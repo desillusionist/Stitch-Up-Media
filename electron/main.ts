@@ -1,10 +1,12 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from 'electron'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
+import { Readable } from 'node:stream'
 import { probeFile } from './ffmpeg/probe'
 import { QueueManager } from './queue/manager'
 import { QueueTask, AppSettings, EditJobPatch } from '../src/types'
 import { logEvent, getLogFile } from './logger'
+import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -55,16 +57,49 @@ function createWindow() {
 app.whenReady().then(() => {
   logEvent('main', 'Application starting', { platform: process.platform, version: process.versions.electron, logFile: getLogFile() })
 
-  // Streams a local file into a renderer, forwarding the Range header so that
-  // <video> can seek. Only absolute paths that actually exist are served.
+  // Streams a local file into a renderer. Byte ranges are resolved here rather
+  // than delegated to net.fetch: a media element will not seek at all unless it
+  // receives a 206 with Content-Range, so this must be exact.
   protocol.handle('stitch-media', async (request) => {
     const target = new URL(request.url).searchParams.get('path')
     if (!target || !path.isAbsolute(target)) return new Response('Missing media path', { status: 400 })
-    if (!fs.existsSync(target)) {
+
+    let size: number
+    try {
+      const stats = fs.statSync(target)
+      if (!stats.isFile()) return new Response('Not a file', { status: 404 })
+      size = stats.size
+    } catch {
       logEvent('media-protocol', 'media not found', { target })
       return new Response('Not found', { status: 404 })
     }
-    return net.fetch(pathToFileURL(target).toString(), { headers: request.headers })
+
+    const contentType = mimeTypeFor(target)
+    const requested = request.headers.get('Range')
+    const range = resolveByteRange(requested, size)
+
+    if (requested && !range) {
+      return new Response('Range not satisfiable', { status: 416, headers: { 'Content-Range': `bytes */${size}` } })
+    }
+
+    if (range) {
+      const body = Readable.toWeb(fs.createReadStream(target, { start: range.start, end: range.end })) as unknown as ReadableStream<Uint8Array>
+      return new Response(body, {
+        status: 206,
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': String(range.end - range.start + 1),
+          'Content-Range': `bytes ${range.start}-${range.end}/${size}`,
+          'Accept-Ranges': 'bytes',
+        },
+      })
+    }
+
+    const body = Readable.toWeb(fs.createReadStream(target)) as unknown as ReadableStream<Uint8Array>
+    return new Response(body, {
+      status: 200,
+      headers: { 'Content-Type': contentType, 'Content-Length': String(size), 'Accept-Ranges': 'bytes' },
+    })
   })
 
   createWindow()
