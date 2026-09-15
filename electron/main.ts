@@ -218,9 +218,15 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('quick-look', async (_, targetPath: string, taskId?: string, trimStart?: number, trimEnd?: number, sourceIndex?: number, stillMode?: boolean, screenshotDirectory?: string, timestampDisplayMode?: 'timestamp' | 'framestamp', sequenceFps?: number, sequenceFrameCount?: number) => {
     const helperSourceName = stillMode ? 'quicklook-lite.swift' : 'quicklook-preview.swift'
+    // Packaged builds unpack the Swift helpers from the asar archive: swiftc runs
+    // as a native process and cannot read a path inside app.asar, and Electron's
+    // fs shim would otherwise resolve the asar path successfully and hand swiftc
+    // an unreadable file. Prefer the unpacked copy. When no archive is in play
+    // (development), getAppPath() has no .asar segment and this is the repo root.
+    const unpackedRoot = app.getAppPath().replace(/app\.asar([\\/]|$)/, 'app.asar.unpacked$1')
     const sourceCandidates = [
+      path.join(unpackedRoot, `electron/${helperSourceName}`),
       path.join(__dirname, `../electron/${helperSourceName}`),
-      path.join(app.getAppPath(), `electron/${helperSourceName}`),
       path.resolve(process.cwd(), `electron/${helperSourceName}`),
     ]
     const source = sourceCandidates.find((candidate) => fs.existsSync(candidate))
