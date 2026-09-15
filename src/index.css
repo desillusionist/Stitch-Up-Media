@@ -213,6 +213,18 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-actions button:disabled, .transport button:disabled { opacity: .4; cursor: not-allowed; }
 .editor-actions button:disabled:hover, .transport button:disabled:hover { color: var(--ui-muted); }
 
+/* EDIT JOB window: frame-accurate preview panel and proportional timeline */
+.editor-screen small { color: var(--ui-muted); font-size: 10px; }
+.editor-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 10px; }
+.editor-preview-actions button { padding: 7px 9px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-accent); font-size: 9px; }
+.editor-preview-actions button:hover { background: rgba(159, 191, 154, .1); }
+.timeline-ruler { display: flex; justify-content: space-between; gap: 10px; }
+.timeline-track .timeline-clip { flex: 1 1 0; min-width: 84px; display: block; text-align: left; background: transparent; cursor: pointer; }
+.timeline-track .timeline-clip:hover { background: rgba(159, 191, 154, .08); }
+.timeline-track .timeline-clip.is-active { border-color: var(--ui-foreground); background: rgba(159, 191, 154, .12); }
+.timeline-track .timeline-clip.is-trimmed { border-style: dashed; }
+.timeline-clip-name { display: block; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
+
 .drop-chooser { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: rgba(3,9,16,.86); }
 .drop-chooser-box { width: min(680px, calc(100vw - 32px)); padding: 22px; border: 1px solid var(--ui-accent); background: var(--ui-panel); color: var(--ui-foreground); }
 .drop-chooser-box h2 { margin: 8px 0 18px; color: var(--ui-foreground) !important; font-size: 14px; }

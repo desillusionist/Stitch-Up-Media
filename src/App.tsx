@@ -10,6 +10,8 @@ import { QueueTask, EncodingPreset, AppSettings, EditJobPatch } from './types'
 import { DEFAULT_PRESETS } from './constants/presets'
 import { detectSequences, isImagePath } from './lib/detectSequences'
 import { deriveOutputFilename } from './lib/outputNaming'
+import { mediaKind } from './lib/mediaKind'
+import { resolveQuickLookRequest } from './lib/quickLookTarget'
 
 /**
  * Overlays the EDIT JOB window's editable fields onto a live queue task.
@@ -26,9 +28,16 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => (
   status: task.status === 'done' ? 'pending' : task.status,
 })
 
-/** Editable slice of a task, used to detect when an open editor needs a refresh. */
-const editJobSignature = (task: QueueTask) =>
-  JSON.stringify([task.preset, task.outputFilename, task.outputFilenameManuallySet, task.sourceBaseName])
+/**
+ * Everything the EDIT JOB window renders. Live progress fields are deliberately
+ * excluded, so encoding ticks cannot push refreshes into the child window.
+ */
+const editJobSignature = (task: QueueTask) => JSON.stringify([
+  task.type, task.status, task.sourcePaths, task.additionalAudioTracks, task.preset,
+  task.outputFilename, task.outputFilenameManuallySet, task.sourceBaseName, task.outputDirectory,
+  task.trimPoints, task.sourceMetadata, task.sourceInfo, task.sequenceInput, task.sequenceInputs,
+  task.imageSequencePreviews, task.quickLookSourceIndex, task.stillImageDuration,
+])
 
 export const App: React.FC = () => {
   const [tasks, setTasks] = useState<QueueTask[]>([])
@@ -431,25 +440,13 @@ export const App: React.FC = () => {
     setTasks((prev) => prev.map((t) => t.id === task.id ? { ...t, outputDirectory: selected.substring(0, slash), outputFilename: selected.substring(slash + 1), outputFilenameManuallySet: true } : t))
   }
   const handleQuickLook = async (task: QueueTask) => {
-    const sourceIndex = task.quickLookSourceIndex ?? 0
-    const sourceTarget = task.quickLookSourceIndex != null ? (task.sourcePaths[sourceIndex] || task.sourcePaths[0]) : task.sourcePaths[0]
-    let existingPreview = task.imageSequencePreviews?.[sourceTarget]
-    const sequence = task.sequenceInputs?.[sourceTarget] || (task.sequenceInput?.firstFrame === sourceTarget ? task.sequenceInput : undefined)
-    if (sequence && (!existingPreview || !(await window.electronAPI?.pathExists?.(existingPreview)))) {
-      existingPreview = await window.electronAPI?.createImageSequencePreview(sequence.files?.length ? sequence.files : [sequence.firstFrame]) || undefined
-      if (existingPreview) {
-        const regeneratedPreview = existingPreview
-        setTasks((current) => current.map((item) => item.id === task.id ? { ...item, imageSequencePreviews: { ...(item.imageSequencePreviews || {}), [sourceTarget]: regeneratedPreview } } : item))
-      }
+    const request = await resolveQuickLookRequest(task, window.electronAPI, {})
+    if (!request) return
+    if (request.regeneratedPreview) {
+      const { sourceTarget, path: previewPath } = request.regeneratedPreview
+      setTasks((current) => current.map((item) => item.id === task.id ? { ...item, imageSequencePreviews: { ...(item.imageSequencePreviews || {}), [sourceTarget]: previewPath } } : item))
     }
-    const kind = mediaKind(sourceTarget)
-    const stillPreview = existingPreview
-    const target = stillPreview || (task.quickLookSourceIndex != null ? sourceTarget : task.status === 'done' ? `${task.outputDirectory}/${task.outputFilename}` : sourceTarget)
-    // Trim points belong to the logical source occurrence, not the temporary sequence preview.
-    const sourceKey = `${sourceTarget}#${sourceIndex}`
-    const sourcePoints = task.trimPoints?.[sourceKey] || task.trimPoints?.[sourceTarget] || task.trimPoints?.[`${target}#${sourceIndex}`] || task.trimPoints?.[target]
-    const standaloneStill = kind === 'image' && !task.sequenceInputs?.[sourceTarget] && task.sequenceInput?.firstFrame !== sourceTarget
-    if (target) void window.electronAPI?.quickLook(target, task.id, sourcePoints?.in, sourcePoints?.out, sourceIndex, standaloneStill, settings.screenshotDirectory, settings.timestampDisplayMode || 'timestamp', sequence?.fps, sequence?.frameCount)
+    void window.electronAPI?.quickLook(request.target, task.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings.screenshotDirectory, settings.timestampDisplayMode || 'timestamp', request.sequenceFps, request.sequenceFrameCount)
   }
   const handleRevealOutput = (task: QueueTask) => {
     if (window.electronAPI) {
@@ -457,12 +454,6 @@ export const App: React.FC = () => {
     }
   }
 
-  const mediaKind = (filePath: string) => {
-    const ext = filePath.split('.').pop()?.toLowerCase() || ''
-    if (['mp3', 'wav', 'aac', 'm4a', 'flac', 'ogg', 'opus'].includes(ext)) return 'audio'
-    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'tiff', 'bmp'].includes(ext)) return 'image'
-    return 'video'
-  }
   const validateModeSources = (type: QueueTask['type'], sourcePaths: string[], tracks: { path: string }[] = []) => {
     const sequenceTask = tasks.find((task) => task.sourcePaths === sourcePaths || task.sourcePaths[0] === sourcePaths[0])
     if (sequenceTask?.sequenceInput && (!sequenceTask.sequenceInput.fps || sequenceTask.sequenceInput.fps <= 0)) return 'IMAGE SEQUENCE requires an interpretation FPS before encoding.'

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { EditJobPatch, EncodingPreset, QueueTask } from '../types'
+import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SequenceInput } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
+import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
@@ -22,15 +23,48 @@ const editableSlice = (task: QueueTask) => ({
 const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
 const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft) !== sliceSignature(baseline)
 
-const pad = (value: number) => String(Math.max(0, Math.floor(value))).padStart(2, '0')
+const sequenceFor = (task: QueueTask, sourcePath: string | undefined): SequenceInput | undefined => {
+  if (!sourcePath) return undefined
+  return task.sequenceInputs?.[sourcePath] || (task.sequenceInput?.firstFrame === sourcePath ? task.sequenceInput : undefined)
+}
 
-const formatTimecode = (seconds: number, fps: number) => {
+/**
+ * Interpreter rate for a source. An image sequence's own fps wins, matching the
+ * `displayFps` rule the native frame-accurate preview already uses, so the two
+ * windows report identical frame numbers for the same media.
+ */
+const sourceFps = (task: QueueTask, sourcePath: string | undefined, sequence: SequenceInput | undefined): number => {
+  if (sequence && sequence.fps > 0) return sequence.fps
+  const metadataFps = sourcePath ? task.sourceMetadata?.[sourcePath]?.fps : undefined
+  if (metadataFps && metadataFps > 0) return metadataFps
+  const streamFps = task.sourceInfo?.videoStreams?.[0]?.fps
+  if (streamFps && streamFps > 0) return streamFps
+  if (task.preset.fps && task.preset.fps > 0) return task.preset.fps
+  return 25
+}
+
+/** A sequence derives its duration from frame count and interpreted fps, as the native preview does. */
+const sourceDuration = (task: QueueTask, sourcePath: string | undefined, sequence: SequenceInput | undefined): number => {
+  if (sequence && sequence.fps > 0 && sequence.frameCount > 0) return sequence.frameCount / sequence.fps
+  const metadataDuration = sourcePath ? task.sourceMetadata?.[sourcePath]?.duration : undefined
+  if (metadataDuration && metadataDuration > 0) return metadataDuration
+  return task.sourceInfo?.duration ?? 0
+}
+
+const trimFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
+  task.trimPoints?.[`${sourcePath}#${index}`] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
+
+/** Same timecode shape the native preview prints: HH:MM:SS.FF */
+const timecode = (seconds: number, fps: number) => {
   const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
   const rate = fps > 0 ? Math.round(fps) : 25
-  const totalFrames = Math.floor(safeSeconds * rate)
-  const totalSeconds = Math.floor(totalFrames / rate)
-  return `${pad(totalSeconds / 3600)}:${pad((totalSeconds % 3600) / 60)}:${pad(totalSeconds % 60)}:${pad(totalFrames % rate)}`
+  const totalFrames = Math.round(safeSeconds * rate)
+  const frames = totalFrames % rate
+  const whole = Math.floor(totalFrames / rate)
+  return `${String(Math.floor(whole / 3600)).padStart(2, '0')}:${String(Math.floor(whole / 60) % 60).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}.${String(frames).padStart(2, '0')}`
 }
+
+const frameStamp = (seconds: number, fps: number) => `FRAME ${String(Math.max(0, Math.round(seconds * fps))).padStart(6, '0')}`
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
 
@@ -52,9 +86,11 @@ const EditorToggle: React.FC<{ label: string; checked: boolean; onChange?: (chec
 export const EditJobApp: React.FC = () => {
   const [baseline, setBaseline] = useState<QueueTask | null>(null)
   const [draft, setDraft] = useState<QueueTask | null>(null)
+  const [settings, setSettings] = useState<AppSettings | null>(null)
   const [tab, setTab] = useState<Tab>('EXPORT')
   const [playing, setPlaying] = useState(false)
   const [playhead, setPlayhead] = useState(0)
+  const [activeSourceIndex, setActiveSourceIndex] = useState(0)
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
   const [incomingConflict, setIncomingConflict] = useState<QueueTask | null>(null)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
@@ -69,38 +105,57 @@ export const EditJobApp: React.FC = () => {
   }
 
   useEffect(() => {
+    void window.electronAPI?.getSettings().then((loaded) => { if (loaded) setSettings(loaded) })
+  }, [])
+
+  useEffect(() => {
     const unsubscribe = window.electronAPI?.onEditJobTask((incoming) => {
       const currentDraft = draftRef.current
       const currentBaseline = baselineRef.current
-      // Never silently destroy unsaved edits; surface the change and let the user choose.
-      if (currentDraft && currentBaseline && isDirty(currentDraft, currentBaseline)
-        && sliceSignature(incoming) !== sliceSignature(currentBaseline)) {
-        setIncomingConflict(incoming)
+      if (!currentDraft || !currentBaseline) {
+        setIncomingConflict(null)
+        baselineRef.current = incoming
+        draftRef.current = incoming
+        setBaseline(incoming)
+        setDraft(incoming)
         return
       }
-      setIncomingConflict(null)
-      setPlayhead(0)
-      setPlaying(false)
+      const userDirty = sliceSignature(currentDraft) !== sliceSignature(currentBaseline)
+      // Only the fields this window owns can conflict; trim points, probe results
+      // and source order arrive from the queue and should just be adopted.
+      if (userDirty && JSON.stringify(editableSlice(incoming)) !== JSON.stringify(editableSlice(currentBaseline))) {
+        setIncomingConflict(incoming)
+      }
+      const merged = userDirty ? { ...incoming, ...editableSlice(currentDraft) } : incoming
       baselineRef.current = incoming
-      draftRef.current = incoming
+      draftRef.current = merged
       setBaseline(incoming)
-      setDraft(incoming)
+      setDraft(merged)
     })
     return () => unsubscribe?.()
   }, [])
 
-  // The playhead is driven by real probe duration, not a decorative counter.
-  const duration = draft?.sourceInfo?.duration ?? draft?.sequenceInput?.duration ?? 0
-  const fps = draft?.preset.fps || draft?.sourceInfo?.videoStreams?.[0]?.fps || 25
+  const activeSource = draft?.sourcePaths[activeSourceIndex] || draft?.sourcePaths[0]
+  const activeSequence = draft ? sequenceFor(draft, activeSource) : undefined
+  const activeDuration = draft ? sourceDuration(draft, activeSource, activeSequence) : 0
+  const fps = draft ? sourceFps(draft, activeSource, activeSequence) : 25
+  const activeTrim = draft ? trimFor(draft, activeSource, activeSourceIndex) : undefined
+  const inPoint = Math.max(0, activeTrim?.in ?? 0)
+  const outPoint = activeTrim?.out && activeTrim.out > inPoint ? activeTrim.out : activeDuration
 
+  // Playback runs inside the trim range, never past the out point, and steps by
+  // whole frames at the interpreted rate.
   useEffect(() => {
-    if (!playing || duration <= 0) return
-    const step = 1 / Math.max(1, Math.round(fps))
+    if (!playing || outPoint <= inPoint) return
+    const step = 1 / Math.max(1, fps)
     const timer = window.setInterval(() => {
-      setPlayhead((current) => (current + step >= duration ? 0 : current + step))
-    }, 1000 / Math.max(1, Math.round(fps)))
+      setPlayhead((current) => {
+        const next = Math.max(inPoint, Math.min(outPoint, current)) + step
+        return next >= outPoint ? inPoint : next
+      })
+    }, 1000 / Math.max(1, fps))
     return () => window.clearInterval(timer)
-  }, [playing, duration, fps])
+  }, [playing, inPoint, outPoint, fps])
 
   if (!draft) return <div className="edit-job-shell"><div className="editor-loading">WAITING FOR QUEUE ITEM...</div></div>
 
@@ -131,6 +186,16 @@ export const EditJobApp: React.FC = () => {
     updatePreset({ fps: value.trim() === '' || !Number.isFinite(parsed) || parsed <= 0 ? undefined : Math.round(parsed) })
   }
 
+  const stamp = (seconds: number) => settings?.timestampDisplayMode === 'framestamp'
+    ? frameStamp(seconds, fps)
+    : timecode(seconds, fps)
+
+  const openPreview = async (preferOutput = false) => {
+    const request = await resolveQuickLookRequest(draft, window.electronAPI, { sourceIndex: activeSourceIndex, preferOutput })
+    if (!request) return
+    void window.electronAPI?.quickLook(request.target, draft.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings?.screenshotDirectory, settings?.timestampDisplayMode || 'timestamp', request.sequenceFps, request.sequenceFrameCount)
+  }
+
   const dirty = isDirty(draft, baseline ?? draft)
   const container = draft.preset.container
   const audioOnly = AUDIO_CONTAINERS.includes(container)
@@ -139,37 +204,27 @@ export const EditJobApp: React.FC = () => {
   const audioDisabled = audioOnly || isGif || isImageContainer
   const videoReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : isGif ? 'GIF OUTPUT FORCES THE GIF ENCODER AND DROPS AUDIO.' : undefined
   const audioReason = audioOnly ? undefined : isGif ? 'GIF OUTPUT CARRIES NO AUDIO.' : isImageContainer ? 'IMAGE OUTPUT CARRIES NO AUDIO TRACK.' : undefined
-  const trimFor = (filePath: string, index: number) => draft.trimPoints?.[`${filePath}#${index}`] || draft.trimPoints?.[filePath]
 
-  const apply = () => {
-    const patch: EditJobPatch = {
-      id: draft.id,
-      preset: draft.preset,
-      outputFilename: draft.outputFilename,
-      outputFilenameManuallySet: draft.outputFilenameManuallySet,
-    }
-    void window.electronAPI?.applyEditJob(patch)
-  }
-
-  const reloadFromQueue = () => {
-    if (!incomingConflict) return
-    setIncomingConflict(null)
-    setPlayhead(0)
-    setPlaying(false)
-    commit(incomingConflict, incomingConflict)
-  }
+  const clipDurations = draft.sourcePaths.map((source) => sourceDuration(draft, source, sequenceFor(draft, source)))
+  const totalDuration = clipDurations.reduce((sum, value) => sum + value, 0) || activeDuration
+  const boundedPlayhead = Math.max(inPoint, Math.min(outPoint, playhead))
+  const step = 1 / Math.max(1, fps)
+  const rulerTicks = Array.from({ length: 5 }, (_, index) => (totalDuration * index) / 4)
+  const resolutionLabel = draft.sourceInfo?.videoStreams?.[0]?.resolution
+    || draft.sourceMetadata?.[activeSource ?? '']?.resolution
+    || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
 
   return <div className="edit-job-shell">
     <header className="editor-header">
-      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB</span><h1>{sourceName(draft.sourcePaths[0])}</h1></div>
+      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB</span><h1>{sourceName(activeSource)}</h1></div>
       <span className="job-mark">{draft.type === 'stitch' ? 'STITCH UP' : draft.type === 'multitrack' ? 'MULTI-TRACK' : draft.type === 'combo' ? 'COMBO' : 'CONVERT'}</span>
     </header>
 
     {incomingConflict && <div className="editor-conflict" role="alert">
-      <div><span className="panel-kicker">QUEUE CHANGED WHILE YOU WERE EDITING</span><p>Your unsaved edits are still here. Reloading discards them and takes the queue&apos;s version.</p></div>
+      <div><span className="panel-kicker">QUEUE CHANGED SETTINGS YOU ARE EDITING</span><p>Your unsaved edits are still here. Reloading discards them and takes the queue&apos;s version.</p></div>
       <div className="editor-conflict-actions">
         <button onClick={() => setIncomingConflict(null)}>KEEP MY EDITS</button>
-        <button className="primary-retro" onClick={reloadFromQueue}>RELOAD FROM QUEUE</button>
+        <button className="primary-retro" onClick={() => { const next = incomingConflict; setIncomingConflict(null); commit(next, next) }}>RELOAD FROM QUEUE</button>
       </div>
     </div>}
 
@@ -177,27 +232,50 @@ export const EditJobApp: React.FC = () => {
       <main className="editor-main">
         <section className="editor-preview">
           <div className="panel-kicker">PREVIEW // FRAME ACCURATE</div>
-          <div className="editor-screen"><span>{sourceName(draft.sourcePaths[0])}</span><b>{playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b></div>
-          <div className="transport">
-            <button disabled={duration <= 0} onClick={() => setPlayhead(Math.max(0, playhead - 1 / Math.max(1, fps)))} title={duration <= 0 ? 'SOURCE DURATION UNKNOWN — PROBE ON START.' : undefined}>[|&lt;] FRAME</button>
-            <button disabled={duration <= 0} onClick={() => setPlaying(!playing)} title={duration <= 0 ? 'SOURCE DURATION UNKNOWN — PROBE ON START.' : undefined}>[{playing ? '||' : '\u25b6'}] PLAY</button>
-            <button disabled={duration <= 0} onClick={() => setPlayhead(Math.min(duration, playhead + 1 / Math.max(1, fps)))} title={duration <= 0 ? 'SOURCE DURATION UNKNOWN — PROBE ON START.' : undefined}>[&gt;|] FRAME</button>
-            <span>{formatTimecode(playhead, fps)} / {formatTimecode(duration, fps)}</span>
-            <input type="range" min="0" max={duration || 1} step={duration > 0 ? 1 / Math.max(1, Math.round(fps)) : 1} value={duration > 0 ? Math.min(playhead, duration) : 0} disabled={duration <= 0} onChange={(event) => setPlayhead(Number(event.target.value))} aria-label="Frame-accurate playhead" />
+          <div className="editor-screen">
+            <span>{sourceName(activeSource)}</span>
+            <small>{resolutionLabel}{activeDuration > 0 ? ` • ${Math.round(fps)} FPS • ${stamp(activeDuration)}` : ' • LENGTH UNKNOWN UNTIL PROBE'}</small>
+            <b>{playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>
           </div>
-          <div className="editor-note">&gt; FRAME RENDERING IS NOT WIRED TO THIS WINDOW YET — THE PLAYHEAD TRACKS REAL SOURCE DURATION.</div>
+          <div className="transport">
+            <button disabled={outPoint <= inPoint} onClick={() => setPlayhead(Math.max(inPoint, boundedPlayhead - step))} title={outPoint <= inPoint ? 'LENGTH UNKNOWN — PROBE ON START.' : undefined}>[|&lt;] FRAME</button>
+            <button disabled={outPoint <= inPoint} onClick={() => setPlaying(!playing)} title={outPoint <= inPoint ? 'LENGTH UNKNOWN — PROBE ON START.' : undefined}>[{playing ? '||' : '\u25b6'}] PLAY</button>
+            <button disabled={outPoint <= inPoint} onClick={() => setPlayhead(Math.min(outPoint, boundedPlayhead + step))} title={outPoint <= inPoint ? 'LENGTH UNKNOWN — PROBE ON START.' : undefined}>[&gt;|] FRAME</button>
+            <span>{stamp(boundedPlayhead)} / {stamp(outPoint)}</span>
+            <input type="range" min={inPoint} max={outPoint > inPoint ? outPoint : 1} step={step} value={outPoint > inPoint ? boundedPlayhead : inPoint} disabled={outPoint <= inPoint} onChange={(event) => setPlayhead(Number(event.target.value))} aria-label="Frame-accurate playhead" />
+          </div>
+          <div className="editor-preview-actions">
+            <button onClick={() => void openPreview(false)}>OPEN FRAME-ACCURATE PREVIEW</button>
+            {draft.status === 'done' && <button onClick={() => void openPreview(true)}>PREVIEW OUTPUT</button>}
+          </div>
+          <div className="editor-note">
+            {activeTrim
+              ? `> TRIMMED ${stamp(activeTrim.in)} → ${stamp(activeTrim.out)}. PRESS I / O IN THE NATIVE PREVIEW TO MOVE THE IN AND OUT POINTS.`
+              : '> PREVIEW OPENS THE NATIVE HELPER, WHICH ALREADY DOES FRAME-ACCURATE SEEKING, IN/OUT HANDLES AND UNDO. TRIM POINTS COME BACK TO THE QUEUE.'}
+          </div>
         </section>
 
         <section className="timeline-panel">
           <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
-          <div className="timeline-ruler">00:00 &nbsp;&nbsp;&nbsp;&nbsp; 00:10 &nbsp;&nbsp;&nbsp;&nbsp; 00:20 &nbsp;&nbsp;&nbsp;&nbsp; 00:30</div>
+          <div className="timeline-ruler">{rulerTicks.map((seconds) => <span key={seconds}>{totalDuration > 0 ? stamp(seconds) : '--:--:--.--'}</span>)}</div>
           <div className="timeline-track">
             <label>VIDEO 1</label>
             {draft.sourcePaths.map((source, index) => {
-              const trim = trimFor(source, index)
-              const metadata = draft.sourceMetadata?.[source]
-              const detail = trim ? `${formatTimecode(trim.in, fps)} — ${formatTimecode(trim.out, fps)} // TRIMMED` : metadata?.duration ? `${formatTimecode(metadata.duration, fps)} // SOURCE` : index === 0 ? '00:00 — SOURCE' : `CLIP ${index + 1} // JUNCTION >`
-              return <div className="timeline-clip" key={`${source}-${index}`}>{sourceName(source)}<small>{detail}</small></div>
+              const trim = trimFor(draft, source, index)
+              const duration = clipDurations[index]
+              const detail = trim
+                ? `${stamp(trim.in)} → ${stamp(trim.out)} // TRIMMED`
+                : duration > 0 ? stamp(duration) : `CLIP ${index + 1}`
+              return <button
+                key={`${source}-${index}`}
+                className={`timeline-clip${index === activeSourceIndex ? ' is-active' : ''}${trim ? ' is-trimmed' : ''}`}
+                style={{ flexGrow: Math.max(duration, 0) || 1 }}
+                onClick={() => { setActiveSourceIndex(index); setPlayhead(0); setPlaying(false) }}
+                title={`Inspect ${sourceName(source)}`}
+              >
+                <span className="timeline-clip-name">{sourceName(source)}</span>
+                <small>{detail}</small>
+              </button>
             })}
           </div>
           {(draft.type === 'multitrack' || draft.type === 'combo') && <div className="timeline-track">
@@ -205,6 +283,7 @@ export const EditJobApp: React.FC = () => {
             <div className="timeline-audio">{draft.additionalAudioTracks?.length ? draft.additionalAudioTracks.map((track) => track.language.toUpperCase()).join(' + ') : 'EMBEDDED AUDIO ONLY'}</div>
           </div>}
           <div className="timeline-track"><label>CAPTIONS</label><div className="timeline-caption">NOT WIRED TO THE ENCODER YET</div></div>
+          {draft.sourcePaths.length > 1 && <div className="editor-note">&gt; SELECT A CLIP TO INSPECT IT. REORDERING SOURCES STAYS IN THE QUEUE RAIL, WHERE THE ORDER IS AUTHORITATIVE.</div>}
         </section>
       </main>
 
@@ -224,7 +303,7 @@ export const EditJobApp: React.FC = () => {
 
           {tab === 'VIDEO' && <>
             <EditorField label="RESOLUTION" reason={videoReason}><select value={draft.preset.resolution} disabled={audioOnly || isGif} onChange={(event) => changeResolution(event.target.value as EncodingPreset['resolution'])}>{RESOLUTIONS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
-            <EditorRow label="EXACT SIZE" value={draft.preset.width && draft.preset.height ? `${draft.preset.width}\u00d7${draft.preset.height} \u2014 OVERRIDES NAMED RESOLUTION` : 'NOT SET'} />
+            <EditorRow label="EXACT SIZE" value={draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height} — OVERRIDES NAMED RESOLUTION` : 'NOT SET'} />
             {draft.preset.width && draft.preset.height ? <button className="editor-inline-action" onClick={() => updatePreset({ width: undefined, height: undefined })}>CLEAR EXACT SIZE</button> : null}
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><input type="number" min="1" className="editor-input" value={draft.preset.fps ?? ''} disabled={audioOnly} onChange={(event) => changeFps(event.target.value)} /></EditorField>
             <EditorField label="QUALITY" hint="BITRATE, E.G. 8M" reason={videoReason}><input type="text" className="editor-input" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} /></EditorField>
@@ -255,14 +334,22 @@ export const EditJobApp: React.FC = () => {
         <div className="export-summary">
           <span className="panel-kicker">SUMMARY</span>
           <strong>{draft.outputFilename}</strong>
-          <span>{duration > 0 ? `DURATION ${formatTimecode(duration, fps)}` : 'DURATION UNKNOWN — PROBE ON START'}</span>
+          <span>{totalDuration > 0 ? `TIMELINE ${stamp(totalDuration)}` : 'TIMELINE LENGTH UNKNOWN — PROBE ON START'}</span>
           <span>{dirty ? 'UNSAVED CHANGES' : 'NO CHANGES'}</span>
         </div>
 
         <div className="editor-actions">
           {confirmingDiscard
             ? <><span className="editor-confirm">DISCARD UNSAVED CHANGES?</span><button onClick={() => setConfirmingDiscard(false)}>KEEP EDITING</button><button className="editor-danger" onClick={() => void window.electronAPI?.cancelEditJob()}>DISCARD</button></>
-            : <><button onClick={() => (dirty ? setConfirmingDiscard(true) : void window.electronAPI?.cancelEditJob())}>CANCEL</button><button className="primary-retro" onClick={apply} disabled={!dirty} title={dirty ? undefined : 'NO CHANGES TO APPLY.'}>OK / APPLY</button></>}
+            : <><button onClick={() => (dirty ? setConfirmingDiscard(true) : void window.electronAPI?.cancelEditJob())}>CANCEL</button><button className="primary-retro" onClick={() => {
+              const patch: EditJobPatch = {
+                id: draft.id,
+                preset: draft.preset,
+                outputFilename: draft.outputFilename,
+                outputFilenameManuallySet: draft.outputFilenameManuallySet,
+              }
+              void window.electronAPI?.applyEditJob(patch)
+            }} disabled={!dirty} title={dirty ? undefined : 'NO CHANGES TO APPLY.'}>OK / APPLY</button></>}
         </div>
       </aside>
     </div>
