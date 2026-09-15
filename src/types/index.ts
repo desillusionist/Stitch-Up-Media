@@ -112,6 +112,22 @@ export interface QueueTask {
   stillImageDuration?: number
 }
 
+/**
+ * The only fields the EDIT JOB window is permitted to change.
+ *
+ * Everything else on a QueueTask is owned by the queue or the encoding engine
+ * (progress, status, speed, eta, error state, probe results, trim points,
+ * additional tracks) and must survive an apply untouched. The editor holds a
+ * snapshot taken when it opened, so sending a whole QueueTask back would
+ * overwrite live encoding state with stale values.
+ */
+export interface EditJobPatch {
+  id: string
+  preset: EncodingPreset
+  outputFilename: string
+  outputFilenameManuallySet?: boolean
+}
+
 export interface PresetRule {
   id: string
   pattern: string // regex or glob like *4K*

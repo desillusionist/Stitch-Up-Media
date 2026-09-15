@@ -3,7 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { probeFile } from './ffmpeg/probe'
 import { QueueManager } from './queue/manager'
-import { QueueTask, AppSettings } from '../src/types'
+import { QueueTask, AppSettings, EditJobPatch } from '../src/types'
 import { logEvent, getLogFile } from './logger'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
@@ -62,10 +62,19 @@ app.whenReady().then(() => {
     if (process.env.VITE_DEV_SERVER_URL) await editJobWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}#edit-job`)
     else await editJobWindow.loadFile(path.join(__dirname, '../dist/index.html'), { hash: 'edit-job' })
   })
-  ipcMain.handle('apply-edit-job', async (_, task: QueueTask) => {
-    editJobTask = task
-    mainWindow?.webContents.send('edit-job-applied', task)
+  // The editor sends only the fields it owns; the queue merges them field-scoped.
+  ipcMain.handle('apply-edit-job', async (_, patch: EditJobPatch) => {
+    mainWindow?.webContents.send('edit-job-applied', patch)
     editJobWindow?.close()
+  })
+  // The queue pushes editable-field changes here while the editor is open, so the
+  // editor never applies edits on top of a stale snapshot. Ignored once the
+  // window is gone, which is why no explicit teardown channel is needed.
+  ipcMain.handle('sync-edit-job-task', async (_, task: QueueTask) => {
+    if (!editJobWindow || editJobWindow.isDestroyed()) return
+    if (!editJobTask || task.id !== editJobTask.id) return
+    editJobTask = task
+    sendEditJobTask()
   })
   ipcMain.handle('cancel-edit-job', async () => { editJobWindow?.close() })
   ipcMain.handle('probe-media', async (_, filePath: string) => {

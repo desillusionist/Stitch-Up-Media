@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { QueueTask, MediaProbeInfo, AppSettings } from '../src/types'
+import { QueueTask, MediaProbeInfo, AppSettings, EditJobPatch } from '../src/types'
 
 export interface IElectronAPI {
   probeMedia: (filePath: string) => Promise<MediaProbeInfo>
@@ -34,8 +34,9 @@ export interface IElectronAPI {
   getPathForFile: (file: File) => string
   openEditJob: (task: QueueTask) => Promise<void>
   onEditJobTask: (callback: (task: QueueTask) => void) => () => void
-  applyEditJob: (task: QueueTask) => Promise<void>
-  onEditJobApplied: (callback: (task: QueueTask) => void) => () => void
+  syncEditJobTask: (task: QueueTask) => Promise<void>
+  applyEditJob: (patch: EditJobPatch) => Promise<void>
+  onEditJobApplied: (callback: (patch: EditJobPatch) => void) => () => void
   cancelEditJob: () => Promise<void>
   onQueueFinished: (callback: () => void) => () => void
 }
@@ -97,10 +98,11 @@ const api: IElectronAPI = {
     ipcRenderer.on('edit-job-task', handler)
     return () => ipcRenderer.removeListener('edit-job-task', handler)
   },
-  applyEditJob: (task: QueueTask) => ipcRenderer.invoke('apply-edit-job', task),
+  applyEditJob: (patch: EditJobPatch) => ipcRenderer.invoke('apply-edit-job', patch),
+  syncEditJobTask: (task: QueueTask) => ipcRenderer.invoke('sync-edit-job-task', task),
   cancelEditJob: () => ipcRenderer.invoke('cancel-edit-job'),
   onEditJobApplied: (callback) => {
-    const handler = (_: any, task: QueueTask) => callback(task)
+    const handler = (_: any, patch: EditJobPatch) => callback(patch)
     ipcRenderer.on('edit-job-applied', handler)
     return () => ipcRenderer.removeListener('edit-job-applied', handler)
   },

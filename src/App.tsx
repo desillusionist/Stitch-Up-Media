@@ -6,9 +6,29 @@ import { StitchModal } from './components/StitchModal'
 import { MultiAudioModal } from './components/MultiAudioModal'
 import { SettingsModal } from './components/SettingsModal'
 import { CommandBar } from './components/CommandBar'
-import { QueueTask, EncodingPreset, AppSettings } from './types'
+import { QueueTask, EncodingPreset, AppSettings, EditJobPatch } from './types'
 import { DEFAULT_PRESETS } from './constants/presets'
 import { detectSequences, isImagePath } from './lib/detectSequences'
+import { deriveOutputFilename } from './lib/outputNaming'
+
+/**
+ * Overlays the EDIT JOB window's editable fields onto a live queue task.
+ *
+ * Deliberately field-scoped rather than a wholesale replace: the editor holds a
+ * snapshot taken when it opened while the queue keeps mutating progress, status,
+ * speed and eta, so replacing the whole object would clobber live encoding state.
+ */
+const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => ({
+  ...task,
+  preset: patch.preset,
+  outputFilename: patch.outputFilename,
+  outputFilenameManuallySet: patch.outputFilenameManuallySet,
+  status: task.status === 'done' ? 'pending' : task.status,
+})
+
+/** Editable slice of a task, used to detect when an open editor needs a refresh. */
+const editJobSignature = (task: QueueTask) =>
+  JSON.stringify([task.preset, task.outputFilename, task.outputFilenameManuallySet, task.sourceBaseName])
 
 export const App: React.FC = () => {
   const [tasks, setTasks] = useState<QueueTask[]>([])
@@ -26,6 +46,8 @@ export const App: React.FC = () => {
   const [isMultiAudioOpen, setIsMultiAudioOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const editJobTaskIdRef = useRef<string | null>(null)
+  const editJobSignatureRef = useRef('')
   const lastDeletedTasksRef = useRef<QueueTask[]>([])
   const taskHistoryPastRef = useRef<QueueTask[][]>([])
   const taskHistoryFutureRef = useRef<QueueTask[][]>([])
@@ -118,6 +140,26 @@ export const App: React.FC = () => {
     return () => window.clearInterval(timer)
   }, [tasks])
 
+  const handleOpenEditJob = (task: QueueTask) => {
+    editJobTaskIdRef.current = task.id
+    editJobSignatureRef.current = editJobSignature(task)
+    void window.electronAPI?.openEditJob(task)
+  }
+
+  // Push editable-field changes to an open EDIT JOB window so it never applies
+  // edits on top of a stale snapshot. Only fires when those fields actually move,
+  // so encoding progress ticks cannot spam the child window.
+  useEffect(() => {
+    const openTaskId = editJobTaskIdRef.current
+    if (!openTaskId) return
+    const task = tasks.find((candidate) => candidate.id === openTaskId)
+    if (!task) return
+    const signature = editJobSignature(task)
+    if (signature === editJobSignatureRef.current) return
+    editJobSignatureRef.current = signature
+    void window.electronAPI?.syncEditJobTask(task)
+  }, [tasks])
+
   // Load initial settings and set up IPC event listeners
   useEffect(() => {
     if (window.electronAPI) {
@@ -125,8 +167,8 @@ export const App: React.FC = () => {
         if (s) setSettings(s)
       })
 
-      const unsubscribeEditor = window.electronAPI.onEditJobApplied((updatedTask) => {
-        setTasks((prev) => prev.map((task) => task.id === updatedTask.id ? updatedTask : task))
+      const unsubscribeEditor = window.electronAPI.onEditJobApplied((patch) => {
+        setTasks((prev) => prev.map((task) => task.id === patch.id ? applyEditJobPatch(task, patch) : task))
       })
 
       const unsubscribeProgress = window.electronAPI.onProgress((taskId, progressData) => {
@@ -657,14 +699,11 @@ export const App: React.FC = () => {
     setTasks((prev) =>
       prev.map((t) => {
         if (targetIds.includes(t.id)) {
-          // Update output extension to match preset container
-          const nameWithoutExt = t.outputFilename.substring(0, t.outputFilename.lastIndexOf('.')) || t.outputFilename
-          const stableBase = t.sourceBaseName || nameWithoutExt.replace(/_(?:1080p_H264_VBR8M|4K_HEVC_VBR22|ProRes422HQ|720p_H264_VBR750k|Source_Remux|PNG_Sequence|JPG_Sequence|PNG|JPG|GIF_(?:Regular|Loop|Bounce)|Audio_[A-Za-z0-9_]+|Custom_[A-Za-z0-9_]+)(?:_[A-Za-z0-9_]+)*$/, '')
           return {
             ...t,
             preset: newPreset,
             status: t.status === 'done' ? 'pending' : t.status,
-            outputFilename: t.outputFilenameManuallySet ? `${nameWithoutExt}.${newPreset.container}` : `${stableBase}_${newPreset.suffix || newPreset.id}.${newPreset.container}`,
+            outputFilename: deriveOutputFilename(t, newPreset),
           }
         }
         return t
@@ -703,7 +742,7 @@ export const App: React.FC = () => {
         missingSources={missingSources}
         selectedTaskIds={selectedTaskIds}
         onSelectTask={handleSelectTask}
-        onOpenEditor={(task) => void window.electronAPI?.openEditJob(task)}
+        onOpenEditor={handleOpenEditJob}
         onAddToExisting={handleAddToExisting}
         onAddSource={handleAddSource}
         onRemoveSource={handleRemoveSource}
@@ -745,7 +784,7 @@ export const App: React.FC = () => {
           onSelectPreset={handleApplyPreset}
           onClose={() => setActiveTaskForPreset(null)}
           onOpenCustom={() => {
-            if (activeTaskForPreset) void window.electronAPI?.openEditJob(activeTaskForPreset)
+            if (activeTaskForPreset) handleOpenEditJob(activeTaskForPreset)
             setIsCustomOpen(false)
             setActiveTaskForPreset(null)
           }}
