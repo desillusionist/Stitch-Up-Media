@@ -1,0 +1,47 @@
+:root {
+  --ui-font-mono: "Doto", sans-serif;
+  --ui-font-system: "Doto", sans-serif;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+  --ui-radius: 0px;
+  --ui-border-width: 1px;
+  --ui-motion-fast: 160ms;
+  --ui-elevation: none;
+  --ui-canvas: #07111d;
+  --ui-panel: #0b1825;
+  --ui-panel-raised: #102232;
+  --ui-panel-inset: #050d16;
+  --ui-foreground: #e8f0f5;
+  --ui-muted: #8ea2b1;
+  --ui-border: #597080;
+  --ui-border-dim: #2a414f;
+  --ui-accent: #ffb000;
+  --ui-done: #33ff66;
+  --ui-encoding: #ffb000;
+  --ui-error: #ff5f56;
+  --ui-paused: #33e1ff;
+  --ui-pending: #8ea2b1;
+}
+[data-theme="modern"] {
+  --ui-font-mono: "Doto", sans-serif;
+  --ui-radius: 6px;
+  --ui-elevation: 0 8px 30px rgba(0,0,0,.28);
+  --ui-canvas: #16181c;
+  --ui-panel: #202329;
+  --ui-panel-raised: #2a2e36;
+  --ui-panel-inset: #111317;
+  --ui-foreground: #f2f4f7;
+  --ui-muted: #a4acb8;
+  --ui-border: #454c58;
+  --ui-border-dim: #303640;
+  --ui-accent: #4da3ff;
+  --ui-done: #35d07f;
+  --ui-encoding: #f2b84b;
+  --ui-error: #ff6b6b;
+  --ui-paused: #58d6e8;
+  --ui-pending: #a4acb8;
+}

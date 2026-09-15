@@ -1,0 +1,68 @@
+export interface DetectedSequence {
+  kind: 'sequence'
+  dir: string
+  pattern: string
+  globPattern: string
+  ext: string
+  prefix: string
+  startNumber: number
+  frameCount: number
+  hasGaps: boolean
+  missing: number[]
+  frames: string[]
+  files: string[]
+  firstFrame: string
+}
+
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'tif', 'tiff'])
+
+export function detectSequences(paths: string[], options: number | { minFrames?: number } = 2): DetectedSequence[] {
+  const minFrames = typeof options === 'number' ? options : options.minFrames ?? 2
+  const groups = new Map<string, { dir: string; prefix: string; ext: string; width: number; entries: Array<{ number: number; path: string }> }>()
+  for (const filePath of paths) {
+    const name = filePath.split(/[\\/]/).pop() || ''
+    const match = /^(.*?)(\d+)(\.[^.]+)$/.exec(name)
+    if (!match || !IMAGE_EXTENSIONS.has(match[3].slice(1).toLowerCase())) continue
+    const separatorIndex = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'))
+    const dir = separatorIndex >= 0 ? filePath.slice(0, separatorIndex + 1) : ''
+    const ext = match[3].slice(1).toLowerCase()
+    const key = `${dir}\0${match[1]}\0${ext}`
+    const current = groups.get(key) || { dir, prefix: match[1], ext, width: match[2].length, entries: [] }
+    current.width = Math.max(current.width, match[2].length)
+    current.entries.push({ number: Number(match[2]), path: filePath })
+    groups.set(key, current)
+  }
+  return [...groups.values()].filter((group) => group.entries.length >= minFrames).map((group) => {
+    const entries = group.entries.sort((a, b) => a.number - b.number)
+    const numbers = entries.map((entry) => entry.number)
+    const startNumber = numbers[0]
+    const endNumber = numbers[numbers.length - 1]
+    const expected = endNumber - startNumber + 1
+    const present = new Set(numbers)
+    const missing = Array.from({ length: expected }, (_, index) => startNumber + index).filter((number) => !present.has(number))
+    const token = group.width > 1 ? `%0${group.width}d` : '%d'
+    return {
+      kind: 'sequence' as const,
+      dir: group.dir,
+      pattern: `${group.prefix}${token}.${group.ext}`,
+      globPattern: `${group.prefix}*.${group.ext}`,
+      ext: group.ext.toUpperCase(),
+      prefix: group.prefix,
+      startNumber,
+      frameCount: entries.length,
+      hasGaps: missing.length > 0,
+      missing,
+      frames: entries.map((entry) => entry.path),
+      files: entries.map((entry) => entry.path),
+      firstFrame: entries[0].path,
+    }
+  })
+}
+
+export function isImagePath(filePath: string): boolean {
+  return /\.(png|jpg|jpeg|tif|tiff)$/i.test(filePath)
+}
+
+export function sequenceLabel(sequence: DetectedSequence, fps: number): string {
+  return `${sequence.frameCount} frames · ${sequence.ext} · ${fps} fps`
+}
