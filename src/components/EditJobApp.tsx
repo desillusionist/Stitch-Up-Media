@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SequenceInput } from '../types'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { AppSettings, EditJobPatch, EncodingPreset, QueueTask } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
+import { buildTimeline, frameStamp, sourceFps, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
@@ -23,49 +25,6 @@ const editableSlice = (task: QueueTask) => ({
 
 const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
 const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft) !== sliceSignature(baseline)
-
-const sequenceFor = (task: QueueTask, sourcePath: string | undefined): SequenceInput | undefined => {
-  if (!sourcePath) return undefined
-  return task.sequenceInputs?.[sourcePath] || (task.sequenceInput?.firstFrame === sourcePath ? task.sequenceInput : undefined)
-}
-
-/**
- * Interpreter rate for a source. An image sequence's own fps wins, matching the
- * `displayFps` rule the native frame-accurate preview already uses, so the two
- * report identical frame numbers for the same media.
- */
-const sourceFps = (task: QueueTask, sourcePath: string | undefined, sequence: SequenceInput | undefined): number => {
-  if (sequence && sequence.fps > 0) return sequence.fps
-  const metadataFps = sourcePath ? task.sourceMetadata?.[sourcePath]?.fps : undefined
-  if (metadataFps && metadataFps > 0) return metadataFps
-  const streamFps = task.sourceInfo?.videoStreams?.[0]?.fps
-  if (streamFps && streamFps > 0) return streamFps
-  if (task.preset.fps && task.preset.fps > 0) return task.preset.fps
-  return 25
-}
-
-/** A sequence derives its duration from frame count and interpreted fps, as the native preview does. */
-const sourceDuration = (task: QueueTask, sourcePath: string | undefined, sequence: SequenceInput | undefined): number => {
-  if (sequence && sequence.fps > 0 && sequence.frameCount > 0) return sequence.frameCount / sequence.fps
-  const metadataDuration = sourcePath ? task.sourceMetadata?.[sourcePath]?.duration : undefined
-  if (metadataDuration && metadataDuration > 0) return metadataDuration
-  return task.sourceInfo?.duration ?? 0
-}
-
-const trimFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
-  task.trimPoints?.[`${sourcePath}#${index}`] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
-
-/** Same timecode shape the native preview prints: HH:MM:SS.FF */
-const timecode = (seconds: number, fps: number) => {
-  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
-  const rate = fps > 0 ? Math.round(fps) : 25
-  const totalFrames = Math.round(safeSeconds * rate)
-  const frames = totalFrames % rate
-  const whole = Math.floor(totalFrames / rate)
-  return `${String(Math.floor(whole / 3600)).padStart(2, '0')}:${String(Math.floor(whole / 60) % 60).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}.${String(frames).padStart(2, '0')}`
-}
-
-const frameStamp = (seconds: number, fps: number) => `FRAME ${String(Math.max(0, Math.round(seconds * fps))).padStart(6, '0')}`
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
 
@@ -89,20 +48,15 @@ export const EditJobApp: React.FC = () => {
   const [draft, setDraft] = useState<QueueTask | null>(null)
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [tab, setTab] = useState<Tab>('EXPORT')
-  const [playing, setPlaying] = useState(false)
-  const [playhead, setPlayhead] = useState(0)
-  const [activeSourceIndex, setActiveSourceIndex] = useState(0)
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
   const [incomingConflict, setIncomingConflict] = useState<QueueTask | null>(null)
-  const [mediaTarget, setMediaTarget] = useState<{ path: string; stillMode: boolean } | null>(null)
-  const [mediaDuration, setMediaDuration] = useState(0)
-  const [mediaError, setMediaError] = useState<string | null>(null)
+  // Where the resolved preview target points, which is not always the stored
+  // source path: sequences play through a generated preview file.
+  const [mediaTarget, setMediaTarget] = useState<{ path: string; stillMode: boolean; sourcePath: string } | null>(null)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
-  const mediaRef = useRef<HTMLVideoElement | null>(null)
-  // Read by media-event handlers so they never capture stale trim bounds.
-  const boundsRef = useRef({ inPoint: 0, outPoint: 0 })
+  const audioElementsRef = useRef<Record<string, HTMLAudioElement | null>>({})
 
   const commit = (nextBaseline: QueueTask | null, nextDraft: QueueTask | null) => {
     baselineRef.current = nextBaseline
@@ -142,98 +96,37 @@ export const EditJobApp: React.FC = () => {
     return () => unsubscribe?.()
   }, [])
 
-  const activeSource = draft?.sourcePaths[activeSourceIndex] || draft?.sourcePaths[0]
-  const activeSequence = draft ? sequenceFor(draft, activeSource) : undefined
-  const probedDuration = draft ? sourceDuration(draft, activeSource, activeSequence) : 0
-  const fps = draft ? sourceFps(draft, activeSource, activeSequence) : 25
-  const activeTrim = draft ? trimFor(draft, activeSource, activeSourceIndex) : undefined
-  const inPoint = Math.max(0, activeTrim?.in ?? 0)
-  // The element's own length is trusted when probing has not happened yet, so the
-  // transport still works on a task that has never been encoded.
-  const effectiveDuration = probedDuration > 0 ? probedDuration : mediaDuration
-  const outPoint = activeTrim?.out && activeTrim.out > inPoint ? activeTrim.out : effectiveDuration
-  boundsRef.current = { inPoint, outPoint }
-
-  // Only inputs that change *what* is loaded are dependencies, so unrelated draft
-  // edits (a bitrate keystroke, say) never reload the media.
-  const targetSignature = draft ? JSON.stringify([
-    draft.id, activeSourceIndex, draft.status, draft.sourcePaths, draft.sequenceInput,
-    draft.sequenceInputs, draft.imageSequencePreviews, draft.outputDirectory, draft.outputFilename,
+  // Rebuilding is cheap but churns identities, so it is keyed to the inputs that
+  // actually change the timeline.
+  const timelineSignature = draft ? JSON.stringify([
+    draft.type, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
+    draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo, draft.preset.fps,
   ]) : ''
+  const model: TimelineModel | null = useMemo(() => (draft ? buildTimeline(draft) : null), [timelineSignature])
 
+  const playback = useConsolidatedPlayback(
+    model ?? { lanes: [], duration: 0, unusedVideoSources: [] },
+    audioElementsRef,
+    { playable: Boolean(model && model.duration > 0) },
+  )
+
+  const focusedSourceIndex = playback.segmentIndex
+  const focusedSource = draft ? (draft.sourcePaths[focusedSourceIndex] || draft.sourcePaths[0]) : undefined
+
+  // Sequence frames and standalone images cannot be decoded by a video element, so
+  // the target is resolved to a generated preview for whichever source is in focus.
   useEffect(() => {
     let cancelled = false
     const task = draftRef.current
-    if (!task) {
-      setMediaTarget(null)
-      return
-    }
-    void resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: activeSourceIndex }).then((request) => {
+    if (!task) { setMediaTarget(null); return }
+    void resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: focusedSourceIndex }).then((request) => {
       if (cancelled) return
-      setMediaTarget(request ? { path: request.target, stillMode: request.stillMode } : null)
+      setMediaTarget(request ? { path: request.target, stillMode: request.stillMode, sourcePath: task.sourcePaths[focusedSourceIndex] || task.sourcePaths[0] || '' } : null)
     })
     return () => { cancelled = true }
-  }, [targetSignature])
+  }, [timelineSignature, focusedSourceIndex])
 
-  // A new clip opens paused at its in point.
-  useEffect(() => {
-    setPlaying(false)
-    setMediaError(null)
-    setMediaDuration(0)
-    const start = boundsRef.current.inPoint
-    setPlayhead(start)
-    const element = mediaRef.current
-    if (element) element.pause()
-  }, [mediaTarget?.path])
-
-  // Playback is driven by the media element, so the playhead shows real time.
-  useEffect(() => {
-    const element = mediaRef.current
-    if (!element || mediaTarget?.stillMode) return
-    if (playing) void element.play().catch(() => setPlaying(false))
-    else element.pause()
-  }, [playing, mediaTarget?.path, mediaTarget?.stillMode])
-
-  // Mirror the element clock into the playhead, and halt at the out point the way
-  // the native preview stops at its out handle.
-  useEffect(() => {
-    const element = mediaRef.current
-    if (!element || mediaTarget?.stillMode) return
-    const sync = () => {
-      const { inPoint: lower, outPoint: upper } = boundsRef.current
-      if (upper > lower && element.currentTime >= upper) {
-        element.pause()
-        element.currentTime = upper
-        setPlaying(false)
-        setPlayhead(upper)
-        return
-      }
-      setPlayhead(element.currentTime)
-    }
-    const onLoaded = () => {
-      setMediaError(null)
-      setMediaDuration(Number.isFinite(element.duration) ? element.duration : 0)
-      const { inPoint: lower } = boundsRef.current
-      if (lower > 0 && element.currentTime < lower) element.currentTime = lower
-      sync()
-    }
-    const onError = () => { setMediaError('UNABLE TO DECODE THIS SOURCE'); setPlaying(false) }
-    const onEnded = () => setPlaying(false)
-    element.addEventListener('timeupdate', sync)
-    element.addEventListener('seeked', sync)
-    element.addEventListener('loadedmetadata', onLoaded)
-    element.addEventListener('error', onError)
-    element.addEventListener('ended', onEnded)
-    return () => {
-      element.removeEventListener('timeupdate', sync)
-      element.removeEventListener('seeked', sync)
-      element.removeEventListener('loadedmetadata', onLoaded)
-      element.removeEventListener('error', onError)
-      element.removeEventListener('ended', onEnded)
-    }
-  }, [mediaTarget?.path, mediaTarget?.stillMode])
-
-  if (!draft) return <div className="edit-job-shell"><div className="editor-loading">WAITING FOR QUEUE ITEM...</div></div>
+  if (!draft || !model) return <div className="edit-job-shell"><div className="editor-loading">WAITING FOR QUEUE ITEM...</div></div>
 
   const updateDraft = (changes: Partial<QueueTask>) => {
     const next = { ...draft, ...changes }
@@ -262,15 +155,53 @@ export const EditJobApp: React.FC = () => {
     updatePreset({ fps: value.trim() === '' || !Number.isFinite(parsed) || parsed <= 0 ? undefined : Math.round(parsed) })
   }
 
-  const stamp = (seconds: number) => settings?.timestampDisplayMode === 'framestamp'
-    ? frameStamp(seconds, fps)
-    : timecode(seconds, fps)
+  const mainLane = model.lanes[0]
+  const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
+  const sequenceSources = new Set([...Object.keys(draft.sequenceInputs || {}), ...(draft.sequenceInput ? [draft.sequenceInput.firstFrame] : [])])
+  const stillMode = mediaTarget?.stillMode === true && (mainLane?.segments.length ?? 0) <= 1
+  const playable = !stillMode && model.duration > 0
+  const fps = sourceFps(draft, playback.segment?.sourcePath ?? focusedSource)
+  const stamp = (seconds: number) => settings?.timestampDisplayMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
+  const duration = model.duration
 
-  const openPreview = async (preferOutput = false) => {
-    const request = await resolveQuickLookRequest(draft, window.electronAPI, { sourceIndex: activeSourceIndex, preferOutput })
+  /**
+   * A sequence frame cannot be handed to a video element, so it plays through the
+   * resolved preview. Returning null keeps the element idle until that preview
+   * exists, rather than letting it fail on a PNG.
+   */
+  const sourceUrlFor = (segment: TimelineSegment | undefined): string | null => {
+    if (!segment) return null
+    if (sequenceSources.has(segment.sourcePath)) {
+      return mediaTarget?.sourcePath === segment.sourcePath ? mediaUrl(mediaTarget.path) : null
+    }
+    return mediaUrl(segment.sourcePath)
+  }
+  const elementUrl = sourceUrlFor(playback.segment)
+
+  const seekFraction = (event: React.MouseEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0 || duration <= 0) return
+    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    playback.seek(fraction * duration)
+  }
+
+  /**
+   * Opens the native trimmer seeded with the source's existing in/out points. The
+   * helper reports the filmstrip range back on close, so opening it without the
+   * current points would overwrite existing trim with the full source range.
+   */
+  const openNativePreview = async () => {
+    const request = await resolveQuickLookRequest(draft, window.electronAPI, { sourceIndex: focusedSourceIndex })
     if (!request) return
     void window.electronAPI?.quickLook(request.target, draft.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings?.screenshotDirectory, settings?.timestampDisplayMode || 'timestamp', request.sequenceFps, request.sequenceFrameCount)
   }
+
+  const laneGap = (lane: TimelineLane) => Math.max(0, duration - lane.duration)
+  const activeSegmentKey = playback.segment?.key
+  const playheadFraction = duration > 0 ? Math.max(0, Math.min(1, playback.position / duration)) : 0
+  const resolutionLabel = draft.sourceInfo?.videoStreams?.[0]?.resolution
+    || draft.sourceMetadata?.[focusedSource ?? '']?.resolution
+    || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
 
   const dirty = isDirty(draft, baseline ?? draft)
   const container = draft.preset.container
@@ -281,27 +212,9 @@ export const EditJobApp: React.FC = () => {
   const videoReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : isGif ? 'GIF OUTPUT FORCES THE GIF ENCODER AND DROPS AUDIO.' : undefined
   const audioReason = audioOnly ? undefined : isGif ? 'GIF OUTPUT CARRIES NO AUDIO.' : isImageContainer ? 'IMAGE OUTPUT CARRIES NO AUDIO TRACK.' : undefined
 
-  const clipDurations = draft.sourcePaths.map((source, index) => sourceDuration(draft, source, sequenceFor(draft, source)) || (index === activeSourceIndex ? mediaDuration : 0))
-  const totalDuration = clipDurations.reduce((sum, value) => sum + value, 0) || effectiveDuration
-  const boundedPlayhead = Math.max(inPoint, Math.min(outPoint, playhead))
-  const step = 1 / Math.max(1, fps)
-  const playable = !mediaTarget?.stillMode && outPoint > inPoint
-  const rulerTicks = Array.from({ length: 5 }, (_, index) => (totalDuration * index) / 4)
-  const resolutionLabel = draft.sourceInfo?.videoStreams?.[0]?.resolution
-    || draft.sourceMetadata?.[activeSource ?? '']?.resolution
-    || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
-
-  // Scrubbing and frame stepping drive the element itself, so a paused frame shows.
-  const seekTo = (seconds: number) => {
-    const bounded = Math.max(inPoint, Math.min(outPoint > inPoint ? outPoint : Number.MAX_SAFE_INTEGER, seconds))
-    setPlayhead(bounded)
-    const element = mediaRef.current
-    if (element && !mediaTarget?.stillMode && Number.isFinite(bounded)) element.currentTime = bounded
-  }
-
   return <div className="edit-job-shell">
     <header className="editor-header">
-      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB</span><h1>{sourceName(activeSource)}</h1></div>
+      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB</span><h1>{sourceName(focusedSource)}</h1></div>
       <span className="job-mark">{draft.type === 'stitch' ? 'STITCH UP' : draft.type === 'multitrack' ? 'MULTI-TRACK' : draft.type === 'combo' ? 'COMBO' : 'CONVERT'}</span>
     </header>
 
@@ -316,65 +229,75 @@ export const EditJobApp: React.FC = () => {
     <div className="editor-body">
       <main className="editor-main">
         <section className="editor-preview">
-          <div className="panel-kicker">PREVIEW // FRAME ACCURATE</div>
+          <div className="panel-kicker">PREVIEW // ASSEMBLED OUTPUT</div>
           <div className="editor-screen">
-            {mediaError
-              ? <span className="editor-screen-message">{mediaError}</span>
-              : mediaTarget?.stillMode
-                ? <img className="editor-still" src={mediaUrl(mediaTarget.path)} alt={sourceName(mediaTarget.path)} onError={() => setMediaError('UNABLE TO DECODE THIS SOURCE')} />
-                : mediaTarget
-                  ? <video ref={mediaRef} className="editor-video" src={mediaUrl(mediaTarget.path)} preload="metadata" playsInline onContextMenu={(event) => event.preventDefault()} />
-                  : <span className="editor-screen-message">NO MEDIA SELECTED</span>}
-            {!mediaError && <small>{sourceName(mediaTarget?.path) || sourceName(activeSource)} • {resolutionLabel}{effectiveDuration > 0 ? ` • ${Math.round(fps)} FPS • ${stamp(effectiveDuration)}` : ''}</small>}
-            {!mediaError && <b>{playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>}
+            {playback.error
+              ? <span className="editor-screen-message">{playback.error}</span>
+              : stillMode && mediaTarget
+                ? <img className="editor-still" src={mediaUrl(mediaTarget.path)} alt={sourceName(mediaTarget.path)} />
+                : elementUrl
+                  ? <video
+                    ref={playback.videoRef}
+                    className="editor-video"
+                    src={elementUrl}
+                    preload="metadata"
+                    playsInline
+                    onContextMenu={(event) => event.preventDefault()}
+                    onClick={() => playback.toggle()}
+                  />
+                  : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
+            <small>{sourceName(focusedSource)} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS • ${stamp(duration)}` : ''}</small>
+            <b>{playback.playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>
           </div>
           <div className="transport">
-            <button disabled={!playable} onClick={() => { setPlaying(false); seekTo(boundedPlayhead - step) }} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
-            <button disabled={!playable} onClick={() => setPlaying(!playing)} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playing ? '||' : '\u25b6'}] PLAY</button>
-            <button disabled={!playable} onClick={() => { setPlaying(false); seekTo(boundedPlayhead + step) }} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
-            <span>{stamp(boundedPlayhead)} / {stamp(outPoint)}</span>
-            <input type="range" min={inPoint} max={outPoint > inPoint ? outPoint : 1} step={step} value={outPoint > inPoint ? boundedPlayhead : inPoint} disabled={!playable} onChange={(event) => { setPlaying(false); seekTo(Number(event.target.value)) }} aria-label="Frame-accurate playhead" />
+            <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
+            <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playback.playing ? '||' : '\u25b6'}] PLAY</button>
+            <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
+            <span>{stamp(playback.position)} / {stamp(duration)}</span>
+            <input
+              type="range"
+              min={0}
+              max={duration > 0 ? duration : 1}
+              step={fps > 0 ? 1 / fps : 0.01}
+              value={duration > 0 ? playback.position : 0}
+              disabled={!playable}
+              onChange={(event) => playback.seek(Number(event.target.value))}
+              aria-label="Playhead across the assembled output"
+            />
           </div>
           <div className="editor-preview-actions">
-            <button onClick={() => void openPreview(false)}>OPEN FRAME-ACCURATE PREVIEW</button>
-            {draft.status === 'done' && <button onClick={() => void openPreview(true)}>PREVIEW OUTPUT</button>}
+            <button onClick={() => void openNativePreview()} disabled={!mediaTarget}>OPEN FRAME-ACCURATE PREVIEW</button>
           </div>
-          <div className="editor-note">
-            {activeTrim
-              ? `> TRIMMED ${stamp(activeTrim.in)} → ${stamp(activeTrim.out)}. PRESS I / O IN THE NATIVE PREVIEW TO MOVE THE IN AND OUT POINTS.`
-              : '> PLAYBACK IS LIMITED TO THE TRIM RANGE. USE THE NATIVE PREVIEW TO SET IN AND OUT POINTS; THEY COME BACK TO THE QUEUE.'}
-          </div>
+          <div className="editor-note">&gt; SCRUB ANYWHERE, OR CLICK A LANE BELOW TO JUMP. IN AND OUT POINTS ARE SET IN THE NATIVE PREVIEW AND COME BACK TO THE QUEUE.</div>
         </section>
 
         <section className="timeline-panel">
           <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
-          <div className="timeline-ruler">{rulerTicks.map((seconds) => <span key={seconds}>{totalDuration > 0 ? stamp(seconds) : '--:--:--.--'}</span>)}</div>
-          <div className="timeline-track">
-            <label>VIDEO 1</label>
-            {draft.sourcePaths.map((source, index) => {
-              const trim = trimFor(draft, source, index)
-              const duration = clipDurations[index]
-              const detail = trim
-                ? `${stamp(trim.in)} → ${stamp(trim.out)} // TRIMMED`
-                : duration > 0 ? stamp(duration) : `CLIP ${index + 1}`
-              return <button
-                key={`${source}-${index}`}
-                className={`timeline-clip${index === activeSourceIndex ? ' is-active' : ''}${trim ? ' is-trimmed' : ''}`}
-                style={{ flexGrow: Math.max(duration, 0) || 1 }}
-                onClick={() => { setActiveSourceIndex(index); setPlayhead(0); setPlaying(false) }}
-                title={`Inspect ${sourceName(source)}`}
-              >
-                <span className="timeline-clip-name">{sourceName(source)}</span>
-                <small>{detail}</small>
-              </button>
-            })}
+          <div className="timeline-ruler">{Array.from({ length: 5 }, (_, index) => (duration * index) / 4).map((seconds) => <span key={seconds}>{duration > 0 ? stamp(seconds) : '--:--:--.--'}</span>)}</div>
+          <div className="timeline-lanes">
+            {model.lanes.map((lane) => (
+              <div className="timeline-lane" key={lane.id}>
+                <label>{lane.label}</label>
+                <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
+                  {lane.segments.map((segment) => (
+                    <div
+                      key={segment.key}
+                      className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}`}
+                      style={{ flexGrow: Math.max(segment.duration, 0.001) }}
+                      title={`${sourceName(segment.sourcePath)} — ${stamp(segment.duration)}${segment.trimmed ? ' (trimmed)' : ''}`}
+                    >
+                      <span className="timeline-clip-name">{sourceName(segment.sourcePath)}</span>
+                      <small>{stamp(segment.duration)}{segment.trimmed ? ' // TRIMMED' : ''}</small>
+                    </div>
+                  ))}
+                  {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexGrow: laneGap(lane) }} title="No media on this lane" />}
+                </div>
+              </div>
+            ))}
+            <div className="timeline-playhead" style={{ left: `calc(74px + ${playheadFraction} * (100% - 74px))` }} aria-hidden="true" />
           </div>
-          {(draft.type === 'multitrack' || draft.type === 'combo') && <div className="timeline-track">
-            <label>TRACKS</label>
-            <div className="timeline-audio">{draft.additionalAudioTracks?.length ? draft.additionalAudioTracks.map((track) => track.language.toUpperCase()).join(' + ') : 'EMBEDDED AUDIO ONLY'}</div>
-          </div>}
-          <div className="timeline-track"><label>CAPTIONS</label><div className="timeline-caption">NOT WIRED TO THE ENCODER YET</div></div>
-          {draft.sourcePaths.length > 1 && <div className="editor-note">&gt; SELECT A CLIP TO INSPECT IT. REORDERING SOURCES STAYS IN THE QUEUE RAIL, WHERE THE ORDER IS AUTHORITATIVE.</div>}
+          {model.unusedVideoSources.length > 0 && <div className="editor-note">&gt; {model.unusedVideoSources.length} EXTRA VIDEO SOURCE(S) ({model.unusedVideoSources.map(sourceName).join(', ')}) ARE NOT USED: COMBO DISPATCHES TO THE MULTI-TRACK ENCODER PATH, WHICH MAPS ONE VIDEO STREAM. SPLIT INTO A STITCH JOB TO CONCATENATE THEM.</div>}
+          <div className="editor-note">&gt; LANE WIDTHS ARE THE REAL TRIMMED DURATIONS. AUDIO TRACKS PLAY ALONGSIDE THE VIDEO FROM ZERO, SO THE OUTPUT RUNS TO {duration > 0 ? stamp(duration) : 'AN UNKNOWN LENGTH'}.</div>
         </section>
       </main>
 
@@ -425,7 +348,7 @@ export const EditJobApp: React.FC = () => {
         <div className="export-summary">
           <span className="panel-kicker">SUMMARY</span>
           <strong>{draft.outputFilename}</strong>
-          <span>{totalDuration > 0 ? `TIMELINE ${stamp(totalDuration)}` : 'TIMELINE LENGTH UNKNOWN — PROBE ON START'}</span>
+          <span>{duration > 0 ? `ASSEMBLED ${stamp(duration)} ACROSS ${model.lanes.length} LANE(S)` : 'LENGTH UNKNOWN — PROBE ON START'}</span>
           <span>{dirty ? 'UNSAVED CHANGES' : 'NO CHANGES'}</span>
         </div>
 
@@ -444,5 +367,16 @@ export const EditJobApp: React.FC = () => {
         </div>
       </aside>
     </div>
+
+    {audioLanes.map((lane) => {
+      const laneSegment = lane.segments[0]
+      const url = laneSegment ? sourceUrlFor(laneSegment) : null
+      return url ? <audio
+        key={lane.id}
+        ref={(element) => { audioElementsRef.current[lane.id] = element }}
+        src={url}
+        preload="auto"
+      /> : null
+    })}
   </div>
 }

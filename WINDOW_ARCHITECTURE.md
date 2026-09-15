@@ -8,13 +8,21 @@ The child window is intentionally independent from the queue renderer. It receiv
 
 Controls the encoder cannot honour yet (burn-in effects, caption output) are shown disabled with an explanatory reason rather than presented as working.
 
-## Frame-accurate preview
+## Preview and timeline
 
-The editor does not render video frames itself. **OPEN FRAME-ACCURATE PREVIEW** opens the same native Swift helper the queue uses through the `quick-look` channel, which already provides frame-accurate seeking, in/out handles, frame stepping, undo/redo, screenshot capture, and timestamp or framestamp burn-in readout. Reusing it avoids a second, divergent playback implementation.
+The panel plays the **assembled output**, not a single clip. `src/lib/timelineModel.ts` builds the consolidated timeline from the task, and the lanes are drawn to scale from the real trimmed durations. **STITCH** concatenates every source in order. **TRANSCODE**, **MULTI-TRACK** and **COMBO** map a single video stream with their audio tracks muxed alongside it from zero, so the finished length is the longer of the video and the longest track — which is exactly how the encoder reconciles them by padding video with a freeze frame. COMBO is modelled as multi-track because the encoder dispatches purely on `type` and never reads `comboMode`.
 
-Launch resolution is shared through `src/lib/quickLookTarget.ts`, so the queue rail and the editor cannot drift on image-sequence thumbnail regeneration, still-frame detection, or trim-point lookup. `src/lib/mediaKind.ts` is shared for the same reason.
+The main lane's media element is the master clock, so video and its embedded audio stay in sync by construction; added tracks are slaved to it and corrected only once they drift past a tolerance. Segment junctions are crossed by pointing the same element at the next source. Where an added track outlasts the video, a wall clock takes over so the playhead still advances.
 
-Trim stays queue-owned. The native helper reports in/out points, the queue records them on the task, and the editor picks the change up through `sync-edit-job-task`. The editor therefore displays and inspects trim state rather than owning it.
+Local files stream through the `stitch-media` scheme registered in `electron/main.ts`. A plain `file://` URL cannot work: the dev renderer runs on `http://localhost`, where Chromium refuses `file://` media. Byte ranges are resolved explicitly rather than delegated, because a media element only becomes seekable when it receives a `206` with a correct `Content-Range`.
+
+### Setting trim
+
+**OPEN FRAME-ACCURATE PREVIEW** opens the same native Swift helper the queue uses through the `quick-look` channel, which already provides frame-accurate seeking, in/out handles, frame stepping, undo/redo, screenshot capture, and timestamp or framestamp burn-in readout. Reusing it avoids reimplementing trimming.
+
+Trim stays queue-owned. The native helper reports in/out points, the queue records them on the task, and the editor picks the change up through `sync-edit-job-task`. The editor therefore displays and inspects trim state rather than owning it, and the timeline redraws at the trimmed lengths.
+
+Launch resolution is shared through `src/lib/quickLookTarget.ts`, so the queue rail and the editor cannot drift on image-sequence thumbnail regeneration, still-frame detection, or trim-point lookup. `src/lib/mediaKind.ts` is shared for the same reason: a sequence frame cannot be decoded by a video element, so it is played through its generated preview instead.
 
 Durations and frame rates come from probe data on the task. An image sequence reports duration as frame count over its interpreted fps, matching the helper's `displayFps` rule, so both windows agree on frame numbers for the same media.
 

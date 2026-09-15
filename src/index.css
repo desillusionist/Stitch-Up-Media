@@ -219,13 +219,20 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-preview-actions button { padding: 7px 9px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-accent); font-size: 9px; }
 .editor-preview-actions button:hover { background: rgba(159, 191, 154, .1); }
 .timeline-ruler { display: flex; justify-content: space-between; gap: 10px; }
-.timeline-track .timeline-clip { flex: 1 1 0; min-width: 84px; display: block; text-align: left; background: transparent; cursor: pointer; }
-.timeline-track .timeline-clip:hover { background: rgba(159, 191, 154, .08); }
-.timeline-track .timeline-clip.is-active { border-color: var(--ui-foreground); background: rgba(159, 191, 154, .12); }
-.timeline-track .timeline-clip.is-trimmed { border-style: dashed; }
+.timeline-lanes { position: relative; }
+.timeline-lane { display: flex; align-items: stretch; min-height: 42px; border-bottom: 1px dotted var(--ui-border); }
+.timeline-lane > label { width: 68px; min-width: 68px; padding: 12px 4px 0 0; color: var(--ui-muted); font-size: 9px; }
+.timeline-lane-track { flex: 1; display: flex; align-items: stretch; min-width: 0; cursor: pointer; }
+.timeline-lane .timeline-clip { flex: 1 1 0; min-width: 0; margin: 5px 2px; display: block; }
+.timeline-lane .timeline-clip:hover { background: rgba(159, 191, 154, .08); }
+.timeline-lane .timeline-clip.is-active { border-color: var(--ui-foreground); background: rgba(159, 191, 154, .14); }
+.timeline-lane .timeline-clip.is-trimmed { border-style: dashed; }
+.timeline-lane-track.is-audio .timeline-clip { border-color: var(--ui-paused); }
+.timeline-fill { flex: 1 1 0; min-width: 0; margin: 5px 2px; border: 1px dashed var(--ui-border-dim); opacity: .5; }
+.timeline-playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ui-accent); pointer-events: none; z-index: 2; }
 .timeline-clip-name { display: block; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
-.editor-video, .editor-still { width: 100%; max-height: 360px; background: #030910; object-fit: contain; }
-.editor-still { width: auto; max-width: 100%; }
+.editor-video, .editor-still { width: 100%; max-height: 360px; background: #030910; object-fit: contain; cursor: pointer; }
+.editor-still { width: auto; max-width: 100%; cursor: default; }
 .editor-screen-message { color: var(--ui-muted); font-size: 10px; }
 
 .drop-chooser { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: rgba(3,9,16,.86); }
