@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from 'electron'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { probeFile } from './ffmpeg/probe'
 import { QueueManager } from './queue/manager'
 import { QueueTask, AppSettings, EditJobPatch } from '../src/types'
@@ -10,6 +10,15 @@ import os from 'node:os'
 import fs from 'node:fs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// Renderers load local media through this scheme. A custom protocol is required
+// because the dev renderer runs on http://localhost, where Chromium refuses to
+// load file:// media, and because <video> needs range requests in order to seek.
+// Must run before the app is ready.
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'stitch-media',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true },
+}])
 
 let mainWindow: BrowserWindow | null = null
 let queueManager: QueueManager | null = null
@@ -45,6 +54,19 @@ function createWindow() {
 
 app.whenReady().then(() => {
   logEvent('main', 'Application starting', { platform: process.platform, version: process.versions.electron, logFile: getLogFile() })
+
+  // Streams a local file into a renderer, forwarding the Range header so that
+  // <video> can seek. Only absolute paths that actually exist are served.
+  protocol.handle('stitch-media', async (request) => {
+    const target = new URL(request.url).searchParams.get('path')
+    if (!target || !path.isAbsolute(target)) return new Response('Missing media path', { status: 400 })
+    if (!fs.existsSync(target)) {
+      logEvent('media-protocol', 'media not found', { target })
+      return new Response('Not found', { status: 404 })
+    }
+    return net.fetch(pathToFileURL(target).toString(), { headers: request.headers })
+  })
+
   createWindow()
 
   // IPC Handlers

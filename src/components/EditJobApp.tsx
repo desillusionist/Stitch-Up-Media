@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SequenceInput } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
+import { mediaUrl } from '../lib/mediaUrl'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
@@ -31,7 +32,7 @@ const sequenceFor = (task: QueueTask, sourcePath: string | undefined): SequenceI
 /**
  * Interpreter rate for a source. An image sequence's own fps wins, matching the
  * `displayFps` rule the native frame-accurate preview already uses, so the two
- * windows report identical frame numbers for the same media.
+ * report identical frame numbers for the same media.
  */
 const sourceFps = (task: QueueTask, sourcePath: string | undefined, sequence: SequenceInput | undefined): number => {
   if (sequence && sequence.fps > 0) return sequence.fps
@@ -93,9 +94,15 @@ export const EditJobApp: React.FC = () => {
   const [activeSourceIndex, setActiveSourceIndex] = useState(0)
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
   const [incomingConflict, setIncomingConflict] = useState<QueueTask | null>(null)
+  const [mediaTarget, setMediaTarget] = useState<{ path: string; stillMode: boolean } | null>(null)
+  const [mediaDuration, setMediaDuration] = useState(0)
+  const [mediaError, setMediaError] = useState<string | null>(null)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
+  const mediaRef = useRef<HTMLVideoElement | null>(null)
+  // Read by media-event handlers so they never capture stale trim bounds.
+  const boundsRef = useRef({ inPoint: 0, outPoint: 0 })
 
   const commit = (nextBaseline: QueueTask | null, nextDraft: QueueTask | null) => {
     baselineRef.current = nextBaseline
@@ -137,25 +144,94 @@ export const EditJobApp: React.FC = () => {
 
   const activeSource = draft?.sourcePaths[activeSourceIndex] || draft?.sourcePaths[0]
   const activeSequence = draft ? sequenceFor(draft, activeSource) : undefined
-  const activeDuration = draft ? sourceDuration(draft, activeSource, activeSequence) : 0
+  const probedDuration = draft ? sourceDuration(draft, activeSource, activeSequence) : 0
   const fps = draft ? sourceFps(draft, activeSource, activeSequence) : 25
   const activeTrim = draft ? trimFor(draft, activeSource, activeSourceIndex) : undefined
   const inPoint = Math.max(0, activeTrim?.in ?? 0)
-  const outPoint = activeTrim?.out && activeTrim.out > inPoint ? activeTrim.out : activeDuration
+  // The element's own length is trusted when probing has not happened yet, so the
+  // transport still works on a task that has never been encoded.
+  const effectiveDuration = probedDuration > 0 ? probedDuration : mediaDuration
+  const outPoint = activeTrim?.out && activeTrim.out > inPoint ? activeTrim.out : effectiveDuration
+  boundsRef.current = { inPoint, outPoint }
 
-  // Playback runs inside the trim range, never past the out point, and steps by
-  // whole frames at the interpreted rate.
+  // Only inputs that change *what* is loaded are dependencies, so unrelated draft
+  // edits (a bitrate keystroke, say) never reload the media.
+  const targetSignature = draft ? JSON.stringify([
+    draft.id, activeSourceIndex, draft.status, draft.sourcePaths, draft.sequenceInput,
+    draft.sequenceInputs, draft.imageSequencePreviews, draft.outputDirectory, draft.outputFilename,
+  ]) : ''
+
   useEffect(() => {
-    if (!playing || outPoint <= inPoint) return
-    const step = 1 / Math.max(1, fps)
-    const timer = window.setInterval(() => {
-      setPlayhead((current) => {
-        const next = Math.max(inPoint, Math.min(outPoint, current)) + step
-        return next >= outPoint ? inPoint : next
-      })
-    }, 1000 / Math.max(1, fps))
-    return () => window.clearInterval(timer)
-  }, [playing, inPoint, outPoint, fps])
+    let cancelled = false
+    const task = draftRef.current
+    if (!task) {
+      setMediaTarget(null)
+      return
+    }
+    void resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: activeSourceIndex }).then((request) => {
+      if (cancelled) return
+      setMediaTarget(request ? { path: request.target, stillMode: request.stillMode } : null)
+    })
+    return () => { cancelled = true }
+  }, [targetSignature])
+
+  // A new clip opens paused at its in point.
+  useEffect(() => {
+    setPlaying(false)
+    setMediaError(null)
+    setMediaDuration(0)
+    const start = boundsRef.current.inPoint
+    setPlayhead(start)
+    const element = mediaRef.current
+    if (element) element.pause()
+  }, [mediaTarget?.path])
+
+  // Playback is driven by the media element, so the playhead shows real time.
+  useEffect(() => {
+    const element = mediaRef.current
+    if (!element || mediaTarget?.stillMode) return
+    if (playing) void element.play().catch(() => setPlaying(false))
+    else element.pause()
+  }, [playing, mediaTarget?.path, mediaTarget?.stillMode])
+
+  // Mirror the element clock into the playhead, and halt at the out point the way
+  // the native preview stops at its out handle.
+  useEffect(() => {
+    const element = mediaRef.current
+    if (!element || mediaTarget?.stillMode) return
+    const sync = () => {
+      const { inPoint: lower, outPoint: upper } = boundsRef.current
+      if (upper > lower && element.currentTime >= upper) {
+        element.pause()
+        element.currentTime = upper
+        setPlaying(false)
+        setPlayhead(upper)
+        return
+      }
+      setPlayhead(element.currentTime)
+    }
+    const onLoaded = () => {
+      setMediaError(null)
+      setMediaDuration(Number.isFinite(element.duration) ? element.duration : 0)
+      const { inPoint: lower } = boundsRef.current
+      if (lower > 0 && element.currentTime < lower) element.currentTime = lower
+      sync()
+    }
+    const onError = () => { setMediaError('UNABLE TO DECODE THIS SOURCE'); setPlaying(false) }
+    const onEnded = () => setPlaying(false)
+    element.addEventListener('timeupdate', sync)
+    element.addEventListener('seeked', sync)
+    element.addEventListener('loadedmetadata', onLoaded)
+    element.addEventListener('error', onError)
+    element.addEventListener('ended', onEnded)
+    return () => {
+      element.removeEventListener('timeupdate', sync)
+      element.removeEventListener('seeked', sync)
+      element.removeEventListener('loadedmetadata', onLoaded)
+      element.removeEventListener('error', onError)
+      element.removeEventListener('ended', onEnded)
+    }
+  }, [mediaTarget?.path, mediaTarget?.stillMode])
 
   if (!draft) return <div className="edit-job-shell"><div className="editor-loading">WAITING FOR QUEUE ITEM...</div></div>
 
@@ -205,14 +281,23 @@ export const EditJobApp: React.FC = () => {
   const videoReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : isGif ? 'GIF OUTPUT FORCES THE GIF ENCODER AND DROPS AUDIO.' : undefined
   const audioReason = audioOnly ? undefined : isGif ? 'GIF OUTPUT CARRIES NO AUDIO.' : isImageContainer ? 'IMAGE OUTPUT CARRIES NO AUDIO TRACK.' : undefined
 
-  const clipDurations = draft.sourcePaths.map((source) => sourceDuration(draft, source, sequenceFor(draft, source)))
-  const totalDuration = clipDurations.reduce((sum, value) => sum + value, 0) || activeDuration
+  const clipDurations = draft.sourcePaths.map((source, index) => sourceDuration(draft, source, sequenceFor(draft, source)) || (index === activeSourceIndex ? mediaDuration : 0))
+  const totalDuration = clipDurations.reduce((sum, value) => sum + value, 0) || effectiveDuration
   const boundedPlayhead = Math.max(inPoint, Math.min(outPoint, playhead))
   const step = 1 / Math.max(1, fps)
+  const playable = !mediaTarget?.stillMode && outPoint > inPoint
   const rulerTicks = Array.from({ length: 5 }, (_, index) => (totalDuration * index) / 4)
   const resolutionLabel = draft.sourceInfo?.videoStreams?.[0]?.resolution
     || draft.sourceMetadata?.[activeSource ?? '']?.resolution
     || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
+
+  // Scrubbing and frame stepping drive the element itself, so a paused frame shows.
+  const seekTo = (seconds: number) => {
+    const bounded = Math.max(inPoint, Math.min(outPoint > inPoint ? outPoint : Number.MAX_SAFE_INTEGER, seconds))
+    setPlayhead(bounded)
+    const element = mediaRef.current
+    if (element && !mediaTarget?.stillMode && Number.isFinite(bounded)) element.currentTime = bounded
+  }
 
   return <div className="edit-job-shell">
     <header className="editor-header">
@@ -233,16 +318,22 @@ export const EditJobApp: React.FC = () => {
         <section className="editor-preview">
           <div className="panel-kicker">PREVIEW // FRAME ACCURATE</div>
           <div className="editor-screen">
-            <span>{sourceName(activeSource)}</span>
-            <small>{resolutionLabel}{activeDuration > 0 ? ` • ${Math.round(fps)} FPS • ${stamp(activeDuration)}` : ' • LENGTH UNKNOWN UNTIL PROBE'}</small>
-            <b>{playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>
+            {mediaError
+              ? <span className="editor-screen-message">{mediaError}</span>
+              : mediaTarget?.stillMode
+                ? <img className="editor-still" src={mediaUrl(mediaTarget.path)} alt={sourceName(mediaTarget.path)} onError={() => setMediaError('UNABLE TO DECODE THIS SOURCE')} />
+                : mediaTarget
+                  ? <video ref={mediaRef} className="editor-video" src={mediaUrl(mediaTarget.path)} preload="metadata" playsInline onContextMenu={(event) => event.preventDefault()} />
+                  : <span className="editor-screen-message">NO MEDIA SELECTED</span>}
+            {!mediaError && <small>{sourceName(mediaTarget?.path) || sourceName(activeSource)} • {resolutionLabel}{effectiveDuration > 0 ? ` • ${Math.round(fps)} FPS • ${stamp(effectiveDuration)}` : ''}</small>}
+            {!mediaError && <b>{playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>}
           </div>
           <div className="transport">
-            <button disabled={outPoint <= inPoint} onClick={() => setPlayhead(Math.max(inPoint, boundedPlayhead - step))} title={outPoint <= inPoint ? 'LENGTH UNKNOWN — PROBE ON START.' : undefined}>[|&lt;] FRAME</button>
-            <button disabled={outPoint <= inPoint} onClick={() => setPlaying(!playing)} title={outPoint <= inPoint ? 'LENGTH UNKNOWN — PROBE ON START.' : undefined}>[{playing ? '||' : '\u25b6'}] PLAY</button>
-            <button disabled={outPoint <= inPoint} onClick={() => setPlayhead(Math.min(outPoint, boundedPlayhead + step))} title={outPoint <= inPoint ? 'LENGTH UNKNOWN — PROBE ON START.' : undefined}>[&gt;|] FRAME</button>
+            <button disabled={!playable} onClick={() => { setPlaying(false); seekTo(boundedPlayhead - step) }} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
+            <button disabled={!playable} onClick={() => setPlaying(!playing)} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playing ? '||' : '\u25b6'}] PLAY</button>
+            <button disabled={!playable} onClick={() => { setPlaying(false); seekTo(boundedPlayhead + step) }} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
             <span>{stamp(boundedPlayhead)} / {stamp(outPoint)}</span>
-            <input type="range" min={inPoint} max={outPoint > inPoint ? outPoint : 1} step={step} value={outPoint > inPoint ? boundedPlayhead : inPoint} disabled={outPoint <= inPoint} onChange={(event) => setPlayhead(Number(event.target.value))} aria-label="Frame-accurate playhead" />
+            <input type="range" min={inPoint} max={outPoint > inPoint ? outPoint : 1} step={step} value={outPoint > inPoint ? boundedPlayhead : inPoint} disabled={!playable} onChange={(event) => { setPlaying(false); seekTo(Number(event.target.value)) }} aria-label="Frame-accurate playhead" />
           </div>
           <div className="editor-preview-actions">
             <button onClick={() => void openPreview(false)}>OPEN FRAME-ACCURATE PREVIEW</button>
@@ -251,7 +342,7 @@ export const EditJobApp: React.FC = () => {
           <div className="editor-note">
             {activeTrim
               ? `> TRIMMED ${stamp(activeTrim.in)} → ${stamp(activeTrim.out)}. PRESS I / O IN THE NATIVE PREVIEW TO MOVE THE IN AND OUT POINTS.`
-              : '> PREVIEW OPENS THE NATIVE HELPER, WHICH ALREADY DOES FRAME-ACCURATE SEEKING, IN/OUT HANDLES AND UNDO. TRIM POINTS COME BACK TO THE QUEUE.'}
+              : '> PLAYBACK IS LIMITED TO THE TRIM RANGE. USE THE NATIVE PREVIEW TO SET IN AND OUT POINTS; THEY COME BACK TO THE QUEUE.'}
           </div>
         </section>
 
