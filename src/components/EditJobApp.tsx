@@ -16,6 +16,11 @@ const AUDIO_CONTAINERS: Array<EncodingPreset['container']> = ['mp3', 'wav', 'm4a
 const IMAGE_CONTAINERS: Array<EncodingPreset['container']> = ['png', 'jpg']
 const RESOLUTIONS: Array<EncodingPreset['resolution']> = ['source', '4k', '1080p', '720p']
 
+/** Lane label column width. Mirrored in CSS and in the playhead offset. */
+const LANE_LABEL_WIDTH = 102
+const ZOOM_MIN = 1
+const ZOOM_MAX = 8
+
 /** The fields this window owns. Everything else on a task belongs to the queue. */
 const editableSlice = (task: QueueTask) => ({
   preset: task.preset,
@@ -52,7 +57,7 @@ export const EditJobApp: React.FC = () => {
   const [incomingConflict, setIncomingConflict] = useState<QueueTask | null>(null)
   // Where the resolved preview target points, which is not always the stored
   // source path: sequences play through a generated preview file.
-  const [mediaTarget, setMediaTarget] = useState<{ path: string; stillMode: boolean; sourcePath: string } | null>(null)
+  const [mediaTarget, setMediaTarget] = useState<{ path: string; sourcePath: string } | null>(null)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
@@ -61,6 +66,13 @@ export const EditJobApp: React.FC = () => {
   // Paths already handed to the prober. A failed probe is not retried, so the
   // effect cannot loop on an unreadable file.
   const probedPathsRef = useRef<Set<string>>(new Set())
+  // Horizontal scale only: lane widths stay proportional to real durations.
+  const [zoom, setZoom] = useState(1)
+  // Monitoring state only. Never written to the task, so muting can never be
+  // mistaken for a mix-down decision.
+  const [muted, setMuted] = useState<Record<string, boolean>>({})
+  const timelineScrollRef = useRef<HTMLDivElement>(null)
+  const timelineInnerRef = useRef<HTMLDivElement>(null)
 
   const commit = (nextBaseline: QueueTask | null, nextDraft: QueueTask | null) => {
     baselineRef.current = nextBaseline
@@ -160,10 +172,50 @@ export const EditJobApp: React.FC = () => {
     if (!task) { setMediaTarget(null); return }
     void resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: focusedSourceIndex }).then((request) => {
       if (cancelled) return
-      setMediaTarget(request ? { path: request.target, stillMode: request.stillMode, sourcePath: task.sourcePaths[focusedSourceIndex] || task.sourcePaths[0] || '' } : null)
+      setMediaTarget(request ? { path: request.target, sourcePath: task.sourcePaths[focusedSourceIndex] || task.sourcePaths[0] || '' } : null)
     })
     return () => { cancelled = true }
   }, [timelineSignature, focusedSourceIndex])
+
+  const timelineDuration = model?.duration ?? 0
+  const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
+  const audioLaneIds = (model?.lanes ?? []).filter((lane) => !lane.embedded).map((lane) => lane.id).join('|')
+
+  // Spacebar is the transport, unless the caret is in a field.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' && event.key !== ' ') return
+      const target = event.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      event.preventDefault()
+      playback.toggle()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [playback.toggle])
+
+  // Mutes are applied to the elements directly and never reach the task. The
+  // segment key is a dependency because the video element remounts around stills.
+  useEffect(() => {
+    const video = playback.videoRef.current
+    if (video) video.muted = Boolean(muted.main)
+    audioLaneIds.split('|').filter(Boolean).forEach((laneId) => {
+      const element = audioElementsRef.current[laneId]
+      if (element) element.muted = Boolean(muted[laneId])
+    })
+  }, [muted, audioLaneIds, playback.videoRef, playback.segment?.key])
+
+  // Keep the playhead in view while zoomed in and playing.
+  useEffect(() => {
+    if (!playback.playing) return
+    const scroller = timelineScrollRef.current
+    const inner = timelineInnerRef.current
+    if (!scroller || !inner) return
+    const x = LANE_LABEL_WIDTH + playheadFraction * Math.max(0, inner.clientWidth - LANE_LABEL_WIDTH)
+    if (x < scroller.scrollLeft + 48 || x > scroller.scrollLeft + scroller.clientWidth - 48) {
+      scroller.scrollLeft = Math.max(0, x - scroller.clientWidth / 2)
+    }
+  }, [playback.playing, playheadFraction])
 
   if (!draft || !model) return <div className="edit-job-shell"><div className="editor-loading">WAITING FOR QUEUE ITEM...</div></div>
 
@@ -194,11 +246,9 @@ export const EditJobApp: React.FC = () => {
     updatePreset({ fps: value.trim() === '' || !Number.isFinite(parsed) || parsed <= 0 ? undefined : Math.round(parsed) })
   }
 
-  const mainLane = model.lanes[0]
   const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
   const sequenceSources = new Set([...Object.keys(draft.sequenceInputs || {}), ...(draft.sequenceInput ? [draft.sequenceInput.firstFrame] : [])])
-  const stillMode = mediaTarget?.stillMode === true && (mainLane?.segments.length ?? 0) <= 1
-  const playable = !stillMode && model.duration > 0
+  const playable = model.duration > 0
   const fps = sourceFps(draft, playback.segment?.sourcePath ?? focusedSource, undefined, resolveTiming)
   const stamp = (seconds: number) => settings?.timestampDisplayMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
   const segmentDetail = (segment: TimelineSegment) => {
@@ -250,7 +300,6 @@ export const EditJobApp: React.FC = () => {
 
   const laneGap = (lane: TimelineLane) => Math.max(0, duration - lane.duration)
   const activeSegmentKey = playback.segment?.key
-  const playheadFraction = duration > 0 ? Math.max(0, Math.min(1, playback.position / duration)) : 0
   const resolutionLabel = draft.sourceInfo?.videoStreams?.[0]?.resolution
     || draft.sourceMetadata?.[focusedSource ?? '']?.resolution
     || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
@@ -285,11 +334,11 @@ export const EditJobApp: React.FC = () => {
           <div className="editor-screen">
             {playback.error
               ? <span className="editor-screen-message">{playback.error}</span>
-              : stillMode && mediaTarget
-                ? <img className="editor-still" src={mediaUrl(mediaTarget.path)} alt={sourceName(mediaTarget.path)} />
+              : playback.segment?.still
+                ? <img className="editor-still" src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} />
                 : elementUrl
                   ? <video
-                    ref={playback.videoRef}
+                    ref={playback.attachVideo}
                     className="editor-video"
                     src={elementUrl}
                     preload="metadata"
@@ -320,33 +369,52 @@ export const EditJobApp: React.FC = () => {
           <div className="editor-preview-actions">
             <button onClick={() => void openNativePreview()} disabled={!mediaTarget}>OPEN FRAME-ACCURATE PREVIEW</button>
           </div>
-          <div className="editor-note">&gt; SCRUB ANYWHERE, OR CLICK A LANE BELOW TO JUMP. IN AND OUT POINTS ARE SET IN THE NATIVE PREVIEW AND COME BACK TO THE QUEUE.</div>
+          <div className="editor-note">&gt; SPACEBAR PLAYS AND PAUSES. SCRUB ANYWHERE, OR CLICK A LANE BELOW TO JUMP. IN AND OUT POINTS ARE SET IN THE NATIVE PREVIEW AND COME BACK TO THE QUEUE.</div>
         </section>
 
         <section className="timeline-panel">
-          <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
-          <div className="timeline-ruler">{Array.from({ length: 5 }, (_, index) => (duration * index) / 4).map((seconds) => <span key={seconds}>{duration > 0 ? stamp(seconds) : '--:--:--.--'}</span>)}</div>
-          <div className="timeline-lanes">
-            {model.lanes.map((lane) => (
-              <div className="timeline-lane" key={lane.id}>
-                <label>{lane.label}</label>
-                <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
-                  {lane.segments.map((segment) => (
-                    <div
-                      key={segment.key}
-                      className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}`}
-                      style={{ flexGrow: Math.max(segment.duration, 0.001) }}
-                      title={clipTitle(segment)}
-                    >
-                      <span className="timeline-clip-name">{sourceName(segment.sourcePath)}</span>
-                      <small>{segmentDetail(segment)}</small>
-                    </div>
-                  ))}
-                  {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexGrow: laneGap(lane) }} title="No media on this lane" />}
+          <div className="timeline-head">
+            <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
+            <div className="timeline-zoom">
+              <span className="panel-kicker">ZOOM</span>
+              <button onClick={() => setZoom((current) => Math.max(ZOOM_MIN, current / 2))} disabled={zoom <= ZOOM_MIN} aria-label="Zoom timeline out" title="Zoom out">−</button>
+              <span className="timeline-zoom-value">{zoom}×</span>
+              <button onClick={() => setZoom((current) => Math.min(ZOOM_MAX, current * 2))} disabled={zoom >= ZOOM_MAX} aria-label="Zoom timeline in" title="Zoom in">+</button>
+              <button onClick={() => setZoom(1)} disabled={zoom === 1} title="Fit the whole timeline">FIT</button>
+            </div>
+          </div>
+          <div className="timeline-lanes" ref={timelineScrollRef}>
+            <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${zoom * 100}%` }}>
+              <div className="timeline-ruler">{Array.from({ length: 5 }, (_, index) => (duration * index) / 4).map((seconds) => <span key={seconds}>{duration > 0 ? stamp(seconds) : '--:--:--.--'}</span>)}</div>
+              {model.lanes.map((lane) => (
+                <div className="timeline-lane" key={lane.id}>
+                  <div className="timeline-lane-head">
+                    <button
+                      className={`lane-mute${muted[lane.id] ? ' is-muted' : ''}`}
+                      onClick={() => setMuted((current) => ({ ...current, [lane.id]: !current[lane.id] }))}
+                      aria-pressed={Boolean(muted[lane.id])}
+                      title={lane.embedded ? 'Mute this stream while monitoring. The export still carries it.' : 'Mute this track while monitoring. This is not a mix-down change.'}
+                    >M</button>
+                    <span>{lane.label}</span>
+                  </div>
+                  <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
+                    {lane.segments.map((segment) => (
+                      <div
+                        key={segment.key}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}`}
+                        style={{ flexGrow: Math.max(segment.duration, 0.001) }}
+                        title={clipTitle(segment)}
+                      >
+                        <span className="timeline-clip-name">{sourceName(segment.sourcePath)}</span>
+                        <small>{segmentDetail(segment)}</small>
+                      </div>
+                    ))}
+                    {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexGrow: laneGap(lane) }} title="No media on this lane" />}
+                  </div>
                 </div>
-              </div>
-            ))}
-            <div className="timeline-playhead" style={{ left: `calc(74px + ${playheadFraction} * (100% - 74px))` }} aria-hidden="true" />
+              ))}
+              <div className="timeline-playhead" style={{ left: `calc(${LANE_LABEL_WIDTH}px + ${playheadFraction} * (100% - ${LANE_LABEL_WIDTH}px))` }} aria-hidden="true" />
+            </div>
           </div>
           {model.unusedVideoSources.length > 0 && <div className="editor-note">&gt; {model.unusedVideoSources.length} EXTRA VIDEO SOURCE(S) ({model.unusedVideoSources.map(sourceName).join(', ')}) ARE NOT USED: COMBO DISPATCHES TO THE MULTI-TRACK ENCODER PATH, WHICH MAPS ONE VIDEO STREAM. SPLIT INTO A STITCH JOB TO CONCATENATE THEM.</div>}
           <div className="editor-note">&gt; LANE WIDTHS ARE THE REAL TRIMMED DURATIONS. AUDIO TRACKS PLAY ALONGSIDE THE VIDEO FROM ZERO, SO THE OUTPUT RUNS TO {duration > 0 ? stamp(duration) : 'AN UNKNOWN LENGTH'}.</div>
@@ -425,7 +493,7 @@ export const EditJobApp: React.FC = () => {
       const url = laneSegment ? sourceUrlFor(laneSegment) : null
       return url ? <audio
         key={lane.id}
-        ref={(element) => { audioElementsRef.current[lane.id] = element }}
+        ref={(element) => { audioElementsRef.current[lane.id] = element; if (element) element.muted = Boolean(muted[lane.id]) }}
         src={url}
         preload="auto"
       /> : null

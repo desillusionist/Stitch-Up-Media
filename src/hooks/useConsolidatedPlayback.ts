@@ -3,9 +3,13 @@ import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
 const DRIFT_TOLERANCE = 0.25
+/** MediaError.MEDIA_ERR_ABORTED: a load superseded by another, not a failure. */
+const MEDIA_ERR_ABORTED = 1
 
 export interface ConsolidatedPlayback {
-  videoRef: React.RefObject<HTMLVideoElement>
+  /** Callback ref: also (re)binds load handlers, because the element unmounts for stills. */
+  attachVideo: (element: HTMLVideoElement | null) => void
+  videoRef: React.MutableRefObject<HTMLVideoElement | null>
   /** Index of the main-lane segment the video element should be showing. */
   segmentIndex: number
   segment: TimelineSegment | undefined
@@ -23,12 +27,18 @@ export interface ConsolidatedPlayback {
  * Plays a whole assembled job rather than a single clip.
  *
  * The main lane's media element is the master clock, so video and its embedded
- * audio stay in sync by construction. Added audio tracks, and any material that
- * outlasts the video lane, are slaved to that clock and corrected only once they
- * drift past a tolerance, which keeps playback smooth instead of chasing frames.
+ * audio stay in sync by construction. Added audio tracks are slaved to it and
+ * corrected only once they drift past a tolerance. Still frames have no element
+ * to drive time, and a segment being loaded has none yet either, so both fall
+ * back to an anchored clock.
  *
- * Segment junctions are crossed by pointing the same element at the next source,
- * so audio never stops while the playhead sweeps the timeline.
+ * Three rules keep the transport honest:
+ * - A seek is recorded and applied, never inferred from the element. Inferring it
+ *   is what used to snap the playhead back to wherever the element last sat.
+ * - A `play()` rejected with AbortError is a superseded load, not a stop request.
+ * - A media `error` event carrying MEDIA_ERR_ABORTED is likewise not a failure.
+ *
+ * Together, the last two are why playback used to freeze at every junction.
  */
 export const useConsolidatedPlayback = (
   model: TimelineModel,
@@ -36,7 +46,8 @@ export const useConsolidatedPlayback = (
   options: { playable: boolean },
 ): ConsolidatedPlayback => {
   const { playable } = options
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const detachRef = useRef<(() => void) | null>(null)
   const [position, setPosition] = useState(0)
   const [segmentIndex, setSegmentIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -57,7 +68,10 @@ export const useConsolidatedPlayback = (
   const segmentIndexRef = useRef(segmentIndex)
   segmentIndexRef.current = segmentIndex
   const loadedSourceRef = useRef<string | null>(null)
-  const tailAnchorRef = useRef<{ position: number; startedAt: number } | null>(null)
+  /** Consolidated position waiting to be applied once the element can seek. */
+  const pendingSeekRef = useRef<number | null>(null)
+  /** Anchored clock for still frames and for material past the end of the video. */
+  const anchorRef = useRef<{ position: number; startedAt: number; key: string | undefined } | null>(null)
 
   const indexForTime = useCallback((seconds: number) => {
     const segments = segmentsRef.current
@@ -77,55 +91,112 @@ export const useConsolidatedPlayback = (
     })
   }, [audioElements])
 
-  /** The element's own clock is authoritative while the main lane still has media. */
-  const readPosition = useCallback(() => {
-    const video = videoRef.current
-    const snapshot = stateRef.current
-    const current = snapshot.segment
-    if (video && current && video.readyState >= 1 && !video.ended) {
-      const local = video.currentTime - current.sourceIn
-      if (local >= -0.05) {
-        tailAnchorRef.current = null
-        return current.start + Math.max(0, local)
-      }
-    }
-    // Past the end of the main lane: added audio can outlast the video, so fall
-    // back to a wall clock rather than freezing the playhead.
-    const now = performance.now()
-    const anchor = tailAnchorRef.current
-    if (!anchor) {
-      tailAnchorRef.current = { position: snapshot.position, startedAt: now }
-      return snapshot.position
-    }
-    return Math.min(snapshot.duration, anchor.position + (now - anchor.startedAt) / 1000)
-  }, [])
-
-  // Bind element events once; everything mutable is read through refs.
-  useEffect(() => {
+  const startPlayback = useCallback(() => {
     const video = videoRef.current
     if (!video) return
-    const onLoaded = () => {
-      const current = stateRef.current.segment
-      loadedSourceRef.current = current?.sourcePath ?? null
-      if (current && current.sourceIn > 0) {
-        try { video.currentTime = current.sourceIn } catch { /* seek before readiness is ignored */ }
-      }
-      if (stateRef.current.playing) void video.play().catch(() => setPlaying(false))
-    }
-    const onError = () => { setError('UNABLE TO DECODE THIS SOURCE'); setPlaying(false) }
-    video.addEventListener('loadedmetadata', onLoaded)
-    video.addEventListener('error', onError)
-    return () => {
-      video.removeEventListener('loadedmetadata', onLoaded)
-      video.removeEventListener('error', onError)
-    }
+    void video.play().catch((playError: unknown) => {
+      if (playError instanceof DOMException && playError.name === 'AbortError') return
+      setPlaying(false)
+    })
   }, [])
 
-  // Play and pause the main element together with every added track.
+  /** Moves the element onto the recorded position, once it is able to. */
+  const applyPendingSeek = useCallback((force: boolean) => {
+    const video = videoRef.current
+    const current = stateRef.current.segment
+    if (!video || !current) return
+    if (!force && (video.readyState < 1 || loadedSourceRef.current !== current.sourcePath)) return
+    const desired = pendingSeekRef.current
+      ?? current.start + Math.max(0, Math.min(current.duration, stateRef.current.position - current.start))
+    try {
+      video.currentTime = current.sourceIn + Math.max(0, Math.min(current.duration, desired - current.start))
+    } catch { /* element not seekable yet */ }
+  }, [])
+
+  const onLoaded = useCallback(() => {
+    const video = videoRef.current
+    const current = stateRef.current.segment
+    if (!video) return
+    loadedSourceRef.current = current?.sourcePath ?? null
+    // Honour a seek made while this segment was loading, not merely its in point.
+    applyPendingSeek(true)
+    pendingSeekRef.current = null
+    anchorRef.current = null
+    setError(null)
+    if (stateRef.current.playing) startPlayback()
+  }, [applyPendingSeek, startPlayback])
+
+  const onMediaError = useCallback(() => {
+    const mediaError = videoRef.current?.error
+    // Changing src aborts the pending load and reports it as an error; that is a
+    // junction, not a broken source.
+    if (mediaError && mediaError.code === MEDIA_ERR_ABORTED) return
+    setError('UNABLE TO DECODE THIS SOURCE')
+    setPlaying(false)
+  }, [])
+
+  /**
+   * The element unmounts while a still frame is showing, so handlers are bound
+   * from a callback ref rather than a mount-once effect. Otherwise the segment
+   * after a still would have nobody listening for its metadata.
+   */
+  const attachVideo = useCallback((element: HTMLVideoElement | null) => {
+    detachRef.current?.()
+    detachRef.current = null
+    videoRef.current = element
+    if (!element) { loadedSourceRef.current = null; return }
+    element.addEventListener('loadedmetadata', onLoaded)
+    element.addEventListener('error', onMediaError)
+    detachRef.current = () => {
+      element.removeEventListener('loadedmetadata', onLoaded)
+      element.removeEventListener('error', onMediaError)
+    }
+    // A remounted element may already hold metadata.
+    if (element.readyState >= 1) onLoaded()
+  }, [onLoaded, onMediaError])
+
+  useEffect(() => () => { detachRef.current?.() }, [])
+
+  /** The element's clock is authoritative while it is actually holding this segment. */
+  const readPosition = useCallback(() => {
+    const snapshot = stateRef.current
+    const current = snapshot.segment
+    const video = videoRef.current
+    const now = performance.now()
+    const anchored = (from: number) => {
+      const anchor = anchorRef.current
+      if (!anchor || anchor.key !== current?.key) {
+        anchorRef.current = { position: from, startedAt: now, key: current?.key }
+        return from
+      }
+      return anchor.position + (now - anchor.startedAt) / 1000
+    }
+
+    // A still frame occupies its duration with nothing decoding.
+    if (current?.still) return Math.min(current.start + current.duration, anchored(current.start))
+
+    if (video && current && video.readyState >= 1) {
+      const local = video.currentTime - current.sourceIn
+      if (!video.ended && local >= -0.05) {
+        anchorRef.current = null
+        return current.start + Math.max(0, local)
+      }
+      // The element finished this source but the timeline continues: an added
+      // track can outlast the video, so the tail runs on the anchored clock.
+      return Math.min(snapshot.duration, anchored(current.start + current.duration))
+    }
+
+    // A source is still loading. Hold rather than advance, because the element
+    // restarts this segment from its in point once it is ready.
+    return snapshot.position
+  }, [])
+
+  // Play and pause the transport with every added track. Re-runs when the segment
+  // changes so a junction resumes instead of stalling.
   useEffect(() => {
     const video = videoRef.current
     if (video) {
-      if (playing) void video.play().catch(() => setPlaying(false))
+      if (playing) { applyPendingSeek(false); startPlayback() }
       else video.pause()
     }
     lanesRef.current.forEach((lane) => {
@@ -134,7 +205,7 @@ export const useConsolidatedPlayback = (
       if (playing) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
-  }, [playing, audioLaneSignature, audioElements])
+  }, [playing, segment?.key, audioLaneSignature, audioElements, applyPendingSeek, startPlayback])
 
   // Frame loop: advance the playhead, cross junctions, correct drift.
   useEffect(() => {
@@ -159,21 +230,18 @@ export const useConsolidatedPlayback = (
   const seek = useCallback((seconds: number) => {
     const bounded = Math.max(0, Math.min(stateRef.current.duration, seconds))
     const index = indexForTime(bounded)
-    const target = segmentsRef.current[index]
     setPosition(bounded)
     setSegmentIndex(index)
-    tailAnchorRef.current = null
-    const video = videoRef.current
-    // Same source: seek directly. Different source: the src change reloads the
-    // element, and loadedmetadata positions it at the segment's in point.
-    if (video && target && loadedSourceRef.current === target.sourcePath) {
-      const desired = target.sourceIn + Math.max(0, Math.min(target.duration, bounded - target.start))
-      try { video.currentTime = desired } catch { /* not seekable yet */ }
-    }
+    pendingSeekRef.current = bounded
+    anchorRef.current = null
+    // Remembered rather than inferred: if the target segment still has to load,
+    // loadedmetadata applies this instead of the segment's in point.
+    applyPendingSeek(false)
     syncAddedAudio(bounded, true)
-  }, [indexForTime, syncAddedAudio])
+  }, [indexForTime, syncAddedAudio, applyPendingSeek])
 
   return {
+    attachVideo,
     videoRef,
     segmentIndex,
     segment,

@@ -218,10 +218,21 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 10px; }
 .editor-preview-actions button { padding: 7px 9px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-accent); font-size: 9px; }
 .editor-preview-actions button:hover { background: rgba(159, 191, 154, .1); }
-.timeline-ruler { display: flex; justify-content: space-between; gap: 10px; }
-.timeline-lanes { position: relative; }
+.timeline-ruler { display: flex; justify-content: space-between; gap: 10px; padding-left: 102px; }
+.timeline-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.timeline-zoom { display: flex; align-items: center; gap: 6px; }
+.timeline-zoom button { padding: 4px 7px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 10px; line-height: 1; }
+.timeline-zoom button:hover:not(:disabled) { color: var(--ui-accent); border-color: var(--ui-accent); }
+.timeline-zoom button:disabled { opacity: .35; cursor: not-allowed; }
+.timeline-zoom-value { min-width: 32px; text-align: center; color: var(--ui-accent); font-size: 10px; }
+.timeline-lanes { overflow-x: auto; overflow-y: hidden; }
+.timeline-lanes-inner { position: relative; min-width: 100%; }
 .timeline-lane { display: flex; align-items: stretch; min-height: 42px; border-bottom: 1px dotted var(--ui-border); }
-.timeline-lane > label { width: 68px; min-width: 68px; padding: 12px 4px 0 0; color: var(--ui-muted); font-size: 9px; }
+.timeline-lane-head { width: 96px; min-width: 96px; display: flex; align-items: center; gap: 6px; padding-top: 12px; color: var(--ui-muted); font-size: 9px; }
+.timeline-lane-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lane-mute { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 9px; line-height: 1; }
+.lane-mute:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
+.lane-mute.is-muted { color: var(--ui-error); border-color: var(--ui-error); background: rgba(201, 133, 133, .12); }
 .timeline-lane-track { flex: 1; display: flex; align-items: stretch; min-width: 0; cursor: pointer; }
 .timeline-lane .timeline-clip { flex: 1 1 0; min-width: 0; margin: 5px 2px; display: block; }
 .timeline-lane .timeline-clip:hover { background: rgba(159, 191, 154, .08); }
