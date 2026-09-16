@@ -3,7 +3,7 @@ import { AppSettings, EditJobPatch, EncodingPreset, QueueTask } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, frameStamp, sourceFps, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, frameStamp, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
@@ -57,6 +57,10 @@ export const EditJobApp: React.FC = () => {
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
   const audioElementsRef = useRef<Record<string, HTMLAudioElement | null>>({})
+  const [probedTiming, setProbedTiming] = useState<Record<string, SourceTiming>>({})
+  // Paths already handed to the prober. A failed probe is not retried, so the
+  // effect cannot loop on an unreadable file.
+  const probedPathsRef = useRef<Set<string>>(new Set())
 
   const commit = (nextBaseline: QueueTask | null, nextDraft: QueueTask | null) => {
     baselineRef.current = nextBaseline
@@ -100,9 +104,44 @@ export const EditJobApp: React.FC = () => {
   // actually change the timeline.
   const timelineSignature = draft ? JSON.stringify([
     draft.type, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
-    draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo, draft.preset.fps,
+    draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo,
+    draft.preset.fps, draft.stillImageDuration,
   ]) : ''
-  const model: TimelineModel | null = useMemo(() => (draft ? buildTimeline(draft) : null), [timelineSignature])
+
+  // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source
+  // without intrinsic timing (audio tracks especially) has to be probed before it
+  // can be drawn or played at its real length.
+  const candidateSources = draft ? Array.from(new Set([
+    ...(draft.type === 'stitch' ? draft.sourcePaths : draft.sourcePaths.slice(0, 1)),
+    ...(draft.additionalAudioTracks || []).map((track) => track.path),
+  ])) : []
+  const probeSignature = candidateSources.join('\u0000')
+
+  useEffect(() => {
+    const task = draftRef.current
+    if (!task) return
+    const missing = candidateSources.filter((sourcePath) => !probedPathsRef.current.has(sourcePath) && sourceDuration(task, sourcePath) <= 0)
+    if (!missing.length) return
+    missing.forEach((sourcePath) => probedPathsRef.current.add(sourcePath))
+    let cancelled = false
+    void Promise.all(missing.map(async (sourcePath) => {
+      try {
+        const info = await window.electronAPI?.probeMedia(sourcePath)
+        return [sourcePath, { duration: info?.duration ?? 0, fps: info?.videoStreams?.[0]?.fps }] as const
+      } catch {
+        return [sourcePath, { duration: 0 }] as const
+      }
+    })).then((entries) => {
+      if (!cancelled) setProbedTiming((current) => ({ ...current, ...Object.fromEntries(entries) }))
+    })
+    return () => { cancelled = true }
+  }, [probeSignature])
+
+  const resolveTiming = (sourcePath: string): SourceTiming | undefined => probedTiming[sourcePath]
+  const model: TimelineModel | null = useMemo(
+    () => (draft ? buildTimeline(draft, { resolveTiming }) : null),
+    [timelineSignature, probedTiming],
+  )
 
   const playback = useConsolidatedPlayback(
     model ?? { lanes: [], duration: 0, unusedVideoSources: [] },
@@ -160,8 +199,21 @@ export const EditJobApp: React.FC = () => {
   const sequenceSources = new Set([...Object.keys(draft.sequenceInputs || {}), ...(draft.sequenceInput ? [draft.sequenceInput.firstFrame] : [])])
   const stillMode = mediaTarget?.stillMode === true && (mainLane?.segments.length ?? 0) <= 1
   const playable = !stillMode && model.duration > 0
-  const fps = sourceFps(draft, playback.segment?.sourcePath ?? focusedSource)
+  const fps = sourceFps(draft, playback.segment?.sourcePath ?? focusedSource, undefined, resolveTiming)
   const stamp = (seconds: number) => settings?.timestampDisplayMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
+  const segmentDetail = (segment: TimelineSegment) => {
+    const parts = [stamp(segment.duration)]
+    if (segment.trimmed) parts.push('TRIMMED')
+    if (segment.sequence) parts.push(`SEQ ${segment.sequence.frames}F @ ${segment.sequence.fps}FPS`)
+    if (segment.still) parts.push('STILL')
+    return parts.join(' // ')
+  }
+  const clipTitle = (segment: TimelineSegment) => {
+    const kind = segment.sequence
+      ? `image sequence, ${segment.sequence.frames} frames at ${segment.sequence.fps} fps`
+      : segment.still ? 'still image' : 'media'
+    return `${sourceName(segment.sourcePath)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
+  }
   const duration = model.duration
 
   /**
@@ -284,10 +336,10 @@ export const EditJobApp: React.FC = () => {
                       key={segment.key}
                       className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}`}
                       style={{ flexGrow: Math.max(segment.duration, 0.001) }}
-                      title={`${sourceName(segment.sourcePath)} — ${stamp(segment.duration)}${segment.trimmed ? ' (trimmed)' : ''}`}
+                      title={clipTitle(segment)}
                     >
                       <span className="timeline-clip-name">{sourceName(segment.sourcePath)}</span>
-                      <small>{stamp(segment.duration)}{segment.trimmed ? ' // TRIMMED' : ''}</small>
+                      <small>{segmentDetail(segment)}</small>
                     </div>
                   ))}
                   {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexGrow: laneGap(lane) }} title="No media on this lane" />}

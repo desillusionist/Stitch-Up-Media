@@ -1,6 +1,9 @@
 import { QueueTask, SequenceInput } from '../types'
 import { mediaKind } from './mediaKind'
 
+/** Default length the encoder gives a still frame that outlives its configured duration. */
+const DEFAULT_STILL_SECONDS = 10
+
 export interface TimelineSegment {
   key: string
   sourcePath: string
@@ -11,6 +14,10 @@ export interface TimelineSegment {
   /** Offset inside the source file where playback begins. */
   sourceIn: number
   trimmed: boolean
+  /** Present when this segment is an interpreted image sequence. */
+  sequence?: { frames: number; fps: number }
+  /** True when the encoder will loop this single frame for a fixed length. */
+  still?: boolean
 }
 
 export interface TimelineLane {
@@ -35,6 +42,25 @@ export interface TimelineModel {
   unusedVideoSources: string[]
 }
 
+export interface SourceTiming {
+  duration: number
+  fps?: number
+}
+
+/**
+ * Consulted only when the task itself carries no timing for a source, which is
+ * the normal case: `sourceInfo` and `sourceMetadata` are read all over the app
+ * but are never actually populated, so durations have to be probed on demand.
+ */
+export type TimingResolver = (sourcePath: string) => SourceTiming | undefined
+
+export interface BuildTimelineOptions {
+  resolveTiming?: TimingResolver
+}
+
+/** `sourceInfo` describes the task's first source only, never its tracks. */
+const primarySource = (task: QueueTask) => task.sourcePaths[0]
+
 export const sequenceFor = (task: QueueTask, sourcePath: string | undefined): SequenceInput | undefined => {
   if (!sourcePath) return undefined
   return task.sequenceInputs?.[sourcePath] || (task.sequenceInput?.firstFrame === sourcePath ? task.sequenceInput : undefined)
@@ -48,22 +74,47 @@ export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: 
  * `displayFps` rule the native frame-accurate preview uses, so both agree on
  * frame numbers for the same media.
  */
-export const sourceFps = (task: QueueTask, sourcePath: string | undefined, sequence = sequenceFor(task, sourcePath)): number => {
+export const sourceFps = (
+  task: QueueTask,
+  sourcePath: string | undefined,
+  sequence = sequenceFor(task, sourcePath),
+  resolve?: TimingResolver,
+): number => {
   if (sequence && sequence.fps > 0) return sequence.fps
   const metadataFps = sourcePath ? task.sourceMetadata?.[sourcePath]?.fps : undefined
   if (metadataFps && metadataFps > 0) return metadataFps
-  const streamFps = task.sourceInfo?.videoStreams?.[0]?.fps
-  if (streamFps && streamFps > 0) return streamFps
+  if (sourcePath && sourcePath === primarySource(task)) {
+    const streamFps = task.sourceInfo?.videoStreams?.[0]?.fps
+    if (streamFps && streamFps > 0) return streamFps
+  }
+  const probedFps = sourcePath ? resolve?.(sourcePath)?.fps : undefined
+  if (probedFps && probedFps > 0) return probedFps
   if (task.preset.fps && task.preset.fps > 0) return task.preset.fps
   return 25
 }
 
-/** A sequence derives its duration from frame count and interpreted fps, as the native preview does. */
-export const sourceDuration = (task: QueueTask, sourcePath: string | undefined, sequence = sequenceFor(task, sourcePath)): number => {
+/**
+ * How long a source contributes to the output.
+ *
+ * The encoder gives a still frame `-t stillImageDuration` (defaulting to ten
+ * seconds), and derives a sequence's length from its frame count over the
+ * interpreted fps, so both are resolved here rather than left at zero.
+ */
+export const sourceDuration = (
+  task: QueueTask,
+  sourcePath: string | undefined,
+  sequence = sequenceFor(task, sourcePath),
+  resolve?: TimingResolver,
+): number => {
   if (sequence && sequence.fps > 0 && sequence.frameCount > 0) return sequence.frameCount / sequence.fps
   const metadataDuration = sourcePath ? task.sourceMetadata?.[sourcePath]?.duration : undefined
   if (metadataDuration && metadataDuration > 0) return metadataDuration
-  return task.sourceInfo?.duration ?? 0
+  if (sourcePath && !sequence && mediaKind(sourcePath) === 'image') {
+    return Math.max(0.1, task.stillImageDuration || DEFAULT_STILL_SECONDS)
+  }
+  if (sourcePath && sourcePath === primarySource(task) && task.sourceInfo?.duration) return task.sourceInfo.duration
+  const probedDuration = sourcePath ? resolve?.(sourcePath)?.duration : undefined
+  return probedDuration && probedDuration > 0 ? probedDuration : 0
 }
 
 /**
@@ -83,9 +134,21 @@ export const segmentTiming = (fullDuration: number, trim?: { in: number; out: nu
   return { duration: fullDuration > 0 ? Math.max(0, fullDuration - sourceIn) : 0, sourceIn, trimmed: true }
 }
 
-const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: number): TimelineSegment => {
-  const timing = segmentTiming(sourceDuration(task, sourcePath), trimFor(task, sourcePath, index))
-  return { key: `${sourcePath}#${index}`, sourcePath, start, duration: timing.duration, sourceIn: timing.sourceIn, trimmed: timing.trimmed }
+const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: number, options: BuildTimelineOptions): TimelineSegment => {
+  const sequence = sequenceFor(task, sourcePath)
+  const full = sourceDuration(task, sourcePath, sequence, options.resolveTiming)
+  const timing = segmentTiming(full, trimFor(task, sourcePath, index))
+  const isStill = !sequence && mediaKind(sourcePath) === 'image'
+  return {
+    key: `${sourcePath}#${index}`,
+    sourcePath,
+    start,
+    duration: timing.duration,
+    sourceIn: timing.sourceIn,
+    trimmed: timing.trimmed,
+    sequence: sequence ? { frames: sequence.frameCount, fps: sequence.fps } : undefined,
+    still: isStill || undefined,
+  }
 }
 
 /** Same timecode shape the native preview prints: HH:MM:SS.FF */
@@ -111,13 +174,13 @@ export const frameStamp = (seconds: number, fps: number) => `FRAME ${String(Math
  * COMBO is modelled as multi-track because the encoder dispatches purely on
  * `type`, and never reads `comboMode`.
  */
-export const buildTimeline = (task: QueueTask): TimelineModel => {
+export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {}): TimelineModel => {
   const lanes: TimelineLane[] = []
 
   if (task.type === 'stitch') {
     let cursor = 0
     const segments = task.sourcePaths.map((sourcePath, index) => {
-      const segment = segmentFor(task, sourcePath, index, cursor)
+      const segment = segmentFor(task, sourcePath, index, cursor, options)
       cursor += segment.duration
       return segment
     })
@@ -128,7 +191,7 @@ export const buildTimeline = (task: QueueTask): TimelineModel => {
 
   const mainSource = task.sourcePaths[0]
   const mainIsAudio = mainSource != null && mediaKind(mainSource) === 'audio'
-  const mainSegment = mainSource ? segmentFor(task, mainSource, 0, 0) : null
+  const mainSegment = mainSource ? segmentFor(task, mainSource, 0, 0, options) : null
   lanes.push({
     id: 'main',
     label: mainIsAudio ? 'AUDIO 1' : 'VIDEO 1',
@@ -142,10 +205,11 @@ export const buildTimeline = (task: QueueTask): TimelineModel => {
   // how the queue stores their trim points and how the encoder reads them.
   const tracks = task.additionalAudioTracks || []
   tracks.forEach((track, index) => {
-    const segment = segmentFor(task, track.path, 0, 0)
+    const segment = segmentFor(task, track.path, 0, 0, options)
+    const language = (track.language || '').toLowerCase()
     lanes.push({
       id: track.id,
-      label: `AUDIO ${index + 2} ${(track.language || 'und').toUpperCase()}`,
+      label: `AUDIO ${index + 2}${language && language !== 'und' ? ` ${language.toUpperCase()}` : ''}`,
       kind: 'audio',
       embedded: false,
       segments: [segment],

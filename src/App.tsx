@@ -559,7 +559,24 @@ export const App: React.FC = () => {
         const base = chosen[0]
         const allSources = chosen.flatMap((item) => item.sourcePaths)
         const allTracks = chosen.flatMap((item) => item.additionalAudioTracks || [])
-        const merged = { ...base, type, comboMode: type === 'combo' ? 'multitrack' as const : undefined, sourcePaths: allSources, additionalAudioTracks: type === 'multitrack' || type === 'combo' ? allTracks : undefined, status: 'pending' as const, progress: 0, outputFilename: `${base.sourceBaseName || 'merged'}_${type === 'stitch' ? 'stitched' : 'multitrack'}.${base.preset.container}` }
+        const wantsTracks = type === 'multitrack' || type === 'combo'
+        // The encoder takes its video from sourcePaths[0] and muxes only
+        // additionalAudioTracks, so an audio source left in sourcePaths would be
+        // listed as a video input and then silently dropped from the output.
+        const visualSources = allSources.filter((source) => mediaKind(source) !== 'audio')
+        const audioSources = allSources.filter((source) => mediaKind(source) === 'audio')
+        const merged = {
+          ...base,
+          type,
+          comboMode: type === 'combo' ? 'multitrack' as const : undefined,
+          sourcePaths: wantsTracks && visualSources.length ? visualSources : allSources,
+          additionalAudioTracks: wantsTracks
+            ? [...allTracks, ...audioSources.map((source, index) => ({ id: `${base.id}-audio-source-${index}-${Date.now()}`, path: source, language: 'und' }))]
+            : undefined,
+          status: 'pending' as const,
+          progress: 0,
+          outputFilename: `${base.sourceBaseName || 'merged'}_${type === 'stitch' ? 'stitched' : 'multitrack'}.${base.preset.container}`,
+        }
         setSelectedTaskIds([merged.id]); setSelectedTaskId(merged.id); return [...prev.filter((item) => !ids.includes(item.id)), merged]
       }
       return prev.map((item) => {

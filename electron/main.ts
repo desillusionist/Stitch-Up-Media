@@ -45,6 +45,10 @@ function createWindow() {
     },
   })
 
+  // A trackpad pinch would otherwise zoom the whole interface, which reads as a
+  // stray magnifier over the window.
+  mainWindow.webContents.setVisualZoomLevelLimits(1, 1)
+
   queueManager = new QueueManager(() => mainWindow)
 
   if (process.env.VITE_DEV_SERVER_URL) {
@@ -114,6 +118,7 @@ app.whenReady().then(() => {
       editJobWindow.focus(); sendEditJobTask(); return
     }
     editJobWindow = new BrowserWindow({ width: 1320, height: 840, minWidth: 980, minHeight: 640, title: 'EDIT JOB', titleBarStyle: 'hiddenInset', backgroundColor: '#07111d', parent: mainWindow || undefined, webPreferences: { preload: path.join(__dirname, 'preload.mjs'), nodeIntegration: false, contextIsolation: true, sandbox: false } })
+    editJobWindow.webContents.setVisualZoomLevelLimits(1, 1)
     editJobWindow.on('closed', () => { editJobWindow = null; editJobTask = null })
     editJobWindow.webContents.once('did-finish-load', sendEditJobTask)
     if (process.env.VITE_DEV_SERVER_URL) await editJobWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}#edit-job`)

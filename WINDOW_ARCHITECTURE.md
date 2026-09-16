@@ -24,7 +24,7 @@ Trim stays queue-owned. The native helper reports in/out points, the queue recor
 
 Launch resolution is shared through `src/lib/quickLookTarget.ts`, so the queue rail and the editor cannot drift on image-sequence thumbnail regeneration, still-frame detection, or trim-point lookup. `src/lib/mediaKind.ts` is shared for the same reason: a sequence frame cannot be decoded by a video element, so it is played through its generated preview instead.
 
-Durations and frame rates come from probe data on the task. An image sequence reports duration as frame count over its interpreted fps, matching the helper's `displayFps` rule, so both windows agree on frame numbers for the same media.
+Durations and frame rates are resolved per source: an interpreted sequence from its frame count over its fps, a still frame from `stillImageDuration` (defaulting to the encoder's ten seconds), and anything else by probing on demand, because `sourceInfo` and `sourceMetadata` are read across the app but never actually populated. A single `sourceInfo` reading describes the task's first source only, never its tracks.
 
 ## Job-type mapping
 
