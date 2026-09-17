@@ -3,7 +3,7 @@ import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, TransitionType } 
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, frameStamp, maxFadeAtBoundary, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
@@ -208,9 +208,9 @@ export const EditJobApp: React.FC = () => {
   })()
 
   /**
-   * J / K / L shuttle, following the convention editing software uses: J and L
-   * ramp backwards and forwards, K stops, K held with J or L is slow motion, and
-   * a press too short to be a hold steps a single frame instead.
+   * One keyboard layer for the transport. Only genuine text entry is ignored: a
+   * focused range slider stays live, because placing the playhead leaves focus on
+   * the scrubber, and treating that as typing swallowed every shortcut.
    */
   const heldKeysRef = useRef({ k: false })
   const slowMotionRef = useRef(false)
@@ -220,9 +220,23 @@ export const EditJobApp: React.FC = () => {
     const clearTap = () => {
       if (tapTimerRef.current != null) { window.clearTimeout(tapTimerRef.current); tapTimerRef.current = null }
     }
+    const isTyping = (target: EventTarget | null) => {
+      const element = target as HTMLElement | null
+      if (!element) return false
+      if (element.isContentEditable) return true
+      const tag = element.tagName
+      if (tag === 'TEXTAREA' || tag === 'SELECT') return true
+      if (tag !== 'INPUT') return false
+      const type = (element as HTMLInputElement).type
+      return !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'color'].includes(type)
+    }
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      if (isTyping(event.target)) return
+      if (event.code === 'Space' || event.key === ' ') {
+        event.preventDefault()
+        playbackRef.current.toggle()
+        return
+      }
       const key = event.key.toLowerCase()
       if (key === 'k') {
         event.preventDefault()
@@ -267,19 +281,6 @@ export const EditJobApp: React.FC = () => {
     }
   }, [])
 
-  // Spacebar is the transport, unless the caret is in a field.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.code !== 'Space' && event.key !== ' ') return
-      const target = event.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
-      event.preventDefault()
-      playback.toggle()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [playback.toggle])
-
   // Mutes are applied to the elements directly and never reach the task. The
   // segment key is a dependency because the video element remounts around stills.
   useEffect(() => {
@@ -319,7 +320,13 @@ export const EditJobApp: React.FC = () => {
     // Renaming follows the same rule as the queue's preset picker, so a container
     // swap keeps the suffix and only moves the extension.
     updateDraft({
-      preset: { ...draft.preset, container },
+      preset: {
+        ...draft.preset,
+        container,
+        // Leaving an image container turns a single-frame job into a timed clip, so
+        // the still-image output mode no longer applies.
+        imageOutputMode: IMAGE_CONTAINERS.includes(container) ? draft.preset.imageOutputMode : undefined,
+      },
       outputFilename: deriveOutputFilename(draft, draft.preset, container),
     })
   }
@@ -365,14 +372,11 @@ export const EditJobApp: React.FC = () => {
   }
   const duration = model.duration
 
-  // Transitions only exist between concatenated clips, so only STITCH has boundaries.
+  // Transitions only exist between concatenated clips, so only STITCH has them.
   const stitchSegments = model.lanes[0]?.segments ?? []
-  const boundaries = draft.type === 'stitch' && stitchSegments.length > 1
-    ? stitchSegments.slice(0, -1).map((segment, index) => ({
-      index,
-      fraction: duration > 0 ? (segment.start + segment.duration) / duration : 0,
-    }))
-    : []
+  const showBoundaries = draft.type === 'stitch' && stitchSegments.length > 1
+  // A single frame in and a single frame out has nothing to time.
+  const stillFrameJob = isStillFrameJob(draft)
   const selectedBoundary = openBoundary != null && stitchSegments[openBoundary] && stitchSegments[openBoundary + 1]
     ? (() => {
       const transition = draft.transitions?.[`${stitchSegments[openBoundary].sourcePath}#${openBoundary}`]
@@ -412,7 +416,9 @@ export const EditJobApp: React.FC = () => {
    * current points would overwrite existing trim with the full source range.
    */
   const openNativePreview = async () => {
-    const request = await resolveQuickLookRequest(draft, window.electronAPI, { sourceIndex: focusedSourceIndex })
+    // A still that becomes a timed clip is opened in the advanced helper as a
+    // generated clip, so its filmstrip and trimming behave like real footage.
+    const request = await resolveQuickLookRequest(draft, window.electronAPI, { sourceIndex: focusedSourceIndex, preferTimedStill: true })
     if (!request) return
     void window.electronAPI?.quickLook(request.target, draft.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings?.screenshotDirectory, settings?.timestampDisplayMode || 'timestamp', request.sequenceFps, request.sequenceFrameCount)
   }
@@ -453,20 +459,22 @@ export const EditJobApp: React.FC = () => {
           <div className="editor-screen">
             {playback.error
               ? <span className="editor-screen-message">{playback.error}</span>
-              : playback.segment?.still
-                ? <img className="editor-still" style={{ opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} />
-                : elementUrl
-                  ? <video
-                    ref={playback.attachVideo}
-                    className="editor-video"
-                    src={elementUrl}
-                    preload="metadata"
-                    playsInline
-                    style={{ opacity: previewGain }}
-                    onContextMenu={(event) => event.preventDefault()}
-                    onClick={() => playback.toggle()}
-                  />
-                  : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
+              : stillFrameJob
+                ? <img className="editor-still" src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} />
+                : playback.segment?.still
+                  ? <img className="editor-still" style={{ opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} />
+                  : elementUrl
+                    ? <video
+                      ref={playback.attachVideo}
+                      className="editor-video"
+                      src={elementUrl}
+                      preload="metadata"
+                      playsInline
+                      style={{ opacity: previewGain }}
+                      onContextMenu={(event) => event.preventDefault()}
+                      onClick={() => playback.toggle()}
+                    />
+                    : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
             <small>{sourceName(focusedSource)} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS • ${stamp(duration)}` : ''}</small>
             <b>{playback.playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>
           </div>
@@ -496,6 +504,10 @@ export const EditJobApp: React.FC = () => {
         </section>
 
         <section className="timeline-panel">
+          {stillFrameJob ? <>
+            <div className="panel-kicker">TIMELINE // SINGLE FRAME</div>
+            <div className="editor-note">&gt; THIS JOB MAPS ONE FRAME TO ONE FRAME, SO THERE IS NOTHING TO TIME. CHANGE THE FORMAT IN EXPORT SETTINGS TO TREAT THE IMAGE AS A {Math.round(draft.stillImageDuration || 10)}s CLIP.</div>
+          </> : <>
           <div className="timeline-head">
             <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
             <div className="timeline-zoom">
@@ -527,7 +539,7 @@ export const EditJobApp: React.FC = () => {
                     <span>{lane.label}</span>
                   </div>
                   <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
-                    {lane.segments.map((segment) => (
+                    {lane.segments.map((segment, index) => (
                       <div
                         key={segment.key}
                         className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}`}
@@ -538,18 +550,18 @@ export const EditJobApp: React.FC = () => {
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                         {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
+                        {/* Anchored to the clip's own trailing edge, so the marker sits
+                            on the cut by construction rather than by arithmetic. */}
+                        {showBoundaries && lane.id === 'main' && index < lane.segments.length - 1 && (
+                          <button
+                            className={`boundary-add${(draft.transitions?.[`${segment.sourcePath}#${index}`]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === index ? ' is-open' : ''}`}
+                            onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === index ? null : index) }}
+                            title={`Transition after ${sourceName(segment.sourcePath)}`}
+                          >+</button>
+                        )}
                       </div>
                     ))}
                     {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexGrow: laneGap(lane) }} title="No media on this lane" />}
-                    {lane.id === 'main' && boundaries.map((boundary) => (
-                      <button
-                        key={boundary.index}
-                        className={`boundary-add${(draft.transitions?.[`${stitchSegments[boundary.index].sourcePath}#${boundary.index}`]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === boundary.index ? ' is-open' : ''}`}
-                        style={{ left: `${boundary.fraction * 100}%` }}
-                        onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === boundary.index ? null : boundary.index) }}
-                        title={`Transition after ${sourceName(stitchSegments[boundary.index].sourcePath)}`}
-                      >+</button>
-                    ))}
                   </div>
                 </div>
               ))}
@@ -576,8 +588,9 @@ export const EditJobApp: React.FC = () => {
             </div>
           )}
           {model.unusedVideoSources.length > 0 && <div className="editor-note">&gt; {model.unusedVideoSources.length} EXTRA VIDEO SOURCE(S) ({model.unusedVideoSources.map(sourceName).join(', ')}) ARE NOT USED: COMBO DISPATCHES TO THE MULTI-TRACK ENCODER PATH, WHICH MAPS ONE VIDEO STREAM. SPLIT INTO A STITCH JOB TO CONCATENATE THEM.</div>}
-          {draft.type === 'stitch' && stitchSegments.length > 1 && <div className="editor-note">&gt; PRESS [+] ON A CUT TO ADD A FADE. FADES ARE APPLIED BY THE ENCODER ON BOTH SIDES OF THE CUT, AND THE MONITOR FADES WITH THEM.</div>}
+          {showBoundaries && <div className="editor-note">&gt; PRESS [+] ON A CUT TO ADD A FADE. FADES ARE APPLIED BY THE ENCODER ON BOTH SIDES OF THE CUT, AND THE MONITOR FADES WITH THEM.</div>}
           <div className="editor-note">&gt; LANE WIDTHS ARE THE REAL TRIMMED DURATIONS. AUDIO TRACKS PLAY ALONGSIDE THE VIDEO FROM ZERO, SO THE OUTPUT RUNS TO {duration > 0 ? stamp(duration) : 'AN UNKNOWN LENGTH'}.</div>
+          </>}
         </section>
       </main>
 
@@ -628,7 +641,7 @@ export const EditJobApp: React.FC = () => {
         <div className="export-summary">
           <span className="panel-kicker">SUMMARY</span>
           <strong>{draft.outputFilename}</strong>
-          <span>{duration > 0 ? `ASSEMBLED ${stamp(duration)} ACROSS ${model.lanes.length} LANE(S)` : 'LENGTH UNKNOWN — PROBE ON START'}</span>
+          <span>{stillFrameJob ? 'SINGLE FRAME OUTPUT — NO TIMELINE' : duration > 0 ? `ASSEMBLED ${stamp(duration)} ACROSS ${model.lanes.length} LANE(S)` : 'LENGTH UNKNOWN — PROBE ON START'}</span>
           <span>{dirty ? 'UNSAVED CHANGES' : 'NO CHANGES'}</span>
         </div>
 

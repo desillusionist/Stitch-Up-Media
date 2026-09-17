@@ -442,7 +442,9 @@ export const App: React.FC = () => {
     setTasks((prev) => prev.map((t) => t.id === task.id ? { ...t, outputDirectory: selected.substring(0, slash), outputFilename: selected.substring(slash + 1), outputFilenameManuallySet: true } : t))
   }
   const handleQuickLook = async (task: QueueTask) => {
-    const request = await resolveQuickLookRequest(task, window.electronAPI, {})
+    // A still that will become a timed clip opens in the advanced helper as a
+    // generated clip, matching what the EDIT JOB window does.
+    const request = await resolveQuickLookRequest(task, window.electronAPI, { preferTimedStill: true })
     if (!request) return
     if (request.regeneratedPreview) {
       const { sourceTarget, path: previewPath } = request.regeneratedPreview

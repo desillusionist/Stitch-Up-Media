@@ -233,7 +233,14 @@ export const frameStamp = (seconds: number, fps: number) => `FRAME ${String(Math
  * COMBO is modelled as multi-track because the encoder dispatches purely on
  * `type`, and never reads `comboMode`.
  */
+/**
+ * A single frame in and a single frame out. Such a job has nothing to time, so it
+ * gets no timeline, and its still previews through the lite helper.
+ */
+export const isStillFrameJob = (task: QueueTask) => task.preset.imageOutputMode === 'still'
+
 export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {}): TimelineModel => {
+  if (isStillFrameJob(task)) return { lanes: [], duration: 0, unusedVideoSources: [] }
   const lanes: TimelineLane[] = []
 
   if (task.type === 'stitch') {

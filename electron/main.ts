@@ -194,7 +194,7 @@ app.whenReady().then(() => {
     return [...new Set(files)]
   })
 
-  ipcMain.handle('create-image-sequence-preview', async (_, inputPaths: string[]) => {
+  ipcMain.handle('create-image-sequence-preview', async (_, inputPaths: string[], options?: { fps?: number; stillSeconds?: number }) => {
     const images = [...new Set(inputPaths)].filter((candidate) => /\.(jpg|jpeg|png|tif|tiff|heic)$/i.test(candidate))
     if (images.length < 1) return null
     const settings = queueManager?.getSettings()
@@ -210,12 +210,21 @@ app.whenReady().then(() => {
       fs.writeFileSync(previewRegistry, JSON.stringify([...new Set([...(Array.isArray(current) ? current : []), previewPath])]), 'utf8')
     } catch {}
     const listPath = `${previewPath}.txt`
+    // A lone image becomes a clip of the requested length, so a still can be
+    // trimmed like footage. Without the option it keeps its previous behaviour.
+    const stillSeconds = options?.stillSeconds && options.stillSeconds > 0 ? options.stillSeconds : 1
     const list = images.length === 1
-      ? `file '${images[0].replace(/'/g, "'\\''")}'\nduration 1\nfile '${images[0].replace(/'/g, "'\\''")}'\n`
+      ? `file '${images[0].replace(/'/g, "'\\''")}'\nduration ${stillSeconds}\nfile '${images[0].replace(/'/g, "'\\''")}'\n`
       : images.map((image) => `file '${image.replace(/'/g, "'\\''")}'\nduration 0.04`).join('\n') + `\nfile '${images[images.length - 1].replace(/'/g, "'\\''")}'\n`
     try {
       fs.writeFileSync(listPath, list, 'utf8')
-      execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-vsync', 'vfr', '-pix_fmt', 'yuv420p', previewPath], { timeout: 120000 })
+      const args = ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', listPath]
+      // A requested rate means constant-rate output, which cannot be combined with
+      // -vsync vfr. Without a rate the previous behaviour is preserved exactly.
+      if (options?.fps && options.fps > 0) args.push('-r', String(Math.round(options.fps)))
+      else args.push('-vsync', 'vfr')
+      args.push('-pix_fmt', 'yuv420p', previewPath)
+      execFileSync('ffmpeg', args, { timeout: 120000 })
       return previewPath
     } catch (error) {
       logEvent('ipc', 'image-sequence preview failed', { count: images.length, error: String(error) })

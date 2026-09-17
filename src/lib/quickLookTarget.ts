@@ -1,10 +1,11 @@
 import { QueueTask } from '../types'
 import { mediaKind } from './mediaKind'
+import { isStillFrameJob } from './timelineModel'
 
 /** The subset of the preload bridge this helper needs. */
 export interface QuickLookBridge {
   pathExists?: (filePath: string) => Promise<boolean>
-  createImageSequencePreview?: (paths: string[]) => Promise<string | null>
+  createImageSequencePreview?: (paths: string[], options?: { fps?: number; stillSeconds?: number }) => Promise<string | null>
 }
 
 export interface QuickLookRequest {
@@ -32,7 +33,7 @@ export interface QuickLookRequest {
 export const resolveQuickLookRequest = async (
   task: QueueTask,
   bridge: QuickLookBridge | undefined,
-  options: { sourceIndex?: number; preferOutput?: boolean } = {},
+  options: { sourceIndex?: number; preferOutput?: boolean; preferTimedStill?: boolean } = {},
 ): Promise<QuickLookRequest | null> => {
   const explicitIndex = options.sourceIndex != null || task.quickLookSourceIndex != null
   const sourceIndex = options.sourceIndex ?? task.quickLookSourceIndex ?? 0
@@ -42,10 +43,22 @@ export const resolveQuickLookRequest = async (
     ? task.sequenceInputs?.[sourceTarget] || (task.sequenceInput?.firstFrame === sourceTarget ? task.sequenceInput : undefined)
     : undefined
 
+  const standaloneImage = sourceTarget != null
+    && mediaKind(sourceTarget) === 'image'
+    && !task.sequenceInputs?.[sourceTarget]
+    && task.sequenceInput?.firstFrame !== sourceTarget
+  // A still that will become a timed clip needs real footage to trim against, so
+  // it is played through a generated clip rather than a single frame. A still that
+  // stays a single frame keeps the lite helper instead.
+  const timedStill = options.preferTimedStill === true && standaloneImage && !isStillFrameJob(task)
+
   let existingPreview = sourceTarget ? task.imageSequencePreviews?.[sourceTarget] : undefined
   let regeneratedPreview: QuickLookRequest['regeneratedPreview']
-  if (sourceTarget && sequence && (!existingPreview || !(await bridge?.pathExists?.(existingPreview)))) {
-    const created = await bridge?.createImageSequencePreview?.(sequence.files?.length ? sequence.files : [sequence.firstFrame])
+  const needsPreview = sequence || timedStill
+  if (sourceTarget && needsPreview && (!existingPreview || !(await bridge?.pathExists?.(existingPreview)))) {
+    const created = timedStill && !sequence
+      ? await bridge?.createImageSequencePreview?.([sourceTarget], { fps: 25, stillSeconds: Math.max(0.1, task.stillImageDuration || 10) })
+      : await bridge?.createImageSequencePreview?.(sequence?.files?.length ? sequence.files : [sequence?.firstFrame || sourceTarget])
     if (created) {
       existingPreview = created
       regeneratedPreview = { sourceTarget, path: created }
@@ -56,22 +69,17 @@ export const resolveQuickLookRequest = async (
   const target = existingPreview || (wantsOutput ? `${task.outputDirectory}/${task.outputFilename}` : sourceTarget)
   if (!target) return null
 
-  // Trim points belong to the logical source occurrence, not the temporary sequence preview.
+  // Trim points belong to the logical source occurrence, not the temporary preview.
   const sourceKey = `${sourceTarget}#${sourceIndex}`
   const points = task.trimPoints?.[sourceKey]
     || task.trimPoints?.[sourceTarget ?? '']
     || task.trimPoints?.[`${target}#${sourceIndex}`]
     || task.trimPoints?.[target]
 
-  const stillMode = sourceTarget != null
-    && mediaKind(sourceTarget) === 'image'
-    && !task.sequenceInputs?.[sourceTarget]
-    && task.sequenceInput?.firstFrame !== sourceTarget
-
   return {
     target,
     sourceIndex,
-    stillMode,
+    stillMode: standaloneImage && !timedStill,
     trimIn: points?.in,
     trimOut: points?.out,
     sequenceFps: sequence?.fps,
