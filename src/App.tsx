@@ -7,6 +7,7 @@ import { MultiAudioModal } from './components/MultiAudioModal'
 import { SettingsModal } from './components/SettingsModal'
 import { CommandBar } from './components/CommandBar'
 import { QueueTask, EncodingPreset, AppSettings, EditJobPatch } from './types'
+import { withSourceRate } from './lib/sourceRate'
 import { DEFAULT_PRESETS } from './constants/presets'
 import { detectSequences, isImagePath } from './lib/detectSequences'
 import { deriveOutputFilename } from './lib/outputNaming'
@@ -63,25 +64,12 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
   }
   if (!patch.sourceFps) return next
   // A rate the user set in MEDIA INFO lands on the task's own record for that source,
-  // which is where the timeline looks first. An interpreted sequence also derives its
-  // length from the rate, so its duration has to move with it.
-  const sourceMetadata = { ...(task.sourceMetadata || {}) }
-  const sequenceInputs = { ...(task.sequenceInputs || {}) }
-  let sequenceInput = task.sequenceInput
-  Object.entries(patch.sourceFps).forEach(([sourcePath, fps]) => {
-    if (!Number.isFinite(fps) || fps <= 0) return
-    sourceMetadata[sourcePath] = { ...(sourceMetadata[sourcePath] || {}), fps }
-    const reflow = (sequence: QueueTask['sequenceInput']): QueueTask['sequenceInput'] =>
-      sequence ? { ...sequence, fps, duration: sequence.frameCount / fps } : sequence
-    if (sequenceInputs[sourcePath]) sequenceInputs[sourcePath] = reflow(sequenceInputs[sourcePath]) as NonNullable<QueueTask['sequenceInput']>
-    if (sequenceInput?.firstFrame === sourcePath) sequenceInput = reflow(sequenceInput)
-  })
-  return {
-    ...next,
-    sourceMetadata,
-    sequenceInputs: Object.keys(sequenceInputs).length ? sequenceInputs : undefined,
-    sequenceInput: sequenceInput,
-  }
+  // which is where the timeline looks first, and it invalidates any clip that was
+  // generated at the previous rate.
+  return Object.entries(patch.sourceFps).reduce(
+    (current, [sourcePath, fps]) => withSourceRate(current, sourcePath, fps),
+    next,
+  )
 }
 
 /**
@@ -323,7 +311,7 @@ export const App: React.FC = () => {
         // remembered FPS as the default; validation still gates encoding.
         sequenceFps = settings.sequenceFps && settings.sequenceFps > 0 ? settings.sequenceFps : 24
         sequenceTotalSize = await window.electronAPI?.getPathsTotalSize?.(sequenceCandidates)
-        imageSequencePreview = await window.electronAPI?.createImageSequencePreview(sequenceCandidates) || null
+        imageSequencePreview = await window.electronAPI?.createImageSequencePreview(sequenceCandidates, { fps: sequenceFps, duration: detectedSequence.frameCount / sequenceFps }) || null
       } else {
         // A single picked/dropped frame means exactly that frame, not all siblings.
         // Multi-file and folder imports intentionally retain all selected frames.
@@ -475,19 +463,19 @@ export const App: React.FC = () => {
   const handleCollapseAll = () => window.dispatchEvent(new Event('queue-collapse-all'))
 
 
-  const handleChangeSequenceFps = (task: QueueTask, sourceKey: string, fps: number) => {
+  /**
+   * A rate changed from the queue's MEDIA INFO. The same rule the EDIT JOB applies, so
+   * a rate set in either window leaves the task in the same state: recorded against the
+   * source, the sequence's length re-derived, and any clip generated at the old rate
+   * thrown away rather than handed to the frame-accurate helper.
+   */
+  const handleChangeSourceFps = (task: QueueTask, sourceKey: string, fps: number) => {
     if (!Number.isFinite(fps) || fps <= 0) return
     setTasks((prev) => prev.map((item) => {
       if (item.id !== task.id) return item
-      const patch = (seq?: QueueTask['sequenceInput']) => seq ? { ...seq, fps, duration: seq.frameCount / fps } : seq
-      const isPrimary = item.sequenceInput?.firstFrame === sourceKey
-      return {
-        ...item,
-        sequenceInput: isPrimary ? patch(item.sequenceInput) : item.sequenceInput,
-        sequenceInputs: item.sequenceInputs?.[sourceKey] ? { ...item.sequenceInputs, [sourceKey]: patch(item.sequenceInputs[sourceKey])! } : item.sequenceInputs,
-        status: item.status === 'done' ? 'pending' as const : item.status,
-        progress: item.status === 'done' ? 0 : item.progress,
-      }
+      const wasDone = item.status === 'done'
+      const next = withSourceRate(item, sourceKey, fps)
+      return wasDone ? { ...next, progress: 0 } : next
     }))
   }
 
@@ -688,7 +676,7 @@ export const App: React.FC = () => {
       if (wholeSequence) {
         const fps = settings.sequenceFps && settings.sequenceFps > 0 ? settings.sequenceFps : 24
         const totalSize = await window.electronAPI?.getPathsTotalSize?.(incomingSequence.frames)
-        incomingSequencePreview = await window.electronAPI?.createImageSequencePreview(incomingSequence.frames) || null
+        incomingSequencePreview = await window.electronAPI?.createImageSequencePreview(incomingSequence.frames, { fps, duration: incomingSequence.frameCount / fps }) || null
         incomingSequenceInput = { ...incomingSequence, fps, duration: incomingSequence.frameCount / fps, totalSize }
         filePaths = filePaths.filter((filePath) => !incomingSequence.files.includes(filePath))
         filePaths = [incomingSequence.firstFrame, ...filePaths]
@@ -840,7 +828,7 @@ export const App: React.FC = () => {
         onRemoveTask={handleRemoveTask}
         onRevealOutput={handleRevealOutput}
         onQuickLook={handleQuickLook}
-        onChangeSequenceFps={handleChangeSequenceFps}
+        onChangeSourceFps={handleChangeSourceFps}
         onChangeOutputName={handleChangeOutputName}
         onDuplicateTask={handleDuplicateTask}
         onSkipTask={handleSkipTask}

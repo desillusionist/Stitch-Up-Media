@@ -8,6 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
+import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
@@ -99,7 +100,8 @@ export const EditJobApp: React.FC = () => {
   const baselineRef = useRef<QueueTask | null>(null)
   const audioElementsRef = useRef<Record<string, HTMLAudioElement | null>>({})
   const [probedTiming, setProbedTiming] = useState<Record<string, SourceTiming>>({})
-  /** Sources whose target has been resolved, so the effect below cannot loop. */
+  /** Sources whose target has been resolved, keyed by source and rate. A generated
+   *  clip belongs to a rate, so a rate change is a different target entirely. */
   const resolvedTargetsRef = useRef<Record<string, true>>({})
   // Paths already handed to the prober. A failed probe is not retried, so the
   // effect cannot loop on an unreadable file.
@@ -207,32 +209,38 @@ export const EditJobApp: React.FC = () => {
   const focusedSourceIndex = playback.segmentIndex
   const focusedSource = draft ? (draft.sourcePaths[focusedSourceIndex] || draft.sourcePaths[0]) : undefined
 
-  // Every main-lane source gets a target, once, in the background. Nothing on the
-  // playback path waits for this: an unresolved source simply renders nothing for
-  // the moment it takes, which is one IPC round trip rather than a clip build.
+  // Every main-lane source gets a target, once per rate, in the background. Nothing
+  // on the playback path waits for this: an unresolved source simply renders nothing
+  // for the moment it takes, which is one IPC round trip rather than a clip build.
   useEffect(() => {
     const task = draftRef.current
     if (!task) { setMediaTargets({}); return }
-    const missing = Array.from(new Set(task.sourcePaths)).filter((sourcePath) => resolvedTargetsRef.current[sourcePath] === undefined)
+    const wanted = new Map<string, string>()
+    Array.from(new Set(task.sourcePaths)).forEach((sourcePath) => {
+      const rate = sourceFps(task, sourcePath, undefined, resolveTiming)
+      wanted.set(`${sourcePath}\u0000${rate}`, sourcePath)
+    })
+    const missing = [...wanted.keys()].filter((key) => resolvedTargetsRef.current[key] === undefined)
     if (!missing.length) return
     let cancelled = false
-    void Promise.all(missing.map(async (sourcePath) => {
+    void Promise.all(missing.map(async (key) => {
+      const sourcePath = wanted.get(key) as string
       const request = await resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: Math.max(0, task.sourcePaths.indexOf(sourcePath)) })
-      return [sourcePath, request] as const
+      return [key, sourcePath, request] as const
     })).then((entries) => {
       if (cancelled) return
       const resolved: Record<string, { path: string; previewUnavailable?: boolean }> = {}
-      entries.forEach(([sourcePath, request]) => {
+      entries.forEach(([key, sourcePath, request]) => {
         if (!request) return
         // Only a success is remembered, so a target that could not be built is tried
         // again the next time the task changes rather than being given up on.
-        resolvedTargetsRef.current[sourcePath] = true
+        resolvedTargetsRef.current[key] = true
         resolved[sourcePath] = { path: request.target, previewUnavailable: request.previewUnavailable }
       })
       setMediaTargets((current) => ({ ...current, ...resolved }))
     })
     return () => { cancelled = true }
-  }, [timelineSignature])
+  }, [timelineSignature, probedTiming])
 
   const timelineDuration = model?.duration ?? 0
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
@@ -399,17 +407,25 @@ export const EditJobApp: React.FC = () => {
     })
   }, [muted, audioLaneIds, playback.videoRef, playback.segment?.key, previewGain])
 
-  // Keep the playhead in view while zoomed in and playing.
+  /**
+   * Keeps the skimmer in view.
+   *
+   * A zoomed timeline is wider than its window, so it is followed whichever way the
+   * skimmer moved: playback, a wheel scrub, an arrow-key step or a click. It pans only
+   * once the skimmer crosses a margin, so a scrub does not re-centre on every tick.
+   */
   useEffect(() => {
-    if (!playback.playing) return
     const scroller = timelineScrollRef.current
     const inner = timelineInnerRef.current
     if (!scroller || !inner) return
-    const x = LANE_LABEL_WIDTH + playheadFraction * Math.max(0, inner.clientWidth - LANE_LABEL_WIDTH)
-    if (x < scroller.scrollLeft + 48 || x > scroller.scrollLeft + scroller.clientWidth - 48) {
-      scroller.scrollLeft = Math.max(0, x - scroller.clientWidth / 2)
-    }
-  }, [playback.playing, playheadFraction])
+    const next = scrollToKeepVisible({
+      offset: skimmerOffset(playheadFraction, inner.clientWidth, LANE_LABEL_WIDTH),
+      scrollLeft: scroller.scrollLeft,
+      viewportWidth: scroller.clientWidth,
+      contentWidth: scroller.scrollWidth,
+    })
+    if (next != null) scroller.scrollLeft = next
+  }, [playheadFraction, zoom])
 
   if (!draft || !model) return <div className="edit-job-shell"><div className="editor-loading">WAITING FOR QUEUE ITEM...</div></div>
 
@@ -488,6 +504,11 @@ export const EditJobApp: React.FC = () => {
   const setSourceFps = (sourcePath: string, fps: number) => {
     if (!Number.isFinite(fps) || fps <= 0) return
     const current = latest()
+    // A generated clip belongs to the rate it was rendered at, so it is dropped here
+    // as well as on the queue side. Otherwise the monitor and the frame-accurate
+    // helper would keep playing footage at the rate that was just replaced.
+    const previews = { ...(current.imageSequencePreviews || {}) }
+    delete previews[sourcePath]
     updateDraft({
       sourceMetadata: { ...(current.sourceMetadata || {}), [sourcePath]: { ...(current.sourceMetadata?.[sourcePath] || {}), fps } },
       sequenceInputs: current.sequenceInputs?.[sourcePath]
@@ -496,6 +517,7 @@ export const EditJobApp: React.FC = () => {
       sequenceInput: current.sequenceInput?.firstFrame === sourcePath
         ? { ...current.sequenceInput, fps, duration: current.sequenceInput.frameCount / fps }
         : current.sequenceInput,
+      imageSequencePreviews: Object.keys(previews).length ? previews : undefined,
     })
   }
 
@@ -579,7 +601,14 @@ export const EditJobApp: React.FC = () => {
     setPreviewNotice(request.previewUnavailable
       ? `COULD NOT BUILD A ${Math.round(draft.stillImageDuration || 10)}s CLIP FOR THIS STILL, SO THE FRAME IS SHOWN INSTEAD. THE FFMPEG ERROR IS IN THE LOG.`
       : null)
-    void window.electronAPI?.quickLook(request.target, draft.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings?.screenshotDirectory, settings?.timestampDisplayMode || 'timestamp', request.sequenceFps, request.sequenceFrameCount)
+    // A timed still is not an interpreted sequence, so the request carries no frame grid
+    // for it and the helper would fall back to whatever rate the generated file happens
+    // to report. Telling it the same rate and length the timeline uses keeps its frame
+    // stepping and its trim readout on the editor's own grid.
+    const clip = playback.segment?.still ? playback.segment : undefined
+    const helperFps = request.sequenceFps ?? (clip ? fps : undefined)
+    const helperFrames = request.sequenceFrameCount ?? (clip ? Math.max(1, Math.round(clip.duration * fps)) : undefined)
+    void window.electronAPI?.quickLook(request.target, draft.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings?.screenshotDirectory, settings?.timestampDisplayMode || 'timestamp', helperFps, helperFrames)
   }
 
   const laneGap = (lane: TimelineLane) => Math.max(0, duration - lane.duration)

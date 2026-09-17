@@ -1,5 +1,7 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
+import { withSourceRate } from '../src/lib/sourceRate'
+import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
@@ -169,6 +171,11 @@ console.log('\n== the rate a still image is rendered at ==')
   check('the recorded rate wins over the fallback', sourceFps(recorded, '/frame.png'), 30)
   const probed = { ...recorded, preset: { ...recorded.preset, fps: 60 } } as unknown as QueueTask
   check('and over the preset rate too', sourceFps(probed, '/frame.png'), 30)
+  // A JPEG probe can invent a rate. Letting it win would put the number on screen out of
+  // step with the rate the encoder renders at, which follows the record then the preset.
+  const presetOnly = { ...still, preset: { ...still.preset, fps: 30 } } as unknown as QueueTask
+  check('a probed still rate does not override the preset', sourceFps(presetOnly, '/frame.png', undefined, () => ({ fps: 25 })), 30)
+  check('and with no preset either it is 25', sourceFps(still, '/frame.png', undefined, () => ({ fps: 25 })), 25)
   check('its length is still the still duration, not a rate', sourceDuration(still, '/frame.png'), 10)
 
   // A sequence carries its own rate, and that is the one both the encoder and the
@@ -181,6 +188,67 @@ console.log('\n== the rate a still image is rendered at ==')
   near('and its length follows the rate', sourceDuration(sequence, '/seq/f_0001.png'), 10)
   const reframed = { ...sequence, sequenceInputs: { '/seq/f_0001.png': { ...sequence.sequenceInputs!['/seq/f_0001.png'], fps: 48 } } } as unknown as QueueTask
   near('changing the rate changes the length', sourceDuration(reframed, '/seq/f_0001.png'), 5)
+}
+
+console.log('\n== changing a rate leaves nothing stale behind ==')
+{
+  const sequence = () => ({
+    id: 's', type: 'stitch', status: 'done', progress: 40,
+    sourcePaths: ['/seq/f_0001.png', '/other.mp4'], outputDirectory: '/out', outputFilename: 'o.mov',
+    sourceBaseName: 'f', stillImageDuration: 10,
+    preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    sequenceInput: { dir: '/seq', pattern: 'f_%04d.png', globPattern: '*', startNumber: 1, frameCount: 240, hasGaps: false, missing: [], fps: 24, firstFrame: '/seq/f_0001.png' },
+    sequenceInputs: { '/seq/f_0001.png': { dir: '/seq', pattern: 'f_%04d.png', globPattern: '*', startNumber: 1, frameCount: 240, hasGaps: false, missing: [], fps: 24, firstFrame: '/seq/f_0001.png' } },
+    imageSequencePreviews: { '/seq/f_0001.png': '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' },
+  }) as unknown as QueueTask
+
+  const changed = withSourceRate(sequence(), '/seq/f_0001.png', 48)
+  // The generated clip was rendered at 24, so it cannot be shown as though it were 48.
+  check('the clip built at the old rate is dropped', changed.imageSequencePreviews, { '/other.mp4': '/tmp/other.mp4' })
+  check('the rate is recorded against the source', changed.sourceMetadata, { '/seq/f_0001.png': { fps: 48 } })
+  near('the sequence length follows the rate', changed.sequenceInput!.duration!, 5)
+  near('and its rate is the new one', changed.sequenceInput!.fps, 48)
+  check('a finished job goes back to pending', changed.status, 'pending')
+  check('a rate of zero changes nothing', withSourceRate(sequence(), '/seq/f_0001.png', 0).imageSequencePreviews, { '/seq/f_0001.png': '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' })
+
+  // Deleting the last preview entry must leave the field absent rather than empty, which
+  // is how the rest of the app tests for it.
+  const lone = { ...sequence(), imageSequencePreviews: { '/seq/f_0001.png': '/tmp/seq-24fps.mp4' } } as unknown as QueueTask
+  check('the last preview leaving empties the field', withSourceRate(lone, '/seq/f_0001.png', 30).imageSequencePreviews, undefined)
+
+  // One rule for the rate, whichever window asked: the timeline model's own.
+  check('a sequence reports its own rate', sourceFps(sequence(), '/seq/f_0001.png'), 24)
+  const still = { ...sequence(), sourcePaths: ['/frame.png'], sequenceInput: undefined, sequenceInputs: undefined, sourceMetadata: { '/frame.png': { fps: 30 } } } as unknown as QueueTask
+  check('a still reports the rate recorded for it', sourceFps(still, '/frame.png'), 30)
+  const bare = { ...still, sourceMetadata: undefined, preset: { ...still.preset, fps: 50 } } as unknown as QueueTask
+  check('then the preset', sourceFps(bare, '/frame.png'), 50)
+  const nothing = { ...bare, preset: { ...bare.preset, fps: undefined } } as unknown as QueueTask
+  check('and finally 25', sourceFps(nothing, '/frame.png'), 25)
+}
+
+console.log('\n== a zoomed timeline follows the skimmer ==')
+{
+  // The ruler, the lane heads and the playhead all start after this column.
+  const LABEL = 102
+  near('the skimmer sits past the label column', skimmerOffset(0, 918, LABEL), 102)
+  near('and at the far edge', skimmerOffset(1, 918, LABEL), 918)
+  near('half way across', skimmerOffset(0.5, 918, LABEL), 510)
+
+  const view = { scrollLeft: 0, viewportWidth: 918, contentWidth: 918 }
+  check('a timeline that fits its window never pans', scrollToKeepVisible({ ...view, offset: 900 }), null)
+
+  const zoomed = { scrollLeft: 0, viewportWidth: 918, contentWidth: 918 * 4 }
+  check('a skimmer inside the window and its margin does not move it', scrollToKeepVisible({ ...zoomed, offset: 400 }), null)
+  check('a skimmer in the left margin is centred', scrollToKeepVisible({ ...zoomed, offset: 10 }), 0)
+  near('a skimmer past the right margin is centred', scrollToKeepVisible({ ...zoomed, offset: 900 })!, 441)
+  near('and the centring is clamped at the start', scrollToKeepVisible({ ...zoomed, scrollLeft: 300, offset: 310 })!, 0)
+
+  // The same effect has to fire for a wheel scrub and for an arrow step, both of which
+  // move the skimmer while the transport is paused, so this is checked for a paused
+  // position rather than one playback produced.
+  const walked = scrollToKeepVisible({ ...zoomed, scrollLeft: 0, offset: 3000 })
+  near('a long step still lands the skimmer in view', walked!, 2541)
+  check('and the answer really is in view', walked! + 918 >= 3000, true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

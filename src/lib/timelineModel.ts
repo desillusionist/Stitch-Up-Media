@@ -155,6 +155,12 @@ export const sourceFps = (
   if (sequence && sequence.fps > 0) return sequence.fps
   const metadataFps = sourcePath ? task.sourceMetadata?.[sourcePath]?.fps : undefined
   if (metadataFps && metadataFps > 0) return metadataFps
+  // A still image has no rate of its own, and probing a JPEG can invent one anyway. If
+  // that invented rate won here, the number on screen would disagree with the rate the
+  // encoder renders at, which follows the same record then the preset then 25.
+  if (sourcePath && !sequence && mediaKind(sourcePath) === 'image') {
+    return task.preset.fps && task.preset.fps > 0 ? task.preset.fps : 25
+  }
   if (sourcePath && sourcePath === primarySource(task)) {
     const streamFps = task.sourceInfo?.videoStreams?.[0]?.fps
     if (streamFps && streamFps > 0) return streamFps

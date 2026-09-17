@@ -5,7 +5,7 @@ export interface IElectronAPI {
   probeMedia: (filePath: string) => Promise<MediaProbeInfo>
   selectFiles: () => Promise<string[]>
   expandMediaPaths: (paths: string[]) => Promise<string[]>
-  createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number }) => Promise<string | null>
+  createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>
   findImageSiblings: (path: string) => Promise<string[]>
   listSiblingFiles: (filePath: string) => Promise<string[]>
   getPathsTotalSize: (filePaths: string[]) => Promise<number>
@@ -45,7 +45,7 @@ const api: IElectronAPI = {
   probeMedia: (filePath: string) => ipcRenderer.invoke('probe-media', filePath),
   selectFiles: () => ipcRenderer.invoke('select-files'),
   expandMediaPaths: (paths: string[]) => ipcRenderer.invoke('expand-media-paths', paths),
-  createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number }) => ipcRenderer.invoke('create-image-sequence-preview', paths, options),
+  createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => ipcRenderer.invoke('create-image-sequence-preview', paths, options),
   findImageSiblings: (filePath: string) => ipcRenderer.invoke('find-image-siblings', filePath),
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),

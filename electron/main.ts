@@ -194,7 +194,7 @@ app.whenReady().then(() => {
     return [...new Set(files)]
   })
 
-  ipcMain.handle('create-image-sequence-preview', async (_, inputPaths: string[], options?: { fps?: number; stillSeconds?: number }) => {
+  ipcMain.handle('create-image-sequence-preview', async (_, inputPaths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => {
     const images = [...new Set(inputPaths)].filter((candidate) => /\.(jpg|jpeg|png|tif|tiff|heic)$/i.test(candidate))
     if (images.length < 1) return null
     const settings = queueManager?.getSettings()
@@ -210,7 +210,7 @@ app.whenReady().then(() => {
       fs.writeFileSync(previewRegistry, JSON.stringify([...new Set([...(Array.isArray(current) ? current : []), previewPath])]), 'utf8')
     } catch {}
     const listPath = `${previewPath}.txt`
-    const rate = options?.fps && options.fps > 0 ? Math.round(options.fps) : 25
+    const rate = options?.fps && options.fps > 0 ? options.fps : 25
     // A lone image becomes a clip of the requested length, so a still can be
     // trimmed like footage. Without the option it keeps its previous behaviour.
     const stillSeconds = options?.stillSeconds && options.stillSeconds > 0 ? options.stillSeconds : 1
@@ -221,23 +221,29 @@ app.whenReady().then(() => {
         // a tail frame, which made a ten-second still come out at 10.04s.
         args.push('-loop', '1', '-framerate', String(rate), '-t', String(stillSeconds), '-i', images[0])
       } else {
-        const list = images.map((image) => `file '${image.replace(/'/g, "'\\''")}'\nduration 0.04`).join('\n') + `\nfile '${images[images.length - 1].replace(/'/g, "'\\''")}'\n`
+        // Each frame is held for one frame at the requested rate, and the output is
+        // that rate too, so the clip's length is frameCount over rate. The rate used to
+        // be a hardcoded 25 here while everything else worked in the requested rate,
+        // which is how the helper came to show footage at the rate the user had just
+        // replaced.
+        const frameSeconds = 1 / rate
+        const list = images.map((image) => `file '${image.replace(/'/g, "'\\''")}'\nduration ${frameSeconds}`).join('\n') + `\nfile '${images[images.length - 1].replace(/'/g, "'\\''")}'\n`
         fs.writeFileSync(listPath, list, 'utf8')
         args.push('-f', 'concat', '-safe', '0', '-i', listPath)
       }
       // A still is whatever size it happens to be, and 4:2:0 output needs both
       // dimensions even. An odd source, 1195 wide say, used to fail the whole run,
       // which left the caller with no clip and a helper reading the image as video.
-      args.push('-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-pix_fmt', 'yuv420p')
-      // A requested rate means constant-rate output, which cannot be combined with
-      // -vsync vfr. Without a rate the previous behaviour is preserved exactly.
-      if (images.length === 1 || (options?.fps && options.fps > 0)) args.push('-r', String(rate))
-      else args.push('-vsync', 'vfr')
+      args.push('-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-pix_fmt', 'yuv420p', '-r', String(rate))
+      // The concat demuxer emits a frame past the last one, so a sequence's clip came
+      // out longer than frameCount over rate and drifted from the timeline across it.
+      // An explicit length pins it to exactly the frames the timeline expects.
+      if (images.length > 1 && options?.duration && options.duration > 0) args.push('-t', String(options.duration))
       args.push(previewPath)
       execFileSync('ffmpeg', args, { timeout: 120000 })
       return previewPath
     } catch (error) {
-      logEvent('ipc', 'image-sequence preview failed', { count: images.length, stillSeconds, args: args.join(' '), error: String(error) })
+      logEvent('ipc', 'image-sequence preview failed', { count: images.length, rate, stillSeconds, args: args.join(' '), error: String(error) })
       try { fs.unlinkSync(previewPath) } catch {}
       return null
     } finally {

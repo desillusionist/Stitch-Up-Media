@@ -1,11 +1,11 @@
 import { QueueTask } from '../types'
 import { mediaKind } from './mediaKind'
-import { isStillFrameJob } from './timelineModel'
+import { isStillFrameJob, sourceFps } from './timelineModel'
 
 /** The subset of the preload bridge this helper needs. */
 export interface QuickLookBridge {
   pathExists?: (filePath: string) => Promise<boolean>
-  createImageSequencePreview?: (paths: string[], options?: { fps?: number; stillSeconds?: number }) => Promise<string | null>
+  createImageSequencePreview?: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>
 }
 
 export interface QuickLookRequest {
@@ -69,9 +69,19 @@ export const resolveQuickLookRequest = async (
   let existingPreview = sourceTarget && sequence ? task.imageSequencePreviews?.[sourceTarget] : undefined
   let regeneratedPreview: QuickLookRequest['regeneratedPreview']
   if (sourceTarget && needsPreview && (!existingPreview || !(await bridge?.pathExists?.(existingPreview)))) {
+    // A generated clip is rendered at a rate, so it has to be built at the rate every
+    // other part of the app is showing. The one rule for that rate lives in the timeline
+    // model, and it is the same number the helper stamps its frames with.
+    const rate = sourceFps(task, sourceTarget)
     const created = timedStill && !sequence
-      ? await bridge?.createImageSequencePreview?.([sourceTarget], { fps: 25, stillSeconds: Math.max(0.1, task.stillImageDuration || 10) })
-      : await bridge?.createImageSequencePreview?.(sequence?.files?.length ? sequence.files : [sequence?.firstFrame || sourceTarget])
+      ? await bridge?.createImageSequencePreview?.([sourceTarget], { fps: rate, stillSeconds: Math.max(0.1, task.stillImageDuration || 10) })
+      : await bridge?.createImageSequencePreview?.(sequence?.files?.length ? sequence.files : [sequence?.firstFrame || sourceTarget], {
+        fps: rate,
+        // The clip has to be exactly as long as the timeline believes the sequence is,
+        // or the playhead and the picture drift apart across it. The concat demuxer on
+        // its own emits a frame past the last one.
+        duration: sequence && sequence.frameCount > 0 && rate > 0 ? sequence.frameCount / rate : undefined,
+      })
     if (created) {
       existingPreview = created
       // Only sequences are worth caching, for the reason above.

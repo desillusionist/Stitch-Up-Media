@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { FileVideo, FileAudio, FileImage, Film, Layers, CheckCircle2, AlertCircle, Clock, Loader2, Folder, ExternalLink } from 'lucide-react'
 import { QueueTask } from '../types'
+import { sourceFps } from '../lib/timelineModel'
 
 const AUDIO_EXT = ['mp3', 'wav', 'aac', 'm4a', 'ogg', 'oga', 'aiff', 'aif', 'flac']
 const isAudioInput = (task: QueueTask) => {
@@ -38,7 +39,7 @@ interface TaskCardProps {
   onRemoveTask: (taskId: string) => void
   onRevealOutput: (task: QueueTask) => void
   onQuickLook: (task: QueueTask) => void
-  onChangeSequenceFps: (task: QueueTask, sourceKey: string, fps: number) => void
+  onChangeSourceFps: (task: QueueTask, sourceKey: string, fps: number) => void
   onChangeOutputName: (task: QueueTask) => void
   onDuplicateTask: (task: QueueTask) => void
   onSkipTask: (task: QueueTask) => void
@@ -68,7 +69,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onRemoveTask,
   onRevealOutput,
   onQuickLook,
-  onChangeSequenceFps,
+  onChangeSourceFps,
   onChangeOutputName,
   onDuplicateTask,
   onSkipTask,
@@ -197,7 +198,10 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     const sequence = sequenceFor(source)
     const metadata = sourceMetadata[`${source}#${index}`] || task.sourceMetadata?.[source]
     const standaloneStill = isImageSource(source) && !sequence
-    const fps = sequence?.fps || (standaloneStill ? undefined : metadata?.fps)
+    // A still has no rate of its own, so it reports the one it will be rendered at, which
+    // is the same number the EDIT JOB's clip line and MEDIA INFO show. A probe of a JPEG
+    // can carry a rate of its own, so it is deliberately not consulted here.
+    const fps = sequence?.fps || (standaloneStill ? sourceFps(task, source) : metadata?.fps)
     const point = trimFor(source, index)
     const totalFrames = sequence?.frameCount || 0
     const trimmedFrames = sequence && fps ? Math.max(0, Math.min(totalFrames, Math.round((point ? point.out - point.in : (sequence.duration || 0)) * fps))) : 0
@@ -400,7 +404,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           const width = Number(seq?.pattern?.match(/%0(\d+)d/)?.[1] || 1)
           const lastName = seq?.files?.[seq.files.length - 1]?.split(/[\\/]/).pop() || ''
           const lastNum = lastName.match(/(\d+)(?=\.[^.]+$)/)?.[1] || String(seq?.startNumber ?? '')
-          return (<section><b>{seq ? 'IMAGE SEQUENCE' : 'IMAGE DETAILS'}</b><span>Dimensions: {dims || 'Unknown'}</span><span>Format: {format}</span><span>DPI: {item.info.dpi || 'Unknown'}</span><span>Color Profile: {item.info.colorProfile || item.info.pixelFormat || 'Unknown'}</span>{seq && <span>Range: {String(seq.startNumber).padStart(width, '0')}–{lastNum.padStart(width, '0')}</span>}{seq && <span>Frames: {seq.frameCount}{seq.hasGaps ? ` (${seq.missing?.length || 0} missing)` : ''}</span>}{seq && (() => { const presets = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]; const current = Number(seq.fps ?? 24); return <span>Frame Rate: <select className="mi-fps-select" value={String(current)} onChange={(event) => { const fps = Number(event.target.value); onChangeSequenceFps(task, item.source, fps); setMediaInfos((cur) => cur.map((entry) => entry.id === item.id ? { ...entry, info: { ...entry.info, sequence: { ...entry.info.sequence, fps, duration: seq.frameCount / fps } } } : entry)) }}>{presets.map((rate) => <option key={rate} value={String(rate)}>{rate}</option>)}{!presets.includes(current) && <option value={String(current)}>{current} (custom)</option>}</select> fps</span> })()}{seq && <span>Duration: {seq.duration ? formatDuration(seq.duration) : 'Unknown'}</span>}{seq && <span>Total Size: {seq.totalSize ? formatBytes(Number(seq.totalSize)) : 'Unknown'}</span>}</section>)
+          return (<section><b>{seq ? 'IMAGE SEQUENCE' : 'IMAGE DETAILS'}</b><span>Dimensions: {dims || 'Unknown'}</span><span>Format: {format}</span><span>DPI: {item.info.dpi || 'Unknown'}</span><span>Color Profile: {item.info.colorProfile || item.info.pixelFormat || 'Unknown'}</span>{seq && <span>Range: {String(seq.startNumber).padStart(width, '0')}–{lastNum.padStart(width, '0')}</span>}{seq && <span>Frames: {seq.frameCount}{seq.hasGaps ? ` (${seq.missing?.length || 0} missing)` : ''}</span>}{seq && (() => { const presets = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]; const current = Number(seq.fps ?? 24); return <span>Frame Rate: <select className="mi-fps-select" value={String(current)} onChange={(event) => { const fps = Number(event.target.value); onChangeSourceFps(task, item.source, fps); setMediaInfos((cur) => cur.map((entry) => entry.id === item.id ? { ...entry, info: { ...entry.info, sequence: { ...entry.info.sequence, fps, duration: seq.frameCount / fps } } } : entry)) }}>{presets.map((rate) => <option key={rate} value={String(rate)}>{rate}</option>)}{!presets.includes(current) && <option value={String(current)}>{current} (custom)</option>}</select> fps</span> })()}{!seq && (() => { const presets = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]; const current = Number(task.sourceMetadata?.[item.source]?.fps || task.preset.fps || 25); return <span>Frame Rate: <select className="mi-fps-select" value={String(current)} onChange={(event) => onChangeSourceFps(task, item.source, Number(event.target.value))}>{presets.map((rate) => <option key={rate} value={String(rate)}>{rate}</option>)}{!presets.includes(current) && <option value={String(current)}>{current} (custom)</option>}</select> fps</span> })()}{seq && <span>Duration: {seq.duration ? formatDuration(seq.duration) : 'Unknown'}</span>}{seq && <span>Total Size: {seq.totalSize ? formatBytes(Number(seq.totalSize)) : 'Unknown'}</span>}</section>)
         }
         if (item.info.videoStreams?.length > 0) return (<section><b>VIDEO DETAILS</b><span>Resolution: {vstream?.resolution || 'Unknown'}</span><span>Codec: {vstream?.codec || 'Unknown'}</span><span>Frame Rate: {vstream?.fps ? `${formatFps(vstream.fps)} fps` : 'Unknown'}</span><span>Data Rate: {vstream?.bitrate || 'Unknown'}</span></section>)
         return null
