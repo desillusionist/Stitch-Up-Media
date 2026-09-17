@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { AppSettings, EditJobPatch, EncodingPreset, QueueTask } from '../types'
+import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, frameStamp, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, frameStamp, maxFadeAtBoundary, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
@@ -26,6 +26,7 @@ const editableSlice = (task: QueueTask) => ({
   preset: task.preset,
   outputFilename: task.outputFilename,
   outputFilenameManuallySet: task.outputFilenameManuallySet ?? false,
+  transitions: task.transitions,
 })
 
 const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
@@ -68,6 +69,8 @@ export const EditJobApp: React.FC = () => {
   const probedPathsRef = useRef<Set<string>>(new Set())
   // Horizontal scale only: lane widths stay proportional to real durations.
   const [zoom, setZoom] = useState(1)
+  /** Boundary whose transition editor is open, by index of the clip it follows. */
+  const [openBoundary, setOpenBoundary] = useState<number | null>(null)
   // Monitoring state only. Never written to the task, so muting can never be
   // mistaken for a mix-down decision.
   const [muted, setMuted] = useState<Record<string, boolean>>({})
@@ -181,6 +184,18 @@ export const EditJobApp: React.FC = () => {
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
   const audioLaneIds = (model?.lanes ?? []).filter((lane) => !lane.embedded).map((lane) => lane.id).join('|')
 
+  // The monitor fades through black exactly where the encoder will, since both
+  // read the same applied fade on the segment.
+  const activeSegment = playback.segment
+  const segmentLocalTime = activeSegment ? playback.position - activeSegment.start : 0
+  const previewGain = (() => {
+    if (!activeSegment) return 1
+    let gain = 1
+    if (activeSegment.fadeIn && segmentLocalTime < activeSegment.fadeIn) gain = Math.min(gain, Math.max(0, segmentLocalTime / activeSegment.fadeIn))
+    if (activeSegment.fadeOut && segmentLocalTime > activeSegment.duration - activeSegment.fadeOut) gain = Math.min(gain, Math.max(0, (activeSegment.duration - segmentLocalTime) / activeSegment.fadeOut))
+    return Math.max(0, Math.min(1, gain))
+  })()
+
   // Spacebar is the transport, unless the caret is in a field.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -198,12 +213,15 @@ export const EditJobApp: React.FC = () => {
   // segment key is a dependency because the video element remounts around stills.
   useEffect(() => {
     const video = playback.videoRef.current
-    if (video) video.muted = Boolean(muted.main)
+    if (video) {
+      video.muted = Boolean(muted.main)
+      video.volume = previewGain
+    }
     audioLaneIds.split('|').filter(Boolean).forEach((laneId) => {
       const element = audioElementsRef.current[laneId]
       if (element) element.muted = Boolean(muted[laneId])
     })
-  }, [muted, audioLaneIds, playback.videoRef, playback.segment?.key])
+  }, [muted, audioLaneIds, playback.videoRef, playback.segment?.key, previewGain])
 
   // Keep the playhead in view while zoomed in and playing.
   useEffect(() => {
@@ -246,6 +264,15 @@ export const EditJobApp: React.FC = () => {
     updatePreset({ fps: value.trim() === '' || !Number.isFinite(parsed) || parsed <= 0 ? undefined : Math.round(parsed) })
   }
 
+  /** Transitions are keyed by the clip BEFORE the boundary, like trim points. */
+  const setBoundaryTransition = (index: number, type: TransitionType, duration = 0.5) => {
+    const next = { ...(draft.transitions || {}) }
+    const key = `${draft.sourcePaths[index]}#${index}`
+    if (type === 'none') delete next[key]
+    else next[key] = { type, duration }
+    updateDraft({ transitions: Object.keys(next).length ? next : undefined })
+  }
+
   const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
   const sequenceSources = new Set([...Object.keys(draft.sequenceInputs || {}), ...(draft.sequenceInput ? [draft.sequenceInput.firstFrame] : [])])
   const playable = model.duration > 0
@@ -256,6 +283,8 @@ export const EditJobApp: React.FC = () => {
     if (segment.trimmed) parts.push('TRIMMED')
     if (segment.sequence) parts.push(`SEQ ${segment.sequence.frames}F @ ${segment.sequence.fps}FPS`)
     if (segment.still) parts.push('STILL')
+    if (segment.fadeIn) parts.push(`FADE IN ${segment.fadeIn.toFixed(2)}s`)
+    if (segment.fadeOut) parts.push(`FADE OUT ${segment.fadeOut.toFixed(2)}s`)
     return parts.join(' // ')
   }
   const clipTitle = (segment: TimelineSegment) => {
@@ -265,6 +294,26 @@ export const EditJobApp: React.FC = () => {
     return `${sourceName(segment.sourcePath)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
   }
   const duration = model.duration
+
+  // Transitions only exist between concatenated clips, so only STITCH has boundaries.
+  const stitchSegments = model.lanes[0]?.segments ?? []
+  const boundaries = draft.type === 'stitch' && stitchSegments.length > 1
+    ? stitchSegments.slice(0, -1).map((segment, index) => ({
+      index,
+      fraction: duration > 0 ? (segment.start + segment.duration) / duration : 0,
+    }))
+    : []
+  const selectedBoundary = openBoundary != null && stitchSegments[openBoundary] && stitchSegments[openBoundary + 1]
+    ? (() => {
+      const transition = draft.transitions?.[`${stitchSegments[openBoundary].sourcePath}#${openBoundary}`]
+      return {
+        index: openBoundary,
+        source: stitchSegments[openBoundary].sourcePath,
+        fade: transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0,
+        maxFade: maxFadeAtBoundary(stitchSegments[openBoundary].duration, stitchSegments[openBoundary + 1].duration),
+      }
+    })()
+    : null
 
   /**
    * A sequence frame cannot be handed to a video element, so it plays through the
@@ -335,7 +384,7 @@ export const EditJobApp: React.FC = () => {
             {playback.error
               ? <span className="editor-screen-message">{playback.error}</span>
               : playback.segment?.still
-                ? <img className="editor-still" src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} />
+                ? <img className="editor-still" style={{ opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} />
                 : elementUrl
                   ? <video
                     ref={playback.attachVideo}
@@ -343,6 +392,7 @@ export const EditJobApp: React.FC = () => {
                     src={elementUrl}
                     preload="metadata"
                     playsInline
+                    style={{ opacity: previewGain }}
                     onContextMenu={(event) => event.preventDefault()}
                     onClick={() => playback.toggle()}
                   />
@@ -407,16 +457,51 @@ export const EditJobApp: React.FC = () => {
                       >
                         <span className="timeline-clip-name">{sourceName(segment.sourcePath)}</span>
                         <small>{segmentDetail(segment)}</small>
+                        {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
+                        {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                       </div>
                     ))}
                     {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexGrow: laneGap(lane) }} title="No media on this lane" />}
+                    {lane.id === 'main' && boundaries.map((boundary) => (
+                      <button
+                        key={boundary.index}
+                        className={`boundary-add${(draft.transitions?.[`${stitchSegments[boundary.index].sourcePath}#${boundary.index}`]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === boundary.index ? ' is-open' : ''}`}
+                        style={{ left: `${boundary.fraction * 100}%` }}
+                        onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === boundary.index ? null : boundary.index) }}
+                        title={`Transition after ${sourceName(stitchSegments[boundary.index].sourcePath)}`}
+                      >+</button>
+                    ))}
                   </div>
                 </div>
               ))}
               <div className="timeline-playhead" style={{ left: `calc(${LANE_LABEL_WIDTH}px + ${playheadFraction} * (100% - ${LANE_LABEL_WIDTH}px))` }} aria-hidden="true" />
             </div>
           </div>
+          {selectedBoundary && (
+            <div className="boundary-editor">
+              <div className="boundary-editor-head">
+                <span className="panel-kicker">TRANSITION // AFTER {sourceName(selectedBoundary.source)}</span>
+                <button className="boundary-close" onClick={() => setOpenBoundary(null)}>CLOSE</button>
+              </div>
+              <div className="boundary-options">
+                <button className={selectedBoundary.fade > 0 ? '' : 'is-selected'} onClick={() => setBoundaryTransition(selectedBoundary.index, 'none')} disabled={selectedBoundary.maxFade <= 0}>NONE</button>
+                <button className={selectedBoundary.fade > 0 ? 'is-selected' : ''} onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', selectedBoundary.fade || Math.min(0.5, selectedBoundary.maxFade) || 0.25)} disabled={selectedBoundary.maxFade <= 0}>FADE IN / OUT</button>
+                <button disabled title="Crossfade overlaps the clips and needs the encoder rework planned next.">CROSSFADE — LATER</button>
+              </div>
+              {selectedBoundary.fade > 0 && (
+                <div className="boundary-duration">
+                  <span className="panel-kicker">LENGTH</span>
+                  <button onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', Math.max(0.25, selectedBoundary.fade - 0.25))} disabled={selectedBoundary.fade <= 0.25} aria-label="Shorter fade">−</button>
+                  <span className="boundary-duration-value">{selectedBoundary.fade.toFixed(2)}s</span>
+                  <button onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', Math.min(selectedBoundary.maxFade, selectedBoundary.fade + 0.25))} disabled={selectedBoundary.fade >= selectedBoundary.maxFade} aria-label="Longer fade">+</button>
+                  <small>APPLIED TO BOTH SIDES OF THE CUT, THROUGH BLACK. CAPPED AT {selectedBoundary.maxFade.toFixed(2)}s BY THE SHORTER CLIP.</small>
+                </div>
+              )}
+              {selectedBoundary.maxFade <= 0 && <div className="editor-note">&gt; ONE OF THESE CLIPS HAS NO KNOWN LENGTH YET, SO NO FADE CAN BE PLACED.</div>}
+            </div>
+          )}
           {model.unusedVideoSources.length > 0 && <div className="editor-note">&gt; {model.unusedVideoSources.length} EXTRA VIDEO SOURCE(S) ({model.unusedVideoSources.map(sourceName).join(', ')}) ARE NOT USED: COMBO DISPATCHES TO THE MULTI-TRACK ENCODER PATH, WHICH MAPS ONE VIDEO STREAM. SPLIT INTO A STITCH JOB TO CONCATENATE THEM.</div>}
+          {draft.type === 'stitch' && stitchSegments.length > 1 && <div className="editor-note">&gt; PRESS [+] ON A CUT TO ADD A FADE. FADES ARE APPLIED BY THE ENCODER ON BOTH SIDES OF THE CUT, AND THE MONITOR FADES WITH THEM.</div>}
           <div className="editor-note">&gt; LANE WIDTHS ARE THE REAL TRIMMED DURATIONS. AUDIO TRACKS PLAY ALONGSIDE THE VIDEO FROM ZERO, SO THE OUTPUT RUNS TO {duration > 0 ? stamp(duration) : 'AN UNKNOWN LENGTH'}.</div>
         </section>
       </main>
@@ -481,6 +566,7 @@ export const EditJobApp: React.FC = () => {
                 preset: draft.preset,
                 outputFilename: draft.outputFilename,
                 outputFilenameManuallySet: draft.outputFilenameManuallySet,
+                transitions: draft.transitions,
               }
               void window.electronAPI?.applyEditJob(patch)
             }} disabled={!dirty} title={dirty ? undefined : 'NO CHANGES TO APPLY.'}>OK / APPLY</button></>}

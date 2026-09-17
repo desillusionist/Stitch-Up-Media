@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
+import { ClipFade, resolveFades, segmentTiming, sourceDuration, transitionDuration } from '../../src/lib/timelineModel'
 import { probeFile } from './probe'
 
 export interface ProgressData {
@@ -42,7 +43,28 @@ export class FFmpegEngine {
   private trimPoint(task: QueueTask, source: string, index: number) {
     return task.trimPoints?.[`${source}#${index}`] || task.trimPoints?.[source]
   }
-  private normalizeStitchSource(task: QueueTask, source: string, output: string, point?: { in: number; out: number }, stitchCanvas?: [number, number], targetFps = 30): Promise<void> {
+  /**
+   * Fade filters for one clip, appended to the same chains the scaling already
+   * uses. A second `-vf` would silently replace the first, so these must compose.
+   */
+  private fadeFilters(fade: ClipFade | undefined, duration: number) {
+    if (!fade || duration <= 0) return { video: [] as string[], audio: [] as string[] }
+    const video: string[] = []
+    const audio: string[] = []
+    if (fade.fadeIn > 0) {
+      const length = Math.min(fade.fadeIn, duration)
+      video.push(`fade=t=in:st=0:d=${length.toFixed(3)}`)
+      audio.push(`afade=t=in:st=0:d=${length.toFixed(3)}`)
+    }
+    if (fade.fadeOut > 0) {
+      const length = Math.min(fade.fadeOut, duration)
+      const start = Math.max(0, duration - length)
+      video.push(`fade=t=out:st=${start.toFixed(3)}:d=${length.toFixed(3)}`)
+      audio.push(`afade=t=out:st=${start.toFixed(3)}:d=${length.toFixed(3)}`)
+    }
+    return { video, audio }
+  }
+  private normalizeStitchSource(task: QueueTask, source: string, output: string, point?: { in: number; out: number }, stitchCanvas?: [number, number], targetFps = 30, clipDuration = 0, fade?: ClipFade): Promise<void> {
     return new Promise((resolve, reject) => {
       const sequence = this.sequenceFor(task, source)
       const isSequence = Boolean(sequence)
@@ -53,14 +75,18 @@ export class FFmpegEngine {
       const rate = isSequence ? (sequence?.fps || 30) : (targetFps || 30)
       if (isStill) command.inputOptions(['-loop 1', '-framerate', String(rate), '-t', String(Math.max(0.1, task.stillImageDuration || 10))])
       if (!isSequence) this.applyTrimInput(command, point)
-      if (isSequence || isStill) {
-        command.outputOptions([`-vf scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${rate}`])
-        command.videoCodec('libx264').outputOptions(['-preset veryfast', '-pix_fmt yuv420p', '-video_track_timescale 90000'])
-      } else {
-        command.videoCodec('libx264').outputOptions([`-vf scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps || 30}`, '-preset veryfast', '-pix_fmt yuv420p', '-video_track_timescale 90000'])
-      }
+      const fades = this.fadeFilters(fade, clipDuration)
+      const outputRate = isSequence || isStill ? rate : (targetFps || 30)
+      const videoFilters = [
+        `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
+        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black`,
+        'setsar=1',
+        `fps=${outputRate}`,
+        ...fades.video,
+      ]
+      command.videoCodec('libx264').outputOptions([`-vf ${videoFilters.join(',')}`, '-preset veryfast', '-pix_fmt yuv420p', '-video_track_timescale 90000'])
       command.audioCodec('aac').audioFrequency(48000).audioChannels(2)
-        .outputOptions(['-af aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo', '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
+        .outputOptions([`-af ${['aresample=48000:async=1', 'aformat=sample_fmts=fltp:channel_layouts=stereo', ...fades.audio].join(',')}`, '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
         .on('end', () => resolve()).on('error', reject).save(output)
     })
   }
@@ -191,6 +217,7 @@ export class FFmpegEngine {
     const normalizedSources: string[] = []
     let stitchCanvas: [number, number] | undefined
     let targetFps = task.preset.fps || 0
+    let clipDurations: number[] = []
     try {
       const parseFps = (value: any) => {
         if (typeof value === 'number') return value
@@ -219,14 +246,24 @@ export class FFmpegEngine {
         ? [task.preset.width, task.preset.height]
         : maxW && maxH ? [even(maxW), even(maxH)] : undefined
       if (!targetFps) targetFps = maxFps > 0 ? Math.round(maxFps * 1000) / 1000 : (task.sequenceInput?.fps || 30)
+      // Clip lengths use the same precedence as the timeline, backed by the probes
+      // already fetched here, so the encoder and the drawn ramps agree on timing.
+      const probeDurations = new Map(probes.map((probe, index) => [task.sourcePaths[index], Number(probe.duration || 0)]))
+      clipDurations = task.sourcePaths.map((source, index) => segmentTiming(
+        sourceDuration(task, source, this.sequenceFor(task, source), (sourcePath) => ({ duration: probeDurations.get(sourcePath) ?? 0 })),
+        this.trimPoint(task, source, index),
+      ).duration)
     } catch (error) {
       targetFps = targetFps || 30
       logEvent('ffmpeg', 'stitch canvas probe failed; using defaults', { taskId: task.id, error: String(error) })
     }
+    // Fade placement is clamped by the shared rule, so a request that would overlap
+    // inside a clip is reduced rather than producing a broken ramp.
+    const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)))
     try {
       for (let index = 0; index < task.sourcePaths.length; index++) {
         const normalized = path.join(os.tmpdir(), `stitch_${task.id}_${index}.mkv`)
-        await this.normalizeStitchSource(task, task.sourcePaths[index], normalized, this.trimPoint(task, task.sourcePaths[index], index), stitchCanvas, targetFps)
+        await this.normalizeStitchSource(task, task.sourcePaths[index], normalized, this.trimPoint(task, task.sourcePaths[index], index), stitchCanvas, targetFps, clipDurations[index] || 0, clipFades[index])
         normalizedSources.push(normalized)
       }
     } catch (error) {

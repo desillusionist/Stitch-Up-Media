@@ -54,6 +54,15 @@ export interface AudioTrackItem {
   language: string // e.g. 'eng', 'spa', 'fra'
   title?: string
 }
+
+/** Clip-boundary transitions. Only meaningful where clips are concatenated. */
+export type TransitionType = 'none' | 'fade'
+
+export interface ClipTransition {
+  type: TransitionType
+  /** Length of the fade on each side of the boundary, in seconds. */
+  duration: number
+}
 export interface SequenceInput {
   dir: string
   pattern: string
@@ -110,6 +119,13 @@ export interface QueueTask {
   sourceMetadata?: Record<string, SourceMetadata>
   quickLookSourceIndex?: number
   stillImageDuration?: number
+  /**
+   * Transitions at clip boundaries, keyed by the clip that PRECEDES the boundary
+   * (`"path#index"`), mirroring how trimPoints are keyed. A boundary fades the
+   * preceding clip out and the following clip in, through black. Only STITCH
+   * concatenates, so other job types ignore this.
+   */
+  transitions?: Record<string, ClipTransition>
 }
 
 /**
@@ -126,6 +142,7 @@ export interface EditJobPatch {
   preset: EncodingPreset
   outputFilename: string
   outputFilenameManuallySet?: boolean
+  transitions?: Record<string, ClipTransition>
 }
 
 export interface PresetRule {

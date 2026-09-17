@@ -233,7 +233,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .lane-mute { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 9px; line-height: 1; }
 .lane-mute:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .lane-mute.is-muted { color: var(--ui-error); border-color: var(--ui-error); background: rgba(201, 133, 133, .12); }
-.timeline-lane-track { flex: 1; display: flex; align-items: stretch; min-width: 0; cursor: pointer; }
+.timeline-lane-track { position: relative; flex: 1; display: flex; align-items: stretch; min-width: 0; cursor: pointer; }
 .timeline-lane .timeline-clip { flex: 1 1 0; min-width: 0; margin: 5px 2px; display: block; }
 .timeline-lane .timeline-clip:hover { background: rgba(159, 191, 154, .08); }
 .timeline-lane .timeline-clip.is-active { border-color: var(--ui-foreground); background: rgba(159, 191, 154, .14); }
@@ -242,6 +242,30 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-fill { flex: 1 1 0; min-width: 0; margin: 5px 2px; border: 1px dashed var(--ui-border-dim); opacity: .5; }
 .timeline-playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ui-accent); pointer-events: none; z-index: 2; }
 .timeline-clip-name { display: block; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
+
+/* Clip-boundary transitions: a fade through black on both sides of the cut. */
+.timeline-lane .timeline-clip { position: relative; }
+.clip-fade { position: absolute; top: 0; bottom: 0; pointer-events: none; }
+.clip-fade-in { left: 0; background: linear-gradient(to right, rgba(0, 0, 0, .92), rgba(0, 0, 0, 0)); }
+.clip-fade-out { right: 0; background: linear-gradient(to left, rgba(0, 0, 0, .92), rgba(0, 0, 0, 0)); }
+.boundary-add { position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 3; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; line-height: 1; }
+.boundary-add:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
+.boundary-add.is-active { color: var(--ui-accent); border-color: var(--ui-accent); }
+.boundary-add.is-open { color: var(--ui-canvas); background: var(--ui-accent); }
+.boundary-editor { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--ui-accent); background: var(--ui-panel-inset); }
+.boundary-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.boundary-close { padding: 5px 8px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
+.boundary-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.boundary-options button { padding: 6px 9px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
+.boundary-options button:hover:not(:disabled) { color: var(--ui-accent); border-color: var(--ui-accent); }
+.boundary-options button.is-selected { color: var(--ui-accent); border-color: var(--ui-accent); background: rgba(159, 191, 154, .1); }
+.boundary-options button:disabled { opacity: .4; cursor: not-allowed; }
+.boundary-duration { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--ui-muted); font-size: 9px; }
+.boundary-duration button { width: 22px; height: 22px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 11px; line-height: 1; }
+.boundary-duration button:hover:not(:disabled) { color: var(--ui-accent); border-color: var(--ui-accent); }
+.boundary-duration button:disabled { opacity: .35; cursor: not-allowed; }
+.boundary-duration-value { min-width: 44px; text-align: center; color: var(--ui-accent); font-size: 10px; }
+.boundary-duration small { flex: 1 1 220px; color: var(--ui-border); font-size: 8px; line-height: 1.5; }
 .editor-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; object-fit: contain; cursor: pointer; }
 .editor-still { flex: 1 1 auto; min-height: 0; max-width: 100%; background: #030910; object-fit: contain; }
 .editor-screen-message { color: var(--ui-muted); font-size: 10px; }

@@ -16,6 +16,14 @@ The main lane's media element is the master clock, so video and its embedded aud
 
 Local files stream through the `stitch-media` scheme registered in `electron/main.ts`. A plain `file://` URL cannot work: the dev renderer runs on `http://localhost`, where Chromium refuses `file://` media. Byte ranges are resolved explicitly rather than delegated, because a media element only becomes seekable when it receives a `206` with a correct `Content-Range`.
 
+### Clip transitions
+
+`QueueTask.transitions` holds fades at clip boundaries, keyed by the clip that *precedes* the boundary (`"path#index"`) — mirroring how trim points are keyed, so both are re-keyed together when clips move or are removed. A boundary fades the preceding clip out and the following clip in, through black, and the length is clamped to half of the shorter neighbour by `maxFadeAtBoundary`. The encoder and the timeline both call that same clamp, so the drawn ramp is what will actually be rendered, and a fade never overlaps a neighbouring one inside a clip.
+
+Transitions apply only to STITCH, because only that path concatenates. They are dropped whenever a job changes type, since the clips are reshuffled and index keys can no longer be trusted.
+
+The `[+]` affordance sits on each cut in the timeline. Fades are placed by `fade`/`afade` inside the same filter chains the scaling already uses — a second `-vf` would silently replace the first, so they compose rather than append. **CROSSFADE is deliberately absent**: it overlaps clips, which the concat demuxer cannot express, and it shortens the total duration, so it needs the encoder rework and a timeline that accounts for the overlap.
+
 ### Setting trim
 
 **OPEN FRAME-ACCURATE PREVIEW** opens the same native Swift helper the queue uses through the `quick-look` channel, which already provides frame-accurate seeking, in/out handles, frame stepping, undo/redo, screenshot capture, and timestamp or framestamp burn-in readout. Reusing it avoids reimplementing trimming.

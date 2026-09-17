@@ -1,4 +1,4 @@
-import { QueueTask, SequenceInput } from '../types'
+import { ClipTransition, QueueTask, SequenceInput } from '../types'
 import { mediaKind } from './mediaKind'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
@@ -18,6 +18,10 @@ export interface TimelineSegment {
   sequence?: { frames: number; fps: number }
   /** True when the encoder will loop this single frame for a fixed length. */
   still?: boolean
+  /** Applied fade at this clip's head, in seconds. Zero when there is no fade. */
+  fadeIn?: number
+  /** Applied fade at this clip's tail, in seconds. Zero when there is no fade. */
+  fadeOut?: number
 }
 
 export interface TimelineLane {
@@ -45,6 +49,61 @@ export interface TimelineModel {
 export interface SourceTiming {
   duration: number
   fps?: number
+}
+
+export interface ClipFade {
+  fadeIn: number
+  fadeOut: number
+}
+
+/** The fade asked for at the boundary AFTER this clip, in seconds. */
+export const transitionDuration = (task: QueueTask, sourcePath: string, index: number): number => {
+  const transition: ClipTransition | undefined = task.transitions?.[`${sourcePath}#${index}`] ?? task.transitions?.[sourcePath]
+  return transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
+}
+
+/**
+ * A boundary fade cannot exceed half of either neighbour, or the two sides would
+ * overlap inside a clip. The encoder and the timeline both clamp through this, so
+ * the picture and the drawn ramp cannot disagree.
+ */
+export const maxFadeAtBoundary = (leftDuration: number, rightDuration: number) =>
+  Math.max(0, Math.min(leftDuration, rightDuration) / 2)
+
+/**
+ * Resolves the fades actually applied to each clip. A boundary fades the
+ * preceding clip out and the following clip in. The last clip has no boundary
+ * after it, so any request there is ignored.
+ */
+export const resolveFades = (durations: number[], requests: number[]): ClipFade[] => {
+  const fades: ClipFade[] = durations.map(() => ({ fadeIn: 0, fadeOut: 0 }))
+  for (let index = 0; index < durations.length - 1; index++) {
+    const requested = Math.max(requests[index] || 0, 0)
+    const applied = Math.min(requested, maxFadeAtBoundary(durations[index], durations[index + 1]))
+    if (applied <= 0) continue
+    fades[index].fadeOut = applied
+    fades[index + 1].fadeIn = applied
+  }
+  return fades
+}
+
+/**
+ * Re-keys clip-scoped maps after clips move, so trims and transitions follow their
+ * clip instead of staying on an index that now belongs to a different one.
+ */
+export const rekeyClipMap = <T>(
+  map: Record<string, T> | undefined,
+  previousPaths: string[],
+  nextPaths: string[],
+): Record<string, T> | undefined => {
+  if (!map) return undefined
+  const rekeyed: Record<string, T> = {}
+  nextPaths.forEach((sourcePath, nextIndex) => {
+    const previousIndex = previousPaths.indexOf(sourcePath)
+    const value = map[`${sourcePath}#${previousIndex}`] ?? map[`${sourcePath}#${nextIndex}`] ?? map[sourcePath]
+    if (value !== undefined) rekeyed[`${sourcePath}#${nextIndex}`] = value
+  })
+  return Object.keys(rekeyed).length ? rekeyed : undefined
 }
 
 /**
@@ -183,6 +242,16 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
       const segment = segmentFor(task, sourcePath, index, cursor, options)
       cursor += segment.duration
       return segment
+    })
+    // Fades are resolved from the same rules the encoder applies, so the drawn
+    // ramp is what will actually be rendered.
+    const fades = resolveFades(
+      segments.map((segment) => segment.duration),
+      task.sourcePaths.map((sourcePath, index) => transitionDuration(task, sourcePath, index)),
+    )
+    segments.forEach((segment, index) => {
+      if (fades[index].fadeIn > 0) segment.fadeIn = fades[index].fadeIn
+      if (fades[index].fadeOut > 0) segment.fadeOut = fades[index].fadeOut
     })
     const audioOnly = task.sourcePaths.length > 0 && task.sourcePaths.every((sourcePath) => mediaKind(sourcePath) === 'audio')
     lanes.push({ id: 'main', label: audioOnly ? 'AUDIO 1' : 'VIDEO 1', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: cursor })
