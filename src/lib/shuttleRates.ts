@@ -1,7 +1,11 @@
 /** Shuttle ladders, following the J/K/L convention used by editing software. */
 export const FORWARD_RATES = [1, 2, 4, 8]
-/** Reverse is driven by seeks rather than the decoder, so it stops lower. */
-export const BACKWARD_RATES = [-1, -2, -4]
+/**
+ * Reverse reaches 8x too, but it is driven by seeking rather than the decoder, so
+ * above 4x the clock outruns the picture and frames are visibly skipped. That is
+ * what a shuttle is expected to look like at the top of its ladder.
+ */
+export const BACKWARD_RATES = [-1, -2, -4, -8]
 
 /**
  * The next rate in the pressed direction.

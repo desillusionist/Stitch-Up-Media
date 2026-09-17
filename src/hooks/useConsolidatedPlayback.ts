@@ -343,7 +343,9 @@ export const useConsolidatedPlayback = (
         if (reverse && incoming && !incoming.still) pendingSeekRef.current = next
         setSegmentIndex(index)
       }
-      if (next >= stateRef.current.duration - 0.01) {
+      // Reaching the end stops forward playback only. At the end is exactly where a
+      // reverse shuttle starts, so stopping there too made J do nothing at all.
+      if (!reverse && next >= stateRef.current.duration - 0.01) {
         setPosition(stateRef.current.duration)
         setPlaying(false)
         setShuttleRateState(0)
