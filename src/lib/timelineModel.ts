@@ -223,6 +223,22 @@ export const timecode = (seconds: number, fps: number) => {
 export const frameStamp = (seconds: number, fps: number) => `FRAME ${String(Math.max(0, Math.round(seconds * fps))).padStart(6, '0')}`
 
 /**
+ * Draws the fades the encoder will actually render onto the clips they belong to,
+ * using the one clamping rule, so a drawn ramp can never disagree with the output.
+ */
+const applyFades = (task: QueueTask, segments: TimelineSegment[]) => {
+  const fades = resolveFades(
+    segments.map((segment) => segment.duration),
+    segments.map((segment, index) => transitionDuration(task, segment.sourcePath, index)),
+  )
+  segments.forEach((segment, index) => {
+    if (fades[index].fadeIn > 0) segment.fadeIn = fades[index].fadeIn
+    if (fades[index].fadeOut > 0) segment.fadeOut = fades[index].fadeOut
+  })
+  return segments
+}
+
+/**
  * Builds the consolidated timeline the output will actually have.
  *
  * STITCH concatenates every source in order. TRANSCODE, MULTI-TRACK and COMBO
@@ -252,14 +268,7 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
     })
     // Fades are resolved from the same rules the encoder applies, so the drawn
     // ramp is what will actually be rendered.
-    const fades = resolveFades(
-      segments.map((segment) => segment.duration),
-      task.sourcePaths.map((sourcePath, index) => transitionDuration(task, sourcePath, index)),
-    )
-    segments.forEach((segment, index) => {
-      if (fades[index].fadeIn > 0) segment.fadeIn = fades[index].fadeIn
-      if (fades[index].fadeOut > 0) segment.fadeOut = fades[index].fadeOut
-    })
+    applyFades(task, segments)
     const audioOnly = task.sourcePaths.length > 0 && task.sourcePaths.every((sourcePath) => mediaKind(sourcePath) === 'audio')
     lanes.push({ id: 'main', label: audioOnly ? 'AUDIO 1' : 'VIDEO 1', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: cursor })
     return { lanes, duration: cursor, unusedVideoSources: [] }
@@ -278,6 +287,9 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   })
   const mainSource = visualSources[0]
   const mainIsAudio = mainSource != null && mediaKind(mainSource) === 'audio'
+  // A combo that concatenates has real cuts, so its fades are resolved here too.
+  // A multi-track job has a single clip, where resolveFades finds no boundary.
+  applyFades(task, mainSegments)
   lanes.push({
     id: 'main',
     label: mainIsAudio ? 'AUDIO 1' : 'VIDEO 1',

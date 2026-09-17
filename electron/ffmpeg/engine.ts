@@ -336,10 +336,24 @@ export class FFmpegEngine {
     const canvas: [number, number] | undefined = task.preset.width && task.preset.height ? [task.preset.width, task.preset.height] : undefined
     const targetFps = task.preset.fps || 30
     const normalized: string[] = []
+    // Clip lengths and fades follow the same rules the editor draws, so a fade put on
+    // a cut is rendered here too: the muxing step downstream only ever sees the single
+    // concatenated video, and could never place one itself.
+    const clipDurations: number[] = []
+    for (let index = 0; index < task.sourcePaths.length; index++) {
+      const source = task.sourcePaths[index]
+      let probeDuration = 0
+      try { probeDuration = Number((await probeFile(source)).duration || 0) } catch { /* fall back to configured timing */ }
+      clipDurations.push(segmentTiming(
+        sourceDuration(task, source, this.sequenceFor(task, source), () => ({ duration: probeDuration })),
+        this.trimPoint(task, source, index),
+      ).duration)
+    }
+    const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)))
     try {
       for (let index = 0; index < task.sourcePaths.length; index++) {
         const output = path.join(os.tmpdir(), `combo_${task.id}_${index}.mkv`)
-        await this.normalizeStitchSource(task, task.sourcePaths[index], output, this.trimPoint(task, task.sourcePaths[index], index), canvas, targetFps, 0, undefined)
+        await this.normalizeStitchSource(task, task.sourcePaths[index], output, this.trimPoint(task, task.sourcePaths[index], index), canvas, targetFps, clipDurations[index] || 0, clipFades[index])
         normalized.push(output)
       }
     } catch (error) {
