@@ -1,6 +1,6 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
-import { buildTimeline, maxFadeAtBoundary, resolveFades, segmentTiming } from '../src/lib/timelineModel'
+import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
 /**
@@ -77,10 +77,12 @@ console.log('\n== the J / K / L ladder ==')
   const presses: number[] = []
   for (let i = 0; i < 5; i++) { rate = nextShuttleRate(rate, 1); presses.push(rate) }
   check('L doubles then tops out', presses, [1, 2, 4, 8, 8])
-  check('J starts its own ladder at 1x', nextShuttleRate(0, -1), -1)
-  check('J doubles too', nextShuttleRate(-2, -1), -4)
+  let back = 0
+  const reverse: number[] = []
+  for (let i = 0; i < 5; i++) { back = nextShuttleRate(back, -1); reverse.push(back) }
+  check('J doubles too, all the way to 8x', reverse, [-1, -2, -4, -8, -8])
   check('reversing starts from the bottom', nextShuttleRate(8, -1), -1)
-  check('and forward again', nextShuttleRate(-4, 1), 1)
+  check('and forward again', nextShuttleRate(-8, 1), 1)
 }
 
 console.log('\n== tail seeking on a multi-track lane ==')
@@ -136,6 +138,49 @@ console.log('\n== a combo exposes cuts too ==')
   // A zero-length fade is left absent rather than stored as zero, which is how the
   // rest of the app tests for one.
   check('the fade on the cut is drawn', main.segments.map((segment) => [segment.fadeIn, segment.fadeOut]), [[undefined, 0.5], [0.5, undefined]])
+}
+
+console.log('\n== clips keep what belongs to them when they move ==')
+{
+  // The same file twice: each occurrence has to keep its own entry, or a fade set on
+  // the second cut appears on the first and vanishes from the one it was set on.
+  const duplicated = { 'a.mp4#0': { type: 'fade', duration: 0.5 }, 'a.mp4#1': { type: 'fade', duration: 1.5 } }
+  check('a repeated file keeps one entry per occurrence', rekeyClipMap(duplicated, ['a.mp4', 'a.mp4'], ['a.mp4', 'a.mp4']), duplicated)
+
+  // A transition belongs to the clip before the cut, so moving that clip moves it.
+  const moved = { 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 }
+  check('a reorder carries each fade with its clip', rekeyClipMap(moved, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': 0.5, 'b.mp4#2': 1.5 })
+
+  // Removing the clip a fade sits after leaves nothing to fade into.
+  check('a removed clip takes its fade with it', rekeyClipMap({ 'a.mp4#0': 0.5, 'b.mp4#1': 1.5, 'c.mp4#2': 2 }, ['a.mp4', 'b.mp4', 'c.mp4'], ['a.mp4', 'b.mp4']), { 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 })
+  check('an empty result is no map at all', rekeyClipMap({ 'a.mp4#0': 1 }, ['a.mp4'], ['b.mp4']), undefined)
+}
+
+console.log('\n== the rate a still image is rendered at ==')
+{
+  const still = {
+    id: 's', type: 'transcode', status: 'pending', progress: 0,
+    sourcePaths: ['/frame.png'], outputDirectory: '/out', outputFilename: 'o.mov',
+    sourceBaseName: 'frame', stillImageDuration: 10,
+    preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+  } as unknown as QueueTask
+  check('a still with no record falls back to the preset, then 25', sourceFps(still, '/frame.png'), 25)
+  const recorded = { ...still, sourceMetadata: { '/frame.png': { fps: 30 } } } as unknown as QueueTask
+  check('the recorded rate wins over the fallback', sourceFps(recorded, '/frame.png'), 30)
+  const probed = { ...recorded, preset: { ...recorded.preset, fps: 60 } } as unknown as QueueTask
+  check('and over the preset rate too', sourceFps(probed, '/frame.png'), 30)
+  check('its length is still the still duration, not a rate', sourceDuration(still, '/frame.png'), 10)
+
+  // A sequence carries its own rate, and that is the one both the encoder and the
+  // native trimmer read, so it has to beat the record on the source.
+  const sequence = {
+    ...recorded, sourcePaths: ['/seq/f_0001.png'],
+    sequenceInputs: { '/seq/f_0001.png': { dir: '/seq', pattern: 'f_%04d.png', globPattern: '*', startNumber: 1, frameCount: 240, hasGaps: false, missing: [], fps: 24, firstFrame: '/seq/f_0001.png' } },
+  } as unknown as QueueTask
+  check('a sequence rate beats the record on its first frame', sourceFps(sequence, '/seq/f_0001.png'), 24)
+  near('and its length follows the rate', sourceDuration(sequence, '/seq/f_0001.png'), 10)
+  const reframed = { ...sequence, sequenceInputs: { '/seq/f_0001.png': { ...sequence.sequenceInputs!['/seq/f_0001.png'], fps: 48 } } } as unknown as QueueTask
+  near('changing the rate changes the length', sourceDuration(reframed, '/seq/f_0001.png'), 5)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
