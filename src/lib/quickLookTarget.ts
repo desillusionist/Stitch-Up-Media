@@ -56,7 +56,11 @@ export const resolveQuickLookRequest = async (
   // helper is handed a video file and quietly shows nothing.
   const needsPreview = Boolean(sequence) || timedStill
 
-  let existingPreview = sourceTarget && needsPreview ? task.imageSequencePreviews?.[sourceTarget] : undefined
+  // Only an interpreted sequence is cached: its length comes from the frames, so a
+  // cached clip stays valid. A timed still's clip is only valid for the length it
+  // was built at, and the cache is keyed by source alone, so it is rebuilt every
+  // time rather than being handed over at the wrong length.
+  let existingPreview = sourceTarget && sequence ? task.imageSequencePreviews?.[sourceTarget] : undefined
   let regeneratedPreview: QuickLookRequest['regeneratedPreview']
   if (sourceTarget && needsPreview && (!existingPreview || !(await bridge?.pathExists?.(existingPreview)))) {
     const created = timedStill && !sequence
@@ -64,7 +68,8 @@ export const resolveQuickLookRequest = async (
       : await bridge?.createImageSequencePreview?.(sequence?.files?.length ? sequence.files : [sequence?.firstFrame || sourceTarget])
     if (created) {
       existingPreview = created
-      regeneratedPreview = { sourceTarget, path: created }
+      // Only sequences are worth caching, for the reason above.
+      if (!timedStill || sequence) regeneratedPreview = { sourceTarget, path: created }
     }
   }
 

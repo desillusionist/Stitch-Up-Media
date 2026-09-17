@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { nextShuttleRate } from '../lib/shuttleRates'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
 const DRIFT_TOLERANCE = 0.25
 /** MediaError.MEDIA_ERR_ABORTED: a load superseded by another, not a failure. */
 const MEDIA_ERR_ABORTED = 1
-/** Shuttle ladders, following the J/K/L convention used by editing software. */
-const FORWARD_RATES = [1, 2, 4, 8]
-/** Reverse is driven by seeks rather than the decoder, so it stops lower. */
-const BACKWARD_RATES = [-1, -2, -4]
 
 export interface ConsolidatedPlayback {
   /** Callback ref: also (re)binds load handlers, because the element unmounts for stills. */
@@ -131,6 +128,14 @@ export const useConsolidatedPlayback = (
     if (!force && (video.readyState < 1 || loadedSourceRef.current !== current.sourcePath)) return
     const desired = pendingSeekRef.current
       ?? current.start + Math.max(0, Math.min(current.duration, stateRef.current.position - current.start))
+    // A position past this segment, which happens when an added track outlasts the
+    // video, is not something this element can show. Clamping it to the segment end
+    // would snap the playhead back to the cut, so the anchored clock keeps it
+    // instead and the seek is considered settled.
+    if (desired < current.start || desired > current.start + current.duration) {
+      pendingSeekRef.current = null
+      return
+    }
     try {
       video.currentTime = current.sourceIn + Math.max(0, Math.min(current.duration, desired - current.start))
       // Cleared only once it lands, so readPosition knows to hold rather than
@@ -212,8 +217,11 @@ export const useConsolidatedPlayback = (
         return current.start + Math.max(0, local)
       }
       // The element finished this source but the timeline continues: an added
-      // track can outlast the video, so the tail runs on the anchored clock.
-      return Math.min(snapshot.duration, anchored(current.start + current.duration))
+      // track can outlast the video, so the tail runs on the anchored clock,
+      // continuing from wherever the playhead already sits rather than snapping
+      // back to the end of the video.
+      const tailFrom = Math.max(current.start + current.duration, Math.min(snapshot.duration, snapshot.position))
+      return Math.min(snapshot.duration, anchored(tailFrom))
     }
 
     // A source is still loading. Hold rather than advance, because the element
@@ -350,11 +358,7 @@ export const useConsolidatedPlayback = (
     /** Ramps in the pressed direction, so repeated presses speed up. */
     shuttle: useCallback((direction: 1 | -1) => {
       if (!playable) return
-      setShuttleRateState((current) => {
-        const ladder = direction > 0 ? FORWARD_RATES : BACKWARD_RATES
-        const index = ladder.indexOf(current)
-        return index >= 0 ? ladder[Math.min(index + 1, ladder.length - 1)] : ladder[0]
-      })
+      setShuttleRateState((current) => nextShuttleRate(current, direction))
       anchorRef.current = null
       reverseAccumulatorRef.current = 0
       setPlaying(true)

@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
+import { mediaKind } from '../lib/mediaKind'
+import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
@@ -13,7 +15,6 @@ const CONTAINERS: Array<EncodingPreset['container']> = ['mp4', 'mov', 'mkv', 'we
 const VIDEO_CODECS: Array<EncodingPreset['videoCodec']> = ['copy', 'h264', 'hevc', 'prores', 'vp9', 'av1', 'png', 'mjpeg']
 const AUDIO_CODECS: Array<EncodingPreset['audioCodec']> = ['copy', 'aac', 'mp3', 'opus', 'pcm', 'flac']
 const AUDIO_CONTAINERS: Array<EncodingPreset['container']> = ['mp3', 'wav', 'm4a', 'flac']
-const IMAGE_CONTAINERS: Array<EncodingPreset['container']> = ['png', 'jpg']
 const RESOLUTIONS: Array<EncodingPreset['resolution']> = ['source', '4k', '1080p', '720p']
 
 /** Lane label column width. Mirrored in CSS and in the playhead offset. */
@@ -190,6 +191,9 @@ export const EditJobApp: React.FC = () => {
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
   const audioLaneIds = (model?.lanes ?? []).filter((lane) => !lane.embedded).map((lane) => lane.id).join('|')
   const fps = draft ? sourceFps(draft, playback.segment?.sourcePath ?? draft.sourcePaths[0], undefined, resolveTiming) : 25
+  // A lone image that is not an interpreted sequence, which is what a container
+  // change can turn into a single frame or into a timed clip.
+  const singleFrameSource = Boolean(draft && draft.sourcePaths.length === 1 && mediaKind(draft.sourcePaths[0]) === 'image' && !sequenceFor(draft, draft.sourcePaths[0]))
   const playbackRef = useRef(playback)
   playbackRef.current = playback
   const stepFpsRef = useRef(fps)
@@ -272,8 +276,8 @@ export const EditJobApp: React.FC = () => {
         return
       }
       if (slowMotionRef.current) { slowMotionRef.current = false; playbackRef.current.setShuttleRate(0); return }
-      if (heldKeysRef.current.k) return
-      playbackRef.current.setShuttleRate(0)
+      // Otherwise the shuttle latches and keeps running after release, so repeated
+      // presses of the same key ramp the speed, and only K or Space stops it.
     }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
@@ -320,16 +324,8 @@ export const EditJobApp: React.FC = () => {
   const updatePreset = (changes: Partial<EncodingPreset>) => updateDraft({ preset: { ...draft.preset, ...changes } })
 
   const changeContainer = (container: EncodingPreset['container']) => {
-    // Renaming follows the same rule as the queue's preset picker, so a container
-    // swap keeps the suffix and only moves the extension.
     updateDraft({
-      preset: {
-        ...draft.preset,
-        container,
-        // Leaving an image container turns a single-frame job into a timed clip, so
-        // the still-image output mode no longer applies.
-        imageOutputMode: IMAGE_CONTAINERS.includes(container) ? draft.preset.imageOutputMode : undefined,
-      },
+      preset: applyContainerChange(draft.preset, container, singleFrameSource),
       outputFilename: deriveOutputFilename(draft, draft.preset, container),
     })
   }
