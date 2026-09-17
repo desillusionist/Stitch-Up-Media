@@ -6,6 +6,8 @@ dist/
 dist-electron/
 release/
 *.tsbuildinfo
+# Compiled verification harness (see `npm run verify`)
+scripts/.verify-timeline.cjs
 
 # Logs
 *.log

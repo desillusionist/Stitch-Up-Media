@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
+    "verify": "esbuild scripts/verify-timeline.ts --bundle --platform=node --format=cjs --outfile=scripts/.verify-timeline.cjs --log-level=warning && node scripts/.verify-timeline.cjs",
     "preview": "vite preview",
     "electron:dev": "vite",
     "dist": "npm run build && electron-builder --mac",
