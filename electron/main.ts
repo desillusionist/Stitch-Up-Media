@@ -210,24 +210,34 @@ app.whenReady().then(() => {
       fs.writeFileSync(previewRegistry, JSON.stringify([...new Set([...(Array.isArray(current) ? current : []), previewPath])]), 'utf8')
     } catch {}
     const listPath = `${previewPath}.txt`
+    const rate = options?.fps && options.fps > 0 ? Math.round(options.fps) : 25
     // A lone image becomes a clip of the requested length, so a still can be
     // trimmed like footage. Without the option it keeps its previous behaviour.
     const stillSeconds = options?.stillSeconds && options.stillSeconds > 0 ? options.stillSeconds : 1
-    const list = images.length === 1
-      ? `file '${images[0].replace(/'/g, "'\\''")}'\nduration ${stillSeconds}\nfile '${images[0].replace(/'/g, "'\\''")}'\n`
-      : images.map((image) => `file '${image.replace(/'/g, "'\\''")}'\nduration 0.04`).join('\n') + `\nfile '${images[images.length - 1].replace(/'/g, "'\\''")}'\n`
+    const args = ['-hide_banner', '-loglevel', 'error', '-y']
     try {
-      fs.writeFileSync(listPath, list, 'utf8')
-      const args = ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', listPath]
+      if (images.length === 1) {
+        // Looped straight from the file. The concat demuxer's duration directive adds
+        // a tail frame, which made a ten-second still come out at 10.04s.
+        args.push('-loop', '1', '-framerate', String(rate), '-t', String(stillSeconds), '-i', images[0])
+      } else {
+        const list = images.map((image) => `file '${image.replace(/'/g, "'\\''")}'\nduration 0.04`).join('\n') + `\nfile '${images[images.length - 1].replace(/'/g, "'\\''")}'\n`
+        fs.writeFileSync(listPath, list, 'utf8')
+        args.push('-f', 'concat', '-safe', '0', '-i', listPath)
+      }
+      // A still is whatever size it happens to be, and 4:2:0 output needs both
+      // dimensions even. An odd source, 1195 wide say, used to fail the whole run,
+      // which left the caller with no clip and a helper reading the image as video.
+      args.push('-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-pix_fmt', 'yuv420p')
       // A requested rate means constant-rate output, which cannot be combined with
       // -vsync vfr. Without a rate the previous behaviour is preserved exactly.
-      if (options?.fps && options.fps > 0) args.push('-r', String(Math.round(options.fps)))
+      if (images.length === 1 || (options?.fps && options.fps > 0)) args.push('-r', String(rate))
       else args.push('-vsync', 'vfr')
-      args.push('-pix_fmt', 'yuv420p', previewPath)
+      args.push(previewPath)
       execFileSync('ffmpeg', args, { timeout: 120000 })
       return previewPath
     } catch (error) {
-      logEvent('ipc', 'image-sequence preview failed', { count: images.length, error: String(error) })
+      logEvent('ipc', 'image-sequence preview failed', { count: images.length, stillSeconds, args: args.join(' '), error: String(error) })
       try { fs.unlinkSync(previewPath) } catch {}
       return null
     } finally {

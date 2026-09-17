@@ -19,6 +19,12 @@ export interface QuickLookRequest {
   sequenceFrameCount?: number
   /** A sequence thumbnail this call had to regenerate; the caller may want to persist it. */
   regeneratedPreview?: { sourceTarget: string; path: string }
+  /**
+   * A timed clip was needed for this still but could not be built, so the request
+   * degraded to the still frame itself. The editor says so rather than pretending
+   * the frame is footage.
+   */
+  previewUnavailable?: boolean
 }
 
 /**
@@ -84,14 +90,21 @@ export const resolveQuickLookRequest = async (
     || task.trimPoints?.[`${target}#${sourceIndex}`]
     || task.trimPoints?.[target]
 
+  // A clip that could not be generated is handed over as a still rather than as
+  // footage. The helper builds a video asset from an image, clamps its length to one
+  // second and draws nothing, which read as a broken preview instead of a failure.
+  // Anything that needed a clip has an image to fall back on: either the still itself
+  // or an image sequence's first frame, which is what the target resolves to.
+  const previewUnavailable = needsPreview && !existingPreview
   return {
     target,
     sourceIndex,
-    stillMode: standaloneImage && !timedStill,
+    stillMode: standaloneImage ? (!timedStill || previewUnavailable) : previewUnavailable,
     trimIn: points?.in,
     trimOut: points?.out,
     sequenceFps: sequence?.fps,
     sequenceFrameCount: sequence?.frameCount,
     regeneratedPreview,
+    previewUnavailable: previewUnavailable || undefined,
   }
 }
