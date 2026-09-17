@@ -8,6 +8,7 @@ release/
 *.tsbuildinfo
 # Compiled verification harness (see `npm run verify`)
 scripts/.verify-timeline.cjs
+scripts/.measure.html
 
 # Logs
 *.log
