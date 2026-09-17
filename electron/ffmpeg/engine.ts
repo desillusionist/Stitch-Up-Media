@@ -15,6 +15,12 @@ export interface ProgressData {
   targetSize?: number
 }
 
+/**
+ * Codecs that cannot encode an odd frame size. 4:2:0 and 4:2:2 chroma is sampled in
+ * pairs, so libx264 rejects 1195x896 outright, whatever pixel format is asked for.
+ */
+const EVEN_SIZE_CODECS: Array<EncodingPreset['videoCodec']> = ['h264', 'hevc', 'prores', 'vp9', 'av1']
+
 export class FFmpegEngine {
   private activeProcesses = new Map<string, ffmpeg.FfmpegCommand>()
   private sequenceFor(task: QueueTask, source: string) {
@@ -73,7 +79,7 @@ export class FFmpegEngine {
       const [W, H] = stitchCanvas || (task.preset.width && task.preset.height ? [task.preset.width, task.preset.height]
         : task.preset.resolution === '4k' ? [3840, 2160] : task.preset.resolution === '720p' ? [1280, 720] : [1920, 1080])
       const rate = isSequence ? (sequence?.fps || 30) : (targetFps || 30)
-      if (isStill) command.inputOptions(['-loop 1', '-framerate', String(rate), '-t', String(Math.max(0.1, task.stillImageDuration || 10))])
+      if (isStill) command.inputOptions(['-loop 1', '-framerate', String(this.stillRate(task, source)), '-t', String(Math.max(0.1, task.stillImageDuration || 10))])
       if (!isSequence) this.applyTrimInput(command, point)
       const fades = this.fadeFilters(fade, clipDuration)
       const outputRate = isSequence || isStill ? rate : (targetFps || 30)
@@ -162,11 +168,19 @@ export class FFmpegEngine {
     const trim = this.trimPoint(task, source, 0)
     let cmd = sequence ? this.sequenceCommand(sequence, trim) : ffmpeg(source)
     if (isStillImage && task.preset.outputMode !== 'audio' && !task.preset.imageOutputMode) {
-      cmd.inputOptions(['-loop 1', '-t ' + Math.max(0.1, task.stillImageDuration || 10)])
+      // The rate is set on the input as well as the output. Without it ffmpeg's image
+      // demuxer picks its own 25, and the clip would render at a rate unrelated to the
+      // one the editor showed.
+      cmd.inputOptions(['-loop 1', `-framerate ${this.stillRate(task, source)}`, '-t ' + Math.max(0.1, task.stillImageDuration || 10)])
     }
     if (!isSequence) this.applyTrimInput(cmd, trim)
 
     this.applyPresetToCommand(cmd, task.preset)
+    // A preset with no rate of its own means "source", and a still has none, so the
+    // recorded rate becomes the output rate rather than leaving it to the encoder.
+    if (isStillImage && !task.preset.fps && task.preset.outputMode !== 'audio' && !task.preset.imageOutputMode) {
+      cmd.outputOptions([`-r ${this.stillRate(task, source)}`])
+    }
 
     cmd
       .on('progress', (progress: any) => {
@@ -425,6 +439,9 @@ export class FFmpegEngine {
     const videoSequence = videoOverride ? undefined : this.sequenceFor(task, videoSource)
     const isSequenceVideo = Boolean(videoSequence)
     const videoTrim = videoOverride ? undefined : this.trimPoint(task, videoSource, 0)
+    // A video shorter than its longest track is padded out with a freeze frame, and
+    // that filter joins the same chain as any scaling rather than replacing it.
+    const tailDuration = Math.max(0, longestAudioDuration - videoDuration)
     let cmd = videoOverride ? ffmpeg(videoOverride) : (videoSequence ? this.sequenceCommand(videoSequence, videoTrim) : ffmpeg(videoSource))
     if (isStillCover && extraAudios.length > 0) {
       cmd.inputOptions(['-loop 1', '-framerate 2'])
@@ -454,13 +471,11 @@ export class FFmpegEngine {
       }
     })
 
-    this.applyPresetToCommand(cmd, task.preset)
+    this.applyPresetToCommand(cmd, task.preset, tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
+      ? [`tpad=stop_mode=add:stop_duration=${tailDuration.toFixed(3)}`]
+      : [])
     if (isStillCover && extraAudios.length > 0) {
       cmd.outputOptions(['-r 2', '-tune stillimage', '-pix_fmt yuv420p', '-shortest'])
-    }
-    const tailDuration = Math.max(0, longestAudioDuration - videoDuration)
-    if (tailDuration > 0.01 && task.preset.videoCodec !== 'copy') {
-      cmd.outputOptions([`-vf tpad=stop_mode=add:stop_duration=${tailDuration.toFixed(3)}`])
     }
     if (task.preset.audioCodec === 'copy') cmd.audioCodec('aac')
     cmd.outputOptions(['-ar 48000', '-ac 2', '-af aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo'])
@@ -489,6 +504,20 @@ export class FFmpegEngine {
     cmd.save(outputPath)
   }
 
+  /**
+   * The rate a still image is encoded at.
+   *
+   * The task records it per source when the file is imported, so the rate the editor
+   * displays is the rate rendered. The preset's rate and then 25 stand in for files
+   * that were added before that record existed.
+   */
+  private stillRate(task: QueueTask, source: string): number {
+    const recorded = task.sourceMetadata?.[source]?.fps
+    if (recorded && recorded > 0) return recorded
+    if (task.preset.fps && task.preset.fps > 0) return task.preset.fps
+    return 25
+  }
+
   private applyTrimInput(cmd: ffmpeg.FfmpegCommand, point?: { in: number; out: number }) {
     if (!point || (point.in <= 0 && point.out <= point.in)) return
     const inputOptions: string[] = []
@@ -498,7 +527,7 @@ export class FFmpegEngine {
   }
 
   // Helper to configure video/audio encoders with macOS VideoToolbox optimizations
-  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset) {
+  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = []) {
     // 1. Video Codec
     if (preset.videoCodec === 'copy') {
       cmd.videoCodec('copy')
@@ -543,20 +572,31 @@ export class FFmpegEngine {
     if (preset.imageOutputMode === 'still') cmd.outputOptions(['-frames:v 1'])
     if (preset.imageOutputMode === 'sequence') cmd.outputOptions(['-vsync 0', '-an'])
     else if (preset.audioEnabled === false) cmd.outputOptions(['-an'])
-    if (preset.width && preset.height && preset.videoCodec !== 'copy') {
-      cmd.outputOptions([`-vf scale=${preset.width}:${preset.height}`])
-    }
     if (preset.audioSampleRate) cmd.audioFrequency(preset.audioSampleRate)
+    // `-vf` is emitted once, from one chain. Setting it twice leaves only the last one
+    // standing, which used to drop a named resolution the moment a caller added a
+    // filter of its own.
+    const videoFilters: string[] = []
     // 2. Resolution Scaling
-    if (preset.width && preset.height) {
-      // Exact custom dimensions above take precedence over named resolutions.
+    if (preset.width && preset.height && preset.videoCodec !== 'copy') {
+      videoFilters.push(`scale=${preset.width}:${preset.height}`)
     } else if (preset.resolution === '4k') {
-      cmd.outputOptions(['-vf scale=3840:2160:force_original_aspect_ratio=decrease'])
+      videoFilters.push('scale=3840:2160:force_original_aspect_ratio=decrease')
     } else if (preset.resolution === '1080p') {
-      cmd.outputOptions(['-vf scale=1920:1080:force_original_aspect_ratio=decrease'])
+      videoFilters.push('scale=1920:1080:force_original_aspect_ratio=decrease')
     } else if (preset.resolution === '720p') {
-      cmd.outputOptions(['-vf scale=1280:720:force_original_aspect_ratio=decrease'])
+      videoFilters.push('scale=1280:720:force_original_aspect_ratio=decrease')
     }
+    // A still image can be any size at all, and 4:2:0 and 4:2:2 encoders refuse an odd
+    // one outright: a 1195x896 source failed the whole job with "width not divisible by
+    // 2". Rounding down to even is a no-op for a frame that already is, and it is added
+    // after any scaling so a named resolution that leaves a smaller source untouched
+    // cannot reintroduce an odd size.
+    if (preset.videoCodec !== 'copy' && preset.container !== 'gif' && EVEN_SIZE_CODECS.includes(preset.videoCodec)) {
+      videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2')
+    }
+    videoFilters.push(...extraFilters)
+    if (videoFilters.length) cmd.outputOptions([`-vf ${videoFilters.join(',')}`])
 
     // 3. Bitrates & FPS
     if (preset.videoBitrate && preset.videoCodec !== 'copy') {
