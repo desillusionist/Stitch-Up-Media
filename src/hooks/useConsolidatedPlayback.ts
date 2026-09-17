@@ -149,16 +149,36 @@ export const useConsolidatedPlayback = (
     } catch { /* element not seekable yet */ }
   }, [])
 
+  /**
+   * Applies the shuttle rate to the element.
+   *
+   * This has to be redone whenever an element is created or its media is loaded,
+   * because both reset the rate: a newly created element starts at its default, and
+   * the media load algorithm assigns `playbackRate` from `defaultPlaybackRate`.
+   * A segment whose media has to be resolved first, an image sequence playing
+   * through its generated clip, mounts its element after the transport effect has
+   * already run, which is why a forward shuttle dropped to normal speed on entering
+   * one while the indicator still read 2x, 4x or 8x. Reverse was unaffected because
+   * it seeks rather than plays.
+   */
+  const applyRate = useCallback(() => {
+    const video = videoRef.current
+    if (!video) return
+    // Reverse has no native rate, so the element is paused and stepped instead.
+    video.playbackRate = shuttleRef.current > 0 ? Math.min(16, shuttleRef.current) : 1
+  }, [])
+
   const onLoaded = useCallback(() => {
     const video = videoRef.current
     const current = stateRef.current.segment
     if (!video) return
     loadedSourceRef.current = current?.sourcePath ?? null
     applyPendingSeek(true)
+    applyRate()
     anchorRef.current = null
     setError(null)
     if (stateRef.current.playing && shuttleRef.current >= 0) startPlayback()
-  }, [applyPendingSeek, startPlayback])
+  }, [applyPendingSeek, applyRate, startPlayback])
 
   const onMediaError = useCallback(() => {
     const mediaError = videoRef.current?.error
@@ -183,8 +203,9 @@ export const useConsolidatedPlayback = (
       element.removeEventListener('loadedmetadata', onLoaded)
       element.removeEventListener('error', onMediaError)
     }
+    applyRate()
     if (element.readyState >= 1) onLoaded()
-  }, [onLoaded, onMediaError])
+  }, [onLoaded, onMediaError, applyRate])
 
   useEffect(() => () => { detachRef.current?.() }, [])
 
@@ -272,7 +293,7 @@ export const useConsolidatedPlayback = (
     const video = videoRef.current
     if (video) {
       // Reverse has no native rate, so the element is paused and stepped instead.
-      video.playbackRate = shuttleRate > 0 ? Math.min(16, shuttleRate) : 1
+      applyRate()
       if (playing && shuttleRate >= 0) { applyPendingSeek(false); startPlayback() }
       else video.pause()
     }
@@ -292,7 +313,7 @@ export const useConsolidatedPlayback = (
       if (audible) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
-  }, [playing, shuttleRate, segment?.key, audioLaneSignature, audioElements, applyPendingSeek, startPlayback])
+  }, [playing, shuttleRate, segment?.key, audioLaneSignature, audioElements, applyPendingSeek, applyRate, startPlayback])
 
   // Frame loop: advance the playhead, cross junctions, correct drift.
   useEffect(() => {
@@ -352,6 +373,19 @@ export const useConsolidatedPlayback = (
     anchorRef.current = null
   }, [])
 
+  /**
+   * Rewinds when playback is asked to start from the very end.
+   *
+   * A finished transport sits on the last frame, where starting forward would stop
+   * again on the same frame and look like the play button had done nothing. Reverse
+   * is left alone, because the end is a perfectly good place to shuttle back from.
+   */
+  const restartIfFinished = useCallback((direction: 1 | -1) => {
+    if (direction < 0) return
+    const { playing: running, position: at, duration: total } = stateRef.current
+    if (!running && total > 0 && at >= total - 0.01) seek(0)
+  }, [seek])
+
   return {
     attachVideo,
     videoRef,
@@ -364,8 +398,10 @@ export const useConsolidatedPlayback = (
     toggle: useCallback(() => {
       if (!playable) return
       setShuttleRate(0)
-      setPlaying((current) => !current)
-    }, [playable, setShuttleRate]),
+      if (stateRef.current.playing) { setPlaying(false); return }
+      restartIfFinished(1)
+      setPlaying(true)
+    }, [playable, setShuttleRate, restartIfFinished]),
     pause: useCallback(() => { setShuttleRate(0); setPlaying(false) }, [setShuttleRate]),
     seek,
     step: useCallback((seconds: number) => {
@@ -376,10 +412,11 @@ export const useConsolidatedPlayback = (
     /** Ramps in the pressed direction, so repeated presses speed up. */
     shuttle: useCallback((direction: 1 | -1) => {
       if (!playable) return
+      restartIfFinished(direction)
       setShuttleRateState((current) => nextShuttleRate(current, direction))
       anchorRef.current = null
       setPlaying(true)
-    }, [playable]),
+    }, [playable, restartIfFinished]),
     setShuttleRate,
     clearError: useCallback(() => setError(null), []),
   }
