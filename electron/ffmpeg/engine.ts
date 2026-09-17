@@ -138,6 +138,8 @@ export class FFmpegEngine {
 
     if (task.type === 'stitch') {
       void this.executeStitch(task, outputPath, onProgress, onComplete, onError)
+    } else if (task.type === 'combo' && task.sourcePaths.length > 1) {
+      void this.executeCombo(task, outputPath, onProgress, onComplete, onError)
     } else if (task.type === 'multitrack' || task.type === 'combo') {
       void this.executeMultiTrack(task, outputPath, onProgress, onComplete, onError)
     } else {
@@ -322,16 +324,76 @@ export class FFmpegEngine {
   }
 
   // --- Feature 3: Unique Feature: Multi-Language Audio Track Packaging ---
-  private async executeMultiTrack(
+  /**
+   * Concatenates a combo's visual sources into one file.
+   *
+   * The multi-track path maps a single video stream, so a combo with several
+   * visuals used to reach the output with only the first of them. The clips are
+   * normalized exactly as a stitch normalizes them, then joined by stream copy,
+   * which leaves the muxing step with a single video to work with.
+   */
+  private async concatComboVisuals(task: QueueTask, onError: (error: Error) => void): Promise<string | null> {
+    const canvas: [number, number] | undefined = task.preset.width && task.preset.height ? [task.preset.width, task.preset.height] : undefined
+    const targetFps = task.preset.fps || 30
+    const normalized: string[] = []
+    try {
+      for (let index = 0; index < task.sourcePaths.length; index++) {
+        const output = path.join(os.tmpdir(), `combo_${task.id}_${index}.mkv`)
+        await this.normalizeStitchSource(task, task.sourcePaths[index], output, this.trimPoint(task, task.sourcePaths[index], index), canvas, targetFps, 0, undefined)
+        normalized.push(output)
+      }
+    } catch (error) {
+      normalized.forEach((file) => { try { fs.unlinkSync(file) } catch {} })
+      onError(error instanceof Error ? error : new Error(String(error)))
+      return null
+    }
+    const listPath = path.join(os.tmpdir(), `combo_${task.id}.txt`)
+    fs.writeFileSync(listPath, normalized.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'), 'utf-8')
+    const combined = path.join(os.tmpdir(), `combo_${task.id}.mkv`)
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg()
+          .input(listPath)
+          .inputOptions(['-f', 'concat', '-safe', '0'])
+          .outputOptions(['-c', 'copy'])
+          .on('end', () => resolve())
+          .on('error', reject)
+          .save(combined)
+      })
+    } catch (error) {
+      logEvent('ffmpeg', 'combo concat failed', { taskId: task.id, error: String(error) })
+      onError(error instanceof Error ? error : new Error(String(error)))
+      return null
+    }
+    logEvent('ffmpeg', 'combo visuals concatenated', { taskId: task.id, clips: task.sourcePaths.length, combined })
+    return combined
+  }
+
+  /** A combo combines both axes: visuals concatenated, tracks muxed alongside. */
+  private async executeCombo(
     task: QueueTask,
     outputPath: string,
     onProgress: (data: ProgressData) => void,
     onComplete: () => void,
     onError: (err: Error) => void
   ) {
-    const videoSource = task.sourcePaths[0]
+    const combined = await this.concatComboVisuals(task, onError)
+    if (!combined) return
+    await this.executeMultiTrack(task, outputPath, onProgress, onComplete, onError, combined)
+  }
+
+  private async executeMultiTrack(
+    task: QueueTask,
+    outputPath: string,
+    onProgress: (data: ProgressData) => void,
+    onComplete: () => void,
+    onError: (err: Error) => void,
+    /** A already-rendered video to mux onto, used by the combo path. */
+    videoOverride?: string
+  ) {
+    const videoSource = videoOverride || task.sourcePaths[0]
     const extraAudios = task.additionalAudioTracks || []
-    const isStillCover = /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(videoSource)
+    const isStillCover = !videoOverride && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(videoSource)
     let videoDuration = 0
     let longestAudioDuration = 0
     try {
@@ -346,10 +408,10 @@ export class FFmpegEngine {
     } catch (error) {
       logEvent('ffmpeg', 'duration reconciliation probe failed; using container durations', { taskId: task.id, error: String(error) })
     }
-    const videoSequence = this.sequenceFor(task, videoSource)
+    const videoSequence = videoOverride ? undefined : this.sequenceFor(task, videoSource)
     const isSequenceVideo = Boolean(videoSequence)
-    const videoTrim = this.trimPoint(task, videoSource, 0)
-    let cmd = videoSequence ? this.sequenceCommand(videoSequence, videoTrim) : ffmpeg(videoSource)
+    const videoTrim = videoOverride ? undefined : this.trimPoint(task, videoSource, 0)
+    let cmd = videoOverride ? ffmpeg(videoOverride) : (videoSequence ? this.sequenceCommand(videoSequence, videoTrim) : ffmpeg(videoSource))
     if (isStillCover && extraAudios.length > 0) {
       cmd.inputOptions(['-loop 1', '-framerate 2'])
     }

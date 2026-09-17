@@ -265,16 +265,26 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
     return { lanes, duration: cursor, unusedVideoSources: [] }
   }
 
-  const mainSource = task.sourcePaths[0]
+  // A combo concatenates its visuals, which is what the encoder now does with them.
+  // A multi-track job maps a single video stream, so anything past the first is
+  // unused and is reported as such.
+  const concatenatesVisuals = task.type === 'combo' && task.sourcePaths.length > 1
+  const visualSources = concatenatesVisuals ? task.sourcePaths : task.sourcePaths.slice(0, 1)
+  let cursor = 0
+  const mainSegments = visualSources.map((sourcePath, index) => {
+    const segment = segmentFor(task, sourcePath, index, cursor, options)
+    cursor += segment.duration
+    return segment
+  })
+  const mainSource = visualSources[0]
   const mainIsAudio = mainSource != null && mediaKind(mainSource) === 'audio'
-  const mainSegment = mainSource ? segmentFor(task, mainSource, 0, 0, options) : null
   lanes.push({
     id: 'main',
     label: mainIsAudio ? 'AUDIO 1' : 'VIDEO 1',
     kind: mainIsAudio ? 'audio' : 'video',
     embedded: true,
-    segments: mainSegment ? [mainSegment] : [],
-    duration: mainSegment?.duration ?? 0,
+    segments: mainSegments,
+    duration: cursor,
   })
 
   // Audio tracks play in parallel from the start, keyed by index zero, which is
@@ -294,7 +304,7 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   })
 
   const duration = lanes.reduce((longest, lane) => Math.max(longest, lane.duration), 0)
-  return { lanes, duration, unusedVideoSources: task.sourcePaths.slice(1) }
+  return { lanes, duration, unusedVideoSources: concatenatesVisuals ? [] : task.sourcePaths.slice(1) }
 }
 
 /** Which lane segment sits under a consolidated time, if any. */
