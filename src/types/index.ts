@@ -143,6 +143,12 @@ export interface EditJobPatch {
   outputFilename: string
   outputFilenameManuallySet?: boolean
   transitions?: Record<string, ClipTransition>
+  /**
+   * Per-source frame-rate overrides, keyed by source path. Covers both cases the
+   * MEDIA INFO inspector offers: a still image being treated as a clip, and an
+   * interpreted image sequence whose rate the user changed.
+   */
+  sourceFps?: Record<string, number>
 }
 
 export interface PresetRule {
@@ -161,6 +167,11 @@ export interface AppSettings {
   saveTempNextToSource: boolean
   pauseOnHighLoad: boolean
   sequenceFps?: number
+  /**
+   * Frame rate a still image is given when it is exported as video rather than as a
+   * single frame. Falls back to `sequenceFps`, then to 25.
+   */
+  defaultImageFps?: number
   screenshotDirectory?: string
   defaultImageDuration: number
   timestampDisplayMode?: 'timestamp' | 'framestamp'

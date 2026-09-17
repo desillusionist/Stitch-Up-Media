@@ -90,6 +90,11 @@ export const resolveFades = (durations: number[], requests: number[]): ClipFade[
 /**
  * Re-keys clip-scoped maps after clips move, so trims and transitions follow their
  * clip instead of staying on an index that now belongs to a different one.
+ *
+ * Occurrences are matched in order. Looking each path up by its first index put the
+ * second occurrence's entry onto the first one, which duplicated a fade onto a cut
+ * the user never set and could drop it from the cut they did, whenever the same file
+ * appeared twice in one job.
  */
 export const rekeyClipMap = <T>(
   map: Record<string, T> | undefined,
@@ -97,10 +102,18 @@ export const rekeyClipMap = <T>(
   nextPaths: string[],
 ): Record<string, T> | undefined => {
   if (!map) return undefined
+  const unclaimed = new Map<string, number[]>()
+  previousPaths.forEach((sourcePath, index) => {
+    const indices = unclaimed.get(sourcePath)
+    if (indices) indices.push(index)
+    else unclaimed.set(sourcePath, [index])
+  })
   const rekeyed: Record<string, T> = {}
   nextPaths.forEach((sourcePath, nextIndex) => {
-    const previousIndex = previousPaths.indexOf(sourcePath)
-    const value = map[`${sourcePath}#${previousIndex}`] ?? map[`${sourcePath}#${nextIndex}`] ?? map[sourcePath]
+    const previousIndex = unclaimed.get(sourcePath)?.shift()
+    const value = (previousIndex !== undefined ? map[`${sourcePath}#${previousIndex}`] : undefined)
+      ?? map[`${sourcePath}#${nextIndex}`]
+      ?? map[sourcePath]
     if (value !== undefined) rekeyed[`${sourcePath}#${nextIndex}`] = value
   })
   return Object.keys(rekeyed).length ? rekeyed : undefined

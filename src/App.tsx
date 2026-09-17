@@ -15,20 +15,74 @@ import { resolveQuickLookRequest } from './lib/quickLookTarget'
 import { rekeyClipMap } from './lib/timelineModel'
 
 /**
- * Overlays the EDIT JOB window's editable fields onto a live queue task.
+ * The rate a still image is given when it is exported as video.
  *
+ * Falls back to the sequence rate and then to 25, so the timeline, the monitor and
+ * the encoder always have one number to agree on.
+ */
+export const stillImageFps = (settings: AppSettings): number => {
+  if (settings.defaultImageFps && settings.defaultImageFps > 0) return settings.defaultImageFps
+  if (settings.sequenceFps && settings.sequenceFps > 0) return settings.sequenceFps
+  return 25
+}
+
+/**
+ * The per-source rate record for the still images among a set of imported files.
+ *
+ * Recorded at import so a still exported through a video preset is encoded at the
+ * rate the settings asked for, rather than at whatever ffmpeg's image demuxer
+ * happens to default to, and so MEDIA INFO has something to edit per clip.
+ * A frame belonging to an interpreted sequence is skipped, because that sequence
+ * carries its own rate and it wins over this record anyway.
+ */
+const stillFpsMetadata = (
+  filePaths: string[],
+  sequenceFrame: string | undefined,
+  settings: AppSettings,
+): Record<string, { fps: number }> | undefined => {
+  const fps = stillImageFps(settings)
+  const entries = filePaths
+    .filter((filePath) => mediaKind(filePath) === 'image' && filePath !== sequenceFrame)
+    .map((filePath) => [filePath, { fps }] as const)
+  return entries.length ? Object.fromEntries(entries) : undefined
+}
+
+/**
  * Deliberately field-scoped rather than a wholesale replace: the editor holds a
  * snapshot taken when it opened while the queue keeps mutating progress, status,
  * speed and eta, so replacing the whole object would clobber live encoding state.
  */
-const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => ({
-  ...task,
-  preset: patch.preset,
-  outputFilename: patch.outputFilename,
-  outputFilenameManuallySet: patch.outputFilenameManuallySet,
-  transitions: patch.transitions,
-  status: task.status === 'done' ? 'pending' : task.status,
-})
+const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
+  const next: QueueTask = {
+    ...task,
+    preset: patch.preset,
+    outputFilename: patch.outputFilename,
+    outputFilenameManuallySet: patch.outputFilenameManuallySet,
+    transitions: patch.transitions,
+    status: task.status === 'done' ? 'pending' : task.status,
+  }
+  if (!patch.sourceFps) return next
+  // A rate the user set in MEDIA INFO lands on the task's own record for that source,
+  // which is where the timeline looks first. An interpreted sequence also derives its
+  // length from the rate, so its duration has to move with it.
+  const sourceMetadata = { ...(task.sourceMetadata || {}) }
+  const sequenceInputs = { ...(task.sequenceInputs || {}) }
+  let sequenceInput = task.sequenceInput
+  Object.entries(patch.sourceFps).forEach(([sourcePath, fps]) => {
+    if (!Number.isFinite(fps) || fps <= 0) return
+    sourceMetadata[sourcePath] = { ...(sourceMetadata[sourcePath] || {}), fps }
+    const reflow = (sequence: QueueTask['sequenceInput']): QueueTask['sequenceInput'] =>
+      sequence ? { ...sequence, fps, duration: sequence.frameCount / fps } : sequence
+    if (sequenceInputs[sourcePath]) sequenceInputs[sourcePath] = reflow(sequenceInputs[sourcePath]) as NonNullable<QueueTask['sequenceInput']>
+    if (sequenceInput?.firstFrame === sourcePath) sequenceInput = reflow(sequenceInput)
+  })
+  return {
+    ...next,
+    sourceMetadata,
+    sequenceInputs: Object.keys(sequenceInputs).length ? sequenceInputs : undefined,
+    sequenceInput: sequenceInput,
+  }
+}
 
 /**
  * Everything the EDIT JOB window renders. Live progress fields are deliberately
@@ -74,6 +128,7 @@ export const App: React.FC = () => {
     saveTempNextToSource: true,
     pauseOnHighLoad: false,
     sequenceFps: 24,
+    defaultImageFps: 25,
     screenshotDirectory: undefined,
     defaultImageDuration: 10,
     timestampDisplayMode: 'timestamp',
@@ -298,6 +353,7 @@ export const App: React.FC = () => {
       preset, status: 'pending', progress: 0, sourceBaseName: baseName, stillImageDuration: mediaKind(first) === 'image' ? Math.max(0.1, settings.defaultImageDuration || 10) : undefined,
       additionalAudioTracks: (effectiveType === 'multitrack' || effectiveType === 'combo') ? filePaths.filter((path) => mediaKind(path) === 'audio').map((path, index) => ({ id: `${Date.now()}-${index}`, path, language: 'und' })) : undefined,
       imageSequencePreviews: imageSequencePreview ? { [detectedSequence?.firstFrame || first]: imageSequencePreview } : undefined,
+      sourceMetadata: stillFpsMetadata(filePaths, detectedSequence?.firstFrame, settings),
       sequenceInput: detectedSequence && sequenceFps ? { ...detectedSequence, fps: sequenceFps, duration: detectedSequence.frameCount / sequenceFps, totalSize: sequenceTotalSize } : undefined,
       sequenceInputs: detectedSequence && sequenceFps ? { [detectedSequence.firstFrame]: { ...detectedSequence, fps: sequenceFps, duration: detectedSequence.frameCount / sequenceFps } } : undefined,
     }
@@ -652,8 +708,10 @@ export const App: React.FC = () => {
       const nextType: QueueTask['type'] = videoSources.length === 0 ? (allAudioSources.length > 1 ? 'stitch' : 'transcode') : tracks.length ? (videoSources.length > 1 ? 'combo' : 'multitrack') : (videoSources.length > 1 ? 'stitch' : 'transcode')
       const stableNextType = item.type === 'multitrack' && videoSources.length === 1 && tracks.length > 0 ? 'multitrack' as const : nextType
       const sequenceKey = incomingSequenceInput?.firstFrame || incomingVideos[0]
+      const incomingStillFps = stillFpsMetadata(incomingVideos, sequenceKey, settings)
+      const sourceMetadata = incomingStillFps ? { ...(item.sourceMetadata || {}), ...incomingStillFps } : item.sourceMetadata
       const resetCompleted = item.status === 'done' || item.skipped
-      return { ...item, type: stableNextType, comboMode: stableNextType === 'combo' ? (item.comboMode || 'multitrack') : undefined, sourcePaths: videoSources.length ? videoSources : allAudioSources, additionalAudioTracks: videoSources.length && tracks.length ? tracks : undefined, imageSequencePreviews: incomingSequencePreview && sequenceKey ? { ...(item.imageSequencePreviews || {}), [sequenceKey]: incomingSequencePreview } : item.imageSequencePreviews, sequenceInput: item.sequenceInput || incomingSequenceInput, sequenceInputs: incomingSequenceInput && sequenceKey ? { ...(item.sequenceInputs || {}), [sequenceKey]: incomingSequenceInput } : item.sequenceInputs, status: resetCompleted ? 'pending' : item.status, skipped: resetCompleted ? false : item.skipped, progress: 0 }
+      return { ...item, type: stableNextType, comboMode: stableNextType === 'combo' ? (item.comboMode || 'multitrack') : undefined, sourcePaths: videoSources.length ? videoSources : allAudioSources, additionalAudioTracks: videoSources.length && tracks.length ? tracks : undefined, imageSequencePreviews: incomingSequencePreview && sequenceKey ? { ...(item.imageSequencePreviews || {}), [sequenceKey]: incomingSequencePreview } : item.imageSequencePreviews, sequenceInput: item.sequenceInput || incomingSequenceInput, sequenceInputs: incomingSequenceInput && sequenceKey ? { ...(item.sequenceInputs || {}), [sequenceKey]: incomingSequenceInput } : item.sequenceInputs, sourceMetadata, status: resetCompleted ? 'pending' : item.status, skipped: resetCompleted ? false : item.skipped, progress: 0 }
     }))
   }
   const handleAddSource = async (task: QueueTask) => {

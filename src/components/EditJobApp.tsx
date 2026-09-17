@@ -32,7 +32,29 @@ const editableSlice = (task: QueueTask) => ({
   outputFilename: task.outputFilename,
   outputFilenameManuallySet: task.outputFilenameManuallySet ?? false,
   transitions: task.transitions,
+  // Per-source timing is editable from MEDIA INFO, so the window owns it too.
+  sourceMetadata: task.sourceMetadata,
+  sequenceInput: task.sequenceInput,
+  sequenceInputs: task.sequenceInputs,
 })
+
+/**
+ * The per-source rates to send back, gathered from both places a rate can live: the
+ * record on the source, and an interpreted sequence's own rate.
+ */
+const sourceFpsOverrides = (task: QueueTask): Record<string, number> | undefined => {
+  const overrides: Record<string, number> = {}
+  Object.entries(task.sourceMetadata || {}).forEach(([sourcePath, metadata]) => {
+    if (metadata.fps && metadata.fps > 0) overrides[sourcePath] = metadata.fps
+  })
+  Object.entries(task.sequenceInputs || {}).forEach(([sourcePath, sequence]) => {
+    if (sequence.fps > 0) overrides[sourcePath] = sequence.fps
+  })
+  return Object.keys(overrides).length ? overrides : undefined
+}
+
+/** The rates the MEDIA INFO inspector offers, matching the queue's own list. */
+const FPS_CHOICES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]
 
 const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
 const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft) !== sliceSignature(baseline)
@@ -61,16 +83,24 @@ export const EditJobApp: React.FC = () => {
   const [tab, setTab] = useState<Tab>('EXPORT')
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
   const [incomingConflict, setIncomingConflict] = useState<QueueTask | null>(null)
-  // Where the resolved preview target points, which is not always the stored
-  // source path: sequences play through a generated preview file.
-  const [mediaTarget, setMediaTarget] = useState<{ path: string; sourcePath: string } | null>(null)
+  // Resolved preview targets, keyed by the source they belong to. The target is not
+  // always the stored path: an image sequence plays through a generated clip. They
+  // are all resolved up front rather than when the playhead reaches one, because
+  // resolving takes IPC and, for a sequence with no cached clip, a whole ffmpeg run.
+  // Doing that on arrival is what made the skimmer stumble at the start of every
+  // sequence segment while the monitor said PREPARING THIS SEGMENT.
+  const [mediaTargets, setMediaTargets] = useState<Record<string, { path: string; previewUnavailable?: boolean }>>({})
   /** Set when a still could not be turned into a clip, so the monitor is not lying. */
   const [previewNotice, setPreviewNotice] = useState<string | null>(null)
+  /** Source whose MEDIA INFO inspector is open, by index on the main lane. */
+  const [inspectedIndex, setInspectedIndex] = useState<number | null>(null)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
   const audioElementsRef = useRef<Record<string, HTMLAudioElement | null>>({})
   const [probedTiming, setProbedTiming] = useState<Record<string, SourceTiming>>({})
+  /** Sources whose target has been resolved, so the effect below cannot loop. */
+  const resolvedTargetsRef = useRef<Record<string, true>>({})
   // Paths already handed to the prober. A failed probe is not retried, so the
   // effect cannot loop on an unreadable file.
   const probedPathsRef = useRef<Set<string>>(new Set())
@@ -177,18 +207,32 @@ export const EditJobApp: React.FC = () => {
   const focusedSourceIndex = playback.segmentIndex
   const focusedSource = draft ? (draft.sourcePaths[focusedSourceIndex] || draft.sourcePaths[0]) : undefined
 
-  // Sequence frames and standalone images cannot be decoded by a video element, so
-  // the target is resolved to a generated preview for whichever source is in focus.
+  // Every main-lane source gets a target, once, in the background. Nothing on the
+  // playback path waits for this: an unresolved source simply renders nothing for
+  // the moment it takes, which is one IPC round trip rather than a clip build.
   useEffect(() => {
-    let cancelled = false
     const task = draftRef.current
-    if (!task) { setMediaTarget(null); return }
-    void resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: focusedSourceIndex }).then((request) => {
+    if (!task) { setMediaTargets({}); return }
+    const missing = Array.from(new Set(task.sourcePaths)).filter((sourcePath) => resolvedTargetsRef.current[sourcePath] === undefined)
+    if (!missing.length) return
+    let cancelled = false
+    void Promise.all(missing.map(async (sourcePath) => {
+      const request = await resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: Math.max(0, task.sourcePaths.indexOf(sourcePath)) })
+      return [sourcePath, request] as const
+    })).then((entries) => {
       if (cancelled) return
-      setMediaTarget(request ? { path: request.target, sourcePath: task.sourcePaths[focusedSourceIndex] || task.sourcePaths[0] || '' } : null)
+      const resolved: Record<string, { path: string; previewUnavailable?: boolean }> = {}
+      entries.forEach(([sourcePath, request]) => {
+        if (!request) return
+        // Only a success is remembered, so a target that could not be built is tried
+        // again the next time the task changes rather than being given up on.
+        resolvedTargetsRef.current[sourcePath] = true
+        resolved[sourcePath] = { path: request.target, previewUnavailable: request.previewUnavailable }
+      })
+      setMediaTargets((current) => ({ ...current, ...resolved }))
     })
     return () => { cancelled = true }
-  }, [timelineSignature, focusedSourceIndex])
+  }, [timelineSignature])
 
   const timelineDuration = model?.duration ?? 0
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
@@ -214,14 +258,39 @@ export const EditJobApp: React.FC = () => {
     return Math.max(0, Math.min(1, gain))
   })()
 
+  /** Clip edges on the main lane, for the arrow keys to walk between. */
+  const clipEdges = useMemo(() => {
+    const segments = model?.lanes[0]?.segments ?? []
+    return segments.map((segment) => ({ start: segment.start, end: segment.start + segment.duration }))
+  }, [timelineSignature, probedTiming])
+  const clipEdgesRef = useRef(clipEdges)
+  clipEdgesRef.current = clipEdges
+
   /**
    * One keyboard layer for the transport. Only genuine text entry is ignored: a
    * focused range slider stays live, because placing the playhead leaves focus on
    * the scrubber, and treating that as typing swallowed every shortcut.
+   *
+   * The arrow keys follow the frame-accurate helper. Left and right step exactly one
+   * frame; up and down move to the edges of the clip under the playhead, and pressing
+   * again walks to the neighbouring clip's edge, which is the helper's jump-to-start
+   * and jump-to-end widened to a timeline with many clips.
    */
   const heldKeysRef = useRef({ k: false })
   const slowMotionRef = useRef(false)
   const tapTimerRef = useRef<number | null>(null)
+
+  const jumpToClipEdge = (direction: 1 | -1) => {
+    const edges = clipEdgesRef.current
+    const at = playbackRef.current.position
+    if (direction > 0) {
+      const next = edges.find((edge) => edge.end > at + 0.001)
+      if (next) playbackRef.current.seek(next.end)
+      return
+    }
+    const previous = [...edges].reverse().find((edge) => edge.start < at - 0.001)
+    if (previous) playbackRef.current.seek(previous.start)
+  }
 
   useEffect(() => {
     const clearTap = () => {
@@ -243,6 +312,16 @@ export const EditJobApp: React.FC = () => {
       if (code === 'Space' || event.key === ' ') {
         event.preventDefault()
         playbackRef.current.toggle()
+        return
+      }
+      if (code === 'ArrowLeft' || code === 'ArrowRight') {
+        event.preventDefault()
+        playbackRef.current.step((code === 'ArrowRight' ? 1 : -1) / stepFpsRef.current)
+        return
+      }
+      if (code === 'ArrowUp' || code === 'ArrowDown') {
+        event.preventDefault()
+        jumpToClipEdge(code === 'ArrowDown' ? 1 : -1)
         return
       }
       // Bound by physical key rather than by character. On a non-Latin layout the
@@ -291,6 +370,21 @@ export const EditJobApp: React.FC = () => {
     }
   }, [])
 
+  /**
+   * Wheel over the timeline scrubs the playhead, as the helper's strip does: a
+   * fraction of a frame per tick, eased with tanh so a flick travels much further
+   * than a nudge, and the sign inverted to match the helper's convention.
+   */
+  const scrubByWheel = (event: React.WheelEvent<HTMLElement>) => {
+    // Shift and the horizontal axis are left to the browser, so a zoomed-in timeline
+    // can still be panned. The helper never needed that: its strip always showed the
+    // whole clip.
+    if (event.shiftKey || event.deltaY === 0) return
+    const eased = Math.tanh(Math.abs(event.deltaY) / 6)
+    const step = (1 / Math.max(1, stepFpsRef.current)) * (0.35 + 1.65 * eased)
+    playback.seek(playback.position + (event.deltaY < 0 ? step : -step))
+  }
+
   // Mutes are applied to the elements directly and never reach the task. The
   // segment key is a dependency because the video element remounts around stills.
   useEffect(() => {
@@ -319,17 +413,27 @@ export const EditJobApp: React.FC = () => {
 
   if (!draft || !model) return <div className="edit-job-shell"><div className="editor-loading">WAITING FOR QUEUE ITEM...</div></div>
 
+  /**
+   * The draft as it stands right now.
+   *
+   * The state behind `draft` only catches up on the next render, so a handler that
+   * reads it directly loses whatever another handler set a moment earlier. That is
+   * how setting a fade on one cut could quietly drop the fade just set on another.
+   */
+  const latest = () => draftRef.current ?? draft
+
   const updateDraft = (changes: Partial<QueueTask>) => {
-    const next = { ...draft, ...changes }
+    const next = { ...latest(), ...changes }
     draftRef.current = next
     setDraft(next)
   }
-  const updatePreset = (changes: Partial<EncodingPreset>) => updateDraft({ preset: { ...draft.preset, ...changes } })
+  const updatePreset = (changes: Partial<EncodingPreset>) => updateDraft({ preset: { ...latest().preset, ...changes } })
 
   const changeContainer = (container: EncodingPreset['container']) => {
+    const current = latest()
     updateDraft({
-      preset: applyContainerChange(draft.preset, container, singleFrameSource),
-      outputFilename: deriveOutputFilename(draft, draft.preset, container),
+      preset: applyContainerChange(current.preset, container, singleFrameSource),
+      outputFilename: deriveOutputFilename(current, current.preset, container),
     })
   }
 
@@ -354,15 +458,45 @@ export const EditJobApp: React.FC = () => {
   const mainLane = model.lanes[0]
   const cuts = (mainLane?.segments ?? []).slice(0, -1).map((clip, index) => ({ index, sourcePath: clip.sourcePath }))
 
+  // MEDIA INFO reads the source under the playhead, which is the one the inspector was
+  // opened on. A source with an intrinsic rate shows it; a still or a sequence, whose
+  // rate is a choice rather than a fact about the file, can have it changed here.
+  const inspectedSegment = inspectedIndex != null ? mainLane?.segments[inspectedIndex] : undefined
+  const inspectedSource = inspectedSegment?.sourcePath ?? (inspectedIndex != null ? draft.sourcePaths[inspectedIndex] : undefined)
+  const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
+  const inspectedEditable = Boolean(inspectedSegment && (inspectedSegment.still || inspectedSegment.sequence))
+  const inspectedProbe = inspectedSource ? probedTiming[inspectedSource] : undefined
+
   /** Transitions are keyed by the clip BEFORE the boundary, like trim points. */
   const setBoundaryTransition = (index: number, type: TransitionType, duration = 0.5) => {
     const cut = cuts.find((candidate) => candidate.index === index)
     if (!cut) return
-    const next = { ...(draft.transitions || {}) }
+    const next = { ...(latest().transitions || {}) }
     const key = `${cut.sourcePath}#${index}`
     if (type === 'none') delete next[key]
     else next[key] = { type, duration }
     updateDraft({ transitions: Object.keys(next).length ? next : undefined })
+  }
+
+  /**
+   * Records a source's frame rate from MEDIA INFO.
+   *
+   * Both places a rate can live are written, because which one wins depends on the
+   * source: an interpreted sequence's own rate takes precedence, and a still image
+   * falls back to the rate recorded on the source. The same rule the encoder reads.
+   */
+  const setSourceFps = (sourcePath: string, fps: number) => {
+    if (!Number.isFinite(fps) || fps <= 0) return
+    const current = latest()
+    updateDraft({
+      sourceMetadata: { ...(current.sourceMetadata || {}), [sourcePath]: { ...(current.sourceMetadata?.[sourcePath] || {}), fps } },
+      sequenceInputs: current.sequenceInputs?.[sourcePath]
+        ? { ...current.sequenceInputs, [sourcePath]: { ...current.sequenceInputs[sourcePath], fps, duration: current.sequenceInputs[sourcePath].frameCount / fps } }
+        : current.sequenceInputs,
+      sequenceInput: current.sequenceInput?.firstFrame === sourcePath
+        ? { ...current.sequenceInput, fps, duration: current.sequenceInput.frameCount / fps }
+        : current.sequenceInput,
+    })
   }
 
   const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
@@ -373,7 +507,9 @@ export const EditJobApp: React.FC = () => {
     const parts = [stamp(segment.duration)]
     if (segment.trimmed) parts.push('TRIMMED')
     if (segment.sequence) parts.push(`SEQ ${segment.sequence.frames}F @ ${segment.sequence.fps}FPS`)
-    if (segment.still) parts.push('STILL')
+    // A still has no rate of its own, so the one it will be rendered at belongs in the
+    // clip's own line rather than being left to the monitor to mention.
+    if (segment.still) parts.push(`STILL @ ${Math.round(sourceFps(draft, segment.sourcePath, undefined, resolveTiming))}FPS`)
     if (segment.fadeIn) parts.push(`FADE IN ${segment.fadeIn.toFixed(2)}s`)
     if (segment.fadeOut) parts.push(`FADE OUT ${segment.fadeOut.toFixed(2)}s`)
     return parts.join(' // ')
@@ -395,12 +531,12 @@ export const EditJobApp: React.FC = () => {
     const segments = mainLane?.segments ?? []
     if (!cut || !segments[openBoundary] || !segments[openBoundary + 1]) return null
     const transition = draft.transitions?.[`${cut.sourcePath}#${openBoundary}`]
-    return {
-      index: openBoundary,
-      source: cut.sourcePath,
-      fade: transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0,
-      maxFade: maxFadeAtBoundary(segments[openBoundary].duration, segments[openBoundary + 1].duration),
-    }
+    const requested = transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
+    const maxFade = maxFadeAtBoundary(segments[openBoundary].duration, segments[openBoundary + 1].duration)
+    // The request and what will actually render are reported separately. A fade that
+    // a neighbour's length currently clamps away still reads as set, instead of
+    // looking like the editor had forgotten it.
+    return { index: openBoundary, source: cut.sourcePath, requested, fade: Math.min(requested, maxFade), maxFade }
   })()
 
   /**
@@ -410,12 +546,18 @@ export const EditJobApp: React.FC = () => {
    */
   const sourceUrlFor = (segment: TimelineSegment | undefined): string | null => {
     if (!segment) return null
+    // A sequence frame cannot be handed to a video element, so it plays through the
+    // resolved preview. Returning null keeps the element idle until that exists,
+    // rather than letting it fail on a PNG.
     if (sequenceSources.has(segment.sourcePath)) {
-      return mediaTarget?.sourcePath === segment.sourcePath ? mediaUrl(mediaTarget.path) : null
+      const target = mediaTargets[segment.sourcePath]
+      return target ? mediaUrl(target.path) : null
     }
     return mediaUrl(segment.sourcePath)
   }
   const elementUrl = sourceUrlFor(playback.segment)
+  /** Target of the source under the playhead, which is what the trimmer would open. */
+  const focusedTarget = focusedSource ? mediaTargets[focusedSource] : undefined
 
   const seekFraction = (event: React.MouseEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -473,7 +615,7 @@ export const EditJobApp: React.FC = () => {
       <main className="editor-main">
         <section className="editor-preview">
           <div className="panel-kicker">PREVIEW // ASSEMBLED OUTPUT</div>
-          <div className="editor-screen">
+          <div className="editor-screen" onWheel={scrubByWheel}>
             {playback.error
               ? <span className="editor-screen-message">{playback.error}</span>
               : stillFrameJob
@@ -515,8 +657,26 @@ export const EditJobApp: React.FC = () => {
             />
           </div>
           <div className="editor-preview-actions">
-            <button onClick={() => void openNativePreview()} disabled={!mediaTarget}>OPEN FRAME-ACCURATE PREVIEW</button>
+            <button onClick={() => void openNativePreview()} disabled={!focusedTarget}>OPEN FRAME-ACCURATE PREVIEW</button>
+            <button className={inspectedIndex === focusedSourceIndex ? 'is-open' : ''} onClick={() => setInspectedIndex(inspectedIndex === focusedSourceIndex ? null : focusedSourceIndex)}>MEDIA INFO</button>
           </div>
+          {inspectedIndex != null && inspectedSource && (
+            <div className="media-inspector">
+              <EditorRow label="SOURCE" value={sourceName(inspectedSource)} />
+              <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
+              <EditorRow
+                label="DURATION"
+                value={inspectedSegment ? `${stamp(inspectedSegment.duration)}${inspectedSegment.trimmed ? ` · TRIMMED FROM ${stamp(inspectedSegment.sourceIn)}` : ''}` : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
+              />
+              <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
+                inspectedEditable
+                  ? <select value={String(inspectedFps)} onChange={(event) => setSourceFps(inspectedSource, Number(event.target.value))}>
+                    {[...new Set([...FPS_CHOICES, inspectedFps])].sort((a, b) => a - b).map((rate) => <option key={rate} value={String(rate)}>{rate}{FPS_CHOICES.includes(rate) ? '' : ' (CURRENT)'} FPS</option>)}
+                  </select>
+                  : <input className="editor-input" type="text" value={`${inspectedFps} FPS`} readOnly />
+              }</EditorField>
+            </div>
+          )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
           <div className="editor-note">&gt; SPACE PLAYS, K STOPS. J / L SHUTTLE AND SPEED UP ON REPEAT; K+J OR K+L IS SLOW MOTION; A QUICK TAP STEPS ONE FRAME. IN / OUT POINTS COME FROM THE NATIVE PREVIEW.</div>
         </section>
@@ -535,7 +695,7 @@ export const EditJobApp: React.FC = () => {
               <button onClick={() => setZoom(1)} disabled={zoom === 1} title="Fit the whole timeline">FIT</button>
             </div>
           </div>
-          <div className="timeline-lanes" ref={timelineScrollRef}>
+          <div className="timeline-lanes" ref={timelineScrollRef} onWheel={scrubByWheel}>
             <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${zoom * 100}%` }}>
               <div className="timeline-ruler">
                 {Array.from({ length: 5 }, (_, index) => index / 4).map((fraction) => (
@@ -592,15 +752,16 @@ export const EditJobApp: React.FC = () => {
             <div className="boundary-editor">
               <span className="boundary-title">CUT {selectedBoundary.index + 1}|{selectedBoundary.index + 2}</span>
               <div className="boundary-options">
-                <button className={selectedBoundary.fade > 0 ? '' : 'is-selected'} onClick={() => setBoundaryTransition(selectedBoundary.index, 'none')} disabled={selectedBoundary.maxFade <= 0}>OFF</button>
-                <button className={selectedBoundary.fade > 0 ? 'is-selected' : ''} onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', selectedBoundary.fade || Math.min(0.5, selectedBoundary.maxFade) || 0.25)} disabled={selectedBoundary.maxFade <= 0}>FADE</button>
+                <button className={selectedBoundary.requested > 0 ? '' : 'is-selected'} onClick={() => setBoundaryTransition(selectedBoundary.index, 'none')}>OFF</button>
+                <button className={selectedBoundary.requested > 0 ? 'is-selected' : ''} onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', selectedBoundary.requested || Math.min(0.5, selectedBoundary.maxFade) || 0.25)}>FADE</button>
                 <button disabled title="Crossfade overlaps the clips and needs the encoder rework planned next.">X-FADE</button>
               </div>
-              {selectedBoundary.fade > 0 && (
+              {selectedBoundary.requested > 0 && (
                 <div className="boundary-duration" title={`Longest fade that fits this cut: ${selectedBoundary.maxFade.toFixed(2)}s`}>
-                  <button onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', Math.max(0.25, selectedBoundary.fade - 0.25))} disabled={selectedBoundary.fade <= 0.25} aria-label="Shorter fade">−</button>
-                  <span className="boundary-duration-value">{selectedBoundary.fade.toFixed(2)}s</span>
-                  <button onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', Math.min(selectedBoundary.maxFade, selectedBoundary.fade + 0.25))} disabled={selectedBoundary.fade >= selectedBoundary.maxFade} aria-label="Longer fade">+</button>
+                  <button onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', Math.max(0.25, selectedBoundary.requested - 0.25))} disabled={selectedBoundary.requested <= 0.25} aria-label="Shorter fade">−</button>
+                  <span className="boundary-duration-value">{selectedBoundary.requested.toFixed(2)}s</span>
+                  <button onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', selectedBoundary.requested + 0.25)} aria-label="Longer fade">+</button>
+                  {selectedBoundary.fade < selectedBoundary.requested && <small className="boundary-clamped">RENDERS {selectedBoundary.fade.toFixed(2)}s</small>}
                 </div>
               )}
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close transition editor">×</button>
@@ -669,11 +830,12 @@ export const EditJobApp: React.FC = () => {
             ? <><span className="editor-confirm">DISCARD UNSAVED CHANGES?</span><button onClick={() => setConfirmingDiscard(false)}>KEEP EDITING</button><button className="editor-danger" onClick={() => void window.electronAPI?.cancelEditJob()}>DISCARD</button></>
             : <><button onClick={() => (dirty ? setConfirmingDiscard(true) : void window.electronAPI?.cancelEditJob())}>CANCEL</button><button className="primary-retro" onClick={() => {
               const patch: EditJobPatch = {
-                id: draft.id,
-                preset: draft.preset,
-                outputFilename: draft.outputFilename,
-                outputFilenameManuallySet: draft.outputFilenameManuallySet,
-                transitions: draft.transitions,
+                id: latest().id,
+                preset: latest().preset,
+                outputFilename: latest().outputFilename,
+                outputFilenameManuallySet: latest().outputFilenameManuallySet,
+                transitions: latest().transitions,
+                sourceFps: sourceFpsOverrides(latest()),
               }
               void window.electronAPI?.applyEditJob(patch)
             }} disabled={!dirty} title={dirty ? undefined : 'NO CHANGES TO APPLY.'}>OK / APPLY</button></>}
