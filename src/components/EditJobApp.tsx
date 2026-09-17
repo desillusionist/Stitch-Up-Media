@@ -20,6 +20,9 @@ const RESOLUTIONS: Array<EncodingPreset['resolution']> = ['source', '4k', '1080p
 const LANE_LABEL_WIDTH = 102
 const ZOOM_MIN = 1
 const ZOOM_MAX = 8
+/** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
+const TAP_THRESHOLD_MS = 250
+const SLOW_MOTION_RATE = 0.5
 
 /** The fields this window owns. Everything else on a task belongs to the queue. */
 const editableSlice = (task: QueueTask) => ({
@@ -120,7 +123,7 @@ export const EditJobApp: React.FC = () => {
   const timelineSignature = draft ? JSON.stringify([
     draft.type, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
     draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo,
-    draft.preset.fps, draft.stillImageDuration,
+    draft.preset.fps, draft.stillImageDuration, draft.transitions,
   ]) : ''
 
   // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source
@@ -157,11 +160,14 @@ export const EditJobApp: React.FC = () => {
     () => (draft ? buildTimeline(draft, { resolveTiming }) : null),
     [timelineSignature, probedTiming],
   )
+  // Frame rate of the primary source, for stepping and reverse. Kept separate from
+  // the displayed rate because the hook is created before a segment is known.
+  const primaryFps = draft ? sourceFps(draft, draft.sourcePaths[0], undefined, resolveTiming) : 25
 
   const playback = useConsolidatedPlayback(
     model ?? { lanes: [], duration: 0, unusedVideoSources: [] },
     audioElementsRef,
-    { playable: Boolean(model && model.duration > 0) },
+    { playable: Boolean(model && model.duration > 0), fps: primaryFps },
   )
 
   const focusedSourceIndex = playback.segmentIndex
@@ -183,6 +189,11 @@ export const EditJobApp: React.FC = () => {
   const timelineDuration = model?.duration ?? 0
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
   const audioLaneIds = (model?.lanes ?? []).filter((lane) => !lane.embedded).map((lane) => lane.id).join('|')
+  const fps = draft ? sourceFps(draft, playback.segment?.sourcePath ?? draft.sourcePaths[0], undefined, resolveTiming) : 25
+  const playbackRef = useRef(playback)
+  playbackRef.current = playback
+  const stepFpsRef = useRef(fps)
+  stepFpsRef.current = Math.max(1, fps)
 
   // The monitor fades through black exactly where the encoder will, since both
   // read the same applied fade on the segment.
@@ -195,6 +206,66 @@ export const EditJobApp: React.FC = () => {
     if (activeSegment.fadeOut && segmentLocalTime > activeSegment.duration - activeSegment.fadeOut) gain = Math.min(gain, Math.max(0, (activeSegment.duration - segmentLocalTime) / activeSegment.fadeOut))
     return Math.max(0, Math.min(1, gain))
   })()
+
+  /**
+   * J / K / L shuttle, following the convention editing software uses: J and L
+   * ramp backwards and forwards, K stops, K held with J or L is slow motion, and
+   * a press too short to be a hold steps a single frame instead.
+   */
+  const heldKeysRef = useRef({ k: false })
+  const slowMotionRef = useRef(false)
+  const tapTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const clearTap = () => {
+      if (tapTimerRef.current != null) { window.clearTimeout(tapTimerRef.current); tapTimerRef.current = null }
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      const key = event.key.toLowerCase()
+      if (key === 'k') {
+        event.preventDefault()
+        if (!event.repeat) { heldKeysRef.current.k = true; playbackRef.current.pause() }
+        return
+      }
+      if ((key !== 'j' && key !== 'l') || event.repeat) return
+      event.preventDefault()
+      const direction: 1 | -1 = key === 'l' ? 1 : -1
+      if (heldKeysRef.current.k) {
+        clearTap()
+        tapTimerRef.current = window.setTimeout(() => {
+          tapTimerRef.current = null
+          slowMotionRef.current = true
+          playbackRef.current.setShuttleRate(direction * SLOW_MOTION_RATE)
+        }, TAP_THRESHOLD_MS)
+        return
+      }
+      playbackRef.current.shuttle(direction)
+    }
+    const onKeyUp = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase()
+      if (key === 'k') { heldKeysRef.current.k = false; return }
+      if (key !== 'j' && key !== 'l') return
+      const direction: 1 | -1 = key === 'l' ? 1 : -1
+      if (tapTimerRef.current != null) {
+        // Released before the threshold, so it was a tap: step one whole frame.
+        clearTap()
+        playbackRef.current.step(direction / stepFpsRef.current)
+        return
+      }
+      if (slowMotionRef.current) { slowMotionRef.current = false; playbackRef.current.setShuttleRate(0); return }
+      if (heldKeysRef.current.k) return
+      playbackRef.current.setShuttleRate(0)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      clearTap()
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+    }
+  }, [])
 
   // Spacebar is the transport, unless the caret is in a field.
   useEffect(() => {
@@ -276,7 +347,6 @@ export const EditJobApp: React.FC = () => {
   const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
   const sequenceSources = new Set([...Object.keys(draft.sequenceInputs || {}), ...(draft.sequenceInput ? [draft.sequenceInput.firstFrame] : [])])
   const playable = model.duration > 0
-  const fps = sourceFps(draft, playback.segment?.sourcePath ?? focusedSource, undefined, resolveTiming)
   const stamp = (seconds: number) => settings?.timestampDisplayMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
   const segmentDetail = (segment: TimelineSegment) => {
     const parts = [stamp(segment.duration)]
@@ -404,6 +474,9 @@ export const EditJobApp: React.FC = () => {
             <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
             <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playback.playing ? '||' : '\u25b6'}] PLAY</button>
             <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
+            <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 ? ' is-fast' : ''}`}>
+              {playback.shuttleRate > 0 ? `\u25b6 ${playback.shuttleRate}\u00d7` : playback.shuttleRate < 0 ? `\u25c0 ${Math.abs(playback.shuttleRate)}\u00d7` : playback.playing ? '\u25b6 1\u00d7' : '\u275a\u275a'}
+            </span>
             <span>{stamp(playback.position)} / {stamp(duration)}</span>
             <input
               type="range"
@@ -419,7 +492,7 @@ export const EditJobApp: React.FC = () => {
           <div className="editor-preview-actions">
             <button onClick={() => void openNativePreview()} disabled={!mediaTarget}>OPEN FRAME-ACCURATE PREVIEW</button>
           </div>
-          <div className="editor-note">&gt; SPACEBAR PLAYS AND PAUSES. SCRUB ANYWHERE, OR CLICK A LANE BELOW TO JUMP. IN AND OUT POINTS ARE SET IN THE NATIVE PREVIEW AND COME BACK TO THE QUEUE.</div>
+          <div className="editor-note">&gt; SPACE PLAYS. J / L SHUTTLE (PRESS AGAIN TO SPEED UP), K STOPS, K+J / K+L IS SLOW, AND A QUICK TAP STEPS ONE FRAME. IN AND OUT POINTS COME FROM THE NATIVE PREVIEW.</div>
         </section>
 
         <section className="timeline-panel">
@@ -435,7 +508,13 @@ export const EditJobApp: React.FC = () => {
           </div>
           <div className="timeline-lanes" ref={timelineScrollRef}>
             <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${zoom * 100}%` }}>
-              <div className="timeline-ruler">{Array.from({ length: 5 }, (_, index) => (duration * index) / 4).map((seconds) => <span key={seconds}>{duration > 0 ? stamp(seconds) : '--:--:--.--'}</span>)}</div>
+              <div className="timeline-ruler">
+                {Array.from({ length: 5 }, (_, index) => index / 4).map((fraction) => (
+                  <span key={fraction} style={{ left: `${fraction * 100}%`, transform: fraction === 0 ? 'none' : fraction === 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
+                    {duration > 0 ? stamp(duration * fraction) : '--:--:--.--'}
+                  </span>
+                ))}
+              </div>
               {model.lanes.map((lane) => (
                 <div className="timeline-lane" key={lane.id}>
                   <div className="timeline-lane-head">
@@ -479,25 +558,21 @@ export const EditJobApp: React.FC = () => {
           </div>
           {selectedBoundary && (
             <div className="boundary-editor">
-              <div className="boundary-editor-head">
-                <span className="panel-kicker">TRANSITION // AFTER {sourceName(selectedBoundary.source)}</span>
-                <button className="boundary-close" onClick={() => setOpenBoundary(null)}>CLOSE</button>
-              </div>
+              <span className="boundary-title">CUT {selectedBoundary.index + 1}\u2192{selectedBoundary.index + 2}</span>
               <div className="boundary-options">
                 <button className={selectedBoundary.fade > 0 ? '' : 'is-selected'} onClick={() => setBoundaryTransition(selectedBoundary.index, 'none')} disabled={selectedBoundary.maxFade <= 0}>NONE</button>
-                <button className={selectedBoundary.fade > 0 ? 'is-selected' : ''} onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', selectedBoundary.fade || Math.min(0.5, selectedBoundary.maxFade) || 0.25)} disabled={selectedBoundary.maxFade <= 0}>FADE IN / OUT</button>
-                <button disabled title="Crossfade overlaps the clips and needs the encoder rework planned next.">CROSSFADE — LATER</button>
+                <button className={selectedBoundary.fade > 0 ? 'is-selected' : ''} onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', selectedBoundary.fade || Math.min(0.5, selectedBoundary.maxFade) || 0.25)} disabled={selectedBoundary.maxFade <= 0}>FADE</button>
+                <button disabled title="Crossfade overlaps the clips and needs the encoder rework planned next.">CROSSFADE</button>
               </div>
               {selectedBoundary.fade > 0 && (
                 <div className="boundary-duration">
-                  <span className="panel-kicker">LENGTH</span>
                   <button onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', Math.max(0.25, selectedBoundary.fade - 0.25))} disabled={selectedBoundary.fade <= 0.25} aria-label="Shorter fade">−</button>
                   <span className="boundary-duration-value">{selectedBoundary.fade.toFixed(2)}s</span>
                   <button onClick={() => setBoundaryTransition(selectedBoundary.index, 'fade', Math.min(selectedBoundary.maxFade, selectedBoundary.fade + 0.25))} disabled={selectedBoundary.fade >= selectedBoundary.maxFade} aria-label="Longer fade">+</button>
-                  <small>APPLIED TO BOTH SIDES OF THE CUT, THROUGH BLACK. CAPPED AT {selectedBoundary.maxFade.toFixed(2)}s BY THE SHORTER CLIP.</small>
+                  <small>MAX {selectedBoundary.maxFade.toFixed(2)}s</small>
                 </div>
               )}
-              {selectedBoundary.maxFade <= 0 && <div className="editor-note">&gt; ONE OF THESE CLIPS HAS NO KNOWN LENGTH YET, SO NO FADE CAN BE PLACED.</div>}
+              <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close transition editor">×</button>
             </div>
           )}
           {model.unusedVideoSources.length > 0 && <div className="editor-note">&gt; {model.unusedVideoSources.length} EXTRA VIDEO SOURCE(S) ({model.unusedVideoSources.map(sourceName).join(', ')}) ARE NOT USED: COMBO DISPATCHES TO THE MULTI-TRACK ENCODER PATH, WHICH MAPS ONE VIDEO STREAM. SPLIT INTO A STITCH JOB TO CONCATENATE THEM.</div>}
