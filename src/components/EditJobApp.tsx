@@ -345,31 +345,21 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
-   * Where the cuts sit on the main lane, as a fraction of its length.
+   * The cuts on the main lane, where a transition can sit.
    *
    * Transitions only exist between concatenated clips, which is the main lane of a
    * stitch and of a combo that concatenates its visuals. A multi-track job maps a
-   * single video stream, so it has no cut to offer. The fraction is measured against
-   * the lane rather than carried on a clip, so a marker lands on the cut however the
-   * clips happen to be laid out.
+   * single video stream, so it has no cut to offer.
    */
   const mainLane = model.lanes[0]
-  const cutMarkers = (() => {
-    const segments = mainLane?.segments ?? []
-    if (!mainLane || mainLane.duration <= 0 || segments.length < 2) return []
-    let cursor = 0
-    return segments.slice(0, -1).map((clip, index) => {
-      cursor += clip.duration
-      return { index, sourcePath: clip.sourcePath, fraction: cursor / mainLane.duration }
-    })
-  })()
+  const cuts = (mainLane?.segments ?? []).slice(0, -1).map((clip, index) => ({ index, sourcePath: clip.sourcePath }))
 
   /** Transitions are keyed by the clip BEFORE the boundary, like trim points. */
   const setBoundaryTransition = (index: number, type: TransitionType, duration = 0.5) => {
-    const marker = cutMarkers.find((candidate) => candidate.index === index)
-    if (!marker) return
+    const cut = cuts.find((candidate) => candidate.index === index)
+    if (!cut) return
     const next = { ...(draft.transitions || {}) }
-    const key = `${marker.sourcePath}#${index}`
+    const key = `${cut.sourcePath}#${index}`
     if (type === 'none') delete next[key]
     else next[key] = { type, duration }
     updateDraft({ transitions: Object.keys(next).length ? next : undefined })
@@ -396,18 +386,18 @@ export const EditJobApp: React.FC = () => {
   }
   const duration = model.duration
 
-  const showBoundaries = cutMarkers.length > 0
+  const showBoundaries = cuts.length > 0
   // A single frame in and a single frame out has nothing to time.
   const stillFrameJob = isStillFrameJob(draft)
   const selectedBoundary = (() => {
     if (openBoundary == null) return null
-    const marker = cutMarkers.find((candidate) => candidate.index === openBoundary)
+    const cut = cuts.find((candidate) => candidate.index === openBoundary)
     const segments = mainLane?.segments ?? []
-    if (!marker || !segments[openBoundary] || !segments[openBoundary + 1]) return null
-    const transition = draft.transitions?.[`${marker.sourcePath}#${openBoundary}`]
+    if (!cut || !segments[openBoundary] || !segments[openBoundary + 1]) return null
+    const transition = draft.transitions?.[`${cut.sourcePath}#${openBoundary}`]
     return {
       index: openBoundary,
-      source: marker.sourcePath,
+      source: cut.sourcePath,
       fade: transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0,
       maxFade: maxFadeAtBoundary(segments[openBoundary].duration, segments[openBoundary + 1].duration),
     }
@@ -566,32 +556,32 @@ export const EditJobApp: React.FC = () => {
                     <span>{lane.label}</span>
                   </div>
                   <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
-                    {lane.segments.map((segment) => (
+                    {lane.segments.map((segment, index) => (
                       <div
                         key={segment.key}
                         className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}`}
-                        style={{ flexGrow: Math.max(segment.duration, 0.001) }}
+                        style={{ flexBasis: `${duration > 0 ? (segment.duration / duration) * 100 : 0}%` }}
                         title={clipTitle(segment)}
                       >
                         <span className="timeline-clip-name">{sourceName(segment.sourcePath)}</span>
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                         {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
+                        {/* Anchored to this clip's own trailing edge, so the marker is on
+                            the cut by construction. No arithmetic on the timeline's
+                            length is involved, which is what put every marker far down
+                            the lane in a combo whose audio outlasted the video. */}
+                        {lane.id === mainLane?.id && index < lane.segments.length - 1 && (
+                          <button
+                            className={`boundary-add${(draft.transitions?.[`${segment.sourcePath}#${index}`]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === index ? ' is-open' : ''}`}
+                            onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === index ? null : index) }}
+                            aria-label={`Add a transition after ${sourceName(segment.sourcePath)}`}
+                            title={`Transition after ${sourceName(segment.sourcePath)}`}
+                          />
+                        )}
                       </div>
                     ))}
-                    {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexGrow: laneGap(lane) }} title="No media on this lane" />}
-                    {/* A marker is placed by its share of the lane, not off a clip edge, so
-                        it lands on the cut whatever the neighbouring clips render at. */}
-                    {lane.id === mainLane?.id && cutMarkers.map((marker) => (
-                      <button
-                        key={marker.index}
-                        className={`boundary-add${(draft.transitions?.[`${marker.sourcePath}#${marker.index}`]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === marker.index ? ' is-open' : ''}`}
-                        style={{ left: `${marker.fraction * 100}%` }}
-                        onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === marker.index ? null : marker.index) }}
-                        aria-label={`Add a transition after ${sourceName(marker.sourcePath)}`}
-                        title={`Transition after ${sourceName(marker.sourcePath)}`}
-                      />
-                    ))}
+                    {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexBasis: `${(laneGap(lane) / duration) * 100}%` }} title="No media on this lane" />}
                   </div>
                 </div>
               ))}

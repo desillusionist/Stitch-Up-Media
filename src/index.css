@@ -242,21 +242,35 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .lane-mute:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .lane-mute.is-muted { color: var(--ui-error); border-color: var(--ui-error); background: rgba(201, 133, 133, .12); }
 .timeline-lane-track { position: relative; flex: 1; display: flex; align-items: stretch; min-width: 0; cursor: pointer; }
-.timeline-lane .timeline-clip { flex: 1 1 0; min-width: 0; margin: 5px 0; display: block; position: relative; overflow: visible; }
-.timeline-lane .timeline-clip small { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* A clip is sized by an explicit percentage of the output, never by flex-grow.
+   A grow factor is distributed over free space, so each clip's share depended on
+   what the others took, and this box was border-box with padding and a border,
+   which floored its flex base at sixteen pixels and handed every clip that much on
+   top of its share. Widths then stopped being proportional to duration and every
+   cut sat a few pixels off the time it stood for.
+   The padding moves to the text inside and the frame is drawn with an outline,
+   neither of which takes part in layout, so the floor is zero and a clip stays
+   proportional even when a long audio track squeezes it down to a few pixels at
+   fit zoom. An outline also leaves the padding box equal to the element's box,
+   which is what an absolutely positioned marker measures its offset against. */
+.timeline-lane .timeline-clip { flex: 0 0 auto; min-width: 0; margin: 5px 0; padding: 0; border: 0; outline: 1px solid var(--ui-accent); outline-offset: -1px; display: block; position: relative; overflow: visible; }
+.timeline-lane .timeline-clip small { display: block; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; }
 .timeline-lane .timeline-clip:hover { background: rgba(159, 191, 154, .08); }
-.timeline-lane .timeline-clip.is-active { border-color: var(--ui-foreground); background: rgba(159, 191, 154, .14); }
-.timeline-lane .timeline-clip.is-trimmed { border-style: dashed; }
-.timeline-lane-track.is-audio .timeline-clip { border-color: var(--ui-paused); }
-.timeline-fill { flex: 1 1 0; min-width: 0; margin: 5px 0; border: 1px dashed var(--ui-border-dim); opacity: .5; }
+.timeline-lane .timeline-clip.is-active { outline-color: var(--ui-foreground); background: rgba(159, 191, 154, .14); }
+.timeline-lane .timeline-clip.is-trimmed { outline-style: dashed; }
+.timeline-lane-track.is-audio .timeline-clip { outline-color: var(--ui-paused); }
+.timeline-fill { flex: 0 0 auto; min-width: 0; margin: 5px 0; border: 1px dashed var(--ui-border-dim); opacity: .5; }
 .timeline-playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ui-accent); pointer-events: none; z-index: 2; }
-.timeline-clip-name { display: block; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
+.timeline-clip-name { display: block; padding: 7px 6px 0; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
 
 /* Clip-boundary transitions: a fade through black on both sides of the cut. */
 .clip-fade { position: absolute; top: 0; bottom: 0; pointer-events: none; }
 .clip-fade-in { left: 0; background: linear-gradient(to right, rgba(0, 0, 0, .92), rgba(0, 0, 0, 0)); }
 .clip-fade-out { right: 0; background: linear-gradient(to left, rgba(0, 0, 0, .92), rgba(0, 0, 0, 0)); }
-.boundary-add { position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 3; box-sizing: border-box; width: 17px; height: 17px; padding: 0; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); }
+/* Sits on the clip's trailing edge, which IS the cut. Half the box is the whole
+   offset, so the box is centred on the edge by construction rather than by any
+   arithmetic on the timeline's length. */
+.boundary-add { position: absolute; top: 50%; right: -8.5px; transform: translateY(-50%); z-index: 3; box-sizing: border-box; width: 17px; height: 17px; padding: 0; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); }
 /* The plus is drawn rather than typed, and centred with inset/margin auto rather
    than left/top 50 per cent: that pair resolves against the padding box, so the
    border used to push the glyph a pixel off centre. */
