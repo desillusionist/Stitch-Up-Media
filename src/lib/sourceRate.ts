@@ -1,4 +1,5 @@
 import { QueueTask } from '../types'
+import { dropPreviewsFor } from './quickLookTarget'
 
 /**
  * Records a source's frame rate, and throws away anything built at the old one.
@@ -18,9 +19,9 @@ export const withSourceRate = (task: QueueTask, sourcePath: string, fps: number)
   const reflow = (sequence: QueueTask['sequenceInput']): QueueTask['sequenceInput'] =>
     sequence ? { ...sequence, fps, duration: sequence.frameCount / fps } : sequence
   const previews = { ...(task.imageSequencePreviews || {}) }
-  // A sequence's generated clip is keyed by its first frame, which is the path it is
-  // stored under, so this one deletion covers a still and a sequence alike.
-  delete previews[sourcePath]
+  // A generated clip is keyed partly by the rate it was rendered at, and partly by the
+  // length a still was given, so every clip for this source is now stale.
+  dropPreviewsFor(previews, sourcePath)
   return {
     ...task,
     sourceMetadata: {

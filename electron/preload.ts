@@ -22,6 +22,9 @@ export interface IElectronAPI {
   quickLook: (path: string, taskId?: string, trimStart?: number, trimEnd?: number, sourceIndex?: number, stillMode?: boolean, screenshotDirectory?: string, timestampDisplayMode?: 'timestamp' | 'framestamp', sequenceFps?: number, sequenceFrameCount?: number) => Promise<void>
   onQuickLookTrimmed: (callback: (taskId: string, path: string) => void) => () => void
   onQuickLookPoints: (callback: (taskId: string, path: string, start: number, end: number, sourceIndex: number) => void) => () => void
+  /** Tells the queue a generated clip exists, so it survives the window that built it. */
+  rememberPreview: (taskId: string, sourceKey: string, previewPath: string) => Promise<void>
+  onSequencePreviewReady: (callback: (taskId: string, sourceKey: string, previewPath: string) => void) => () => void
   selectOutputFilename: (path: string, container: string) => Promise<string | null>
   showItemInFolder: (path: string) => Promise<void>
   getSettings: () => Promise<AppSettings>
@@ -81,6 +84,12 @@ const api: IElectronAPI = {
     const handler = (_: any, payload: { taskId: string; path: string; start: number; end: number; sourceIndex: number }) => callback(payload.taskId, payload.path, payload.start, payload.end, payload.sourceIndex)
     ipcRenderer.on('quicklook-points', handler)
     return () => ipcRenderer.removeListener('quicklook-points', handler)
+  },
+  rememberPreview: (taskId: string, sourceKey: string, previewPath: string) => ipcRenderer.invoke('remember-preview', taskId, sourceKey, previewPath),
+  onSequencePreviewReady: (callback) => {
+    const handler = (_: any, payload: { taskId: string; sourceKey: string; previewPath: string }) => callback(payload.taskId, payload.sourceKey, payload.previewPath)
+    ipcRenderer.on('sequence-preview-ready', handler)
+    return () => ipcRenderer.removeListener('sequence-preview-ready', handler)
   },
   selectOutputFilename: (path: string, container: string) => ipcRenderer.invoke('select-output-filename', path, container),
   showItemInFolder: (path: string) => ipcRenderer.invoke('show-item-in-folder', path),

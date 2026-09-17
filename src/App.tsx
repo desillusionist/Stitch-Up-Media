@@ -12,7 +12,7 @@ import { DEFAULT_PRESETS } from './constants/presets'
 import { detectSequences, isImagePath } from './lib/detectSequences'
 import { deriveOutputFilename } from './lib/outputNaming'
 import { mediaKind } from './lib/mediaKind'
-import { resolveQuickLookRequest } from './lib/quickLookTarget'
+import { resolveQuickLookRequest, dropPreviewsFor, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
 import { rekeyClipMap } from './lib/timelineModel'
 
 /**
@@ -46,6 +46,21 @@ const stillFpsMetadata = (
     .filter((filePath) => mediaKind(filePath) === 'image' && filePath !== sequenceFrame)
     .map((filePath) => [filePath, { fps }] as const)
   return entries.length ? Object.fromEntries(entries) : undefined
+}
+
+/**
+ * Records a generated clip against the source it was built for.
+ *
+ * Keyed by source and the parameters it was built at, so the file name stays stable
+ * between opens: that is what lets the frame-accurate helper remember its in/out points
+ * instead of generating new footage every time. Any clip for the same source built at
+ * other parameters is dropped with it.
+ */
+const rememberPreview = (task: QueueTask, sourceKey: string, previewPath: string): QueueTask => {
+  const previews = { ...(task.imageSequencePreviews || {}) }
+  dropPreviewsFor(previews, sourceOfPreviewKey(sourceKey))
+  previews[sourceKey] = previewPath
+  return { ...task, imageSequencePreviews: previews }
 }
 
 /**
@@ -250,12 +265,22 @@ export const App: React.FC = () => {
       })
 
       const unsubscribeFinished = window.electronAPI.onQueueFinished(() => setIsQueueRunning(false))
-      const unsubscribePoints = window.electronAPI.onQuickLookPoints((taskId, sourcePath, start, end, sourceIndex) => {
+      const unsubscribePoints = window.electronAPI.onQuickLookPoints((taskId, reportedPath, start, end, sourceIndex) => {
         setTasks((prev) => prev.map((task) => {
           if (task.id !== taskId) return task
-          const originalSource = Object.entries(task.imageSequencePreviews || {}).find(([, preview]) => preview === sourcePath)?.[0] || sourcePath
+          // The helper reports the file it was handed, which for a still or a sequence is
+          // a generated clip. In/out points belong to the media the user picked, so the
+          // clip is tied back to its source; filing them against the clip would lose them
+          // the moment it was rebuilt.
+          const originalSource = sourceOfPreview(task.imageSequencePreviews, reportedPath) || reportedPath
           return { ...task, trimPoints: { ...(task.trimPoints || {}), [`${originalSource}#${sourceIndex}`]: { in: start, out: end } } }
         }))
+      })
+      // A clip built in the EDIT JOB window is persisted here the moment it exists, rather
+      // than only when that window is applied: the trim points that come back on close have
+      // to find it, and the next open should find it too instead of building another.
+      const unsubscribePreview = window.electronAPI.onSequencePreviewReady((taskId, sourceKey, previewPath) => {
+        setTasks((prev) => prev.map((task) => task.id === taskId ? rememberPreview(task, sourceKey, previewPath) : task))
       })
       const unsubscribeError = window.electronAPI.onTaskError((taskId, error) => {
         setTasks((prev) =>
@@ -270,6 +295,7 @@ export const App: React.FC = () => {
         unsubscribeError()
         unsubscribeFinished()
         unsubscribePoints()
+        unsubscribePreview()
       }
     }
   }, [])
@@ -494,7 +520,7 @@ export const App: React.FC = () => {
     if (!request) return
     if (request.regeneratedPreview) {
       const { sourceTarget, path: previewPath } = request.regeneratedPreview
-      setTasks((current) => current.map((item) => item.id === task.id ? { ...item, imageSequencePreviews: { ...(item.imageSequencePreviews || {}), [sourceTarget]: previewPath } } : item))
+      setTasks((current) => current.map((item) => item.id === task.id ? rememberPreview(item, sourceTarget, previewPath) : item))
     }
     void window.electronAPI?.quickLook(request.target, task.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings.screenshotDirectory, settings.timestampDisplayMode || 'timestamp', request.sequenceFps, request.sequenceFrameCount)
   }

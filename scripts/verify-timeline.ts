@@ -1,6 +1,7 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceRate } from '../src/lib/sourceRate'
+import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -249,6 +250,40 @@ console.log('\n== a zoomed timeline follows the skimmer ==')
   const walked = scrollToKeepVisible({ ...zoomed, scrollLeft: 0, offset: 3000 })
   near('a long step still lands the skimmer in view', walked!, 2541)
   check('and the answer really is in view', walked! + 918 >= 3000, true)
+}
+
+console.log('\n== a generated clip is keyed by what it was built with ==')
+{
+  // A sequence's clip is identified by its source alone.
+  check('a plain key is the source', previewKey('/seq/f_0001.png'), '/seq/f_0001.png')
+  // A still's also carries the rate and length, so changing either misses the cache and
+  // rebuilds instead of handing back footage at parameters the user replaced.
+  const at25 = previewKey('/frame.png', 'still:25:10')
+  const at30 = previewKey('/frame.png', 'still:30:10')
+  const longer = previewKey('/frame.png', 'still:25:20')
+  check('a different rate is a different clip', at25 === at30, false)
+  check('a different length is a different clip', at25 === longer, false)
+  check('and both still name their source', [sourceOfPreviewKey(at25), sourceOfPreviewKey(at30)], ['/frame.png', '/frame.png'])
+
+  // The helper reports the clip it was handed on close, so the clip has to lead back to
+  // the media the user picked, or the in/out points are filed against a file name that
+  // will not exist the next time the helper opens.
+  const previews = { [at30]: '/tmp/still-30fps.mp4', '/other.mp4': '/tmp/other.mp4' }
+  check('a clip leads back to its source', sourceOfPreview(previews, '/tmp/still-30fps.mp4'), '/frame.png')
+  check('a source that was never generated leads nowhere', sourceOfPreview(previews, '/tmp/unknown.mp4'), null)
+
+  const pruned = { ...previews, [at25]: '/tmp/still-25fps.mp4' }
+  dropPreviewsFor(pruned, '/frame.png')
+  check('every clip for one source is dropped together', pruned, { '/other.mp4': '/tmp/other.mp4' })
+
+  // A rate change invalidates a still's clip even though its key is not the source path.
+  const stillTask = {
+    id: 's', type: 'transcode', status: 'pending', progress: 0,
+    sourcePaths: ['/frame.png'], outputDirectory: '/out', outputFilename: 'o.mov', sourceBaseName: 'frame',
+    preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    imageSequencePreviews: { [at30]: '/tmp/still-30fps.mp4', '/other.mp4': '/tmp/other.mp4' },
+  } as unknown as QueueTask
+  check('a rate change drops a still clip built at the old rate', withSourceRate(stillTask, '/frame.png', 60).imageSequencePreviews, { '/other.mp4': '/tmp/other.mp4' })
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

@@ -17,7 +17,7 @@ export interface QuickLookRequest {
   trimOut?: number
   sequenceFps?: number
   sequenceFrameCount?: number
-  /** A sequence thumbnail this call had to regenerate; the caller may want to persist it. */
+  /** A generated clip this call had to build; the caller may want to persist it. */
   regeneratedPreview?: { sourceTarget: string; path: string }
   /**
    * A timed clip was needed for this still but could not be built, so the request
@@ -25,6 +25,41 @@ export interface QuickLookRequest {
    * the frame is footage.
    */
   previewUnavailable?: boolean
+}
+
+/** Separates a source path from the build parameters in a preview cache key. */
+const PREVIEW_SPEC = '\u0000'
+
+/**
+ * The cache key a generated clip is stored under.
+ *
+ * A generated clip is a real file rendered at a rate and, for a still, a length, so
+ * those parameters belong in the key. A still's clip used to be neither cached nor
+ * keyed at all, which is why the frame-accurate helper rebuilt one on every single
+ * open, and why the in/out points it reported on close were stored against a file name
+ * the next open could never produce again.
+ */
+export const previewKey = (sourcePath: string, spec?: string): string =>
+  spec ? `${sourcePath}${PREVIEW_SPEC}${spec}` : sourcePath
+
+/** The logical source a cache key belongs to. */
+export const sourceOfPreviewKey = (key: string): string => key.split(PREVIEW_SPEC)[0]
+
+/**
+ * The logical source a generated clip belongs to, or null when it is not one of ours.
+ *
+ * The native helper reports the file it was given, which for a still or a sequence is a
+ * generated clip rather than the media the user picked, so the two have to be tied back
+ * together or the trim would be filed against an ephemeral file name.
+ */
+export const sourceOfPreview = (previews: Record<string, string> | undefined, previewPath: string): string | null => {
+  const entry = Object.entries(previews || {}).find(([, preview]) => preview === previewPath)
+  return entry ? sourceOfPreviewKey(entry[0]) : null
+}
+
+/** Drops every generated clip recorded for a source, whatever it was built at. */
+export const dropPreviewsFor = (previews: Record<string, string>, sourcePath: string): void => {
+  Object.keys(previews).forEach((key) => { if (sourceOfPreviewKey(key) === sourcePath) delete previews[key] })
 }
 
 /**
@@ -62,19 +97,20 @@ export const resolveQuickLookRequest = async (
   // helper is handed a video file and quietly shows nothing.
   const needsPreview = Boolean(sequence) || timedStill
 
-  // Only an interpreted sequence is cached: its length comes from the frames, so a
-  // cached clip stays valid. A timed still's clip is only valid for the length it
-  // was built at, and the cache is keyed by source alone, so it is rebuilt every
-  // time rather than being handed over at the wrong length.
-  let existingPreview = sourceTarget && sequence ? task.imageSequencePreviews?.[sourceTarget] : undefined
+  const rate = sourceTarget ? sourceFps(task, sourceTarget) : 0
+  const stillSeconds = Math.max(0.1, task.stillImageDuration || 10)
+  // A sequence's clip is identified by its source. A still's also carries the rate and
+  // length it was built at, so changing either one misses the cache and rebuilds rather
+  // than handing back footage at the parameters the user just replaced.
+  const cacheKey = sourceTarget ? previewKey(sourceTarget, timedStill && !sequence ? `still:${rate}:${stillSeconds}` : undefined) : undefined
+  let existingPreview = cacheKey ? task.imageSequencePreviews?.[cacheKey] : undefined
   let regeneratedPreview: QuickLookRequest['regeneratedPreview']
-  if (sourceTarget && needsPreview && (!existingPreview || !(await bridge?.pathExists?.(existingPreview)))) {
+  if (cacheKey && needsPreview && (!existingPreview || !(await bridge?.pathExists?.(existingPreview)))) {
     // A generated clip is rendered at a rate, so it has to be built at the rate every
     // other part of the app is showing. The one rule for that rate lives in the timeline
     // model, and it is the same number the helper stamps its frames with.
-    const rate = sourceFps(task, sourceTarget)
     const created = timedStill && !sequence
-      ? await bridge?.createImageSequencePreview?.([sourceTarget], { fps: rate, stillSeconds: Math.max(0.1, task.stillImageDuration || 10) })
+      ? await bridge?.createImageSequencePreview?.([sourceTarget as string], { fps: rate, stillSeconds })
       : await bridge?.createImageSequencePreview?.(sequence?.files?.length ? sequence.files : [sequence?.firstFrame || sourceTarget], {
         fps: rate,
         // The clip has to be exactly as long as the timeline believes the sequence is,
@@ -84,8 +120,10 @@ export const resolveQuickLookRequest = async (
       })
     if (created) {
       existingPreview = created
-      // Only sequences are worth caching, for the reason above.
-      if (!timedStill || sequence) regeneratedPreview = { sourceTarget, path: created }
+      // Reported for every kind of clip now, so a caller can persist it. Persisting is
+      // what keeps the clip's path stable between opens, which is what lets the in/out
+      // points reported on close be filed against the source they belong to.
+      regeneratedPreview = { sourceTarget: cacheKey, path: created }
     }
   }
 

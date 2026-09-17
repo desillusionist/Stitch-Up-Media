@@ -601,6 +601,14 @@ export const EditJobApp: React.FC = () => {
     setPreviewNotice(request.previewUnavailable
       ? `COULD NOT BUILD A ${Math.round(draft.stillImageDuration || 10)}s CLIP FOR THIS STILL, SO THE FRAME IS SHOWN INSTEAD. THE FFMPEG ERROR IS IN THE LOG.`
       : null)
+    // A generated clip belongs to the task, not to this window, so it is reported back
+    // immediately rather than waiting to be applied. That is what lets the in/out points
+    // that come back when the helper closes be filed against the source the user picked,
+    // and what stops the next open building the same footage again.
+    if (request.regeneratedPreview) {
+      const { sourceTarget, path: previewPath } = request.regeneratedPreview
+      void window.electronAPI?.rememberPreview(draft.id, sourceTarget, previewPath)
+    }
     // A timed still is not an interpreted sequence, so the request carries no frame grid
     // for it and the helper would fall back to whatever rate the generated file happens
     // to report. Telling it the same rate and length the timeline uses keeps its frame

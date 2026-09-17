@@ -146,6 +146,14 @@ app.whenReady().then(() => {
     sendEditJobTask()
   })
   ipcMain.handle('cancel-edit-job', async () => { editJobWindow?.close() })
+  // A generated clip belongs to the task, not to the window that happened to build it,
+  // so the window reports it here and the queue records it. Without this the helper would
+  // rebuild the footage for every still it opens, and the in/out points reported on close
+  // would be filed against a file name that no longer exists.
+  ipcMain.handle('remember-preview', async (_, taskId: string, sourceKey: string, previewPath: string) => {
+    if (!taskId || !sourceKey || !previewPath) return
+    mainWindow?.webContents.send('sequence-preview-ready', { taskId, sourceKey, previewPath })
+  })
   ipcMain.handle('probe-media', async (_, filePath: string) => {
     logEvent('ipc', 'probe-media request', { filePath })
     try {
