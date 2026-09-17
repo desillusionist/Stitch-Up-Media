@@ -22,6 +22,13 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true },
 }])
 
+// One state directory, shared by the development app and the packaged build. Electron
+// derives the default from the app's own name, which is not the same in both, so settings
+// and the queue were only ever remembered within whichever one wrote them: a rebuild
+// looked like everything had been forgotten. Must run before the app is ready, and before
+// anything asks for the userData path.
+app.setPath('userData', path.join(app.getPath('appData'), 'stitch-up-media'))
+
 let mainWindow: BrowserWindow | null = null
 let queueManager: QueueManager | null = null
 let editJobWindow: BrowserWindow | null = null

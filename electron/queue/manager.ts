@@ -18,6 +18,9 @@ export class QueueManager {
     defaultImageDuration: 10,
     saveTempNextToSource: true,
     pauseOnHighLoad: false,
+    sequenceFps: 24,
+    defaultImageFps: 25,
+    timestampDisplayMode: 'timestamp',
   }
 
   constructor(private getMainWindow: () => BrowserWindow | null) {}

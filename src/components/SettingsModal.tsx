@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { X, Sliders, Bell, Folder } from 'lucide-react'
 import { AppSettings } from '../types'
 
@@ -11,6 +11,14 @@ interface SettingsModalProps {
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings, onSaveSettings }) => {
   const [localSettings, setLocalSettings] = useState<AppSettings>(settings)
+  // The panel is always mounted and merely returns null while closed, so this state was
+  // captured on the very first render, before the saved settings had been read back from
+  // disk. Opening it then showed the defaults, and saving wrote those defaults over every
+  // setting the user had not just touched. Re-sync on each open, and whenever the stored
+  // settings change underneath.
+  useEffect(() => {
+    if (isOpen) setLocalSettings(settings)
+  }, [isOpen, settings])
   if (!isOpen) return null
 
   const handleSelectDefaultOutput = async () => {

@@ -218,7 +218,9 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (window.electronAPI) {
       window.electronAPI.getSettings().then((s) => {
-        if (s) setSettings(s)
+        // Merged rather than replaced: the main process's copy is a partial record, so a
+        // wholesale replace dropped whichever settings it does not carry.
+        if (s) setSettings((current) => ({ ...current, ...s }))
       })
 
       const unsubscribeEditor = window.electronAPI.onEditJobApplied((patch) => {
