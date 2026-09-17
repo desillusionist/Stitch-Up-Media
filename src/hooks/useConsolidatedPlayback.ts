@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { nextShuttleRate } from '../lib/shuttleRates'
+import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
 const DRIFT_TOLERANCE = 0.25
@@ -45,9 +46,15 @@ export interface ConsolidatedPlayback {
  * - An anchored clock always continues from the current position, never from the
  *   start of the segment, or pausing on a still would jump backwards.
  *
+ * The anchored clock runs at the shuttle rate, because it is the only clock a
+ * still frame or a tail beyond the video has: without the rate a shuttle visibly
+ * dropped to normal speed on entering such a segment while the indicator still
+ * read 2x, 4x or 8x.
+ *
  * Reverse playback cannot use a media element (there is no negative playback
- * rate), so it is driven by stepping `currentTime` backwards, which is why the
- * reverse ladder stops at 4x.
+ * rate), so the anchored clock owns the playhead outright and the element is
+ * seeked frame by frame to paint it. Because that clock does not clamp at a
+ * segment edge, reverse can cross a cut, which the frame loop commits.
  */
 export const useConsolidatedPlayback = (
   model: TimelineModel,
@@ -84,10 +91,8 @@ export const useConsolidatedPlayback = (
   const loadedSourceRef = useRef<string | null>(null)
   /** Consolidated position waiting to be applied once the element can seek. */
   const pendingSeekRef = useRef<number | null>(null)
-  /** Anchored clock for still frames and for material past the end of the video. */
-  const anchorRef = useRef<{ position: number; startedAt: number; key: string | undefined } | null>(null)
-  /** Frames owed to reverse playback once they add up to a whole one. */
-  const reverseAccumulatorRef = useRef(0)
+  /** Anchored clock for stills, reverse, and material past the end of the video. */
+  const anchorRef = useRef<{ position: number; startedAt: number; key: string | undefined; direction: 1 | -1; rate: number } | null>(null)
 
   const indexForTime = useCallback((seconds: number) => {
     const segments = segmentsRef.current
@@ -150,9 +155,7 @@ export const useConsolidatedPlayback = (
     if (!video) return
     loadedSourceRef.current = current?.sourcePath ?? null
     applyPendingSeek(true)
-    pendingSeekRef.current = null
     anchorRef.current = null
-    reverseAccumulatorRef.current = 0
     setError(null)
     if (stateRef.current.playing && shuttleRef.current >= 0) startPlayback()
   }, [applyPendingSeek, startPlayback])
@@ -185,7 +188,7 @@ export const useConsolidatedPlayback = (
 
   useEffect(() => () => { detachRef.current?.() }, [])
 
-  /** The element's clock is authoritative while it is actually holding this segment. */
+  /** The clock that owns the playhead whenever no element is entitled to. */
   const readPosition = useCallback(() => {
     const snapshot = stateRef.current
     const current = snapshot.segment
@@ -194,32 +197,50 @@ export const useConsolidatedPlayback = (
     // A crossing or seek is in flight. Holding is the only safe answer, because
     // the element still holds the previous source and would report its clock.
     if (pendingSeekRef.current != null) return snapshot.position
+    const reverse = shuttleRef.current < 0
+    /**
+     * Advances the fallback clock, running at the shuttle rate so a shuttle keeps
+     * its speed across a container change. It rebases on the value it just
+     * computed rather than on the rendered position: that lags a frame, and
+     * rebasing on it rewound the playhead at every crossing.
+     */
     const anchored = (from: number) => {
-      const anchor = anchorRef.current
-      if (!anchor || anchor.key !== current?.key) {
-        anchorRef.current = { position: from, startedAt: now, key: current?.key }
-        return from
-      }
-      return anchor.position + (now - anchor.startedAt) / 1000
+      const advanced = advanceClock(anchorRef.current, {
+        from,
+        now,
+        key: current?.key,
+        reverse,
+        shuttleRate: shuttleRef.current,
+      })
+      anchorRef.current = advanced.anchor
+      return advanced.value
     }
 
-    // A still frame occupies its duration with nothing decoding. It must continue
-    // from wherever the playhead sits, not restart at the head of the segment.
+    // Reverse has no element clock and no way to leave a segment backwards through
+    // one, so the anchored clock owns the playhead and is free to cross a cut. The
+    // frame loop commits the crossing; clamping here would stall on the boundary.
+    if (reverse) {
+      const from = Math.max(0, Math.min(snapshot.duration, snapshot.position))
+      return Math.max(0, Math.min(snapshot.duration, anchored(from)))
+    }
+
+    // A still frame has no element clock, so it advances on the anchored clock. The
+    // clamp is to the segment end, which still lets the crossing happen because
+    // indexForTime reads the end of a segment as the start of the next one.
     if (current?.still) {
       const from = Math.max(current.start, Math.min(current.start + current.duration, snapshot.position))
       return Math.min(current.start + current.duration, anchored(from))
     }
 
     if (video && current && video.readyState >= 1) {
-      const local = video.currentTime - current.sourceIn
-      if (!video.ended && local >= -0.05) {
+      const owns = elementOwnsPosition(current, snapshot.position, { readyState: video.readyState, ended: video.ended, clock: video.currentTime })
+      if (owns) {
         anchorRef.current = null
-        return current.start + Math.max(0, local)
+        return current.start + Math.max(0, video.currentTime - current.sourceIn)
       }
-      // The element finished this source but the timeline continues: an added
+      // The element finished this source, or the playhead is beyond it: an added
       // track can outlast the video, so the tail runs on the anchored clock,
-      // continuing from wherever the playhead already sits rather than snapping
-      // back to the end of the video.
+      // continuing from wherever the playhead already sits.
       const tailFrom = Math.max(current.start + current.duration, Math.min(snapshot.duration, snapshot.position))
       return Math.min(snapshot.duration, anchored(tailFrom))
     }
@@ -229,33 +250,20 @@ export const useConsolidatedPlayback = (
     return snapshot.position
   }, [])
 
-  /** Walks the element's clock backwards, crossing clips through their tails. */
-  const advanceReverse = useCallback((dt: number, rate: number) => {
+  /**
+   * Paints the frame at a reverse position. The element cannot run backwards, so it
+   * is seeked instead of played and this is the only thing that moves the picture.
+   */
+  const renderReverseFrame = useCallback((seconds: number) => {
     const video = videoRef.current
     const current = stateRef.current.segment
-    if (!video || !current || video.readyState < 1) return
-    reverseAccumulatorRef.current += rate * dt * fpsRef.current
-    const frames = Math.floor(reverseAccumulatorRef.current)
-    if (frames < 1) return
-    reverseAccumulatorRef.current -= frames
-    const target = video.currentTime - frames / fpsRef.current
-    if (target > current.sourceIn) {
-      video.currentTime = target
-      return
-    }
-    const index = segmentIndexRef.current
-    if (index <= 0) {
-      video.currentTime = current.sourceIn
-      reverseAccumulatorRef.current = 0
-      return
-    }
-    // Enter the previous clip from its tail, since reverse arrives at its end.
-    const previous = segmentsRef.current[index - 1]
-    pendingSeekRef.current = previous.start + previous.duration - 1 / fpsRef.current
-    anchorRef.current = null
-    reverseAccumulatorRef.current = 0
-    setPosition(pendingSeekRef.current)
-    setSegmentIndex(index - 1)
+    if (!video || !current || current.still || video.readyState < 1) return
+    if (loadedSourceRef.current !== current.sourcePath) return
+    const target = current.sourceIn + Math.max(0, Math.min(current.duration, seconds - current.start))
+    // Half a frame of slack keeps a paused playhead from seeking on every tick while
+    // still landing on each frame the clock walks through.
+    if (Math.abs(video.currentTime - target) < 0.5 / fpsRef.current) return
+    try { video.currentTime = target } catch { /* not seekable yet */ }
   }, [])
 
   // Play and pause the transport with every added track. Re-runs when the segment
@@ -269,15 +277,18 @@ export const useConsolidatedPlayback = (
       else video.pause()
     }
     // Re-anchor whenever the transport moves, or resuming after a pause would
-    // credit the paused wall time and jump the playhead forward.
+    // credit the paused wall time and jump the playhead forward. Resuming is safe
+    // because the anchor is rebuilt from the position the playhead already holds.
     anchorRef.current = null
-    reverseAccumulatorRef.current = 0
-    // Added tracks only accompany ordinary forward playback, where they can stay
-    // in step; they are dropped from a shuttle rather than smeared or desynced.
-    const audible = playing && shuttleRate >= 0 && shuttleRate <= 1
+    // Added tracks accompany forward playback, where they can stay in step. Slow
+    // motion is followed by rate rather than being dropped, so the two never drift.
+    // A shuttle past normal speed and reverse are silent: audio cannot follow either.
+    const magnitude = Math.abs(shuttleRate) || 1
+    const audible = playing && shuttleRate >= 0 && magnitude <= 1
     lanesRef.current.forEach((lane) => {
       const element = audioElements.current?.[lane.id]
       if (!element) return
+      element.playbackRate = magnitude
       if (audible) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
@@ -287,26 +298,35 @@ export const useConsolidatedPlayback = (
   useEffect(() => {
     if (!playing) return
     let frame = 0
-    let previous = performance.now()
-    const tick = (now: number) => {
+    const tick = () => {
       frame = requestAnimationFrame(tick)
-      const dt = Math.min(0.25, Math.max(0, (now - previous) / 1000))
-      previous = now
-      if (shuttleRef.current < 0) advanceReverse(dt, Math.abs(shuttleRef.current))
+      const reverse = shuttleRef.current < 0
       const next = readPosition()
       syncAddedAudio(next, false)
       // While a crossing or seek is in flight, the position and the segment index
       // are already decided. Letting the element's stale clock re-derive them here
       // is what would bounce the playhead back to the clip it just left.
       if (pendingSeekRef.current != null) return
-      setPosition(next)
       const index = indexForTime(next)
-      if (index !== segmentIndexRef.current) setSegmentIndex(index)
+      const crossing = index !== segmentIndexRef.current
+      // Reverse only moves because of this, and a crossing has no element yet, so
+      // painting there would show the outgoing source at the cut instead.
+      if (reverse && !crossing) renderReverseFrame(next)
+      setPosition(next)
+      if (crossing) {
+        // Crossing a cut backwards: the incoming element has to be parked on the
+        // frame the clock already reached, which its load handler applies. A still
+        // renders no element and so never loads one, so a pending seek there would
+        // hold the playhead for good.
+        const incoming = segmentsRef.current[index]
+        if (reverse && incoming && !incoming.still) pendingSeekRef.current = next
+        setSegmentIndex(index)
+      }
       if (next >= stateRef.current.duration - 0.01) {
         setPosition(stateRef.current.duration)
         setPlaying(false)
         setShuttleRateState(0)
-      } else if (shuttleRef.current < 0 && next <= 0) {
+      } else if (reverse && next <= 0) {
         setPosition(0)
         setPlaying(false)
         setShuttleRateState(0)
@@ -314,7 +334,7 @@ export const useConsolidatedPlayback = (
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [playing, readPosition, syncAddedAudio, indexForTime, advanceReverse])
+  }, [playing, readPosition, syncAddedAudio, indexForTime, renderReverseFrame])
 
   const seek = useCallback((seconds: number) => {
     const bounded = Math.max(0, Math.min(stateRef.current.duration, seconds))
@@ -323,7 +343,6 @@ export const useConsolidatedPlayback = (
     setSegmentIndex(index)
     pendingSeekRef.current = bounded
     anchorRef.current = null
-    reverseAccumulatorRef.current = 0
     applyPendingSeek(false)
     syncAddedAudio(bounded, true)
   }, [indexForTime, syncAddedAudio, applyPendingSeek])
@@ -331,7 +350,6 @@ export const useConsolidatedPlayback = (
   const setShuttleRate = useCallback((rate: number) => {
     setShuttleRateState(rate)
     anchorRef.current = null
-    reverseAccumulatorRef.current = 0
   }, [])
 
   return {
@@ -360,7 +378,6 @@ export const useConsolidatedPlayback = (
       if (!playable) return
       setShuttleRateState((current) => nextShuttleRate(current, direction))
       anchorRef.current = null
-      reverseAccumulatorRef.current = 0
       setPlaying(true)
     }, [playable]),
     setShuttleRate,
