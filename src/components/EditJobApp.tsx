@@ -232,20 +232,23 @@ export const EditJobApp: React.FC = () => {
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTyping(event.target)) return
-      if (event.code === 'Space' || event.key === ' ') {
+      const code = event.code
+      if (code === 'Space' || event.key === ' ') {
         event.preventDefault()
         playbackRef.current.toggle()
         return
       }
-      const key = event.key.toLowerCase()
-      if (key === 'k') {
+      // Bound by physical key rather than by character. On a non-Latin layout the
+      // letter keys report a different character, which is why Space worked while
+      // these did nothing.
+      if (code === 'KeyK') {
         event.preventDefault()
         if (!event.repeat) { heldKeysRef.current.k = true; playbackRef.current.pause() }
         return
       }
-      if ((key !== 'j' && key !== 'l') || event.repeat) return
+      if ((code !== 'KeyJ' && code !== 'KeyL') || event.repeat) return
       event.preventDefault()
-      const direction: 1 | -1 = key === 'l' ? 1 : -1
+      const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
       if (heldKeysRef.current.k) {
         clearTap()
         tapTimerRef.current = window.setTimeout(() => {
@@ -258,10 +261,10 @@ export const EditJobApp: React.FC = () => {
       playbackRef.current.shuttle(direction)
     }
     const onKeyUp = (event: KeyboardEvent) => {
-      const key = event.key.toLowerCase()
-      if (key === 'k') { heldKeysRef.current.k = false; return }
-      if (key !== 'j' && key !== 'l') return
-      const direction: 1 | -1 = key === 'l' ? 1 : -1
+      const code = event.code
+      if (code === 'KeyK') { heldKeysRef.current.k = false; return }
+      if (code !== 'KeyJ' && code !== 'KeyL') return
+      const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
       if (tapTimerRef.current != null) {
         // Released before the threshold, so it was a tap: step one whole frame.
         clearTap()
@@ -556,8 +559,9 @@ export const EditJobApp: React.FC = () => {
                           <button
                             className={`boundary-add${(draft.transitions?.[`${segment.sourcePath}#${index}`]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === index ? ' is-open' : ''}`}
                             onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === index ? null : index) }}
+                            aria-label={`Add a transition after ${sourceName(segment.sourcePath)}`}
                             title={`Transition after ${sourceName(segment.sourcePath)}`}
-                          >+</button>
+                          />
                         )}
                       </div>
                     ))}

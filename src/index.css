@@ -252,7 +252,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .clip-fade { position: absolute; top: 0; bottom: 0; pointer-events: none; }
 .clip-fade-in { left: 0; background: linear-gradient(to right, rgba(0, 0, 0, .92), rgba(0, 0, 0, 0)); }
 .clip-fade-out { right: 0; background: linear-gradient(to left, rgba(0, 0, 0, .92), rgba(0, 0, 0, 0)); }
-.boundary-add { position: absolute; top: 50%; right: -9px; transform: translateY(-50%); z-index: 3; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; line-height: 1; }
+.boundary-add { position: absolute; top: 50%; right: -9px; transform: translateY(-50%); z-index: 3; width: 18px; height: 18px; padding: 0; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); }
+/* The plus is drawn rather than typed: a font glyph is centred on its line box,
+   which leaves it visibly off-centre inside the button. */
+.boundary-add::before, .boundary-add::after { content: ''; position: absolute; top: 50%; left: 50%; width: 8px; height: 1px; background: currentColor; }
+.boundary-add::before { transform: translate(-50%, -50%); }
+.boundary-add::after { transform: translate(-50%, -50%) rotate(90deg); }
 .boundary-add:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .boundary-add.is-active { color: var(--ui-accent); border-color: var(--ui-accent); }
 .boundary-add.is-open { color: var(--ui-canvas); background: var(--ui-accent); }

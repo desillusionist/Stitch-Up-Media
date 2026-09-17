@@ -51,10 +51,13 @@ export const resolveQuickLookRequest = async (
   // it is played through a generated clip rather than a single frame. A still that
   // stays a single frame keeps the lite helper instead.
   const timedStill = options.preferTimedStill === true && standaloneImage && !isStillFrameJob(task)
+  // Only consult a generated preview when one is actually wanted. A still that has
+  // gone back to single-frame output must target its own frame again, or the lite
+  // helper is handed a video file and quietly shows nothing.
+  const needsPreview = Boolean(sequence) || timedStill
 
-  let existingPreview = sourceTarget ? task.imageSequencePreviews?.[sourceTarget] : undefined
+  let existingPreview = sourceTarget && needsPreview ? task.imageSequencePreviews?.[sourceTarget] : undefined
   let regeneratedPreview: QuickLookRequest['regeneratedPreview']
-  const needsPreview = sequence || timedStill
   if (sourceTarget && needsPreview && (!existingPreview || !(await bridge?.pathExists?.(existingPreview)))) {
     const created = timedStill && !sequence
       ? await bridge?.createImageSequencePreview?.([sourceTarget], { fps: 25, stillSeconds: Math.max(0.1, task.stillImageDuration || 10) })

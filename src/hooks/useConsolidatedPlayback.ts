@@ -123,7 +123,11 @@ export const useConsolidatedPlayback = (
   const applyPendingSeek = useCallback((force: boolean) => {
     const video = videoRef.current
     const current = stateRef.current.segment
-    if (!video || !current) return
+    if (!current) { pendingSeekRef.current = null; return }
+    // A still frame renders no video element, so there is nothing to move and the
+    // recorded position already IS the position. Leaving it pending would hold the
+    // playhead in place forever, because readPosition stands still while one is set.
+    if (!video || current.still) { pendingSeekRef.current = null; return }
     if (!force && (video.readyState < 1 || loadedSourceRef.current !== current.sourcePath)) return
     const desired = pendingSeekRef.current
       ?? current.start + Math.max(0, Math.min(current.duration, stateRef.current.position - current.start))
@@ -151,6 +155,7 @@ export const useConsolidatedPlayback = (
   const onMediaError = useCallback(() => {
     const mediaError = videoRef.current?.error
     if (mediaError && mediaError.code === MEDIA_ERR_ABORTED) return
+    pendingSeekRef.current = null
     setError('UNABLE TO DECODE THIS SOURCE')
     setPlaying(false)
   }, [])
