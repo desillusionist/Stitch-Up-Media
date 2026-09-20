@@ -38,6 +38,11 @@ export interface EncodingPreset {
   suffix?: string
   width?: number
   height?: number
+  /**
+   * The picture kept from each frame, as fractions of the frame, before any scaling. It is
+   * applied to the output canvas, so a multi-clip job loses the same edges from every clip.
+   */
+  crop?: { left: number; top: number; right: number; bottom: number }
   aspectRatio?: 'source' | '1:1' | '4:3' | '16:9' | '9:16' | 'custom'
   audioEnabled?: boolean
   frameRate?: number

@@ -5,6 +5,8 @@ import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
 import { ClipFade, resolveFades, segmentTiming, sourceDuration, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
+import { progressPercent } from '../../src/lib/progress'
+import { cropFilter, hasCrop } from '../../src/lib/outputFrame'
 import { probeFile } from './probe'
 
 export interface ProgressData {
@@ -149,12 +151,12 @@ export class FFmpegEngine {
     } else if (task.type === 'multitrack' || task.type === 'combo') {
       void this.executeMultiTrack(task, outputPath, onProgress, onComplete, onError)
     } else {
-      this.executeTranscode(task, outputPath, onProgress, onComplete, onError)
+      void this.executeTranscode(task, outputPath, onProgress, onComplete, onError)
     }
   }
 
   // --- Feature 1: Standard Transcoding with Apple Hardware Acceleration ---
-  private executeTranscode(
+  private async executeTranscode(
     task: QueueTask,
     outputPath: string,
     onProgress: (data: ProgressData) => void,
@@ -166,6 +168,16 @@ export class FFmpegEngine {
     const isSequence = Boolean(sequence)
     const isStillImage = !isSequence && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(source)
     const trim = this.trimPoint(task, source, 0)
+    // The length the finished file will have, for the progress readout: the same rule the
+    // timeline uses, backed by a probe of the one source.
+    let expectedSeconds = 0
+    try {
+      const probe = await probeFile(source)
+      expectedSeconds = segmentTiming(
+        sourceDuration(task, source, sequence, () => ({ duration: Number(probe.duration || 0) })),
+        trim,
+      ).duration
+    } catch { /* the bar falls back to whatever ffmpeg reports */ }
     let cmd = sequence ? this.sequenceCommand(sequence, trim) : ffmpeg(source)
     if (isStillImage && task.preset.outputMode !== 'audio' && !task.preset.imageOutputMode) {
       // The rate is set on the input as well as the output. Without it ffmpeg's image
@@ -183,15 +195,7 @@ export class FFmpegEngine {
     }
 
     cmd
-      .on('progress', (progress: any) => {
-        onProgress({
-          percent: Math.min(100, Math.max(0, Math.round(progress.percent || 0))),
-          currentFps: progress.currentFps,
-          timemark: progress.timemark,
-          currentKbps: progress.currentKbps,
-          targetSize: progress.targetSize,
-        })
-      })
+      .on('progress', this.progressHandler(expectedSeconds, onProgress))
       .on('end', () => {
         this.activeProcesses.delete(task.id)
         onComplete()
@@ -307,13 +311,7 @@ export class FFmpegEngine {
     }
 
     cmd
-      .on('progress', (progress: any) => {
-        onProgress({
-          percent: Math.min(100, Math.max(0, Math.round(progress.percent || 0))),
-          currentFps: progress.currentFps,
-          timemark: progress.timemark,
-        })
-      })
+      .on('progress', this.progressHandler(clipDurations.reduce((total, clip) => total + clip, 0), onProgress))
       .on('end', () => {
         try {
           fs.unlinkSync(tmpConcatFile)
@@ -436,6 +434,12 @@ export class FFmpegEngine {
     } catch (error) {
       logEvent('ffmpeg', 'duration reconciliation probe failed; using container durations', { taskId: task.id, error: String(error) })
     }
+    // A multi-track output runs to the longer of the video and its tracks, the video being
+    // padded with a freeze frame when a track outlasts it. A still cover is the exception:
+    // it is bounded by the tracks it plays under.
+    const expectedSeconds = isStillCover && extraAudios.length > 0
+      ? longestAudioDuration
+      : Math.max(videoDuration, longestAudioDuration)
     const videoSequence = videoOverride ? undefined : this.sequenceFor(task, videoSource)
     const isSequenceVideo = Boolean(videoSequence)
     const videoTrim = videoOverride ? undefined : this.trimPoint(task, videoSource, 0)
@@ -482,13 +486,7 @@ export class FFmpegEngine {
     cmd.outputOptions(outputOptions)
 
     cmd
-      .on('progress', (progress: any) => {
-        onProgress({
-          percent: Math.min(100, Math.max(0, Math.round(progress.percent || 0))),
-          currentFps: progress.currentFps,
-          timemark: progress.timemark,
-        })
-      })
+      .on('progress', this.progressHandler(expectedSeconds, onProgress))
       .on('end', () => {
         this.activeProcesses.delete(task.id)
         onComplete()
@@ -502,6 +500,26 @@ export class FFmpegEngine {
     this.activeProcesses.set(task.id, cmd)
     cmd.on('start', (commandLine: string) => logEvent('ffmpeg', 'process started', { taskId: task.id, commandLine }))
     cmd.save(outputPath)
+  }
+
+  /**
+   * The progress callback for a command.
+   *
+   * fluent-ffmpeg's own percentage is documented as "may not be available depending on
+   * input", and for a concat or a mix of inputs it never arrives: the queue's progress
+   * bar then sat empty for the whole encode while the timemark advanced. The timemark
+   * measured against the length the job will actually have is always available.
+   */
+  private progressHandler(expectedSeconds: number, onProgress: (data: ProgressData) => void) {
+    return (progress: any) => {
+      onProgress({
+        percent: progressPercent({ timemark: progress.timemark, expectedSeconds, fallback: progress.percent }),
+        currentFps: progress.currentFps,
+        timemark: progress.timemark,
+        currentKbps: progress.currentKbps,
+        targetSize: progress.targetSize,
+      })
+    }
   }
 
   /**
@@ -577,23 +595,32 @@ export class FFmpegEngine {
     // standing, which used to drop a named resolution the moment a caller added a
     // filter of its own.
     const videoFilters: string[] = []
+    // An audio-only export has no picture to filter, and handing ffmpeg a filter chain
+    // alongside -vn is an error rather than a harmless extra.
+    const wantsVideo = preset.outputMode !== 'audio'
+    // A crop goes first: everything downstream then works on what was kept, which is what
+    // makes cropping to an output shape a crop followed by a fit rather than two unrelated
+    // operations. Its smallest side is floored, since an encoder rejects an empty frame.
+    if (wantsVideo && preset.crop && hasCrop(preset.crop)) videoFilters.push(cropFilter(preset.crop))
     // 2. Resolution Scaling
-    if (preset.width && preset.height && preset.videoCodec !== 'copy') {
-      videoFilters.push(`scale=${preset.width}:${preset.height}`)
-    } else if (preset.resolution === '4k') {
-      videoFilters.push('scale=3840:2160:force_original_aspect_ratio=decrease')
-    } else if (preset.resolution === '1080p') {
-      videoFilters.push('scale=1920:1080:force_original_aspect_ratio=decrease')
-    } else if (preset.resolution === '720p') {
-      videoFilters.push('scale=1280:720:force_original_aspect_ratio=decrease')
-    }
-    // A still image can be any size at all, and 4:2:0 and 4:2:2 encoders refuse an odd
-    // one outright: a 1195x896 source failed the whole job with "width not divisible by
-    // 2". Rounding down to even is a no-op for a frame that already is, and it is added
-    // after any scaling so a named resolution that leaves a smaller source untouched
-    // cannot reintroduce an odd size.
-    if (preset.videoCodec !== 'copy' && preset.container !== 'gif' && EVEN_SIZE_CODECS.includes(preset.videoCodec)) {
-      videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2')
+    if (wantsVideo) {
+      if (preset.width && preset.height && preset.videoCodec !== 'copy') {
+        videoFilters.push(`scale=${preset.width}:${preset.height}`)
+      } else if (preset.resolution === '4k') {
+        videoFilters.push('scale=3840:2160:force_original_aspect_ratio=decrease')
+      } else if (preset.resolution === '1080p') {
+        videoFilters.push('scale=1920:1080:force_original_aspect_ratio=decrease')
+      } else if (preset.resolution === '720p') {
+        videoFilters.push('scale=1280:720:force_original_aspect_ratio=decrease')
+      }
+      // A still image can be any size at all, and 4:2:0 and 4:2:2 encoders refuse an odd
+      // one outright: a 1195x896 source failed the whole job with "width not divisible by
+      // 2". Rounding down to even is a no-op for a frame that already is, and it is added
+      // after any scaling so a named resolution that leaves a smaller source untouched
+      // cannot reintroduce an odd size.
+      if (preset.videoCodec !== 'copy' && preset.container !== 'gif' && EVEN_SIZE_CODECS.includes(preset.videoCodec)) {
+        videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2')
+      }
     }
     videoFilters.push(...extraFilters)
     if (videoFilters.length) cmd.outputOptions([`-vf ${videoFilters.join(',')}`])

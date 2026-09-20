@@ -41,3 +41,63 @@ export const fitFrame = (available: FrameSize, aspect: number): FrameSize | null
   const width = Math.min(available.width, available.height * aspect)
   return { width, height: width / aspect }
 }
+
+/**
+ * The pixel size a ratio gives at a base, rounded to an even pair.
+ *
+ * A named resolution is a SHORT SIDE, which is what makes it meaningful for a portrait
+ * frame: 1080p is 1920x1080 landscape and 1080x1920 upright, not a 1920-wide slot.
+ */
+export const aspectSize = (ratio: number, shortSide: number): FrameSize => {
+  const base = Math.max(2, shortSide)
+  const width = ratio >= 1 ? base * ratio : base
+  const height = ratio >= 1 ? base : base / ratio
+  return { width: even(width), height: even(height) }
+}
+
+/** The short side a named resolution stands for. */
+export const resolutionShortSide = (resolution: EncodingPreset['resolution']): number => {
+  if (resolution === '4k') return 2160
+  if (resolution === '720p') return 720
+  return 1080
+}
+
+/** How far a crop may reach in from each edge before there is nothing left to encode. */
+export const MAX_CROP = 0.45
+
+export interface CropFractions {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+/** True when a crop would actually remove something. */
+export const hasCrop = (crop: CropFractions | undefined): boolean =>
+  Boolean(crop && (crop.left > 0 || crop.top > 0 || crop.right > 0 || crop.bottom > 0))
+
+/** Keeps a crop inside the frame, so the filter can never be handed an empty picture. */
+export const clampCrop = (crop: CropFractions): CropFractions => ({
+  left: Math.max(0, Math.min(MAX_CROP, crop.left)),
+  top: Math.max(0, Math.min(MAX_CROP, crop.top)),
+  right: Math.max(0, Math.min(MAX_CROP - Math.min(MAX_CROP, crop.left), crop.right)),
+  bottom: Math.max(0, Math.min(MAX_CROP - Math.min(MAX_CROP, crop.top), crop.bottom)),
+})
+
+/**
+ * The crop filter, as fractions of the frame so it needs no knowledge of the resolution.
+ *
+ * It goes first in the chain: everything downstream then works on what was kept, which is
+ * what makes cropping to an output shape a crop followed by a fit rather than two
+ * unrelated operations. The smallest side is floored at two pixels because the encoders
+ * reject a smaller frame than that outright.
+ *
+ * The commas inside the arguments are escaped, because an unescaped comma separates one
+ * filter from the next and would split this one in half.
+ */
+export const cropFilter = (crop: CropFractions): string => {
+  const safe = clampCrop(crop)
+  const keepWidth = 1 - safe.left - safe.right
+  const keepHeight = 1 - safe.top - safe.bottom
+  return `crop=max(2\\,iw*${keepWidth.toFixed(6)}):max(2\\,ih*${keepHeight.toFixed(6)}):iw*${safe.left.toFixed(6)}:ih*${safe.top.toFixed(6)}`
+}

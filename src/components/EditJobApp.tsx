@@ -8,7 +8,17 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { fitFrame, outputFrameSize, resolutionBox } from '../lib/outputFrame'
+import { fitFrame, outputFrameSize, resolutionBox, aspectSize, resolutionShortSide, clampCrop, hasCrop, MAX_CROP, CropFractions } from '../lib/outputFrame'
+
+/** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
+const ASPECTS: Array<{ label: string; ratio: number }> = [
+  { label: '16:9', ratio: 16 / 9 },
+  { label: '4:3', ratio: 4 / 3 },
+  { label: '1:1', ratio: 1 },
+  { label: '3:4', ratio: 3 / 4 },
+  { label: '9:16', ratio: 9 / 16 },
+]
+const ASPECT_TOLERANCE = 0.01
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
@@ -476,6 +486,26 @@ export const EditJobApp: React.FC = () => {
     updatePreset({ resolution, width: undefined, height: undefined })
   }
 
+  /**
+   * Sets the output frame's shape by giving the encoder an exact size for it.
+   *
+   * A named resolution is a short side, so the ratio decides the rest: 1080p at 4:3 is
+   * 1440x1080 and at 9:16 is 1080x1920. Changing the size clears the named resolution's
+   * effect in the encoder, which is why the sidebar says so.
+   */
+  const applyAspect = (ratio: number) => {
+    const current = latest()
+    const base = current.preset.width && current.preset.height
+      ? Math.min(current.preset.width, current.preset.height)
+      : resolutionShortSide(current.preset.resolution)
+    const size = aspectSize(ratio, base)
+    updatePreset({ width: size.width, height: size.height })
+  }
+
+  /** The ratio the current exact size stands for, if it is one of the offered shapes. */
+  const exactAspect = draft.preset.width && draft.preset.height ? draft.preset.width / draft.preset.height : null
+  const activeAspect = exactAspect ? ASPECTS.find((candidate) => Math.abs(candidate.ratio - exactAspect) < ASPECT_TOLERANCE)?.label : undefined
+
   const changeFps = (value: string) => {
     const parsed = Number(value)
     updatePreset({ fps: value.trim() === '' || !Number.isFinite(parsed) || parsed <= 0 ? undefined : Math.round(parsed) })
@@ -647,6 +677,55 @@ export const EditJobApp: React.FC = () => {
     || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
 
   const dirty = isDirty(draft, baseline ?? draft)
+  // The picture's own box inside the stage, which is what a crop selects from: the
+  // generated frame the encoder writes may be a different shape, and a crop is of the
+  // source, not of the canvas it is fitted to.
+  const naturalAspect = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize.width / naturalSize.height : null
+  const pictureRect = naturalAspect && stageSize ? fitFrame(stageSize, naturalAspect) : null
+  const crop = draft.preset.crop
+  const cropEnabled = hasCrop(crop)
+  const setCrop = (next: CropFractions) => updatePreset({ crop: clampCrop(next) })
+  const cropRect = (() => {
+    if (!cropEnabled || !crop || !pictureRect || !stageSize) return null
+    const originX = (stageSize.width - pictureRect.width) / 2
+    const originY = (stageSize.height - pictureRect.height) / 2
+    return {
+      left: originX + pictureRect.width * crop.left,
+      top: originY + pictureRect.height * crop.top,
+      width: pictureRect.width * (1 - crop.left - crop.right),
+      height: pictureRect.height * (1 - crop.top - crop.bottom),
+      box: pictureRect,
+      originX,
+      originY,
+    }
+  })()
+
+  /**
+   * Drags one edge of the crop box. The pointer position is turned into a fraction of the
+   * picture, which is the space the crop is stored in, so the same drag works whatever the
+   * window size.
+   */
+  const beginCropDrag = (edge: 'left' | 'top' | 'right' | 'bottom', event: React.PointerEvent) => {
+    if (!crop || !cropRect) return
+    event.preventDefault()
+    event.stopPropagation()
+    const stage = stageRef.current?.getBoundingClientRect()
+    if (!stage) return
+    const horizontal = edge === 'left' || edge === 'right'
+    const size = horizontal ? cropRect.box.width : cropRect.box.height
+    const origin = horizontal ? cropRect.originX : cropRect.originY
+    const coordinate = (moveEvent: PointerEvent) => (horizontal ? moveEvent.clientX - stage.left : moveEvent.clientY - stage.top)
+    const move = (moveEvent: PointerEvent) => {
+      const value = Math.max(0, Math.min(1, (coordinate(moveEvent) - origin) / Math.max(1, size)))
+      setCrop({ ...crop, [edge]: value })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
   /** The frame the encoder will produce, and the box to outline it in. */
   const outputFrame = outputFrameSize({
     natural: naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined,
@@ -704,6 +783,11 @@ export const EditJobApp: React.FC = () => {
                       />
                       : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
               {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
+              {cropRect && <div className="editor-crop" style={{ left: cropRect.left, top: cropRect.top, width: cropRect.width, height: cropRect.height }}>
+                {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
+                  <span key={edge} className={`crop-handle is-${edge}`} onPointerDown={(event) => beginCropDrag(edge, event)} role="presentation" />
+                ))}
+              </div>}
             </div>
             <small>{focusedLabel} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS` : ''}</small>
             <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` · USED ${stamp(activeSegment.sourceIn)} → ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} · OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
@@ -875,10 +959,46 @@ export const EditJobApp: React.FC = () => {
             <EditorToggle label="EXPORT CAPTIONS" checked={false} reason="CAPTION OUTPUT HAS NO BACKING FIELD YET." />
           </>}
 
-          {tab === 'VIDEO' && <>
+              {/* Resolution Scaling */}
+            {tab === 'VIDEO' && <>
+            <div className="editor-field"><span>ASPECT RATIO<em>OUTPUT FRAME</em></span>
+              <div className="aspect-row">
+                {ASPECTS.map((candidate) => (
+                  <button key={candidate.label} className={activeAspect === candidate.label ? 'is-selected' : ''} onClick={() => applyAspect(candidate.ratio)} title={`Output frame of ${candidate.label}`}>{candidate.label}</button>
+                ))}
+              </div>
+            </div>
             <EditorField label="RESOLUTION" reason={videoReason}><select value={draft.preset.resolution} disabled={audioOnly || isGif} onChange={(event) => changeResolution(event.target.value as EncodingPreset['resolution'])}>{RESOLUTIONS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
             <EditorRow label="EXACT SIZE" value={draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height} — OVERRIDES NAMED RESOLUTION` : 'NOT SET'} />
             {draft.preset.width && draft.preset.height ? <button className="editor-inline-action" onClick={() => updatePreset({ width: undefined, height: undefined })}>CLEAR EXACT SIZE</button> : null}
+            <div className="editor-subsection">
+              <EditorToggle
+                label="CROP VIDEO"
+                checked={cropEnabled}
+                reason={videoReason}
+                onChange={(checked) => updatePreset({ crop: checked ? (crop ?? { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }) : undefined })}
+              />
+              {cropEnabled && crop && <>
+                <div className="crop-row">
+                  {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
+                    <label key={edge} className="crop-field">
+                      <span>{edge.slice(0, 1).toUpperCase()}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max={Math.round(MAX_CROP * 100)}
+                        step="1"
+                        className="editor-input"
+                        value={Math.round(crop[edge] * 100)}
+                        onChange={(event) => setCrop({ ...crop, [edge]: (Number(event.target.value) || 0) / 100 })}
+                        title={`${edge} edge, per cent of the frame`}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div className="editor-note">&gt; A CROP IS APPLIED TO THE OUTPUT FRAME BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE AS PER CENT.</div>
+              </>}
+            </div>
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><input type="number" min="1" className="editor-input" value={draft.preset.fps ?? ''} disabled={audioOnly} onChange={(event) => changeFps(event.target.value)} /></EditorField>
             <EditorField label="QUALITY" hint="BITRATE, E.G. 8M" reason={videoReason}><input type="text" className="editor-input" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} /></EditorField>
             <div className="editor-note">&gt; BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.</div>

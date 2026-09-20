@@ -2,7 +2,8 @@ import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
-import { fitFrame, outputFrameSize, resolutionBox } from '../src/lib/outputFrame'
+import { progressPercent, timemarkSeconds } from '../src/lib/progress'
+import { aspectSize, clampCrop, cropFilter, fitFrame, hasCrop, outputFrameSize, resolutionBox, resolutionShortSide } from '../src/lib/outputFrame'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -356,6 +357,44 @@ console.log('\n== the output frame ==')
   near('a box that matches the frame is the whole box', fitFrame({ width: 800, height: 600 }, 4 / 3)!.width, 800)
   check('an empty box draws nothing', fitFrame({ width: 0, height: 600 }, 16 / 9), null)
   check('and neither does a nonsense aspect', fitFrame({ width: 800, height: 600 }, 0), null)
+}
+
+console.log('\n== progress is measured against the length the job will have ==')
+{
+  near('a timemark becomes seconds', timemarkSeconds('00:02:59.41')!, 179.41)
+  check('a bare number is not a timemark', timemarkSeconds('12'), null)
+  check('nor is nothing', timemarkSeconds(undefined), null)
+  // The reported case: the timemark advanced while the bar sat empty, because
+  // fluent-ffmpeg never supplied a percentage for that input.
+  check('a position against the expected length is a percentage', progressPercent({ timemark: '00:00:30.00', expectedSeconds: 60 }), 50)
+  check('the fallback is used when there is no position', progressPercent({ expectedSeconds: 0, fallback: 42 }), 42)
+  check('an unknown length falls back as well', progressPercent({ expectedSeconds: 0 }), 0)
+  check('a position past the end is clamped', progressPercent({ timemark: '00:02:00.00', expectedSeconds: 60 }), 100)
+  check('and the fallback is clamped too', progressPercent({ expectedSeconds: 0, fallback: 140 }), 100)
+  check('half a minute of a long job is a small percentage', progressPercent({ timemark: '00:00:30.00', expectedSeconds: 600 }), 5)
+}
+
+console.log('\n== the output shape ==')
+{
+  // A named resolution is a short side, which is what makes it meaningful upright: 1080p is
+  // not a 1920-wide slot.
+  check('16:9 at 1080p', aspectSize(16 / 9, 1080), { width: 1920, height: 1080 })
+  check('4:3 at 1080p', aspectSize(4 / 3, 1080), { width: 1440, height: 1080 })
+  check('1:1 at 1080p', aspectSize(1, 1080), { width: 1080, height: 1080 })
+  check('9:16 at 1080p is upright', aspectSize(9 / 16, 1080), { width: 1080, height: 1920 })
+  check('16:9 at 720p', aspectSize(16 / 9, 720), { width: 1280, height: 720 })
+  check('the short side each resolution stands for', [resolutionShortSide('4k'), resolutionShortSide('1080p'), resolutionShortSide('720p'), resolutionShortSide('source')], [2160, 1080, 720, 1080])
+}
+
+console.log('\n== cropping ==')
+{
+  check('an empty crop is no crop', hasCrop({ left: 0, top: 0, right: 0, bottom: 0 }), false)
+  check('and an absent one is none either', hasCrop(undefined), false)
+  check('any edge makes it a crop', hasCrop({ left: 0.1, top: 0, right: 0, bottom: 0 }), true)
+  // The whole point of clamping: the filter must never be handed an empty picture.
+  check('a crop cannot eat the whole frame', clampCrop({ left: 0.9, top: 0, right: 0.9, bottom: 0 }), { left: 0.45, top: 0, right: 0, bottom: 0 })
+  check('the filter keeps the picture it was asked for', cropFilter({ left: 0.1, top: 0.05, right: 0, bottom: 0.05 }), 'crop=max(2\\,iw*0.900000):max(2\\,ih*0.900000):iw*0.100000:ih*0.050000')
+  check('and the smallest side is floored at two pixels', cropFilter({ left: 0, top: 0, right: 0, bottom: 0 }).startsWith('crop=max(2\\,iw*1.000000)'), true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

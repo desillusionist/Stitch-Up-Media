@@ -156,11 +156,19 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-screen { min-height: 120px; flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--ui-muted); background: #030910; border-top: 1px dashed var(--ui-border); border-bottom: 1px dashed var(--ui-border); margin-top: 8px; overflow: hidden; }
 /* The picture's own box, so the output frame outline can be drawn around it. A column, so
    the media stretches to the space available exactly as it did as a direct child. */
-.editor-stage { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.editor-stage { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
 /* The edges of the frame the encoder will write, which is not always the picture's own
    shape: an exact size stretches to it, a named resolution fits inside it. */
 .editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85); pointer-events: none; }
 .editor-frame b { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
+/* The crop box, drawn on the picture rather than on the output frame, and shading
+   everything it will remove with a spread shadow so no band of shading can escape. */
+.editor-crop { position: absolute; border: 1px solid var(--ui-encoding); box-shadow: 0 0 0 9999px rgba(3, 9, 16, .62); cursor: move; }
+.crop-handle { position: absolute; display: block; }
+.crop-handle.is-left { left: -4px; top: 0; bottom: 0; width: 9px; cursor: ew-resize; }
+.crop-handle.is-right { right: -4px; top: 0; bottom: 0; width: 9px; cursor: ew-resize; }
+.crop-handle.is-top { top: -4px; left: 0; right: 0; height: 9px; cursor: ns-resize; }
+.crop-handle.is-bottom { bottom: -4px; left: 0; right: 0; height: 9px; cursor: ns-resize; }
 .editor-screen b { color: var(--ui-accent); font-size: 11px; }
 .transport { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 9px; color: var(--ui-muted); font-size: 10px; }
 .transport button { border: 0; background: transparent; color: var(--ui-muted); padding: 5px; }
@@ -238,6 +246,16 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-zoom button:disabled { opacity: .35; cursor: not-allowed; }
 .timeline-zoom-value { min-width: 32px; text-align: center; color: var(--ui-accent); font-size: 10px; }
 .timeline-lanes { overflow-x: auto; overflow-y: hidden; }
+/* The output shape buttons, and the four crop figures. */
+.aspect-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.aspect-row button { flex: 0 0 auto; min-width: 44px; padding: 5px 7px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
+.aspect-row button:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
+.aspect-row button.is-selected { color: var(--ui-canvas); background: var(--ui-accent); border-color: var(--ui-accent); }
+.editor-subsection { display: grid; gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
+.crop-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.crop-field { display: flex; align-items: center; gap: 4px; }
+.crop-field span { color: var(--ui-muted); font-size: 9px; }
+.crop-field input { width: 100%; min-width: 0; padding: 5px 4px; text-align: center; }
 .timeline-lanes-inner { position: relative; min-width: 100%; }
 .timeline-lane { display: flex; align-items: stretch; min-height: 42px; border-bottom: 1px dotted var(--ui-border); }
 /* Lane label column. Kept equal to LANE_LABEL_WIDTH in EditJobApp, because the

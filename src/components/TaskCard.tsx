@@ -254,7 +254,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     : task.type === 'combo'
       ? Math.max(videoTotal, trackTotal)
       : videoTotal
-  const progressBlocks = `${'█'.repeat(Math.round((task.progress || 0) / 100 * 32))}${'░'.repeat(32 - Math.round((task.progress || 0) / 100 * 32))}`
 
   const formatBytes = (bytes?: number) => {
     if (!bytes || !Number.isFinite(bytes)) return ''
@@ -383,7 +382,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
       {/* Real-time Progress Bar */}
       {task.status === 'encoding' && (
         <div className="mt-3 pt-2 border-t border-white/5">
-          <div className="encoding-progress" role="progressbar" aria-valuenow={task.progress} aria-valuemin={0} aria-valuemax={100}>{progressBlocks}</div>
+          <div className="dither-progress" role="progressbar" aria-valuenow={task.progress} aria-valuemin={0} aria-valuemax={100} title={`${task.progress}% encoded`}><i style={{ width: `${Math.max(0, Math.min(100, task.progress || 0))}%` }} /></div>
           <div className="flex justify-between text-[11px] text-neutral-400 mt-1.5 font-mono">
             <span>{task.currentTimemark ? `At: ${task.currentTimemark}` : 'Starting...'}</span>
             <span>{task.fps ? `${Math.round(task.fps)} fps` : ''}</span>
