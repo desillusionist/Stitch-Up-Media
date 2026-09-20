@@ -9,7 +9,7 @@ import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { FILMSTRIP_HEIGHT, filmstripCountForZoom, filmstripKey } from '../lib/filmstrip'
-import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
+import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions, FitMode } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -132,6 +132,8 @@ export const EditJobApp: React.FC = () => {
   const [timelineMenu, setTimelineMenu] = useState<TimelineMenu | null>(null)
   /** Whether the crop fields read as per cent of the source or as pixels of it. */
   const [cropUnit, setCropUnit] = useState<'%' | 'px'>('%')
+  /** How the picture and the output frame are fitted into the monitor. */
+  const [previewFit, setPreviewFit] = useState<FitMode>('contain')
   /** Boundary whose transition editor is open, by index of the clip it follows. */
   const [openBoundary, setOpenBoundary] = useState<number | null>(null)
   // Monitoring state only. Never written to the task, so muting can never be
@@ -605,6 +607,24 @@ export const EditJobApp: React.FC = () => {
   /** The ratio the current exact size stands for, if it is one of the offered shapes. */
   const exactAspect = draft.preset.width && draft.preset.height ? draft.preset.width / draft.preset.height : null
   const activeAspect = exactAspect ? ASPECTS.find((candidate) => Math.abs(candidate.ratio - exactAspect) < ASPECT_TOLERANCE)?.label : undefined
+  /**
+   * MATCH SOURCE: no exact size and no named resolution, so the frame is the source's own.
+   * It is the state the window starts in, and the way back to it once a shape has been chosen.
+   */
+  const matchSource = !draft.preset.width && !draft.preset.height && draft.preset.resolution === 'source'
+  /**
+   * The rate the encoder will use when none is set: the source's own when there is one source,
+   * and otherwise the default the output falls back to, since many sources have many rates and
+   * no single one of them is the answer. Shown as the field's placeholder so a blank field says
+   * what a blank field means rather than nothing at all.
+   */
+  const defaultFps = (() => {
+    if (draft.sourcePaths.length === 1) {
+      const only = sourceFps(draft, draft.sourcePaths[0], undefined, resolveTiming)
+      if (only > 0) return Math.round(only)
+    }
+    return Math.round(settings?.sequenceFps || 30)
+  })()
 
   const changeFps = (value: string) => {
     const parsed = Number(value)
@@ -754,14 +774,41 @@ export const EditJobApp: React.FC = () => {
     return mediaUrl(segment.sourcePath)
   }
   const elementUrl = sourceUrlFor(playback.segment)
-  /** Target of the source under the playhead, which is what the trimmer would open. */
-  const focusedTarget = focusedSource ? mediaTargets[focusedSource] : undefined
 
   const seekFraction = (event: React.MouseEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0 || duration <= 0) return
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
     playback.seek(fraction * duration)
+  }
+
+  /**
+   * Drags the skimmer.
+   *
+   * The playhead is a hairline, so it carries a wider transparent grab area of its own; the
+   * drag reads its position against the inner timeline, which is the same space the playhead's
+   * own `left` is expressed in. That keeps the pointer and the skimmer in step however far the
+   * lane has been scrolled or zoomed, since the box is re-read on every move.
+   */
+  const beginSkimmerDrag = (event: React.PointerEvent) => {
+    const inner = timelineInnerRef.current
+    if (!inner || duration <= 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const scrubTo = (clientX: number) => {
+      const rect = inner.getBoundingClientRect()
+      const usable = rect.width - LANE_LABEL_WIDTH
+      if (usable <= 0) return
+      playback.seek(Math.max(0, Math.min(1, (clientX - rect.left - LANE_LABEL_WIDTH) / usable)) * duration)
+    }
+    const move = (moveEvent: PointerEvent) => scrubTo(moveEvent.clientX)
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    scrubTo(event.clientX)
   }
 
   /**
@@ -812,13 +859,42 @@ export const EditJobApp: React.FC = () => {
   // lands, and written into the applied patch so the queue's badge agrees. Renaming an output
   // or setting a transition is not an encoding setting, so neither of those makes it custom.
   const presetEdited = JSON.stringify(draft.preset) !== JSON.stringify((baseline ?? draft).preset)
+  /** The patch this window would send, built fresh so it never carries a stale snapshot. */
+  const buildPatch = (): EditJobPatch => ({
+    id: latest().id,
+    // A hand-tuned preset stops claiming to be the preset it started from.
+    preset: presetEdited ? { ...latest().preset, id: 'custom', name: 'CUSTOM' } : latest().preset,
+    outputFilename: latest().outputFilename,
+    outputFilenameManuallySet: latest().outputFilenameManuallySet,
+    transitions: latest().transitions,
+    sourceTiming: sourceTimingOverrides(latest()),
+  })
+  /**
+   * Sends the edits, and closes only when asked to.
+   *
+   * APPLY keeps the window up so a setting can be changed and looked at again. What was just
+   * applied becomes the new baseline either way, so the window stops calling it unsaved and the
+   * queue's own confirmation of it is not mistaken for an edit made somewhere else.
+   */
+  const applyEdits = (close: boolean) => {
+    const patch = buildPatch()
+    void window.electronAPI?.applyEditJob(patch, close)
+    const applied: QueueTask = { ...latest(), preset: patch.preset }
+    commit(applied, applied)
+  }
   // The picture's own box inside the stage, which is what a crop selects from: the
   // generated frame the encoder writes may be a different shape, and a crop is of the
   // source, not of the canvas it is fitted to. Its pixel size is also what turns the crop's
   // fractions into the pixel figures the fields show when the unit is switched to px.
   const picture = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined
   const naturalAspect = picture ? picture.width / picture.height : null
-  const pictureRect = naturalAspect && stageSize ? fitFrame(stageSize, naturalAspect) : null
+  const pictureRect = naturalAspect && stageSize ? fitFrameBy(stageSize, naturalAspect, previewFit) : null
+  // The media is given the picture's own box rather than stretched to the panel and letterboxed
+  // inside it, so the crop box and the picture agree exactly instead of the crop being drawn in
+  // a space the picture only partly occupies. Under `contain` this is what object-fit did anyway.
+  const mediaStyle = pictureRect
+    ? { width: pictureRect.width, height: pictureRect.height, flex: '0 0 auto' as const, maxWidth: 'none' as const, maxHeight: 'none' as const }
+    : null
   const crop = draft.preset.crop
   const cropPx = crop && picture ? cropPixels(crop, picture) : null
   /** The proportion list's value: no crop at all, a shape the crop keeps, or the user's own. */
@@ -967,7 +1043,7 @@ export const EditJobApp: React.FC = () => {
     exact: draft.preset.width && draft.preset.height ? { width: draft.preset.width, height: draft.preset.height } : undefined,
     box: resolutionBox(draft.preset.resolution),
   })
-  const frameRect = outputFrame && stageSize ? fitFrame(stageSize, outputFrame.width / outputFrame.height) : null
+  const frameRect = outputFrame && stageSize ? fitFrameBy(stageSize, outputFrame.width / outputFrame.height, previewFit) : null
   // The exact-size fields. Empty means "not overridden": the placeholder shows the frame the
   // encoder is already writing, and editing either edge pins the pair to that starting point.
   const exactSize = exactSizeFields({ width: draft.preset.width, height: draft.preset.height }, outputFrame)
@@ -1011,9 +1087,9 @@ export const EditJobApp: React.FC = () => {
               {playback.error
                 ? <span className="editor-screen-message">{playback.error}</span>
                 : stillFrameJob
-                  ? <img className="editor-still" src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} />
+                  ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} />
                   : playback.segment?.still
-                    ? <img className="editor-still" style={{ opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} />
+                    ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} />
                     : elementUrl
                       ? <video
                         ref={playback.attachVideo}
@@ -1021,7 +1097,7 @@ export const EditJobApp: React.FC = () => {
                         src={elementUrl}
                         preload="metadata"
                         playsInline
-                        style={{ opacity: previewGain }}
+                        style={{ ...mediaStyle, opacity: previewGain }}
                         onContextMenu={(event) => event.preventDefault()}
                         onLoadedMetadata={measureNatural}
                         onClick={() => playback.toggle()}
@@ -1064,8 +1140,9 @@ export const EditJobApp: React.FC = () => {
             />
           </div>
           <div className="editor-preview-actions">
-            <button onClick={() => void openNativePreview()} disabled={!focusedTarget}>OPEN FRAME-ACCURATE PREVIEW</button>
-            <button className={inspectedIndex === focusedSourceIndex ? 'is-open' : ''} onClick={() => setInspectedIndex(inspectedIndex === focusedSourceIndex ? null : focusedSourceIndex)}>MEDIA INFO</button>
+            <span className="preview-divider" aria-hidden="true" />
+            <button className={previewFit === 'width' ? 'is-open' : ''} onClick={() => setPreviewFit((current) => current === 'width' ? 'contain' : 'width')} title="Fill the monitor's width; click again to fit the whole frame">FIT TO WIDTH</button>
+            <button className={previewFit === 'height' ? 'is-open' : ''} onClick={() => setPreviewFit((current) => current === 'height' ? 'contain' : 'height')} title="Fill the monitor's height; click again to fit the whole frame">FIT TO HEIGHT</button>
           </div>
           {inspectedIndex != null && inspectedSource && (
             <div className="media-inspector">
@@ -1175,7 +1252,7 @@ export const EditJobApp: React.FC = () => {
                   </div>
                 </div>
               ))}
-              <div className="timeline-playhead" style={{ left: `calc(${LANE_LABEL_WIDTH}px + ${playheadFraction} * (100% - ${LANE_LABEL_WIDTH}px))` }} aria-hidden="true" />
+              <div className="timeline-playhead" style={{ left: `calc(${LANE_LABEL_WIDTH}px + ${playheadFraction} * (100% - ${LANE_LABEL_WIDTH}px))` }} onPointerDown={beginSkimmerDrag} title="Drag to move the skimmer" role="presentation" />
             </div>
           </div>
           {selectedBoundary && (
@@ -1225,6 +1302,7 @@ export const EditJobApp: React.FC = () => {
                 {ASPECTS.map((candidate) => (
                   <button key={candidate.label} className={activeAspect === candidate.label ? 'is-selected' : ''} onClick={() => applyAspect(candidate.ratio)} title={`Output frame of ${candidate.label}`}>{candidate.label}</button>
                 ))}
+                <button className={matchSource ? 'is-selected' : ''} onClick={() => updatePreset({ width: undefined, height: undefined, resolution: 'source' })} title="Output frame follows the source">MS</button>
               </div>
             </div>
             <EditorField label="RESOLUTION" reason={videoReason}><select value={draft.preset.resolution} disabled={audioOnly || isGif} onChange={(event) => changeResolution(event.target.value as EncodingPreset['resolution'])}>{RESOLUTIONS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
@@ -1275,7 +1353,7 @@ export const EditJobApp: React.FC = () => {
                 <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON THE PICTURE; NONE CLEARS IT. A CROP IS APPLIED BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.</div>
               </>}
             </div>
-            <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><input type="number" min="1" className="editor-input" value={draft.preset.fps ?? ''} disabled={audioOnly} onChange={(event) => changeFps(event.target.value)} /></EditorField>
+            <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><input type="number" min="1" className="editor-input" value={draft.preset.fps ?? ''} placeholder={String(defaultFps)} disabled={audioOnly} onChange={(event) => changeFps(event.target.value)} /></EditorField>
             <EditorField label="QUALITY" hint="BITRATE, E.G. 8M" reason={videoReason}><input type="text" className="editor-input" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} /></EditorField>
             <div className="editor-note">&gt; BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.</div>
           </>}
@@ -1311,18 +1389,7 @@ export const EditJobApp: React.FC = () => {
         <div className="editor-actions">
           {confirmingDiscard
             ? <><span className="editor-confirm">DISCARD UNSAVED CHANGES?</span><button onClick={() => setConfirmingDiscard(false)}>KEEP EDITING</button><button className="editor-danger" onClick={() => void window.electronAPI?.cancelEditJob()}>DISCARD</button></>
-            : <><button onClick={() => (dirty ? setConfirmingDiscard(true) : void window.electronAPI?.cancelEditJob())}>CANCEL</button><button className="primary-retro" onClick={() => {
-              const patch: EditJobPatch = {
-                id: latest().id,
-                // A hand-tuned preset stops claiming to be the preset it started from.
-                preset: presetEdited ? { ...latest().preset, id: 'custom', name: 'CUSTOM' } : latest().preset,
-                outputFilename: latest().outputFilename,
-                outputFilenameManuallySet: latest().outputFilenameManuallySet,
-                transitions: latest().transitions,
-                sourceTiming: sourceTimingOverrides(latest()),
-              }
-              void window.electronAPI?.applyEditJob(patch)
-            }} disabled={!dirty} title={dirty ? undefined : 'NO CHANGES TO APPLY.'}>OK / APPLY</button></>}
+            : <><button onClick={() => (dirty ? setConfirmingDiscard(true) : void window.electronAPI?.cancelEditJob())}>CANCEL</button><button onClick={() => applyEdits(false)} disabled={!dirty} title={dirty ? 'Apply without closing' : 'NO CHANGES TO APPLY.'}>APPLY</button><button className="primary-retro" onClick={() => applyEdits(true)} disabled={!dirty} title={dirty ? 'Apply and close' : 'NO CHANGES TO APPLY.'}>OK</button></>}
         </div>
       </aside>
     </div>

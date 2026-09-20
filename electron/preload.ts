@@ -43,7 +43,7 @@ export interface IElectronAPI {
   openEditJob: (task: QueueTask) => Promise<void>
   onEditJobTask: (callback: (task: QueueTask) => void) => () => void
   syncEditJobTask: (task: QueueTask) => Promise<void>
-  applyEditJob: (patch: EditJobPatch) => Promise<void>
+  applyEditJob: (patch: EditJobPatch, close?: boolean) => Promise<void>
   onEditJobApplied: (callback: (patch: EditJobPatch) => void) => () => void
   cancelEditJob: () => Promise<void>
   onQueueFinished: (callback: () => void) => () => void
@@ -119,7 +119,7 @@ const api: IElectronAPI = {
     ipcRenderer.on('edit-job-task', handler)
     return () => ipcRenderer.removeListener('edit-job-task', handler)
   },
-  applyEditJob: (patch: EditJobPatch) => ipcRenderer.invoke('apply-edit-job', patch),
+  applyEditJob: (patch: EditJobPatch, close?: boolean) => ipcRenderer.invoke('apply-edit-job', patch, close),
   syncEditJobTask: (task: QueueTask) => ipcRenderer.invoke('sync-edit-job-task', task),
   cancelEditJob: () => ipcRenderer.invoke('cancel-edit-job'),
   onEditJobApplied: (callback) => {

@@ -3,7 +3,7 @@ import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
-import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
+import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { FILMSTRIP_HEIGHT, filmstripCountForZoom, filmstripKey } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
@@ -357,6 +357,15 @@ console.log('\n== the output frame ==')
 
   check('a wide frame in a tall box is limited by the width', fitFrame({ width: 400, height: 600 }, 16 / 9), { width: 400, height: 225 })
   check('a wide frame in a wide box is limited by the height', fitFrame({ width: 800, height: 400 }, 16 / 9), { width: 711.1111111111111, height: 400 })
+
+  // How the monitor fits the picture into its panel. Width and height fill that one dimension
+  // and let the other run over, which is what the two fit commands mean; contain does not.
+  check('fit to width fills the width', fitFrameBy({ width: 400, height: 300 }, 16 / 9, 'width'), { width: 400, height: 225 })
+  near('fit to height fills the height', fitFrameBy({ width: 400, height: 300 }, 16 / 9, 'height')!.width, 533.3333333333334, 1e-9)
+  check('and its height is the panel', fitFrameBy({ width: 400, height: 300 }, 16 / 9, 'height')!.height, 300)
+  check('contain is still the whole frame inside', fitFrameBy({ width: 400, height: 300 }, 16 / 9, 'contain'), fitFrame({ width: 400, height: 300 }, 16 / 9))
+  check('and is what being asked for nothing gets', fitFrameBy({ width: 400, height: 300 }, 16 / 9), fitFrame({ width: 400, height: 300 }, 16 / 9))
+  check('no room draws nothing in any mode', [fitFrameBy({ width: 0, height: 300 }, 16 / 9, 'width'), fitFrameBy({ width: 400, height: 0 }, 16 / 9, 'height')], [null, null])
   near('a box that matches the frame is the whole box', fitFrame({ width: 800, height: 600 }, 4 / 3)!.width, 800)
   check('an empty box draws nothing', fitFrame({ width: 0, height: 600 }, 16 / 9), null)
   check('and neither does a nonsense aspect', fitFrame({ width: 800, height: 600 }, 0), null)

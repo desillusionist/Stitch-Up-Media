@@ -131,10 +131,12 @@ app.whenReady().then(() => {
     if (process.env.VITE_DEV_SERVER_URL) await editJobWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}#edit-job`)
     else await editJobWindow.loadFile(path.join(__dirname, '../dist/index.html'), { hash: 'edit-job' })
   })
-  // The editor sends only the fields it owns; the queue merges them field-scoped.
-  ipcMain.handle('apply-edit-job', async (_, patch: EditJobPatch) => {
+  // The editor sends only the fields it owns; the queue merges them field-scoped. APPLY keeps
+  // the window open so a change can be made and looked at again; OK is the same thing and a
+  // close, which is what the caller asks for with `close`.
+  ipcMain.handle('apply-edit-job', async (_, patch: EditJobPatch, close = true) => {
     mainWindow?.webContents.send('edit-job-applied', patch)
-    editJobWindow?.close()
+    if (close) editJobWindow?.close()
   })
   // The queue pushes editable-field changes here while the editor is open, so the
   // editor never applies edits on top of a stale snapshot. Ignored once the

@@ -604,19 +604,17 @@ export class FFmpegEngine {
     if (wantsVideo && preset.crop && hasCrop(preset.crop)) videoFilters.push(cropFilter(preset.crop))
     // 2. Resolution Scaling
     if (wantsVideo && preset.videoCodec !== 'copy') {
-      if (preset.width && preset.height) {
-        // An exact size is the frame, so the picture is stretched to it and nothing is padded.
-        videoFilters.push(`scale=${preset.width}:${preset.height}`)
-      } else {
-        // A named resolution is a canvas, not a hint: the picture is fitted inside the box and
-        // then padded out to the box, so asking for 4K really produces 4K. Fitting alone made a
-        // 720x1280 source come out at its own shape's size, 1214x2160, which looks like the
-        // resolution was ignored. Stream copy cannot be filtered at all, so it takes neither.
-        const box = resolutionBox(preset.resolution)
-        if (box) {
-          videoFilters.push(`scale=${box.width}:${box.height}:force_original_aspect_ratio=decrease`)
-          videoFilters.push(`pad=${box.width}:${box.height}:(ow-iw)/2:(oh-ih)/2:color=black`)
-        }
+      const exact = preset.width && preset.height ? { width: preset.width, height: preset.height } : undefined
+      const box = exact ?? resolutionBox(preset.resolution)
+      if (box) {
+        // A cropped picture is fitted into the output frame keeping its proportions and then
+        // padded out, because stretching a crop to the frame would undo the shape the crop was
+        // made to have. A named resolution is the frame itself and is fitted the same way, so
+        // asking for 4K really produces 4K. An exact size with no crop is still applied as it
+        // stands, which is what lets the aspect buttons shape the picture.
+        const keepShape = Boolean(preset.crop && hasCrop(preset.crop)) || !exact
+        videoFilters.push(`scale=${box.width}:${box.height}${keepShape ? ':force_original_aspect_ratio=decrease' : ''}`)
+        if (keepShape) videoFilters.push(`pad=${box.width}:${box.height}:(ow-iw)/2:(oh-ih)/2:color=black`)
       }
       // A still image can be any size at all, and 4:2:0 and 4:2:2 encoders refuse an odd
       // one outright: a 1195x896 source failed the whole job with "width not divisible by

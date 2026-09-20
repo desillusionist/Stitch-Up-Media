@@ -42,6 +42,23 @@ export const fitFrame = (available: FrameSize, aspect: number): FrameSize | null
   return { width, height: width / aspect }
 }
 
+/** How a frame is fitted into the space available. */
+export type FitMode = 'contain' | 'width' | 'height'
+
+/**
+ * The box a frame occupies when fitted into a space.
+ *
+ * `contain` is the whole frame inside it. `width` and `height` fill that one dimension and let
+ * the other overflow, which is what a monitor's fit-to-width and fit-to-height mean: the part
+ * that will not fit is clipped by the panel rather than shrunk until it behaves like `contain`.
+ */
+export const fitFrameBy = (available: FrameSize, aspect: number, mode: FitMode = 'contain'): FrameSize | null => {
+  if (available.width <= 0 || available.height <= 0 || !Number.isFinite(aspect) || aspect <= 0) return null
+  if (mode === 'width') return { width: available.width, height: available.width / aspect }
+  if (mode === 'height') return { width: available.height * aspect, height: available.height }
+  return fitFrame(available, aspect)
+}
+
 /**
  * The pixel size a ratio gives at a base, rounded to an even pair.
  *
