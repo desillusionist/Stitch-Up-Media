@@ -8,6 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
+import { FILMSTRIP_HEIGHT, filmstripCountForZoom, filmstripKey } from '../lib/filmstrip'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
@@ -60,6 +61,17 @@ const FPS_CHOICES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]
 const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
 const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft) !== sliceSignature(baseline)
 
+/**
+ * What a right-click on the timeline was on.
+ *
+ * A clip offers the two things that are about the clip itself: its frame-accurate preview and
+ * its media info. A lane head offers the two ways to draw its clips, since that is a property
+ * of the lane rather than of any one clip in it.
+ */
+type TimelineMenu =
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; label: string }
+  | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
+
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
 
 const EditorRow: React.FC<{ label: string; value: React.ReactNode; reason?: string }> = ({ label, value, reason }) => (
@@ -110,6 +122,14 @@ export const EditJobApp: React.FC = () => {
   const [zoom, setZoom] = useState(1)
   /** Keeps the exact size's proportions while one of the two fields is edited. */
   const [lockProportion, setLockProportion] = useState(false)
+  /** Lanes drawn as strips of frames rather than as a plain clip panel, by lane id. */
+  const [filmstripLanes, setFilmstripLanes] = useState<Record<string, boolean>>({})
+  /** Strips already built, keyed by media, used range and tile count. */
+  const [filmstrips, setFilmstrips] = useState<Record<string, string[]>>({})
+  /** Strips asked for and not yet answered, so one is never requested twice over. */
+  const filmstripWaitingRef = useRef<Set<string>>(new Set())
+  /** Where a right-click on the timeline opened its menu, and what it was on. */
+  const [timelineMenu, setTimelineMenu] = useState<TimelineMenu | null>(null)
   /** Whether the crop fields read as per cent of the source or as pixels of it. */
   const [cropUnit, setCropUnit] = useState<'%' | 'px'>('%')
   /** Boundary whose transition editor is open, by index of the clip it follows. */
@@ -249,6 +269,74 @@ export const EditJobApp: React.FC = () => {
     })
     return () => { cancelled = true }
   }, [timelineSignature, probedTiming])
+
+  /**
+   * Builds the filmstrips the visible lanes are asking for.
+   *
+   * A strip is frames sampled across the range the clip actually USES, keyed by the media, the
+   * range and the tile count together, so trimming a clip or zooming in asks for a genuinely
+   * different strip rather than reusing one that no longer describes it. Stills are drawn from
+   * their own frame instead, because one frame tiled is exactly what a strip of a still is and
+   * there is nothing to sample.
+   */
+  const filmstripZoom = zoom
+  useEffect(() => {
+    const lanes = model
+    const bridge = window.electronAPI
+    if (!lanes || !bridge?.filmstripFrames) return
+    const count = filmstripCountForZoom(filmstripZoom)
+    const wanted: Array<{ key: string; target: string; start: number; end: number }> = []
+    lanes.lanes.forEach((lane) => {
+      if (!filmstripLanes[lane.id]) return
+      lane.segments.forEach((segment) => {
+        if (segment.still) return
+        const target = mediaTargets[segment.sourcePath]?.path
+        if (!target) return
+        const key = filmstripKey(target, segment.sourceIn, segment.duration, count)
+        if (filmstrips[key] || filmstripWaitingRef.current.has(key)) return
+        wanted.push({ key, target, start: segment.sourceIn, end: segment.sourceIn + segment.duration })
+      })
+    })
+    if (!wanted.length) return
+    wanted.forEach(({ key }) => filmstripWaitingRef.current.add(key))
+    let cancelled = false
+    void Promise.all(wanted.map(async ({ key, target, start, end }) => {
+      const frames = await bridge.filmstripFrames(target, { count, height: FILMSTRIP_HEIGHT, start, end })
+      return [key, frames] as const
+    })).then((entries) => {
+      if (cancelled) return
+      setFilmstrips((current) => {
+        const next = { ...current }
+        entries.forEach(([key, frames]) => {
+          // A strip that could not be built is forgotten rather than left pending forever, so
+          // the next render can try again instead of the clip being stuck with no frames.
+          if (frames.length) next[key] = frames
+          else filmstripWaitingRef.current.delete(key)
+        })
+        return next
+      })
+    })
+    return () => { cancelled = true }
+  }, [filmstripLanes, filmstripZoom, mediaTargets, timelineSignature])
+
+  // A context menu closes on the next press anywhere, or on Escape.
+  useEffect(() => {
+    if (!timelineMenu) return
+    const close = (event: Event) => {
+      const target = event.target as Node | null
+      if (target instanceof Element && target.closest('.timeline-menu')) return
+      setTimelineMenu(null)
+    }
+    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') setTimelineMenu(null) }
+    document.addEventListener('mousedown', close, true)
+    document.addEventListener('contextmenu', close, true)
+    document.addEventListener('keydown', keydown, true)
+    return () => {
+      document.removeEventListener('mousedown', close, true)
+      document.removeEventListener('contextmenu', close, true)
+      document.removeEventListener('keydown', keydown, true)
+    }
+  }, [timelineMenu])
 
   const timelineDuration = model?.duration ?? 0
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
@@ -600,6 +688,36 @@ export const EditJobApp: React.FC = () => {
       : segment.still ? 'still image' : 'media'
     return `${segmentLabel(segment)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
   }
+  /** The strip a clip is drawn with, or nothing when it has none yet. */
+  const stripFor = (segment: TimelineSegment) => {
+    const target = mediaTargets[segment.sourcePath]?.path
+    if (!target || segment.still) return undefined
+    return filmstrips[filmstripKey(target, segment.sourceIn, segment.duration, filmstripCountForZoom(zoom))]
+  }
+  /** Keeps a right-click menu on screen when the click landed near an edge. */
+  const menuPoint = (event: React.MouseEvent) => ({
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 200)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 160)),
+  })
+  const openClipMenu = (event: React.MouseEvent, segment: TimelineSegment, laneId: string, index: number) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const point = menuPoint(event)
+    setTimelineMenu({
+      kind: 'clip',
+      x: point.x,
+      y: point.y,
+      sourceIndex: Math.max(0, draft.sourcePaths.indexOf(segment.sourcePath)),
+      mainIndex: laneId === model.lanes[0]?.id ? index : null,
+      label: segmentLabel(segment),
+    })
+  }
+  const openLaneMenu = (event: React.MouseEvent, laneId: string, label: string) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const point = menuPoint(event)
+    setTimelineMenu({ kind: 'lane', x: point.x, y: point.y, laneId, label })
+  }
   const duration = model.duration
 
   const showBoundaries = cuts.length > 0
@@ -651,10 +769,10 @@ export const EditJobApp: React.FC = () => {
    * helper reports the filmstrip range back on close, so opening it without the
    * current points would overwrite existing trim with the full source range.
    */
-  const openNativePreview = async () => {
+  const openNativePreview = async (sourceIndex: number = focusedSourceIndex) => {
     // A still that becomes a timed clip is opened in the advanced helper as a
     // generated clip, so its filmstrip and trimming behave like real footage.
-    const request = await resolveQuickLookRequest(draft, window.electronAPI, { sourceIndex: focusedSourceIndex, preferTimedStill: true })
+    const request = await resolveQuickLookRequest(draft, window.electronAPI, { sourceIndex, preferTimedStill: true })
     if (!request) { setPreviewNotice('NO PREVIEW TARGET FOR THIS SOURCE.'); return }
     setPreviewNotice(request.previewUnavailable
       ? `COULD NOT BUILD A ${Math.round(draft.stillImageDuration || 10)}s CLIP FOR THIS STILL, SO THE FRAME IS SHOWN INSTEAD. THE FFMPEG ERROR IS IN THE LOG.`
@@ -1010,7 +1128,7 @@ export const EditJobApp: React.FC = () => {
               </div>
               {model.lanes.map((lane) => (
                 <div className="timeline-lane" key={lane.id}>
-                  <div className="timeline-lane-head">
+                  <div className="timeline-lane-head" onContextMenu={(event) => openLaneMenu(event, lane.id, lane.label)} title="Right-click to choose how this lane's clips are drawn">
                     <button
                       className={`lane-mute${muted[lane.id] ? ' is-muted' : ''}`}
                       onClick={() => setMuted((current) => ({ ...current, [lane.id]: !current[lane.id] }))}
@@ -1023,10 +1141,18 @@ export const EditJobApp: React.FC = () => {
                     {lane.segments.map((segment, index) => (
                       <div
                         key={segment.key}
-                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}`}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
                         style={{ flexBasis: `${duration > 0 ? (segment.duration / duration) * 100 : 0}%` }}
                         title={clipTitle(segment)}
+                        onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
                       >
+                        {/* The strip sits behind the clip's own label, so a clip still says what it
+                            is while its frames are visible underneath. A still has no frames to
+                            sample and one frame tiled is exactly its strip, so it is drawn from
+                            its own picture rather than through ffmpeg. */}
+                        {filmstripLanes[lane.id] && (stripFor(segment)
+                          ? <div className="timeline-clip-film" aria-hidden="true">{stripFor(segment)?.map((frame, tile) => <img key={tile} src={frame} alt="" draggable={false} />)}</div>
+                          : segment.still ? <div className="timeline-clip-film is-still" style={{ backgroundImage: `url(${mediaUrl(segment.sourcePath)})` }} aria-hidden="true" /> : null)}
                         <span className="timeline-clip-name">{segmentLabel(segment)}</span>
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
@@ -1211,5 +1337,18 @@ export const EditJobApp: React.FC = () => {
         preload="auto"
       /> : null
     })}
+
+    {/* Fixed rather than positioned inside the timeline, so it is never clipped by the scroll
+        area it was opened from. */}
+    {timelineMenu && <div className="timeline-menu" style={{ left: timelineMenu.x, top: timelineMenu.y }} role="menu">
+      <span className="timeline-menu-head">{timelineMenu.label}</span>
+      {timelineMenu.kind === 'clip' ? <>
+        <button role="menuitem" onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void openNativePreview(index) }}>QUICK LOOK...</button>
+        <button role="menuitem" onClick={() => { const index = timelineMenu.mainIndex ?? timelineMenu.sourceIndex; setTimelineMenu(null); setInspectedIndex(index) }}>MEDIA INFO</button>
+      </> : <>
+        <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? '' : 'is-on'} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: false })) }}>COMPACT VIEW</button>
+        <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? 'is-on' : ''} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: true })) }}>FILMSTRIP</button>
+      </>}
+    </div>}
   </div>
 }

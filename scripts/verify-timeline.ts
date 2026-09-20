@@ -4,6 +4,7 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
+import { FILMSTRIP_HEIGHT, filmstripCountForZoom, filmstripKey } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -513,6 +514,24 @@ console.log('\n== the exact-size fields ==')
   check('a locked square stays square', resizeExact({ width: 1080, height: 1080 }, 'height', 500, true), { width: 500, height: 500 })
   // A frame can never be zero pixels wide, whatever is typed into the box.
   check('a locked size never falls to zero', resizeExact({ width: 1920, height: 1080 }, 'width', 0, true), { width: 2, height: 2 })
+}
+
+console.log('\n== the timeline filmstrip ==')
+{
+  // The count follows the zoom, so zooming in buys detail about a clip instead of spending the
+  // same few tiles on a two-second clip and on a two-minute one.
+  check('a fit timeline asks for a short strip', filmstripCountForZoom(1), 6)
+  check('and zooming in asks for more', filmstripCountForZoom(4), 24)
+  check('but a tile narrower than a few pixels is noise', filmstripCountForZoom(0.1), 4)
+  check('and a nonsense zoom falls back to fit', filmstripCountForZoom(Number.NaN), 6)
+
+  // The key carries the media, the used range AND the tile count. Footage trimmed differently
+  // is a different strip, and a strip of one count is not the strip of another, so keying on
+  // the media alone would serve a short strip for a request that wanted a long one.
+  check('a strip key names its media, range and count', filmstripKey('/a.mp4', 1.5, 4, 8), '/a.mp4|1.500|4.000|8')
+  check('the same media on another range is another strip', filmstripKey('/a.mp4', 2, 4, 8) === filmstripKey('/a.mp4', 1.5, 4, 8), false)
+  check('and so is another tile count', filmstripKey('/a.mp4', 1.5, 4, 8) === filmstripKey('/a.mp4', 1.5, 4, 12), false)
+  check('the tile height is a positive number', FILMSTRIP_HEIGHT > 0, true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

@@ -176,6 +176,45 @@ app.whenReady().then(() => {
     try { return fs.existsSync(filePath) } catch { return false }
   })
 
+  // Filmstrip tiles for the timeline: a handful of frames sampled evenly across the range a
+  // clip actually uses, handed back as data URLs. Cached in memory because a clip is redrawn
+  // on every scroll and zoom far more often than its footage changes.
+  const filmstripCache = new Map<string, string[]>()
+  ipcMain.handle('filmstrip-frames', async (_, filePath: string, options?: { count?: number; start?: number; end?: number; height?: number }) => {
+    if (!filePath) return []
+    try { if (!fs.statSync(filePath).isFile()) return [] } catch { return [] }
+    const count = Math.max(2, Math.min(24, Math.round(options?.count ?? 12)))
+    const height = Math.max(16, Math.min(120, Math.round(options?.height ?? 48)))
+    const start = Math.max(0, options?.start ?? 0)
+    const end = options?.end && options.end > start ? options.end : undefined
+    const cacheKey = `${filePath}|${start.toFixed(3)}|${(end ?? -1).toFixed(3)}|${count}|${height}`
+    const cached = filmstripCache.get(cacheKey)
+    if (cached) return cached
+    const length = end != null ? Math.max(0.05, end - start) : undefined
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-filmstrip-'))
+    try {
+      const args = ['-hide_banner', '-loglevel', 'error', '-y']
+      if (start > 0) args.push('-ss', String(start))
+      if (length != null) args.push('-t', String(length))
+      args.push('-i', filePath)
+      // fps samples evenly across whatever was read, so the tiles span the used range rather
+      // than clustering at its head, and -frames:v pins the count so a short clip cannot come
+      // back with fewer tiles than the strip has room for.
+      const rate = length != null ? count / length : 4
+      args.push('-vf', `fps=${rate.toFixed(6)},scale=-2:${height}`, '-frames:v', String(count), '-q:v', '5', path.join(dir, 'f%03d.jpg'))
+      execFileSync('ffmpeg', args, { timeout: 60000 })
+      const files = fs.readdirSync(dir).filter((name) => name.endsWith('.jpg')).sort()
+      const frames = files.slice(0, count).map((name) => `data:image/jpeg;base64,${fs.readFileSync(path.join(dir, name)).toString('base64')}`)
+      if (frames.length && filmstripCache.size < 200) filmstripCache.set(cacheKey, frames)
+      return frames
+    } catch (error) {
+      logEvent('ipc', 'filmstrip failed', { filePath, start, end, count, height, error: String(error) })
+      return []
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+    }
+  })
+
   ipcMain.handle('get-paths-total-size', async (_, filePaths: string[]) => {
     return filePaths.reduce((total, filePath) => {
       try { return total + fs.statSync(filePath).size } catch { return total }

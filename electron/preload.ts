@@ -10,6 +10,8 @@ export interface IElectronAPI {
   listSiblingFiles: (filePath: string) => Promise<string[]>
   getPathsTotalSize: (filePaths: string[]) => Promise<number>
   pathExists: (filePath: string) => Promise<boolean>
+  /** Evenly-spaced frames across a clip's used range, as data URLs, for the timeline filmstrip. */
+  filmstripFrames: (filePath: string, options?: { count?: number; start?: number; end?: number; height?: number }) => Promise<string[]>
   selectOutputDir: () => Promise<string | null>
   startTask: (task: QueueTask) => Promise<{ success: boolean; error?: string }>
   startSelectedTasks: (tasks: QueueTask[]) => Promise<{ success: boolean; error?: string }>
@@ -56,6 +58,7 @@ const api: IElectronAPI = {
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
+  filmstripFrames: (filePath: string, options?: { count?: number; start?: number; end?: number; height?: number }) => ipcRenderer.invoke('filmstrip-frames', filePath, options),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),
   startSelectedTasks: (tasks: QueueTask[]) => ipcRenderer.invoke('start-selected-tasks', tasks),
