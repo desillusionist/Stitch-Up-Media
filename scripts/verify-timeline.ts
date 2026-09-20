@@ -3,7 +3,7 @@ import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
-import { aspectSize, clampCrop, cropFilter, fitFrame, hasCrop, outputFrameSize, resolutionBox, resolutionShortSide } from '../src/lib/outputFrame'
+import { aspectSize, clampCrop, cropBands, cropFilter, fitFrame, hasCrop, outputFrameSize, resolutionBox, resolutionShortSide } from '../src/lib/outputFrame'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -395,6 +395,19 @@ console.log('\n== cropping ==')
   check('a crop cannot eat the whole frame', clampCrop({ left: 0.9, top: 0, right: 0.9, bottom: 0 }), { left: 0.45, top: 0, right: 0, bottom: 0 })
   check('the filter keeps the picture it was asked for', cropFilter({ left: 0.1, top: 0.05, right: 0, bottom: 0.05 }), 'crop=max(2\\,iw*0.900000):max(2\\,ih*0.900000):iw*0.100000:ih*0.050000')
   check('and the smallest side is floored at two pixels', cropFilter({ left: 0, top: 0, right: 0, bottom: 0 }).startsWith('crop=max(2\\,iw*1.000000)'), true)
+
+  // The shading the monitor draws: the four bands a kept rect leaves inside its picture box.
+  // A 100x50 picture keeping the middle 50x20 (from x=25, y=15) leaves a 25-wide strip on
+  // each side and a 15-tall strip above and below, and nothing at all overlapping the kept
+  // rect. That is what stops a crop from tinting the output frame or the rest of the stage.
+  const bands = cropBands({ left: 0, top: 0, width: 100, height: 50 }, { left: 25, top: 15, width: 50, height: 20 })
+  check('the crop shades each side separately', bands, [
+    { left: 0, top: 0, width: 25, height: 50 },
+    { left: 75, top: 0, width: 25, height: 50 },
+    { left: 25, top: 0, width: 50, height: 15 },
+    { left: 25, top: 35, width: 50, height: 15 },
+  ])
+  check('an untouched picture leaves no shade', cropBands({ left: 0, top: 0, width: 100, height: 50 }, { left: 0, top: 0, width: 100, height: 50 }).every((band) => band.width === 0 || band.height === 0), true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

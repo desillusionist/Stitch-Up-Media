@@ -42,6 +42,15 @@ ${lane('B', [['a', 'b0', (4 / 600) * 100, true], ['b', 'b1', (6 / 600) * 100, fa
 ${lane('B2', [['long.wav', 'b2', 100, false]], 0, '')}
 <div class="timeline-playhead" id="bph" style="left:calc(102px + ${4 / 600} * (100% - 102px))"></div>`
 
+// Case C: the preview overlay. A square output frame centred in a wide stage, its label
+// anchored to the frame's top-left, and one crop band down the left edge. This checks the
+// overlay geometry a reader cannot judge from the stylesheet.
+const caseC = `
+<div class="editor-stage" id="stage" style="width:500px;height:300px">
+  <div class="editor-frame" id="cframe" style="width:200px;height:200px"><b id="clabel">OUTPUT 1080×1080</b></div>
+  <div class="editor-crop-shade" id="cshade" style="left:0;top:0;width:25px;height:300px"></div>
+</div>`
+
 const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${cssPath}">
 </head><body><div class="edit-job-shell"><div class="editor-body"><main class="editor-main">
@@ -51,13 +60,14 @@ ${caseA}
 <section class="timeline-panel"><div class="timeline-lanes"><div class="timeline-lanes-inner" style="width:100%">
 ${caseB}
 </div></div></section>
+<section class="editor-preview"><div class="editor-screen">${caseC}</div></section>
 </main></div></div></body></html>`
 
 const htmlPath = path.join(__dirname, '.measure.html')
 fs.writeFileSync(htmlPath, page, 'utf8')
 
 const measure = `(() => {
-  const rect = (id) => { const el = document.getElementById(id); if (!el) return null; const r = el.getBoundingClientRect(); return { left: +r.left.toFixed(2), right: +r.right.toFixed(2), center: +((r.left + r.right) / 2).toFixed(2) } }
+  const rect = (id) => { const el = document.getElementById(id); if (!el) return null; const r = el.getBoundingClientRect(); return { left: +r.left.toFixed(2), right: +r.right.toFixed(2), top: +r.top.toFixed(2), bottom: +r.bottom.toFixed(2), center: +((r.left + r.right) / 2).toFixed(2), centerY: +((r.top + r.bottom) / 2).toFixed(2), width: +(r.right - r.left).toFixed(2), height: +(r.bottom - r.top).toFixed(2) } }
   const glyph = (id) => { const style = getComputedStyle(document.getElementById(id), '::before'); return { inset: style.inset, margin: style.margin, width: style.width } }
   const track = rect('track-A')
   const clip0 = rect('a0')
@@ -68,12 +78,20 @@ const measure = `(() => {
   const bMarker = rect('bm0')
   const bPlayhead = rect('bph')
   const bAudio = rect('b2')
+  const stage = rect('stage')
+  const cframe = rect('cframe')
+  const clabel = rect('clabel')
+  const cshade = rect('cshade')
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0') },
     caseB: { trackWidth: +(bTrack.right - bTrack.left).toFixed(2), clip0Right: bClip0.right, markerCenter: bMarker.center, playheadLeft: bPlayhead.left, audioRight: bAudio.right,
       cutVsMarker: +(bClip0.right - bMarker.center).toFixed(2), cutVsPlayhead: +(bClip0.right - bPlayhead.left).toFixed(2),
       laneOverflow: +(bAudio.right - bTrack.right).toFixed(2) },
+    caseC: { stage: [stage.width, stage.height], frame: [cframe.width, cframe.height],
+      centeredX: +(cframe.center - stage.center).toFixed(2), centeredY: +(cframe.centerY - stage.centerY).toFixed(2),
+      labelVsFrameLeft: +(clabel.left - cframe.left).toFixed(2), labelVsFrameTop: +(clabel.top - cframe.top).toFixed(2),
+      shadeLeft: cshade.left, shadeHeight: cshade.height },
   }
 })()`
 

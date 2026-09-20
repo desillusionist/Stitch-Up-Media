@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ZoomIn, ZoomOut } from 'lucide-react'
 import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
@@ -8,7 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { fitFrame, outputFrameSize, resolutionBox, aspectSize, resolutionShortSide, clampCrop, hasCrop, MAX_CROP, CropFractions } from '../lib/outputFrame'
+import { cropBands, fitFrame, outputFrameSize, resolutionBox, aspectSize, resolutionShortSide, clampCrop, hasCrop, MAX_CROP, CropFractions } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -260,7 +260,8 @@ export const EditJobApp: React.FC = () => {
 
   // The stage the picture sits in, and the picture's own pixel size. Together they place the
   // output frame outline, which is drawn around the picture rather than guessed at.
-  const stageRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const stageObserverRef = useRef<ResizeObserver | null>(null)
   const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
   const [naturalSize, setNaturalSize] = useState<{ key: string | undefined; width: number; height: number } | null>(null)
 
@@ -271,14 +272,21 @@ export const EditJobApp: React.FC = () => {
     if (width > 0 && height > 0) setNaturalSize({ key: playback.segment?.key, width, height })
   }
 
-  useEffect(() => {
-    const element = stageRef.current
+  // The stage only exists once a queue item has arrived: until then the editor returns a
+  // placeholder and there is no element to measure. A callback ref binds the observer the
+  // moment that element mounts. The effect this replaced ran once against the placeholder,
+  // found no element and never ran again, so the size stayed null forever and the output
+  // frame and the crop box had no geometry to draw with.
+  const attachStage = useCallback((element: HTMLDivElement | null) => {
+    stageObserverRef.current?.disconnect()
+    stageObserverRef.current = null
+    stageRef.current = element
     if (!element) return
     const measure = () => setStageSize({ width: element.clientWidth, height: element.clientHeight })
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(element)
-    return () => observer.disconnect()
+    stageObserverRef.current = observer
   }, [])
 
   // The monitor fades through black exactly where the encoder will, since both
@@ -699,6 +707,14 @@ export const EditJobApp: React.FC = () => {
       originY,
     }
   })()
+  // What the crop removes, as bands rather than one huge spread shadow, so the output
+  // frame outline and the parts of the stage the crop does not own stay readable.
+  const cropShade = cropRect
+    ? cropBands(
+      { left: cropRect.originX, top: cropRect.originY, width: cropRect.box.width, height: cropRect.box.height },
+      { left: cropRect.left, top: cropRect.top, width: cropRect.width, height: cropRect.height },
+    )
+    : []
 
   /**
    * Drags one edge of the crop box. The pointer position is turned into a fraction of the
@@ -762,7 +778,7 @@ export const EditJobApp: React.FC = () => {
           <div className="editor-screen" onWheel={scrubByWheel}>
             {/* The media sits in its own measured stage, so the output frame outline can
                 be drawn around the picture rather than around the panel. */}
-            <div className="editor-stage" ref={stageRef}>
+            <div className="editor-stage" ref={attachStage}>
               {playback.error
                 ? <span className="editor-screen-message">{playback.error}</span>
                 : stillFrameJob
@@ -783,6 +799,9 @@ export const EditJobApp: React.FC = () => {
                       />
                       : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
               {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
+              {cropShade.map((band, index) => (
+                <div key={index} className="editor-crop-shade" style={{ left: band.left, top: band.top, width: band.width, height: band.height }} aria-hidden="true" />
+              ))}
               {cropRect && <div className="editor-crop" style={{ left: cropRect.left, top: cropRect.top, width: cropRect.width, height: cropRect.height }}>
                 {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
                   <span key={edge} className={`crop-handle is-${edge}`} onPointerDown={(event) => beginCropDrag(edge, event)} role="presentation" />

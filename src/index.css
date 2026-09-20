@@ -158,12 +158,16 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    the media stretches to the space available exactly as it did as a direct child. */
 .editor-stage { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
 /* The edges of the frame the encoder will write, which is not always the picture's own
-   shape: an exact size stretches to it, a named resolution fits inside it. */
-.editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85); pointer-events: none; }
+   shape: an exact size stretches to it, a named resolution fits inside it. The spread
+   shadow dims everything the output does not cover, so the output area reads as a window
+   even when its outline coincides with the picture's. It is clipped by the stage. */
+.editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85), 0 0 0 9999px rgba(3, 9, 16, .55); pointer-events: none; }
 .editor-frame b { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
-/* The crop box, drawn on the picture rather than on the output frame, and shading
-   everything it will remove with a spread shadow so no band of shading can escape. */
-.editor-crop { position: absolute; border: 1px solid var(--ui-encoding); box-shadow: 0 0 0 9999px rgba(3, 9, 16, .62); cursor: move; }
+/* The crop box, drawn on the picture rather than on the output frame. What it removes is
+   dimmed by four explicit bands (see cropBands) rather than one spread shadow, which used
+   to shade the output frame outline and the whole stage along with it. */
+.editor-crop { position: absolute; border: 1px solid var(--ui-encoding); cursor: move; }
+.editor-crop-shade { position: absolute; background: rgba(3, 9, 16, .62); pointer-events: none; }
 .crop-handle { position: absolute; display: block; }
 .crop-handle.is-left { left: -4px; top: 0; bottom: 0; width: 9px; cursor: ew-resize; }
 .crop-handle.is-right { right: -4px; top: 0; bottom: 0; width: 9px; cursor: ew-resize; }

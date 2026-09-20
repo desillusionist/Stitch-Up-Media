@@ -101,3 +101,31 @@ export const cropFilter = (crop: CropFractions): string => {
   const keepHeight = 1 - safe.top - safe.bottom
   return `crop=max(2\\,iw*${keepWidth.toFixed(6)}):max(2\\,ih*${keepHeight.toFixed(6)}):iw*${safe.left.toFixed(6)}:ih*${safe.top.toFixed(6)}`
 }
+
+export interface Rect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/**
+ * The four bands a kept rect leaves behind inside the box it was taken from.
+ *
+ * The monitor dims these instead of shading everything outside the kept rect with one
+ * enormous spread shadow. A spread shadow also covers the output frame outline and jumps
+ * across the whole stage rather than the picture, which read as a mistake; a band is only
+ * ever what the crop actually removes from the picture, so nothing else is tinted.
+ */
+export const cropBands = (box: Rect, kept: Rect): Rect[] => {
+  const keptRight = kept.left + kept.width
+  const keptBottom = kept.top + kept.height
+  const boxRight = box.left + box.width
+  const boxBottom = box.top + box.height
+  return [
+    { left: box.left, top: box.top, width: Math.max(0, kept.left - box.left), height: box.height },
+    { left: keptRight, top: box.top, width: Math.max(0, boxRight - keptRight), height: box.height },
+    { left: kept.left, top: box.top, width: kept.width, height: Math.max(0, kept.top - box.top) },
+    { left: kept.left, top: keptBottom, width: kept.width, height: Math.max(0, boxBottom - keptBottom) },
+  ]
+}
