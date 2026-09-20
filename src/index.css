@@ -223,8 +223,6 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-input::placeholder { color: var(--ui-border); }
 .editor-toggle.is-locked { opacity: .45; }
 .editor-toggle.is-locked input { cursor: not-allowed; }
-.editor-inline-action { margin: 8px 0; padding: 6px 8px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
-.editor-inline-action:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-conflict { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin: 12px 14px 0; padding: 10px 14px; border: 1px solid var(--ui-encoding); background: var(--ui-panel-inset); color: var(--ui-foreground); }
 .editor-conflict .panel-kicker { color: var(--ui-encoding); }
 .editor-conflict p { margin: 4px 0 0; color: var(--ui-muted); font-size: 10px; }
@@ -256,10 +254,17 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .aspect-row button:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .aspect-row button.is-selected { color: var(--ui-canvas); background: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-subsection { display: grid; gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
-.crop-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
-.crop-field { display: flex; align-items: center; gap: 4px; }
-.crop-field span { color: var(--ui-muted); font-size: 9px; }
-.crop-field input { width: 100%; min-width: 0; padding: 5px 4px; text-align: center; }
+.crop-row, .exact-row { display: grid; align-items: center; gap: 5px; }
+.crop-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
+.mini-field { display: flex; align-items: center; gap: 4px; }
+.mini-field span { color: var(--ui-muted); font-size: 9px; }
+.mini-field input { width: 100%; min-width: 0; padding: 5px 4px; text-align: center; }
+/* The lock and reset glyphs beside the exact-size fields, sized to the fields they sit with. */
+.exact-icon { width: 27px; padding: 5px 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); }
+.exact-icon:hover:not(:disabled) { color: var(--ui-accent); border-color: var(--ui-accent); }
+.exact-icon.is-on { color: var(--ui-accent); border-color: var(--ui-accent); }
+.exact-icon:disabled { opacity: .4; }
 .timeline-lanes-inner { position: relative; min-width: 100%; }
 .timeline-lane { display: flex; align-items: stretch; min-height: 42px; border-bottom: 1px dotted var(--ui-border); }
 /* Lane label column. Kept equal to LANE_LABEL_WIDTH in EditJobApp, because the

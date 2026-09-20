@@ -51,6 +51,20 @@ const caseC = `
   <div class="editor-crop-shade" id="cshade" style="left:0;top:0;width:25px;height:300px"></div>
 </div>`
 
+// Case D: the exact-size row. Two fields that must split the space evenly and two glyph
+// buttons that must sit flush with the row's trailing edge, all the same height.
+const caseD = `
+<div class="export-content" id="drow" style="width:300px">
+  <div class="editor-field"><span>EXACT SIZE<em>OVERRIDES RESOLUTION</em></span>
+    <div class="exact-row" id="exrow">
+      <label class="mini-field" id="dwf"><span>W</span><input id="dw" type="number" value="1920"></label>
+      <label class="mini-field" id="dhf"><span>H</span><input id="dh" type="number" value="1080"></label>
+      <button class="exact-icon" id="dlock">L</button>
+      <button class="exact-icon" id="dreset">R</button>
+    </div>
+  </div>
+</div>`
+
 const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${cssPath}">
 </head><body><div class="edit-job-shell"><div class="editor-body"><main class="editor-main">
@@ -61,7 +75,7 @@ ${caseA}
 ${caseB}
 </div></div></section>
 <section class="editor-preview"><div class="editor-screen">${caseC}</div></section>
-</main></div></div></body></html>`
+</main><aside class="export-sidebar">${caseD}</aside></div></div></body></html>`
 
 const htmlPath = path.join(__dirname, '.measure.html')
 fs.writeFileSync(htmlPath, page, 'utf8')
@@ -82,6 +96,11 @@ const measure = `(() => {
   const cframe = rect('cframe')
   const clabel = rect('clabel')
   const cshade = rect('cshade')
+  const exrow = rect('exrow')
+  const dw = rect('dw')
+  const dh = rect('dh')
+  const dlock = rect('dlock')
+  const dreset = rect('dreset')
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0') },
@@ -92,6 +111,10 @@ const measure = `(() => {
       centeredX: +(cframe.center - stage.center).toFixed(2), centeredY: +(cframe.centerY - stage.centerY).toFixed(2),
       labelVsFrameLeft: +(clabel.left - cframe.left).toFixed(2), labelVsFrameTop: +(clabel.top - cframe.top).toFixed(2),
       shadeLeft: cshade.left, shadeHeight: cshade.height },
+    caseD: { rowWidth: exrow.width, fieldWidths: [dw.width, dh.width], iconWidths: [dlock.width, dreset.width],
+      fieldHeights: [dw.height, dh.height], iconHeights: [dlock.height, dreset.height],
+      leadingFlush: +(rect('dwf').left - exrow.left).toFixed(2), trailingFlush: +(exrow.right - dreset.right).toFixed(2),
+      columnGap: +(dh.left - dw.right).toFixed(2) },
   }
 })()`
 

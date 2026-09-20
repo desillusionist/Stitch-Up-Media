@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ZoomIn, ZoomOut } from 'lucide-react'
+import { Link, RotateCcw, Unlink, ZoomIn, ZoomOut } from 'lucide-react'
 import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
@@ -8,7 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { cropBands, fitFrame, outputFrameSize, resolutionBox, aspectSize, resolutionShortSide, clampCrop, hasCrop, MAX_CROP, CropFractions } from '../lib/outputFrame'
+import { cropBands, exactSizeFields, fitFrame, outputFrameSize, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropFractions } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -108,6 +108,8 @@ export const EditJobApp: React.FC = () => {
   const probedPathsRef = useRef<Set<string>>(new Set())
   // Horizontal scale only: lane widths stay proportional to real durations.
   const [zoom, setZoom] = useState(1)
+  /** Keeps the exact size's proportions while one of the two fields is edited. */
+  const [lockProportion, setLockProportion] = useState(false)
   /** Boundary whose transition editor is open, by index of the clip it follows. */
   const [openBoundary, setOpenBoundary] = useState<number | null>(null)
   // Monitoring state only. Never written to the task, so muting can never be
@@ -691,10 +693,14 @@ export const EditJobApp: React.FC = () => {
   const naturalAspect = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize.width / naturalSize.height : null
   const pictureRect = naturalAspect && stageSize ? fitFrame(stageSize, naturalAspect) : null
   const crop = draft.preset.crop
-  const cropEnabled = hasCrop(crop)
+  // The crop object existing IS the enabled state, and it is deliberately not `hasCrop`:
+  // a crop with all four edges at zero removes nothing, so a data test reported the control
+  // as off the moment the last field was zeroed, and every attempt to switch it back on set
+  // the same all-zero crop again. Whether it removes anything is the encoder's question.
+  const cropEnabled = Boolean(crop)
   const setCrop = (next: CropFractions) => updatePreset({ crop: clampCrop(next) })
   const cropRect = (() => {
-    if (!cropEnabled || !crop || !pictureRect || !stageSize) return null
+    if (!crop || !pictureRect || !stageSize) return null
     const originX = (stageSize.width - pictureRect.width) / 2
     const originY = (stageSize.height - pictureRect.height) / 2
     return {
@@ -749,6 +755,16 @@ export const EditJobApp: React.FC = () => {
     box: resolutionBox(draft.preset.resolution),
   })
   const frameRect = outputFrame && stageSize ? fitFrame(stageSize, outputFrame.width / outputFrame.height) : null
+  // The exact-size fields. Empty means "not overridden": the placeholder shows the frame the
+  // encoder is already writing, and editing either edge pins the pair to that starting point.
+  const exactSize = exactSizeFields({ width: draft.preset.width, height: draft.preset.height }, outputFrame)
+  const exactSet = Boolean(draft.preset.width && draft.preset.height)
+  const setExactEdge = (edge: 'width' | 'height', value: number) => {
+    if (!exactSize || !Number.isFinite(value) || value <= 0) return
+    const next = resizeExact(exactSize, edge, value, lockProportion)
+    updatePreset({ width: next.width, height: next.height })
+  }
+  const clearExactSize = () => updatePreset({ width: undefined, height: undefined })
   const container = draft.preset.container
   const audioOnly = AUDIO_CONTAINERS.includes(container)
   const isImageContainer = IMAGE_CONTAINERS.includes(container)
@@ -988,8 +1004,14 @@ export const EditJobApp: React.FC = () => {
               </div>
             </div>
             <EditorField label="RESOLUTION" reason={videoReason}><select value={draft.preset.resolution} disabled={audioOnly || isGif} onChange={(event) => changeResolution(event.target.value as EncodingPreset['resolution'])}>{RESOLUTIONS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
-            <EditorRow label="EXACT SIZE" value={draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height} — OVERRIDES NAMED RESOLUTION` : 'NOT SET'} />
-            {draft.preset.width && draft.preset.height ? <button className="editor-inline-action" onClick={() => updatePreset({ width: undefined, height: undefined })}>CLEAR EXACT SIZE</button> : null}
+            <div className="editor-field"><span>EXACT SIZE<em>OVERRIDES RESOLUTION</em></span>
+              <div className="exact-row">
+                <label className="mini-field"><span>W</span><input type="number" min="2" step="2" className="editor-input" value={draft.preset.width ?? ''} placeholder={outputFrame ? String(outputFrame.width) : '\u2014'} disabled={audioOnly || isGif} onChange={(event) => setExactEdge('width', Number(event.target.value))} title="Output width in pixels" /></label>
+                <label className="mini-field"><span>H</span><input type="number" min="2" step="2" className="editor-input" value={draft.preset.height ?? ''} placeholder={outputFrame ? String(outputFrame.height) : '\u2014'} disabled={audioOnly || isGif} onChange={(event) => setExactEdge('height', Number(event.target.value))} title="Output height in pixels" /></label>
+                <button className={`exact-icon${lockProportion ? ' is-on' : ''}`} aria-pressed={lockProportion} onClick={() => setLockProportion((on) => !on)} title={lockProportion ? 'Proportions locked' : 'Keep proportions'}>{lockProportion ? <Link size={12} /> : <Unlink size={12} />}</button>
+                <button className="exact-icon" disabled={!exactSet} onClick={clearExactSize} title="Clear exact size" aria-label="Clear exact size"><RotateCcw size={12} /></button>
+              </div>
+            </div>
             <div className="editor-subsection">
               <EditorToggle
                 label="CROP VIDEO"
@@ -997,10 +1019,10 @@ export const EditJobApp: React.FC = () => {
                 reason={videoReason}
                 onChange={(checked) => updatePreset({ crop: checked ? (crop ?? { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }) : undefined })}
               />
-              {cropEnabled && crop && <>
+              {crop && <>
                 <div className="crop-row">
                   {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
-                    <label key={edge} className="crop-field">
+                    <label key={edge} className="mini-field">
                       <span>{edge.slice(0, 1).toUpperCase()}</span>
                       <input
                         type="number"

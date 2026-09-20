@@ -62,6 +62,38 @@ export const resolutionShortSide = (resolution: EncodingPreset['resolution']): n
   return 1080
 }
 
+/**
+ * The exact-size pair the editor's W/H fields work from.
+ *
+ * The preset's own pair is used when it has one; otherwise the frame the encoder is already
+ * producing, so the fields start from the shape the user can see and an edit to one edge
+ * keeps the other rather than leaving the size half set.
+ */
+export const exactSizeFields = (exact: Partial<FrameSize>, effective?: FrameSize): FrameSize | undefined => {
+  const width = exact.width ?? effective?.width
+  const height = exact.height ?? effective?.height
+  return width && height ? { width, height } : undefined
+}
+
+/**
+ * The pair after one edge is edited.
+ *
+ * Both edges are always produced, because the encoder reads an exact size only when it has
+ * both: a lone width is ignored outright, which is what made editing one field look like
+ * nothing happened. While the proportion is locked the other edge follows from the pair's
+ * own ratio, so the frame's shape is kept; unlocked, the other edge stands as it was.
+ */
+export const resizeExact = (current: FrameSize, edge: keyof FrameSize, value: number, lockProportion: boolean): FrameSize => {
+  const rounded = Math.max(2, Math.round(value))
+  if (!lockProportion) {
+    return edge === 'width' ? { width: rounded, height: current.height } : { width: current.width, height: rounded }
+  }
+  const ratio = current.width > 0 && current.height > 0 ? current.height / current.width : 1
+  return edge === 'width'
+    ? { width: rounded, height: Math.max(2, Math.round(rounded * ratio)) }
+    : { width: Math.max(2, Math.round(rounded / ratio)), height: rounded }
+}
+
 /** How far a crop may reach in from each edge before there is nothing left to encode. */
 export const MAX_CROP = 0.45
 

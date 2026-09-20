@@ -3,7 +3,7 @@ import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
-import { aspectSize, clampCrop, cropBands, cropFilter, fitFrame, hasCrop, outputFrameSize, resolutionBox, resolutionShortSide } from '../src/lib/outputFrame'
+import { aspectSize, clampCrop, cropBands, cropFilter, exactSizeFields, fitFrame, hasCrop, outputFrameSize, resolutionBox, resolutionShortSide, resizeExact } from '../src/lib/outputFrame'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -408,6 +408,26 @@ console.log('\n== cropping ==')
     { left: 25, top: 35, width: 50, height: 15 },
   ])
   check('an untouched picture leaves no shade', cropBands({ left: 0, top: 0, width: 100, height: 50 }, { left: 0, top: 0, width: 100, height: 50 }).every((band) => band.width === 0 || band.height === 0), true)
+}
+
+console.log('\n== the exact-size fields ==')
+{
+  // The fields start from the preset's own pair when it has one, and otherwise from the frame
+  // the encoder is already writing, so an edit to one edge has something to keep the other from.
+  check('a set pair wins', exactSizeFields({ width: 1920, height: 1080 }, { width: 1280, height: 720 }), { width: 1920, height: 1080 })
+  check('an unset pair falls back to the effective frame', exactSizeFields({}, { width: 1280, height: 720 }), { width: 1280, height: 720 })
+  check('and nothing at all before the media has loaded', exactSizeFields({}, undefined), undefined)
+
+  // An edit always writes BOTH edges, because the encoder ignores an exact size that is only
+  // half set, which is what made typing in one field look like nothing happened.
+  check('editing the width keeps the height when unlocked', resizeExact({ width: 1920, height: 1080 }, 'width', 1280, false), { width: 1280, height: 1080 })
+  check('editing the height keeps the width when unlocked', resizeExact({ width: 1920, height: 1080 }, 'height', 720, false), { width: 1920, height: 720 })
+  check('a locked width carries the height with it', resizeExact({ width: 1920, height: 1080 }, 'width', 1280, true), { width: 1280, height: 720 })
+  check('a locked height carries the width with it', resizeExact({ width: 1920, height: 1080 }, 'height', 720, true), { width: 1280, height: 720 })
+  check('a locked portrait pair stays portrait', resizeExact({ width: 1080, height: 1920 }, 'width', 540, true), { width: 540, height: 960 })
+  check('a locked square stays square', resizeExact({ width: 1080, height: 1080 }, 'height', 500, true), { width: 500, height: 500 })
+  // A frame can never be zero pixels wide, whatever is typed into the box.
+  check('a locked size never falls to zero', resizeExact({ width: 1920, height: 1080 }, 'width', 0, true), { width: 2, height: 2 })
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
