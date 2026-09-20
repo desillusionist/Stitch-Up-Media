@@ -154,6 +154,13 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-preview, .timeline-panel, .export-sidebar { border: 1px solid var(--ui-border); background: var(--ui-panel); }
 .editor-preview { padding: 10px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .editor-screen { min-height: 120px; flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--ui-muted); background: #030910; border-top: 1px dashed var(--ui-border); border-bottom: 1px dashed var(--ui-border); margin-top: 8px; overflow: hidden; }
+/* The picture's own box, so the output frame outline can be drawn around it. A column, so
+   the media stretches to the space available exactly as it did as a direct child. */
+.editor-stage { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+/* The edges of the frame the encoder will write, which is not always the picture's own
+   shape: an exact size stretches to it, a named resolution fits inside it. */
+.editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85); pointer-events: none; }
+.editor-frame b { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
 .editor-screen b { color: var(--ui-accent); font-size: 11px; }
 .transport { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 9px; color: var(--ui-muted); font-size: 10px; }
 .transport button { border: 0; background: transparent; color: var(--ui-muted); padding: 5px; }

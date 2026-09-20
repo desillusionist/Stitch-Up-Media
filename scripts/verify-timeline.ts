@@ -2,6 +2,7 @@ import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
+import { fitFrame, outputFrameSize, resolutionBox } from '../src/lib/outputFrame'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -265,6 +266,16 @@ console.log('\n== a generated clip is keyed by what it was built with ==')
   check('a different length is a different clip', at25 === longer, false)
   check('and both still name their source', [sourceOfPreviewKey(at25), sourceOfPreviewKey(at30)], ['/frame.png', '/frame.png'])
 
+  // A sequence's clip carries its rate and frame count: a clip built at another rate is a
+  // different length, so playing it would run the sequence at the wrong speed rather than
+  // merely looking stale. This is what made every sequence play too fast.
+  const seqAt25 = previewKey('/seq/f_0001.png', 'seq:25:240')
+  const seqAt30 = previewKey('/seq/f_0001.png', 'seq:30:240')
+  const seqReframed = previewKey('/seq/f_0001.png', 'seq:30:300')
+  check('another rate is another sequence clip', seqAt25 === seqAt30, false)
+  check('and so is another frame count', seqAt30 === seqReframed, false)
+  check('a sequence clip still names its source', sourceOfPreviewKey(seqAt30), '/seq/f_0001.png')
+
   // The helper reports the clip it was handed on close, so the clip has to lead back to
   // the media the user picked, or the in/out points are filed against a file name that
   // will not exist the next time the helper opens.
@@ -319,6 +330,32 @@ console.log('\n== a still’s clip length is settable per source ==')
   // sent: a sequence's derived length is not mistaken for a choice.
   check('only what can be set is sent back', sourceTimingOverrides(recorded), { '/frame.png': { seconds: 20 } })
   check('a sequence sends its rate and no length', sourceTimingOverrides(seqTask), { '/seq/f_0001.png': { fps: 24 } })
+}
+
+console.log('\n== the output frame ==')
+{
+  check('a named resolution is a box', resolutionBox('1080p'), { width: 1920, height: 1080 })
+  check('and source is no box at all', resolutionBox('source'), undefined)
+
+  // An exact size is applied as it stands, so the frame is that shape whatever the picture is.
+  check('an exact size is the frame', outputFrameSize({ natural: { width: 1195, height: 896 }, exact: { width: 1920, height: 1080 }, box: { width: 1920, height: 1080 } }), { width: 1920, height: 1080 })
+  check('an odd exact size is rounded to even', outputFrameSize({ exact: { width: 1921, height: 1081 } }), { width: 1920, height: 1080 })
+
+  // A named resolution fits the picture inside the box keeping its shape. The figures here
+  // are the ones ffmpeg actually produced for this source when the encoder was checked.
+  check('a named resolution fits the picture to the box', outputFrameSize({ natural: { width: 1195, height: 896 }, box: { width: 1920, height: 1080 } }), { width: 1440, height: 1080 })
+  check('and a 720p box fits it too', outputFrameSize({ natural: { width: 1920, height: 1080 }, box: { width: 1280, height: 720 } }), { width: 1280, height: 720 })
+
+  // With neither, the picture's shape is the output's, and only the encoder's even-size
+  // rounding applies. This is the case that used to fail the whole job outright.
+  check('source resolution is the picture, rounded to even', outputFrameSize({ natural: { width: 1195, height: 896 } }), { width: 1194, height: 896 })
+  check('nothing is drawn before the picture has loaded', outputFrameSize({ box: { width: 1920, height: 1080 } }), { width: 1920, height: 1080 })
+
+  check('a wide frame in a tall box is limited by the width', fitFrame({ width: 400, height: 600 }, 16 / 9), { width: 400, height: 225 })
+  check('a wide frame in a wide box is limited by the height', fitFrame({ width: 800, height: 400 }, 16 / 9), { width: 711.1111111111111, height: 400 })
+  near('a box that matches the frame is the whole box', fitFrame({ width: 800, height: 600 }, 4 / 3)!.width, 800)
+  check('an empty box draws nothing', fitFrame({ width: 0, height: 600 }, 16 / 9), null)
+  check('and neither does a nonsense aspect', fitFrame({ width: 800, height: 600 }, 0), null)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

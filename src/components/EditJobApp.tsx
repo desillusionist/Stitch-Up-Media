@@ -8,6 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
+import { fitFrame, outputFrameSize, resolutionBox } from '../lib/outputFrame'
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
@@ -246,6 +247,29 @@ export const EditJobApp: React.FC = () => {
   playbackRef.current = playback
   const stepFpsRef = useRef(fps)
   stepFpsRef.current = Math.max(1, fps)
+
+  // The stage the picture sits in, and the picture's own pixel size. Together they place the
+  // output frame outline, which is drawn around the picture rather than guessed at.
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
+  const [naturalSize, setNaturalSize] = useState<{ key: string | undefined; width: number; height: number } | null>(null)
+
+  const measureNatural = (event: React.SyntheticEvent<HTMLImageElement | HTMLVideoElement>) => {
+    const element = event.currentTarget
+    const width = element instanceof HTMLVideoElement ? element.videoWidth : element.naturalWidth
+    const height = element instanceof HTMLVideoElement ? element.videoHeight : element.naturalHeight
+    if (width > 0 && height > 0) setNaturalSize({ key: playback.segment?.key, width, height })
+  }
+
+  useEffect(() => {
+    const element = stageRef.current
+    if (!element) return
+    const measure = () => setStageSize({ width: element.clientWidth, height: element.clientHeight })
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
 
   // The monitor fades through black exactly where the encoder will, since both
   // read the same applied fade on the segment.
@@ -603,11 +627,16 @@ export const EditJobApp: React.FC = () => {
     }
     // A timed still is not an interpreted sequence, so the request carries no frame grid
     // for it and the helper would fall back to whatever rate the generated file happens
-    // to report. Telling it the same rate and length the timeline uses keeps its frame
+    // to report. Telling it the same rate and the WHOLE clip's length keeps its frame
     // stepping and its trim readout on the editor's own grid.
+    //
+    // The length must be the clip's, not the trimmed segment's: the helper normalises the
+    // in/out handles by whatever total it is given, so a trimmed segment as the total put
+    // the out handle at the end of the strip, which read as the clip being only as long as
+    // the trim, and pulled the out point earlier on every open and close.
     const clip = playback.segment?.still ? playback.segment : undefined
     const helperFps = request.sequenceFps ?? (clip ? fps : undefined)
-    const helperFrames = request.sequenceFrameCount ?? (clip ? Math.max(1, Math.round(clip.duration * fps)) : undefined)
+    const helperFrames = request.sequenceFrameCount ?? (clip ? Math.max(1, Math.round(stillSecondsFor(draft, clip.sourcePath) * fps)) : undefined)
     void window.electronAPI?.quickLook(request.target, draft.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings?.screenshotDirectory, settings?.timestampDisplayMode || 'timestamp', helperFps, helperFrames)
   }
 
@@ -618,6 +647,13 @@ export const EditJobApp: React.FC = () => {
     || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
 
   const dirty = isDirty(draft, baseline ?? draft)
+  /** The frame the encoder will produce, and the box to outline it in. */
+  const outputFrame = outputFrameSize({
+    natural: naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined,
+    exact: draft.preset.width && draft.preset.height ? { width: draft.preset.width, height: draft.preset.height } : undefined,
+    box: resolutionBox(draft.preset.resolution),
+  })
+  const frameRect = outputFrame && stageSize ? fitFrame(stageSize, outputFrame.width / outputFrame.height) : null
   const container = draft.preset.container
   const audioOnly = AUDIO_CONTAINERS.includes(container)
   const isImageContainer = IMAGE_CONTAINERS.includes(container)
@@ -645,24 +681,30 @@ export const EditJobApp: React.FC = () => {
         <section className="editor-preview">
           <div className="panel-kicker">PREVIEW // ASSEMBLED OUTPUT</div>
           <div className="editor-screen" onWheel={scrubByWheel}>
-            {playback.error
-              ? <span className="editor-screen-message">{playback.error}</span>
-              : stillFrameJob
-                ? <img className="editor-still" src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} />
-                : playback.segment?.still
-                  ? <img className="editor-still" style={{ opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} />
-                  : elementUrl
-                    ? <video
-                      ref={playback.attachVideo}
-                      className="editor-video"
-                      src={elementUrl}
-                      preload="metadata"
-                      playsInline
-                      style={{ opacity: previewGain }}
-                      onContextMenu={(event) => event.preventDefault()}
-                      onClick={() => playback.toggle()}
-                    />
-                    : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
+            {/* The media sits in its own measured stage, so the output frame outline can
+                be drawn around the picture rather than around the panel. */}
+            <div className="editor-stage" ref={stageRef}>
+              {playback.error
+                ? <span className="editor-screen-message">{playback.error}</span>
+                : stillFrameJob
+                  ? <img className="editor-still" src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} />
+                  : playback.segment?.still
+                    ? <img className="editor-still" style={{ opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} />
+                    : elementUrl
+                      ? <video
+                        ref={playback.attachVideo}
+                        className="editor-video"
+                        src={elementUrl}
+                        preload="metadata"
+                        playsInline
+                        style={{ opacity: previewGain }}
+                        onContextMenu={(event) => event.preventDefault()}
+                        onLoadedMetadata={measureNatural}
+                        onClick={() => playback.toggle()}
+                      />
+                      : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
+              {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
+            </div>
             <small>{focusedLabel} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS` : ''}</small>
             <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` · USED ${stamp(activeSegment.sourceIn)} → ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} · OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
             <b>{playback.playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>

@@ -99,10 +99,16 @@ export const resolveQuickLookRequest = async (
 
   const rate = sourceTarget ? sourceFps(task, sourceTarget) : 0
   const stillSeconds = stillSecondsFor(task, sourceTarget)
-  // A sequence's clip is identified by its source. A still's also carries the rate and
-  // length it was built at, so changing either one misses the cache and rebuilds rather
-  // than handing back footage at the parameters the user just replaced.
-  const cacheKey = sourceTarget ? previewKey(sourceTarget, timedStill && !sequence ? `still:${rate}:${stillSeconds}` : undefined) : undefined
+  // A generated clip is identified by what decides its contents, not by its source alone.
+  // A sequence's clip carries its rate and frame count, because a clip built at another
+  // rate is a different length from the one the timeline expects and would play the
+  // sequence at the wrong speed rather than merely looking stale. A still's carries its
+  // rate and length, since those are choices. Before this, a sequence imported when the
+  // settings said 25 kept playing at 25 after the rate was changed to 30.
+  const spec = sequence
+    ? `seq:${rate}:${sequence.frameCount}`
+    : timedStill ? `still:${rate}:${stillSeconds}` : undefined
+  const cacheKey = sourceTarget ? previewKey(sourceTarget, spec) : undefined
   let existingPreview = cacheKey ? task.imageSequencePreviews?.[cacheKey] : undefined
   let regeneratedPreview: QuickLookRequest['regeneratedPreview']
   if (cacheKey && needsPreview && (!existingPreview || !(await bridge?.pathExists?.(existingPreview)))) {
