@@ -20,19 +20,19 @@ const even = (value: number) => Math.max(2, Math.floor(value / 2) * 2)
  * The frame the encoder will actually produce, which is what the monitor should outline.
  *
  * An exact width and height is applied as it stands, which stretches the picture to that
- * shape. A named resolution is a box the source is fitted inside with its aspect kept, so
- * the finished frame is the source's own shape, scaled until it touches the box. With
- * neither, the source's shape is the output's, and only the even-size rounding applies.
+ * shape. A named resolution is a canvas: the picture is fitted inside it keeping its shape and
+ * then padded out to it, so the finished frame really is that resolution whatever the picture
+ * is. This used to be the fitted size instead, which is why asking for 4K on a portrait source
+ * quietly produced a portrait frame of the source's own shape rather than a 4K one.
  *
- * `natural` is the source's own pixel size, which is only known once the media has loaded,
- * so this returns undefined until then rather than guessing a frame.
+ * `natural` is the source's own pixel size, which is only known once the media has loaded, so
+ * with neither an exact size nor a box this returns undefined until then rather than guessing.
  */
 export const outputFrameSize = (input: { natural?: FrameSize; exact?: FrameSize; box?: FrameSize }): FrameSize | undefined => {
   if (input.exact) return { width: even(input.exact.width), height: even(input.exact.height) }
-  if (!input.natural) return input.box
-  if (!input.box) return { width: even(input.natural.width), height: even(input.natural.height) }
-  const scale = Math.min(input.box.width / input.natural.width, input.box.height / input.natural.height)
-  return { width: even(input.natural.width * scale), height: even(input.natural.height * scale) }
+  if (input.box) return input.box
+  if (!input.natural) return undefined
+  return { width: even(input.natural.width), height: even(input.natural.height) }
 }
 
 /** The largest box of a given aspect that fits inside the space available, in pixels. */
@@ -248,9 +248,10 @@ export type CropCorner = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
  * Resizes a crop from one corner, holding a shape and keeping the opposite corner still.
  *
  * The shape held is `ratio` when one is given, which is the proportion chosen in the list;
- * without one the region's own shape is held, so a corner drag is always proportional. The
- * dragged corner follows the pointer only as far as the shape allows, so the pointer and the
- * corner agree rather than the pointer and the box fighting.
+ * without one the region's own shape is held, so a corner drag is proportional by default.
+ * With `free` set the corner follows the pointer on both axes at once, which is what the list's
+ * NONE offers. The dragged corner follows the pointer only as far as the bounds allow, so the
+ * pointer and the corner agree rather than the pointer and the box fighting.
  *
  * `ratio` is in pixels while the crop is in fractions, so the two are related by the picture's
  * own shape: a width fraction of dx keeps the shape when the height fraction is c x dx.
@@ -263,12 +264,13 @@ export const resizeCorner = (input: {
   point: { x: number; y: number }
   /** The pixel shape to hold. Without one, the region's own shape is held. */
   ratio?: number
+  /** Ignore the shape entirely and let the corner follow the pointer on both axes. */
+  free?: boolean
 }): CropFractions => {
   const { crop, picture, corner, point } = input
   const keptWidth = 1 - crop.left - crop.right
   const keptHeight = 1 - crop.top - crop.bottom
   if (picture.width <= 0 || picture.height <= 0 || keptWidth <= 0 || keptHeight <= 0) return crop
-  const target = input.ratio && input.ratio > 0 ? input.ratio : (keptWidth * picture.width) / (keptHeight * picture.height)
   // The corner held still is the one opposite the one being dragged.
   const leftSide = corner === 'topLeft' || corner === 'bottomLeft'
   const topSide = corner === 'topLeft' || corner === 'topRight'
@@ -276,16 +278,25 @@ export const resizeCorner = (input: {
   const anchorY = topSide ? 1 - crop.bottom : crop.top
   const spaceX = leftSide ? anchorX : 1 - anchorX
   const spaceY = topSide ? anchorY : 1 - anchorY
-  const c = picture.width / (target * picture.height)
   const rawX = Math.abs(point.x - anchorX)
   const rawY = Math.abs(point.y - anchorY)
-  // The bound that keeps the dragged edge inside the picture and within MAX_CROP, expressed in
-  // width fractions so the shape can be held exactly rather than clamped out of true afterwards.
-  const low = Math.max(0, spaceX - MAX_CROP, (spaceY - MAX_CROP) / c)
-  const high = Math.min(spaceX, spaceY / c)
-  const wanted = Math.min(rawX, rawY / c)
-  const dx = high < low ? high : Math.max(low, Math.min(high, wanted))
-  const dy = c * dx
+  const within = (space: number, raw: number) => Math.max(Math.max(0, space - MAX_CROP), Math.min(space, raw))
+  let dx: number
+  let dy: number
+  if (input.free) {
+    dx = within(spaceX, rawX)
+    dy = within(spaceY, rawY)
+  } else {
+    const target = input.ratio && input.ratio > 0 ? input.ratio : (keptWidth * picture.width) / (keptHeight * picture.height)
+    const c = picture.width / (target * picture.height)
+    // The bound that keeps the dragged edge inside the picture and within MAX_CROP, expressed in
+    // width fractions so the shape can be held exactly rather than clamped out of true afterwards.
+    const low = Math.max(0, spaceX - MAX_CROP, (spaceY - MAX_CROP) / c)
+    const high = Math.min(spaceX, spaceY / c)
+    const wanted = Math.min(rawX, rawY / c)
+    dx = high < low ? high : Math.max(low, Math.min(high, wanted))
+    dy = c * dx
+  }
   return clampCrop({
     left: leftSide ? anchorX - dx : crop.left,
     top: topSide ? anchorY - dy : crop.top,

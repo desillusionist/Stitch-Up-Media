@@ -689,6 +689,11 @@ export const EditJobApp: React.FC = () => {
     || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
 
   const dirty = isDirty(draft, baseline ?? draft)
+  // A preset is only worth its name while it still describes the job. Once any of its own
+  // fields is edited it no longer does, so it becomes CUSTOM: shown here as soon as an edit
+  // lands, and written into the applied patch so the queue's badge agrees. Renaming an output
+  // or setting a transition is not an encoding setting, so neither of those makes it custom.
+  const presetEdited = JSON.stringify(draft.preset) !== JSON.stringify((baseline ?? draft).preset)
   // The picture's own box inside the stage, which is what a crop selects from: the
   // generated frame the encoder writes may be a different shape, and a crop is of the
   // source, not of the canvas it is fitted to. Its pixel size is also what turns the crop's
@@ -816,12 +821,15 @@ export const EditJobApp: React.FC = () => {
     if (!stage) return
     const from = crop
     const ratio = cropProportionRatio
+    // NONE in the list means no shape is being held at all, so the corner is free.
+    const free = cropProportion === 'NONE'
     const move = (moveEvent: PointerEvent) => {
       setCrop(resizeCorner({
         crop: from,
         picture,
         corner,
         ratio,
+        free,
         point: {
           x: (moveEvent.clientX - stage.left - cropRect.originX) / Math.max(1, cropRect.box.width),
           y: (moveEvent.clientY - stage.top - cropRect.originY) / Math.max(1, cropRect.box.height),
@@ -1078,7 +1086,7 @@ export const EditJobApp: React.FC = () => {
             <EditorField label="FORMAT"><select value={container} onChange={(event) => changeContainer(event.target.value as EncodingPreset['container'])}>{CONTAINERS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
             <EditorField label="VIDEO CODEC" reason={videoReason}><select value={draft.preset.videoCodec} disabled={audioOnly || isGif} onChange={(event) => updatePreset({ videoCodec: event.target.value as EncodingPreset['videoCodec'] })}>{VIDEO_CODECS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
             <EditorField label="OUTPUT NAME"><input type="text" className="editor-input" value={draft.outputFilename} onChange={(event) => updateDraft({ outputFilename: event.target.value, outputFilenameManuallySet: true })} /></EditorField>
-            <EditorRow label="PRESET" value={draft.preset.name} />
+            <EditorRow label="PRESET" value={presetEdited ? 'CUSTOM' : draft.preset.name} />
             <EditorToggle label="EXPORT VIDEO" checked={draft.preset.outputMode !== 'audio'} onChange={(checked) => updatePreset({ outputMode: checked ? undefined : 'audio' })} />
             <EditorToggle label="EXPORT AUDIO" checked={draft.preset.audioEnabled !== false} onChange={audioDisabled ? undefined : (checked) => updatePreset({ audioEnabled: checked })} reason={audioReason} />
             <EditorToggle label="EXPORT CAPTIONS" checked={false} reason="CAPTION OUTPUT HAS NO BACKING FIELD YET." />
@@ -1180,7 +1188,8 @@ export const EditJobApp: React.FC = () => {
             : <><button onClick={() => (dirty ? setConfirmingDiscard(true) : void window.electronAPI?.cancelEditJob())}>CANCEL</button><button className="primary-retro" onClick={() => {
               const patch: EditJobPatch = {
                 id: latest().id,
-                preset: latest().preset,
+                // A hand-tuned preset stops claiming to be the preset it started from.
+                preset: presetEdited ? { ...latest().preset, id: 'custom', name: 'CUSTOM' } : latest().preset,
                 outputFilename: latest().outputFilename,
                 outputFilenameManuallySet: latest().outputFilenameManuallySet,
                 transitions: latest().transitions,

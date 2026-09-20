@@ -342,10 +342,12 @@ console.log('\n== the output frame ==')
   check('an exact size is the frame', outputFrameSize({ natural: { width: 1195, height: 896 }, exact: { width: 1920, height: 1080 }, box: { width: 1920, height: 1080 } }), { width: 1920, height: 1080 })
   check('an odd exact size is rounded to even', outputFrameSize({ exact: { width: 1921, height: 1081 } }), { width: 1920, height: 1080 })
 
-  // A named resolution fits the picture inside the box keeping its shape. The figures here
-  // are the ones ffmpeg actually produced for this source when the encoder was checked.
-  check('a named resolution fits the picture to the box', outputFrameSize({ natural: { width: 1195, height: 896 }, box: { width: 1920, height: 1080 } }), { width: 1440, height: 1080 })
-  check('and a 720p box fits it too', outputFrameSize({ natural: { width: 1920, height: 1080 }, box: { width: 1280, height: 720 } }), { width: 1280, height: 720 })
+  // A named resolution is the frame itself now: the picture is fitted inside the box and padded
+  // out to it, so the output really is the resolution that was asked for. It used to be the
+  // fitted size, which is what made 4K on a portrait source come out portrait.
+  check('a named resolution IS the frame, whatever the picture is', outputFrameSize({ natural: { width: 1195, height: 896 }, box: { width: 1920, height: 1080 } }), { width: 1920, height: 1080 })
+  check('and the same for a portrait source asked for 4K', outputFrameSize({ natural: { width: 720, height: 1280 }, box: { width: 3840, height: 2160 } }), { width: 3840, height: 2160 })
+  check('and a 720p box is 720p too', outputFrameSize({ natural: { width: 1920, height: 1080 }, box: { width: 1280, height: 720 } }), { width: 1280, height: 720 })
 
   // With neither, the picture's shape is the output's, and only the encoder's even-size
   // rounding applies. This is the case that used to fail the whole job outright.
@@ -479,6 +481,18 @@ console.log('\n== moving and resizing the crop ==')
   // proportional rather than free.
   const own = resizeCorner({ crop: from, picture, corner: 'bottomRight', point: { x: 0.9, y: 0.9 } })
   near('with nothing chosen the crop keeps its own shape', keptAspect(own, 16 / 9)!, keptAspect(from, 16 / 9)!, 1e-9)
+
+  // NONE in the list holds no shape at all, so the corner follows the pointer on both axes and
+  // the region it leaves is the pointer's shape rather than a locked one.
+  const free = resizeCorner({ crop: from, picture, corner: 'bottomRight', point: { x: 0.8, y: 0.7 }, free: true })
+  check('a freeform corner leaves the anchor alone', [free.left, free.top], [from.left, from.top])
+  near('and follows the pointer across', free.right, 0.2, 1e-9)
+  near('and follows it down', free.bottom, 0.3, 1e-9)
+  near('so the region kept is the pointer shape, not a locked one', keptAspect(free, 16 / 9)!, (0.7 * 1920) / (0.6 * 1080), 1e-9)
+  // Still bounded: the moving edge cannot pass the cap, so neither can the pointer drag it there.
+  const pushed = resizeCorner({ crop: from, picture, corner: 'bottomRight', point: { x: 0.5, y: 0.5 }, free: true })
+  near('and a freeform drag is still capped across', pushed.right, MAX_CROP, 1e-9)
+  near('and down', pushed.bottom, MAX_CROP, 1e-9)
 }
 
 console.log('\n== the exact-size fields ==')

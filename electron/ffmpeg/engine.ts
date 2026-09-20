@@ -6,7 +6,7 @@ import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
 import { ClipFade, resolveFades, segmentTiming, sourceDuration, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
 import { progressPercent } from '../../src/lib/progress'
-import { cropFilter, hasCrop } from '../../src/lib/outputFrame'
+import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { probeFile } from './probe'
 
 export interface ProgressData {
@@ -603,22 +603,27 @@ export class FFmpegEngine {
     // operations. Its smallest side is floored, since an encoder rejects an empty frame.
     if (wantsVideo && preset.crop && hasCrop(preset.crop)) videoFilters.push(cropFilter(preset.crop))
     // 2. Resolution Scaling
-    if (wantsVideo) {
-      if (preset.width && preset.height && preset.videoCodec !== 'copy') {
+    if (wantsVideo && preset.videoCodec !== 'copy') {
+      if (preset.width && preset.height) {
+        // An exact size is the frame, so the picture is stretched to it and nothing is padded.
         videoFilters.push(`scale=${preset.width}:${preset.height}`)
-      } else if (preset.resolution === '4k') {
-        videoFilters.push('scale=3840:2160:force_original_aspect_ratio=decrease')
-      } else if (preset.resolution === '1080p') {
-        videoFilters.push('scale=1920:1080:force_original_aspect_ratio=decrease')
-      } else if (preset.resolution === '720p') {
-        videoFilters.push('scale=1280:720:force_original_aspect_ratio=decrease')
+      } else {
+        // A named resolution is a canvas, not a hint: the picture is fitted inside the box and
+        // then padded out to the box, so asking for 4K really produces 4K. Fitting alone made a
+        // 720x1280 source come out at its own shape's size, 1214x2160, which looks like the
+        // resolution was ignored. Stream copy cannot be filtered at all, so it takes neither.
+        const box = resolutionBox(preset.resolution)
+        if (box) {
+          videoFilters.push(`scale=${box.width}:${box.height}:force_original_aspect_ratio=decrease`)
+          videoFilters.push(`pad=${box.width}:${box.height}:(ow-iw)/2:(oh-ih)/2:color=black`)
+        }
       }
       // A still image can be any size at all, and 4:2:0 and 4:2:2 encoders refuse an odd
       // one outright: a 1195x896 source failed the whole job with "width not divisible by
       // 2". Rounding down to even is a no-op for a frame that already is, and it is added
       // after any scaling so a named resolution that leaves a smaller source untouched
       // cannot reintroduce an odd size.
-      if (preset.videoCodec !== 'copy' && preset.container !== 'gif' && EVEN_SIZE_CODECS.includes(preset.videoCodec)) {
+      if (preset.container !== 'gif' && EVEN_SIZE_CODECS.includes(preset.videoCodec)) {
         videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2')
       }
     }
