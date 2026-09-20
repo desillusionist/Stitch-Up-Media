@@ -222,3 +222,74 @@ export const cropForProportion = (pictureAspect: number, ratio: number): CropFra
   const trim = (1 - pictureAspect / ratio) / 2
   return clampCrop({ left: 0, top: trim, right: 0, bottom: trim })
 }
+
+/**
+ * Slides a crop across the picture without changing its size.
+ *
+ * Both edges of an axis move together, which is what keeps the region the same shape. The
+ * move stops when either edge would leave the picture or pass MAX_CROP, so a box that already
+ * reaches the cap on both sides of an axis cannot move along it at all.
+ */
+export const shiftCrop = (crop: CropFractions, dx: number, dy: number): CropFractions => {
+  const rightwards = Math.max(-Math.min(crop.left, MAX_CROP - crop.right), Math.min(dx, Math.min(crop.right, MAX_CROP - crop.left)))
+  const downwards = Math.max(-Math.min(crop.top, MAX_CROP - crop.bottom), Math.min(dy, Math.min(crop.bottom, MAX_CROP - crop.top)))
+  return {
+    left: crop.left + rightwards,
+    top: crop.top + downwards,
+    right: crop.right - rightwards,
+    bottom: crop.bottom - downwards,
+  }
+}
+
+/** The four corners a crop can be resized from. */
+export type CropCorner = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
+
+/**
+ * Resizes a crop from one corner, holding a shape and keeping the opposite corner still.
+ *
+ * The shape held is `ratio` when one is given, which is the proportion chosen in the list;
+ * without one the region's own shape is held, so a corner drag is always proportional. The
+ * dragged corner follows the pointer only as far as the shape allows, so the pointer and the
+ * corner agree rather than the pointer and the box fighting.
+ *
+ * `ratio` is in pixels while the crop is in fractions, so the two are related by the picture's
+ * own shape: a width fraction of dx keeps the shape when the height fraction is c x dx.
+ */
+export const resizeCorner = (input: {
+  crop: CropFractions
+  picture: FrameSize
+  corner: CropCorner
+  /** The pointer, as fractions of the picture. */
+  point: { x: number; y: number }
+  /** The pixel shape to hold. Without one, the region's own shape is held. */
+  ratio?: number
+}): CropFractions => {
+  const { crop, picture, corner, point } = input
+  const keptWidth = 1 - crop.left - crop.right
+  const keptHeight = 1 - crop.top - crop.bottom
+  if (picture.width <= 0 || picture.height <= 0 || keptWidth <= 0 || keptHeight <= 0) return crop
+  const target = input.ratio && input.ratio > 0 ? input.ratio : (keptWidth * picture.width) / (keptHeight * picture.height)
+  // The corner held still is the one opposite the one being dragged.
+  const leftSide = corner === 'topLeft' || corner === 'bottomLeft'
+  const topSide = corner === 'topLeft' || corner === 'topRight'
+  const anchorX = leftSide ? 1 - crop.right : crop.left
+  const anchorY = topSide ? 1 - crop.bottom : crop.top
+  const spaceX = leftSide ? anchorX : 1 - anchorX
+  const spaceY = topSide ? anchorY : 1 - anchorY
+  const c = picture.width / (target * picture.height)
+  const rawX = Math.abs(point.x - anchorX)
+  const rawY = Math.abs(point.y - anchorY)
+  // The bound that keeps the dragged edge inside the picture and within MAX_CROP, expressed in
+  // width fractions so the shape can be held exactly rather than clamped out of true afterwards.
+  const low = Math.max(0, spaceX - MAX_CROP, (spaceY - MAX_CROP) / c)
+  const high = Math.min(spaceX, spaceY / c)
+  const wanted = Math.min(rawX, rawY / c)
+  const dx = high < low ? high : Math.max(low, Math.min(high, wanted))
+  const dy = c * dx
+  return clampCrop({
+    left: leftSide ? anchorX - dx : crop.left,
+    top: topSide ? anchorY - dy : crop.top,
+    right: leftSide ? crop.right : 1 - (anchorX + dx),
+    bottom: topSide ? crop.bottom : 1 - (anchorY + dy),
+  })
+}

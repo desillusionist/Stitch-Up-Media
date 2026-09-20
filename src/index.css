@@ -173,6 +173,13 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-handle.is-right { right: -4px; top: 0; bottom: 0; width: 9px; cursor: ew-resize; }
 .crop-handle.is-top { top: -4px; left: 0; right: 0; height: 9px; cursor: ns-resize; }
 .crop-handle.is-bottom { bottom: -4px; left: 0; right: 0; height: 9px; cursor: ns-resize; }
+/* The corners resize the crop proportionally. They come after the edge handles so they win
+   where the two overlap, and their cursors point the way each one actually moves the box. */
+.crop-corner { position: absolute; width: 11px; height: 11px; background: var(--ui-encoding); }
+.crop-corner.is-topLeft { left: -6px; top: -6px; cursor: nwse-resize; }
+.crop-corner.is-topRight { right: -6px; top: -6px; cursor: nesw-resize; }
+.crop-corner.is-bottomLeft { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.crop-corner.is-bottomRight { right: -6px; bottom: -6px; cursor: nwse-resize; }
 .editor-screen b { color: var(--ui-accent); font-size: 11px; }
 .transport { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 9px; color: var(--ui-muted); font-size: 10px; }
 .transport button { border: 0; background: transparent; color: var(--ui-muted); padding: 5px; }
@@ -189,12 +196,14 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-clip small { display: block; color: var(--ui-muted); font-size: 8px; margin-top: 3px; }
 .timeline-audio { border-color: var(--ui-paused); color: var(--ui-paused); }
 .timeline-caption { border-color: var(--ui-muted); color: var(--ui-muted); }
-.export-sidebar { min-width: 0; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; border-top: 0; border-bottom: 0; border-right: 0; background: var(--ui-panel-inset); }
-.export-title { padding: 18px 14px 12px; color: var(--ui-accent); font-size: 12px; letter-spacing: .12em; border-bottom: 1px dashed var(--ui-border); }
-.export-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--ui-border); }
+/* The sidebar itself does not scroll: the title and the tab strip are its head and the
+   CANCEL / OK buttons its foot, so only the settings between them move out of sight. */
+.export-sidebar { min-width: 0; display: flex; flex-direction: column; overflow: hidden; border-top: 0; border-bottom: 0; border-right: 0; background: var(--ui-panel-inset); }
+.export-title { flex: 0 0 auto; padding: 18px 14px 12px; color: var(--ui-accent); font-size: 12px; letter-spacing: .12em; border-bottom: 1px dashed var(--ui-border); }
+.export-tabs { flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--ui-border); }
 .export-tabs button { min-height: 34px; padding: 6px 3px; color: var(--ui-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; }
 .export-tabs button.active { color: var(--ui-accent); border-bottom-color: var(--ui-accent); }
-.export-content { flex: 1; padding: 10px 14px; }
+.export-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 10px 14px; }
 .editor-row, .editor-toggle { display: grid; grid-template-columns: 1fr minmax(0, 1.25fr) 14px; gap: 8px; align-items: center; min-height: 38px; border-bottom: 1px dotted var(--ui-border-dim); color: var(--ui-muted); font-size: 10px; }
 .editor-row strong { color: var(--ui-foreground); font-weight: 400; overflow-wrap: anywhere; }
 .editor-row b { color: var(--ui-accent); }
@@ -206,7 +215,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .export-summary { margin: 0 14px; padding: 10px 0; border-top: 1px dashed var(--ui-border); display: grid; gap: 5px; font-size: 10px; }
 .export-summary strong { color: var(--ui-foreground); overflow-wrap: anywhere; font-weight: 400; }
 .export-summary span:last-child { color: var(--ui-muted); }
-.editor-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--ui-border); }
+.editor-actions { flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--ui-border); background: var(--ui-panel-inset); }
 .editor-actions button { padding: 8px 10px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); }
 .editor-actions .primary-retro { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-loading { min-height: 100vh; display: grid; place-items: center; color: var(--ui-accent); }

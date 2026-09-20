@@ -77,6 +77,17 @@ const caseD = `
   </div>
 </div>`
 
+const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></div>'
+
+// Case F: a whole sidebar. The title and tab strip are its head and the buttons its foot, so
+// they must stay put while the settings between them scroll. The fillers make the settings
+// taller than the window, which is the only way the behaviour shows at all.
+const caseF = `
+<div class="export-title" id="ftitle">EXPORT SETTINGS</div>
+<div class="export-tabs" id="ftabs"><button class="active">EXPORT</button><button>VIDEO</button><button>AUDIO</button><button>EFFECTS</button><button>CAPTIONS</button></div>
+<div class="export-content" id="fcontent">${caseD}${filler.repeat(30)}</div>
+<div class="editor-actions" id="factions"><button>CANCEL</button><button class="primary-retro">OK / APPLY</button></div>`
+
 const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${cssPath}">
 </head><body><div class="edit-job-shell"><div class="editor-body"><main class="editor-main">
@@ -87,7 +98,7 @@ ${caseA}
 ${caseB}
 </div></div></section>
 <section class="editor-preview"><div class="editor-screen">${caseC}</div></section>
-</main><aside class="export-sidebar">${caseD}</aside></div></div></body></html>`
+</main><aside class="export-sidebar" id="fside">${caseF}</aside></div></div></body></html>`
 
 const htmlPath = path.join(__dirname, '.measure.html')
 fs.writeFileSync(htmlPath, page, 'utf8')
@@ -113,6 +124,8 @@ const measure = `(() => {
   const dh = rect('dh')
   const dlock = rect('dlock')
   const dreset = rect('dreset')
+  const content = document.getElementById('fcontent')
+  const fside = rect('fside')
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0') },
@@ -131,6 +144,12 @@ const measure = `(() => {
       headLeadingFlush: +(rect('csel').left - rect('chead').left).toFixed(2), headTrailingFlush: +(rect('chead').right - rect('cunit').right).toFixed(2),
       unitButtonWidths: [rect('cupct').width, rect('cupx').width], unitHeight: rect('cupct').height, selectHeight: rect('csel').height,
       cropRowWidth: rect('crow').width, cropFieldWidth: rect('cl').width },
+    // The head must sit at the sidebar's top, the foot at its bottom, and the settings between
+    // them must be scrollable: a taller content than viewport with both neighbours still in view.
+    caseF: { sidebarHeight: fside.height, titleVsTop: +(rect('ftitle').top - fside.top).toFixed(2), contentVsTabs: +(rect('fcontent').top - rect('ftabs').bottom).toFixed(2),
+      actionsVsSidebarBottom: +(fside.bottom - rect('factions').bottom).toFixed(2), actionsVsContent: +(rect('factions').top - rect('fcontent').bottom).toFixed(2),
+      contentScrolls: content.scrollHeight > content.clientHeight + 1, contentViewport: content.clientHeight, contentFull: content.scrollHeight,
+      titleStillVisible: +(fside.bottom - rect('ftitle').top).toFixed(2) >= fside.height },
   }
 })()`
 

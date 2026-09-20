@@ -8,7 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropFractions } from '../lib/outputFrame'
+import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -704,6 +704,8 @@ export const EditJobApp: React.FC = () => {
     ? ASPECTS.find((candidate) => Math.abs(candidate.ratio - keptProportion) < ASPECT_TOLERANCE)?.label
     : undefined
   const cropProportion = !crop || !hasCrop(crop) ? 'NONE' : matchedProportion ?? 'CUSTOM'
+  /** The shape a corner drag holds: the chosen proportion, or nothing to hold the region's own. */
+  const cropProportionRatio = ASPECTS.find((candidate) => candidate.label === cropProportion)?.ratio
   // The crop object existing IS the enabled state, and it is deliberately not `hasCrop`:
   // a crop with all four edges at zero removes nothing, so a data test reported the control
   // as off the moment the last field was zeroed, and every attempt to switch it back on set
@@ -769,6 +771,62 @@ export const EditJobApp: React.FC = () => {
       const position = (coordinate(moveEvent) - origin) / Math.max(1, size)
       const value = Math.max(0, Math.min(1, trailing ? 1 - position : position))
       setCrop({ ...crop, [edge]: value })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  /**
+   * Slides the whole crop box, which is what the move cursor over it invites. The pointer's
+   * travel is read as a fraction of the picture, so the box keeps up with the cursor exactly
+   * rather than drifting with the window size.
+   */
+  const beginCropMove = (event: React.PointerEvent) => {
+    if (!crop || !cropRect) return
+    event.preventDefault()
+    event.stopPropagation()
+    const start = { x: event.clientX, y: event.clientY }
+    const from = crop
+    const move = (moveEvent: PointerEvent) => {
+      setCrop(shiftCrop(
+        from,
+        (moveEvent.clientX - start.x) / Math.max(1, cropRect.box.width),
+        (moveEvent.clientY - start.y) / Math.max(1, cropRect.box.height),
+      ))
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  /**
+   * Resizes from a corner, holding the shape chosen in the proportion list, or the region's own
+   * shape when the list is on NONE or CUSTOM. The corner opposite the one dragged stays put.
+   */
+  const beginCropCorner = (corner: CropCorner, event: React.PointerEvent) => {
+    if (!crop || !picture || !cropRect) return
+    event.preventDefault()
+    event.stopPropagation()
+    const stage = stageRef.current?.getBoundingClientRect()
+    if (!stage) return
+    const from = crop
+    const ratio = cropProportionRatio
+    const move = (moveEvent: PointerEvent) => {
+      setCrop(resizeCorner({
+        crop: from,
+        picture,
+        corner,
+        ratio,
+        point: {
+          x: (moveEvent.clientX - stage.left - cropRect.originX) / Math.max(1, cropRect.box.width),
+          y: (moveEvent.clientY - stage.top - cropRect.originY) / Math.max(1, cropRect.box.height),
+        },
+      }))
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
@@ -847,9 +905,12 @@ export const EditJobApp: React.FC = () => {
               {cropShade.map((band, index) => (
                 <div key={index} className="editor-crop-shade" style={{ left: band.left, top: band.top, width: band.width, height: band.height }} aria-hidden="true" />
               ))}
-              {cropRect && <div className="editor-crop" style={{ left: cropRect.left, top: cropRect.top, width: cropRect.width, height: cropRect.height }}>
+              {cropRect && <div className="editor-crop" style={{ left: cropRect.left, top: cropRect.top, width: cropRect.width, height: cropRect.height }} onPointerDown={beginCropMove}>
                 {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
                   <span key={edge} className={`crop-handle is-${edge}`} onPointerDown={(event) => beginCropDrag(edge, event)} role="presentation" />
+                ))}
+                {(['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as const).map((corner) => (
+                  <span key={corner} className={`crop-corner is-${corner}`} onPointerDown={(event) => beginCropCorner(corner, event)} role="presentation" />
                 ))}
               </div>}
             </div>

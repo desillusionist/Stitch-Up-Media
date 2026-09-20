@@ -3,7 +3,7 @@ import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
-import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeExact, MAX_CROP } from '../src/lib/outputFrame'
+import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -442,6 +442,43 @@ console.log('\n== crop proportions and units ==')
   check('and trims the top and bottom instead', [landscape.left, landscape.right], [0, 0])
 
   check('a picture with no shape asked for gets no crop', cropForProportion(0, 1), { left: 0, top: 0, right: 0, bottom: 0 })
+}
+
+console.log('\n== moving and resizing the crop ==')
+{
+  const box = { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }
+  // Sliding the region: both edges of an axis move together, which is what keeps its size.
+  const movedRight = shiftCrop(box, 0.05, 0)
+  near('a crop moves right by giving the right edge away', movedRight.left, 0.15, 1e-9)
+  near('and the right edge gives exactly as much', movedRight.right, 0.05, 1e-9)
+  const movedDown = shiftCrop(box, 0, 0.05)
+  near('and moves down by giving the bottom edge away', movedDown.top, 0.15, 1e-9)
+  near('with the bottom edge giving the same', movedDown.bottom, 0.05, 1e-9)
+  // It stops at the picture rather than shrinking itself against the edge.
+  check('a move past the right edge stops with nothing left over', shiftCrop(box, 1, 0), { left: 0.2, top: 0.1, right: 0, bottom: 0.1 })
+  check('and the same the other way', shiftCrop(box, -1, 0), { left: 0, top: 0.1, right: 0.2, bottom: 0.1 })
+  check('a crop already at the cap both sides cannot move along it', shiftCrop({ left: MAX_CROP, top: 0.1, right: MAX_CROP, bottom: 0.1 }, 0.1, 0), { left: MAX_CROP, top: 0.1, right: MAX_CROP, bottom: 0.1 })
+
+  const picture = { width: 1920, height: 1080 }
+  const from = { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }
+  // Resizing from a corner holds the shape chosen in the proportion list. The pointer is given
+  // in picture fractions, and the shape is held in pixels, so the two only agree once the
+  // picture's own shape is taken into account: that is the whole job of this rule.
+  const square = resizeCorner({ crop: from, picture, corner: 'bottomRight', point: { x: 0.8, y: 0.8 }, ratio: 1 })
+  near('a corner drag to 1:1 keeps 1:1', keptAspect(square, 16 / 9)!, 1, 1e-9)
+  check('and the opposite corner does not move', [square.left, square.top], [from.left, from.top])
+
+  const anchored = resizeCorner({ crop: from, picture, corner: 'topLeft', point: { x: 0.2, y: 0.2 }, ratio: 1 })
+  near('dragging the other corner keeps 1:1 too', keptAspect(anchored, 16 / 9)!, 1, 1e-9)
+  check('and IT leaves its own opposite corner still', [anchored.right, anchored.bottom], [from.right, from.bottom])
+
+  const wide = resizeCorner({ crop: from, picture, corner: 'topRight', point: { x: 0.6, y: 0.2 }, ratio: 4 / 3 })
+  near('each listed shape is held, not only 1:1', keptAspect(wide, 16 / 9)!, 4 / 3, 1e-9)
+
+  // Without a shape from the list the region's own shape is held, so a corner is always
+  // proportional rather than free.
+  const own = resizeCorner({ crop: from, picture, corner: 'bottomRight', point: { x: 0.9, y: 0.9 } })
+  near('with nothing chosen the crop keeps its own shape', keptAspect(own, 16 / 9)!, keptAspect(from, 16 / 9)!, 1e-9)
 }
 
 console.log('\n== the exact-size fields ==')
