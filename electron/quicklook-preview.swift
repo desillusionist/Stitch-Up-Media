@@ -353,7 +353,7 @@ final class PreviewView: NSView {
     let appTitlebar = NSView()
     let appTitle = NSTextField(labelWithString: "STITCH UP MEDIA // QUICK LOOK")
     let doneButton = NSButton(title: "DONE", target: nil, action: nil); let revertButton = NSButton(title: "REVERT", target: nil, action: nil); let cancelButton = NSButton(title: "CANCEL", target: nil, action: nil)
-    let inField = TimecodeField(string: ""); let outField = TimecodeField(string: ""); let screenshotFolderButton = NSButton(title: "↗", target: nil, action: nil); let trimmedDurationLabel = NSTextField(labelWithString: ""); let titleLabel = NSTextField(labelWithString: ""); let toastLabel = NSTextField(labelWithString: ""); let timestampLabel = NSTextField(labelWithString: ""); let dimsLabel = NSTextField(labelWithString: "")
+    let inField = TimecodeField(string: ""); let outField = TimecodeField(string: ""); let screenshotFolderButton = NSButton(title: "↗", target: nil, action: nil); let trimmedDurationLabel = NSTextField(labelWithString: ""); let titleLabel = NSTextField(labelWithString: ""); let toastLabel = NSTextField(labelWithString: ""); let timestampLabel = NSTextField(labelWithString: ""); let sourceStampLabel = NSTextField(labelWithString: ""); let dimsLabel = NSTextField(labelWithString: "")
     private var titleHideWork: DispatchWorkItem?
     private var undoStack: [(Double, Double)] = []
     private var redoStack: [(Double, Double)] = []
@@ -372,7 +372,8 @@ final class PreviewView: NSView {
         imageView.translatesAutoresizingMaskIntoConstraints = false; imageView.imageScaling = .scaleProportionallyUpOrDown; imageView.imageAlignment = .alignCenter; imageView.image = NSImage(contentsOf: url); if audioArtwork, let item = asset.metadata.first(where: { ($0.commonKey?.rawValue == "artwork" || $0.identifier?.rawValue.contains("covr") == true) && $0.dataValue != nil }), let data = item.dataValue { imageView.image = NSImage(data: data) }; imageView.isHidden = !(stillMode || audioArtwork); imageView.alphaValue = 1.0; imageView.imageScaling = .scaleProportionallyUpOrDown; if audioArtwork { playerView.contentOverlayView?.addSubview(imageView) } else { addSubview(imageView) }
         titleLabel.stringValue = url.lastPathComponent; titleLabel.textColor = crtGreen.withAlphaComponent(0.78); titleLabel.font = NSFont(name: dotoFontName, size: 11) ?? NSFont.monospacedSystemFont(ofSize: 11, weight: .medium); titleLabel.alignment = .center; titleLabel.translatesAutoresizingMaskIntoConstraints = false; titleLabel.wantsLayer = true; addSubview(titleLabel); toastLabel.font = NSFont(name: dotoFontName, size: 10) ?? NSFont.monospacedSystemFont(ofSize: 10, weight: .medium); toastLabel.textColor = crtGreen; toastLabel.alignment = .center; toastLabel.maximumNumberOfLines = 1; toastLabel.lineBreakMode = .byTruncatingTail; toastLabel.setContentHuggingPriority(.defaultLow, for: .horizontal); toastLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); toastLabel.isHidden = true; toastLabel.wantsLayer = true; toastLabel.layer?.backgroundColor = crtBlack.withAlphaComponent(0.82).cgColor; toastLabel.layer?.cornerRadius = 3; toastLabel.layer?.borderColor = crtGreen.withAlphaComponent(0.65).cgColor; toastLabel.layer?.borderWidth = 1; toastLabel.translatesAutoresizingMaskIntoConstraints = false; addSubview(toastLabel)
         dimsLabel.textColor = crtGreen.withAlphaComponent(0.55); dimsLabel.font = NSFont(name: dotoFontName, size: 10) ?? NSFont.monospacedSystemFont(ofSize: 10, weight: .regular); dimsLabel.alignment = .center; dimsLabel.translatesAutoresizingMaskIntoConstraints = false; dimsLabel.wantsLayer = true; addSubview(dimsLabel); if stillMode, let rep = NSImage(contentsOf: url)?.representations.first { dimsLabel.stringValue = "\(rep.pixelsWide) × \(rep.pixelsHigh)" } else if let track = asset.tracks(withMediaType: .video).first { let mapped = track.naturalSize.applying(track.preferredTransform); let fps = max(1, Int(displayFps.rounded())); dimsLabel.stringValue = "\(Int(abs(mapped.width))) × \(Int(abs(mapped.height))) • \(fps) FPS" }
-        timestampLabel.textColor = NSColor.white.withAlphaComponent(0.82); timestampLabel.font = NSFont(name: dotoFontName, size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .medium); timestampLabel.alignment = .center; timestampLabel.translatesAutoresizingMaskIntoConstraints = false; timestampLabel.wantsLayer = true; addSubview(timestampLabel)
+        timestampLabel.textColor = crtGreen; timestampLabel.font = NSFont(name: dotoFontName, size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .medium); timestampLabel.alignment = .center; timestampLabel.translatesAutoresizingMaskIntoConstraints = false; timestampLabel.wantsLayer = true; timestampLabel.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.45).cgColor; timestampLabel.layer?.cornerRadius = 3; addSubview(timestampLabel)
+        sourceStampLabel.textColor = crtGreen; sourceStampLabel.font = NSFont(name: dotoFontName, size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .medium); sourceStampLabel.alignment = .center; sourceStampLabel.translatesAutoresizingMaskIntoConstraints = false; sourceStampLabel.wantsLayer = true; sourceStampLabel.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.45).cgColor; sourceStampLabel.layer?.cornerRadius = 3; addSubview(sourceStampLabel)
         trimmedDurationLabel.textColor = crtGreen; trimmedDurationLabel.font = NSFont(name: dotoFontName, size: 11) ?? NSFont.monospacedSystemFont(ofSize: 11, weight: .medium); trimmedDurationLabel.alignment = .center; trimmedDurationLabel.translatesAutoresizingMaskIntoConstraints = false; trimmedDurationLabel.wantsLayer = true; addSubview(trimmedDurationLabel)
         filmstrip.translatesAutoresizingMaskIntoConstraints = false; addSubview(filmstrip)
         [inField, outField, doneButton, revertButton, cancelButton, screenshotFolderButton].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
@@ -404,7 +405,7 @@ final class PreviewView: NSView {
             self.seek(to: bounded)
         }
         addSubview(inField); addSubview(outField)
-        if stillMode { filmstrip.isHidden = true; inField.isHidden = true; outField.isHidden = true; timestampLabel.isHidden = true; playerView.isHidden = true }
+        if stillMode { filmstrip.isHidden = true; inField.isHidden = true; outField.isHidden = true; timestampLabel.isHidden = true; sourceStampLabel.isHidden = true; playerView.isHidden = true }
         var layout: [NSLayoutConstraint] = [
             appTitlebar.topAnchor.constraint(equalTo: topAnchor), appTitlebar.leadingAnchor.constraint(equalTo: leadingAnchor), appTitlebar.trailingAnchor.constraint(equalTo: trailingAnchor), appTitlebar.heightAnchor.constraint(equalToConstant: 42),
             appTitle.leadingAnchor.constraint(equalTo: appTitlebar.leadingAnchor, constant: 92), appTitle.trailingAnchor.constraint(lessThanOrEqualTo: appTitlebar.trailingAnchor, constant: -18), appTitle.centerYAnchor.constraint(equalTo: appTitlebar.centerYAnchor),
@@ -418,7 +419,8 @@ final class PreviewView: NSView {
             if audioArtwork, let overlay = playerView.contentOverlayView { layout += [imageView.topAnchor.constraint(equalTo: overlay.topAnchor), imageView.leadingAnchor.constraint(equalTo: overlay.leadingAnchor), imageView.trailingAnchor.constraint(equalTo: overlay.trailingAnchor), imageView.bottomAnchor.constraint(equalTo: overlay.bottomAnchor)] }
             layout += [
                 screenshotFolderButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), screenshotFolderButton.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12), screenshotFolderButton.widthAnchor.constraint(equalToConstant: 28), screenshotFolderButton.heightAnchor.constraint(equalToConstant: 24),
-                    timestampLabel.centerXAnchor.constraint(equalTo: playerView.centerXAnchor), timestampLabel.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12),
+                    timestampLabel.leadingAnchor.constraint(equalTo: playerView.leadingAnchor, constant: 12), timestampLabel.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12),
+                    sourceStampLabel.trailingAnchor.constraint(equalTo: playerView.trailingAnchor, constant: -12), sourceStampLabel.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12),
                 trimmedDurationLabel.centerXAnchor.constraint(equalTo: centerXAnchor), trimmedDurationLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
                 playerView.topAnchor.constraint(equalTo: appTitlebar.bottomAnchor), playerView.leadingAnchor.constraint(equalTo: leadingAnchor), playerView.trailingAnchor.constraint(equalTo: trailingAnchor), playerView.bottomAnchor.constraint(equalTo: filmstrip.topAnchor, constant: -14),
                 filmstrip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18), filmstrip.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18), filmstrip.heightAnchor.constraint(equalToConstant: 82), filmstrip.bottomAnchor.constraint(equalTo: inField.topAnchor, constant: -10),
@@ -429,7 +431,7 @@ final class PreviewView: NSView {
         NSLayoutConstraint.activate(layout)
         let initialIn = max(0, min(1, (initialStart ?? 0) / max(sourceDuration, 0.001)))
         let initialOut = max(initialIn + 0.001, min(1, (initialEnd ?? sourceDuration) / max(sourceDuration, 0.001)))
-        selectionChanged(start: initialIn, end: initialOut, seek: false); filmstrip.playheadValue = initialIn; timestampLabel.stringValue = timecode(initialIn * sourceDuration); updateTrimmedDurationLabel(); installTrackingArea(); showOverlay()
+        selectionChanged(start: initialIn, end: initialOut, seek: false); filmstrip.playheadValue = initialIn; timestampLabel.stringValue = stampText("CUR", initialIn * sourceDuration); sourceStampLabel.stringValue = stampText("SRC", sourceDuration); updateTrimmedDurationLabel(); installTrackingArea(); showOverlay()
     }
     required init?(coder: NSCoder) { fatalError() }
     override var acceptsFirstResponder: Bool { true }
@@ -440,8 +442,8 @@ final class PreviewView: NSView {
     override func mouseEntered(with event: NSEvent) { showOverlay() }
     override func mouseMoved(with event: NSEvent) { showOverlay() }
     override func mouseExited(with event: NSEvent) { scheduleOverlayHide() }
-    private func showOverlay() { titleHideWork?.cancel(); titleLabel.isHidden = false; dimsLabel.isHidden = false; if !stillMode { timestampLabel.isHidden = false }; scheduleOverlayHide() }
-    private func scheduleOverlayHide() { titleHideWork?.cancel(); guard player.rate != 0 else { return }; let work = DispatchWorkItem { [weak self] in self?.titleLabel.isHidden = true; self?.timestampLabel.isHidden = true; self?.dimsLabel.isHidden = true }; titleHideWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work) }
+    private func showOverlay() { titleHideWork?.cancel(); titleLabel.isHidden = false; dimsLabel.isHidden = false; if !stillMode { timestampLabel.isHidden = false; sourceStampLabel.isHidden = false }; scheduleOverlayHide() }
+    private func scheduleOverlayHide() { titleHideWork?.cancel(); guard player.rate != 0 else { return }; let work = DispatchWorkItem { [weak self] in self?.titleLabel.isHidden = true; self?.timestampLabel.isHidden = true; self?.sourceStampLabel.isHidden = true; self?.dimsLabel.isHidden = true }; titleHideWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work) }
     override func scrollWheel(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
         if playerView.frame.contains(location) {
@@ -500,7 +502,7 @@ final class PreviewView: NSView {
     func updatePlayhead(seconds: Double) {
         let value = max(filmstrip.start, min(filmstrip.end, seconds / max(asset.duration.seconds, 1)))
         filmstrip.playheadValue = value
-        timestampLabel.stringValue = stamp(value * sourceDuration)
+        timestampLabel.stringValue = stampText("CUR", value * sourceDuration)
         if player.rate != 0 { scheduleOverlayHide() }
         if seconds >= filmstrip.end * asset.duration.seconds { player.pause() }
     }
@@ -558,7 +560,7 @@ final class PreviewView: NSView {
     }
     private func seek(to value: Double) {
         let bounded = max(filmstrip.start, min(filmstrip.end, value))
-        timestampLabel.stringValue = stamp(bounded * sourceDuration)
+        timestampLabel.stringValue = stampText("CUR", bounded * sourceDuration)
         player.seek(to: CMTime(seconds: bounded * asset.duration.seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
     private func updateTrimmedDurationLabel() { trimmedDurationLabel.stringValue = stillMode ? "" : "TRIM " + stamp(max(0, (filmstrip.end - filmstrip.start) * sourceDuration)) }
@@ -566,6 +568,7 @@ final class PreviewView: NSView {
         if stampMode == "framestamp" { return String(format: "FRAME %06d", max(0, Int((seconds * displayFps).rounded()))) }
         return timecode(seconds)
     }
+    private func stampText(_ prefix: String, _ seconds: Double) -> String { "  \(prefix) \(stamp(seconds))  " }
     private func timecode(_ seconds: Double) -> String { let fps = max(1, Int(frameRate.rounded())); let total = max(0, Int((seconds * Double(fps)).rounded())); let frames = total % fps; let whole = total / fps; return String(format: "%02d:%02d:%02d.%02d", whole / 3600, (whole / 60) % 60, whole % 60, frames) }
 }
 
