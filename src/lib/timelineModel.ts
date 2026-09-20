@@ -172,11 +172,26 @@ export const sourceFps = (
 }
 
 /**
+ * How long a still image's clip should be.
+ *
+ * A record against the source wins over the job-wide default, so one still in a stitch can
+ * be given its own length from MEDIA INFO. The timeline, the generated clip and the encoder
+ * all resolve it here, which is what keeps the three showing the same number. A probe is
+ * never consulted: an image has no intrinsic runtime, and a probe of one reports a single
+ * frame.
+ */
+export const stillSecondsFor = (task: QueueTask, sourcePath: string | undefined): number => {
+  const recorded = sourcePath ? task.sourceMetadata?.[sourcePath]?.duration : undefined
+  if (recorded && recorded > 0) return recorded
+  return Math.max(0.1, task.stillImageDuration || DEFAULT_STILL_SECONDS)
+}
+
+/**
  * How long a source contributes to the output.
  *
- * The encoder gives a still frame `-t stillImageDuration` (defaulting to ten
- * seconds), and derives a sequence's length from its frame count over the
- * interpreted fps, so both are resolved here rather than left at zero.
+ * The encoder gives a still frame `-t next to stillSecondsFor`, and derives a sequence's
+ * length from its frame count over the interpreted fps, so both are resolved here rather
+ * than left at zero.
  */
 export const sourceDuration = (
   task: QueueTask,
@@ -185,11 +200,9 @@ export const sourceDuration = (
   resolve?: TimingResolver,
 ): number => {
   if (sequence && sequence.fps > 0 && sequence.frameCount > 0) return sequence.frameCount / sequence.fps
+  if (sourcePath && !sequence && mediaKind(sourcePath) === 'image') return stillSecondsFor(task, sourcePath)
   const metadataDuration = sourcePath ? task.sourceMetadata?.[sourcePath]?.duration : undefined
   if (metadataDuration && metadataDuration > 0) return metadataDuration
-  if (sourcePath && !sequence && mediaKind(sourcePath) === 'image') {
-    return Math.max(0.1, task.stillImageDuration || DEFAULT_STILL_SECONDS)
-  }
   if (sourcePath && sourcePath === primarySource(task) && task.sourceInfo?.duration) return task.sourceInfo.duration
   const probedDuration = sourcePath ? resolve?.(sourcePath)?.duration : undefined
   return probedDuration && probedDuration > 0 ? probedDuration : 0

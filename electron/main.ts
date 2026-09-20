@@ -154,6 +154,13 @@ app.whenReady().then(() => {
     if (!taskId || !sourceKey || !previewPath) return
     mainWindow?.webContents.send('sequence-preview-ready', { taskId, sourceKey, previewPath })
   })
+  // Per-source timing is a fact about the media rather than a job setting, so the editor
+  // reports it as soon as it changes instead of waiting to be applied. The queue's card and
+  // the frame-accurate helper then show the same numbers the editor just set.
+  ipcMain.handle('apply-source-timing', async (_, taskId: string, sourceKey: string, override: { fps?: number; seconds?: number }) => {
+    if (!taskId || !sourceKey || !override) return
+    mainWindow?.webContents.send('source-timing', { taskId, sourceKey, override })
+  })
   ipcMain.handle('probe-media', async (_, filePath: string) => {
     logEvent('ipc', 'probe-media request', { filePath })
     try {

@@ -1,9 +1,9 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
-import { withSourceRate } from '../src/lib/sourceRate'
+import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
-import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps } from '../src/lib/timelineModel'
+import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
 /**
@@ -203,19 +203,19 @@ console.log('\n== changing a rate leaves nothing stale behind ==')
     imageSequencePreviews: { '/seq/f_0001.png': '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' },
   }) as unknown as QueueTask
 
-  const changed = withSourceRate(sequence(), '/seq/f_0001.png', 48)
+  const changed = withSourceTiming(sequence(), '/seq/f_0001.png', { fps: 48 })
   // The generated clip was rendered at 24, so it cannot be shown as though it were 48.
   check('the clip built at the old rate is dropped', changed.imageSequencePreviews, { '/other.mp4': '/tmp/other.mp4' })
   check('the rate is recorded against the source', changed.sourceMetadata, { '/seq/f_0001.png': { fps: 48 } })
   near('the sequence length follows the rate', changed.sequenceInput!.duration!, 5)
   near('and its rate is the new one', changed.sequenceInput!.fps, 48)
   check('a finished job goes back to pending', changed.status, 'pending')
-  check('a rate of zero changes nothing', withSourceRate(sequence(), '/seq/f_0001.png', 0).imageSequencePreviews, { '/seq/f_0001.png': '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' })
+  check('a rate of zero changes nothing', withSourceTiming(sequence(), '/seq/f_0001.png', { fps: 0 }).imageSequencePreviews, { '/seq/f_0001.png': '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' })
 
   // Deleting the last preview entry must leave the field absent rather than empty, which
   // is how the rest of the app tests for it.
   const lone = { ...sequence(), imageSequencePreviews: { '/seq/f_0001.png': '/tmp/seq-24fps.mp4' } } as unknown as QueueTask
-  check('the last preview leaving empties the field', withSourceRate(lone, '/seq/f_0001.png', 30).imageSequencePreviews, undefined)
+  check('the last preview leaving empties the field', withSourceTiming(lone, '/seq/f_0001.png', { fps: 30 }).imageSequencePreviews, undefined)
 
   // One rule for the rate, whichever window asked: the timeline model's own.
   check('a sequence reports its own rate', sourceFps(sequence(), '/seq/f_0001.png'), 24)
@@ -283,7 +283,42 @@ console.log('\n== a generated clip is keyed by what it was built with ==')
     preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
     imageSequencePreviews: { [at30]: '/tmp/still-30fps.mp4', '/other.mp4': '/tmp/other.mp4' },
   } as unknown as QueueTask
-  check('a rate change drops a still clip built at the old rate', withSourceRate(stillTask, '/frame.png', 60).imageSequencePreviews, { '/other.mp4': '/tmp/other.mp4' })
+  check('a rate change drops a still clip built at the old rate', withSourceTiming(stillTask, '/frame.png', { fps: 60 }).imageSequencePreviews, { '/other.mp4': '/tmp/other.mp4' })
+}
+
+console.log('\n== a still’s clip length is settable per source ==')
+{
+  const still = {
+    id: 's', type: 'transcode', status: 'pending', progress: 0,
+    sourcePaths: ['/frame.png'], outputDirectory: '/out', outputFilename: 'o.mov',
+    sourceBaseName: 'frame', stillImageDuration: 10,
+    preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+  } as unknown as QueueTask
+  near('the job default is used until one is recorded', stillSecondsFor(still, '/frame.png'), 10)
+  near('and a job-wide default is itself a fallback for nothing', stillSecondsFor({ ...still, stillImageDuration: 4 } as QueueTask, '/frame.png'), 4)
+  near('with neither, ten seconds', stillSecondsFor({ ...still, stillImageDuration: undefined } as QueueTask, '/frame.png'), 10)
+
+  const recorded = withSourceTiming(still, '/frame.png', { seconds: 20 })
+  near('a recorded length wins over the job default', stillSecondsFor(recorded, '/frame.png'), 20)
+  near('and the timeline contributes exactly that', sourceDuration(recorded, '/frame.png'), 20)
+  check('recording a length drops the clip built at the other one', recorded.imageSequencePreviews, undefined)
+  check('applying what is already recorded changes nothing', withSourceTiming(recorded, '/frame.png', { seconds: 20 }), recorded)
+  check('and neither does an empty override', withSourceTiming(recorded, '/frame.png', {}), recorded)
+  near('a still keeps its rate when only its length changes', sourceFps(recorded, '/frame.png'), 25)
+
+  // An interpreted sequence derives its length from its frames, so a length is not a choice
+  // that can be offered for it, and offering one must not disturb it.
+  const seqTask = {
+    ...still, sourcePaths: ['/seq/f_0001.png'], sequenceInput: { dir: '/seq', pattern: 'f_%04d.png', globPattern: '*', startNumber: 1, frameCount: 240, hasGaps: false, missing: [], fps: 24, firstFrame: '/seq/f_0001.png' },
+  } as unknown as QueueTask
+  check('a length cannot be recorded against a sequence', withSourceTiming(seqTask, '/seq/f_0001.png', { seconds: 20 }), seqTask)
+  near('but its rate can', withSourceTiming(seqTask, '/seq/f_0001.png', { fps: 48 }).sequenceInput!.duration!, 5)
+  near('and its length follows the rate', sourceDuration(withSourceTiming(seqTask, '/seq/f_0001.png', { fps: 48 }), '/seq/f_0001.png'), 5)
+
+  // The editor sends back everything it has recorded, so only what can actually be set is
+  // sent: a sequence's derived length is not mistaken for a choice.
+  check('only what can be set is sent back', sourceTimingOverrides(recorded), { '/frame.png': { seconds: 20 } })
+  check('a sequence sends its rate and no length', sourceTimingOverrides(seqTask), { '/seq/f_0001.png': { fps: 24 } })
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

@@ -2,7 +2,8 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { FileVideo, FileAudio, FileImage, Film, Layers, CheckCircle2, AlertCircle, Clock, Loader2, Folder, ExternalLink } from 'lucide-react'
 import { QueueTask } from '../types'
-import { sourceFps } from '../lib/timelineModel'
+import { sourceFps, stillSecondsFor } from '../lib/timelineModel'
+import { sequenceLabel } from '../lib/sequenceLabel'
 
 const AUDIO_EXT = ['mp3', 'wav', 'aac', 'm4a', 'ogg', 'oga', 'aiff', 'aif', 'flac']
 const isAudioInput = (task: QueueTask) => {
@@ -39,7 +40,7 @@ interface TaskCardProps {
   onRemoveTask: (taskId: string) => void
   onRevealOutput: (task: QueueTask) => void
   onQuickLook: (task: QueueTask) => void
-  onChangeSourceFps: (task: QueueTask, sourceKey: string, fps: number) => void
+  onChangeSourceTiming: (task: QueueTask, sourceKey: string, override: { fps?: number; seconds?: number }) => void
   onChangeOutputName: (task: QueueTask) => void
   onDuplicateTask: (task: QueueTask) => void
   onSkipTask: (task: QueueTask) => void
@@ -69,7 +70,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onRemoveTask,
   onRevealOutput,
   onQuickLook,
-  onChangeSourceFps,
+  onChangeSourceTiming,
   onChangeOutputName,
   onDuplicateTask,
   onSkipTask,
@@ -186,11 +187,9 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   }
   const sourceLabel = (source: string, index: number) => {
     const sequence = sequenceFor(source)
-    const width = Number(sequence?.pattern.match(/%0(\d+)d/)?.[1] || 1)
-    const sequenceFiles = sequence?.files || []
-    const lastFrameName = sequenceFiles[sequenceFiles.length - 1]?.split(/[\\/]/).pop() || ''
-    const lastNumber = Number(lastFrameName.match(/(\d+)(?=\.[^.]+$)/)?.[1] || sequence?.startNumber || 0)
-    const base = sequence ? `${sequence.prefix || ''}[${String(sequence.startNumber).padStart(width, '0')}-${String(lastNumber).padStart(width, '0')}].${(sequence.ext || 'jpg').toLowerCase()}` : (source.split(/[\\/]/).pop() || '')
+    // Named by the shared rule, so a clip reads the same here as it does in the EDIT JOB's
+    // timeline and its monitor.
+    const base = sequence ? sequenceLabel(sequence) : (source.split(/[\\/]/).pop() || '')
     return sourceCounts[source] > 1 ? `CLIP ${task.sourcePaths.slice(0, index + 1).filter((candidate) => candidate === source).length} // ${base}` : base
   }
   const jobTitle = task.type === 'transcode' ? sourceLabel(task.sourcePaths[0] || fileName, 0) : task.type === 'stitch' ? `STITCH UP (${task.sourcePaths.length} clips)` : task.type === 'multitrack' ? `MULTI-TRACK (${audioCount} audio)` : 'COMBO'
@@ -202,11 +201,14 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     // is the same number the EDIT JOB's clip line and MEDIA INFO show. A probe of a JPEG
     // can carry a rate of its own, so it is deliberately not consulted here.
     const fps = sequence?.fps || (standaloneStill ? sourceFps(task, source) : metadata?.fps)
+    // A still's clip has a length as well as a rate, and both are settable from MEDIA INFO,
+    // so the brief line reports the length it will actually contribute.
+    const stillLength = standaloneStill ? stillSecondsFor(task, source) : undefined
     const point = trimFor(source, index)
     const totalFrames = sequence?.frameCount || 0
     const trimmedFrames = sequence && fps ? Math.max(0, Math.min(totalFrames, Math.round((point ? point.out - point.in : (sequence.duration || 0)) * fps))) : 0
     const frameText = sequence && totalFrames > 0 ? `${trimmedFrames} of ${totalFrames}` : undefined
-    return [metadata?.resolution, metadata?.format?.toUpperCase(), fps ? `${formatFps(fps)} FPS` : undefined, frameText].filter(Boolean).join(' · ')
+    return [metadata?.resolution, metadata?.format?.toUpperCase(), fps ? `${formatFps(fps)} FPS` : undefined, stillLength ? `${stillLength}s CLIP` : undefined, frameText].filter(Boolean).join(' · ')
   }
   const mediaInfoFor = (info: any, source: string) => {
     const sequence = sequenceFor(source)
@@ -404,7 +406,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           const width = Number(seq?.pattern?.match(/%0(\d+)d/)?.[1] || 1)
           const lastName = seq?.files?.[seq.files.length - 1]?.split(/[\\/]/).pop() || ''
           const lastNum = lastName.match(/(\d+)(?=\.[^.]+$)/)?.[1] || String(seq?.startNumber ?? '')
-          return (<section><b>{seq ? 'IMAGE SEQUENCE' : 'IMAGE DETAILS'}</b><span>Dimensions: {dims || 'Unknown'}</span><span>Format: {format}</span><span>DPI: {item.info.dpi || 'Unknown'}</span><span>Color Profile: {item.info.colorProfile || item.info.pixelFormat || 'Unknown'}</span>{seq && <span>Range: {String(seq.startNumber).padStart(width, '0')}–{lastNum.padStart(width, '0')}</span>}{seq && <span>Frames: {seq.frameCount}{seq.hasGaps ? ` (${seq.missing?.length || 0} missing)` : ''}</span>}{seq && (() => { const presets = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]; const current = Number(seq.fps ?? 24); return <span>Frame Rate: <select className="mi-fps-select" value={String(current)} onChange={(event) => { const fps = Number(event.target.value); onChangeSourceFps(task, item.source, fps); setMediaInfos((cur) => cur.map((entry) => entry.id === item.id ? { ...entry, info: { ...entry.info, sequence: { ...entry.info.sequence, fps, duration: seq.frameCount / fps } } } : entry)) }}>{presets.map((rate) => <option key={rate} value={String(rate)}>{rate}</option>)}{!presets.includes(current) && <option value={String(current)}>{current} (custom)</option>}</select> fps</span> })()}{!seq && (() => { const presets = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]; const current = Number(task.sourceMetadata?.[item.source]?.fps || task.preset.fps || 25); return <span>Frame Rate: <select className="mi-fps-select" value={String(current)} onChange={(event) => onChangeSourceFps(task, item.source, Number(event.target.value))}>{presets.map((rate) => <option key={rate} value={String(rate)}>{rate}</option>)}{!presets.includes(current) && <option value={String(current)}>{current} (custom)</option>}</select> fps</span> })()}{seq && <span>Duration: {seq.duration ? formatDuration(seq.duration) : 'Unknown'}</span>}{seq && <span>Total Size: {seq.totalSize ? formatBytes(Number(seq.totalSize)) : 'Unknown'}</span>}</section>)
+          return (<section><b>{seq ? 'IMAGE SEQUENCE' : 'IMAGE DETAILS'}</b><span>Dimensions: {dims || 'Unknown'}</span><span>Format: {format}</span><span>DPI: {item.info.dpi || 'Unknown'}</span><span>Color Profile: {item.info.colorProfile || item.info.pixelFormat || 'Unknown'}</span>{seq && <span>Range: {String(seq.startNumber).padStart(width, '0')}–{lastNum.padStart(width, '0')}</span>}{seq && <span>Frames: {seq.frameCount}{seq.hasGaps ? ` (${seq.missing?.length || 0} missing)` : ''}</span>}{seq && (() => { const presets = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]; const current = Number(seq.fps ?? 24); return <span>Frame Rate: <select className="mi-fps-select" value={String(current)} onChange={(event) => { const fps = Number(event.target.value); onChangeSourceTiming(task, item.source, { fps }); setMediaInfos((cur) => cur.map((entry) => entry.id === item.id ? { ...entry, info: { ...entry.info, sequence: { ...entry.info.sequence, fps, duration: seq.frameCount / fps } } } : entry)) }}>{presets.map((rate) => <option key={rate} value={String(rate)}>{rate}</option>)}{!presets.includes(current) && <option value={String(current)}>{current} (custom)</option>}</select> fps</span> })()}{!seq && (() => { const presets = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]; const current = Number(task.sourceMetadata?.[item.source]?.fps || task.preset.fps || 25); const seconds = stillSecondsFor(task, item.source); return <><span>Frame Rate: <select className="mi-fps-select" value={String(current)} onChange={(event) => onChangeSourceTiming(task, item.source, { fps: Number(event.target.value) })}>{presets.map((rate) => <option key={rate} value={String(rate)}>{rate}</option>)}{!presets.includes(current) && <option value={String(current)}>{current} (custom)</option>}</select> fps</span><span>Clip Length: <input className="mi-fps-select" type="number" min="0.1" step="0.1" value={seconds} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value) && value > 0) onChangeSourceTiming(task, item.source, { seconds: value }) }} /> s</span></> })()}{seq && <span>Duration: {seq.duration ? formatDuration(seq.duration) : 'Unknown'}</span>}{seq && <span>Total Size: {seq.totalSize ? formatBytes(Number(seq.totalSize)) : 'Unknown'}</span>}</section>)
         }
         if (item.info.videoStreams?.length > 0) return (<section><b>VIDEO DETAILS</b><span>Resolution: {vstream?.resolution || 'Unknown'}</span><span>Codec: {vstream?.codec || 'Unknown'}</span><span>Frame Rate: {vstream?.fps ? `${formatFps(vstream.fps)} fps` : 'Unknown'}</span><span>Data Rate: {vstream?.bitrate || 'Unknown'}</span></section>)
         return null

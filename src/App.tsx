@@ -7,7 +7,7 @@ import { MultiAudioModal } from './components/MultiAudioModal'
 import { SettingsModal } from './components/SettingsModal'
 import { CommandBar } from './components/CommandBar'
 import { QueueTask, EncodingPreset, AppSettings, EditJobPatch } from './types'
-import { withSourceRate } from './lib/sourceRate'
+import { withSourceTiming } from './lib/sourceTiming'
 import { DEFAULT_PRESETS } from './constants/presets'
 import { detectSequences, isImagePath } from './lib/detectSequences'
 import { deriveOutputFilename } from './lib/outputNaming'
@@ -77,12 +77,12 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     transitions: patch.transitions,
     status: task.status === 'done' ? 'pending' : task.status,
   }
-  if (!patch.sourceFps) return next
-  // A rate the user set in MEDIA INFO lands on the task's own record for that source,
-  // which is where the timeline looks first, and it invalidates any clip that was
-  // generated at the previous rate.
-  return Object.entries(patch.sourceFps).reduce(
-    (current, [sourcePath, fps]) => withSourceRate(current, sourcePath, fps),
+  if (!patch.sourceTiming) return next
+  // Timing the window set in its MEDIA INFO lands on the task's own record for that
+  // source, which is where the timeline and the encoder look, and it invalidates any clip
+  // that was generated at the previous values.
+  return Object.entries(patch.sourceTiming).reduce(
+    (current, [sourcePath, override]) => withSourceTiming(current, sourcePath, override),
     next,
   )
 }
@@ -282,6 +282,17 @@ export const App: React.FC = () => {
       const unsubscribePreview = window.electronAPI.onSequencePreviewReady((taskId, sourceKey, previewPath) => {
         setTasks((prev) => prev.map((task) => task.id === taskId ? rememberPreview(task, sourceKey, previewPath) : task))
       })
+      // Per-source timing changed in the EDIT JOB's MEDIA INFO. Applied here at once rather
+      // than waiting for that window to be applied, so its monitor, this card and the
+      // frame-accurate helper are never showing different numbers for the same clip.
+      const unsubscribeTiming = window.electronAPI.onSourceTiming((taskId, sourceKey, override) => {
+        setTasks((prev) => prev.map((task) => {
+          if (task.id !== taskId) return task
+          const wasDone = task.status === 'done'
+          const next = withSourceTiming(task, sourceKey, override)
+          return wasDone && next !== task ? { ...next, progress: 0 } : next
+        }))
+      })
       const unsubscribeError = window.electronAPI.onTaskError((taskId, error) => {
         setTasks((prev) =>
           prev.map((t) => (t.id === taskId ? { ...t, status: 'error', errorMessage: error } : t))
@@ -296,6 +307,7 @@ export const App: React.FC = () => {
         unsubscribeFinished()
         unsubscribePoints()
         unsubscribePreview()
+        unsubscribeTiming()
       }
     }
   }, [])
@@ -492,18 +504,17 @@ export const App: React.FC = () => {
 
 
   /**
-   * A rate changed from the queue's MEDIA INFO. The same rule the EDIT JOB applies, so
-   * a rate set in either window leaves the task in the same state: recorded against the
-   * source, the sequence's length re-derived, and any clip generated at the old rate
-   * thrown away rather than handed to the frame-accurate helper.
+   * Timing changed from the queue's MEDIA INFO. The same rule the EDIT JOB applies, so a
+   * rate or a still's length set in either window leaves the task in the same state:
+   * recorded against the source, the sequence's length re-derived, and any clip generated
+   * at the old values thrown away rather than handed to the frame-accurate helper.
    */
-  const handleChangeSourceFps = (task: QueueTask, sourceKey: string, fps: number) => {
-    if (!Number.isFinite(fps) || fps <= 0) return
+  const handleChangeSourceTiming = (task: QueueTask, sourceKey: string, override: { fps?: number; seconds?: number }) => {
     setTasks((prev) => prev.map((item) => {
       if (item.id !== task.id) return item
       const wasDone = item.status === 'done'
-      const next = withSourceRate(item, sourceKey, fps)
-      return wasDone ? { ...next, progress: 0 } : next
+      const next = withSourceTiming(item, sourceKey, override)
+      return wasDone && next !== item ? { ...next, progress: 0 } : next
     }))
   }
 
@@ -856,7 +867,7 @@ export const App: React.FC = () => {
         onRemoveTask={handleRemoveTask}
         onRevealOutput={handleRevealOutput}
         onQuickLook={handleQuickLook}
-        onChangeSourceFps={handleChangeSourceFps}
+        onChangeSourceTiming={handleChangeSourceTiming}
         onChangeOutputName={handleChangeOutputName}
         onDuplicateTask={handleDuplicateTask}
         onSkipTask={handleSkipTask}

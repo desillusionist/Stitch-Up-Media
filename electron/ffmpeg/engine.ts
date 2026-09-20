@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, resolveFades, segmentTiming, sourceDuration, transitionDuration } from '../../src/lib/timelineModel'
+import { ClipFade, resolveFades, segmentTiming, sourceDuration, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
 import { probeFile } from './probe'
 
 export interface ProgressData {
@@ -79,7 +79,7 @@ export class FFmpegEngine {
       const [W, H] = stitchCanvas || (task.preset.width && task.preset.height ? [task.preset.width, task.preset.height]
         : task.preset.resolution === '4k' ? [3840, 2160] : task.preset.resolution === '720p' ? [1280, 720] : [1920, 1080])
       const rate = isSequence ? (sequence?.fps || 30) : (targetFps || 30)
-      if (isStill) command.inputOptions(['-loop 1', '-framerate', String(this.stillRate(task, source)), '-t', String(Math.max(0.1, task.stillImageDuration || 10))])
+      if (isStill) command.inputOptions(['-loop 1', '-framerate', String(this.stillRate(task, source)), '-t', String(stillSecondsFor(task, source))])
       if (!isSequence) this.applyTrimInput(command, point)
       const fades = this.fadeFilters(fade, clipDuration)
       const outputRate = isSequence || isStill ? rate : (targetFps || 30)
@@ -171,7 +171,7 @@ export class FFmpegEngine {
       // The rate is set on the input as well as the output. Without it ffmpeg's image
       // demuxer picks its own 25, and the clip would render at a rate unrelated to the
       // one the editor showed.
-      cmd.inputOptions(['-loop 1', `-framerate ${this.stillRate(task, source)}`, '-t ' + Math.max(0.1, task.stillImageDuration || 10)])
+      cmd.inputOptions(['-loop 1', `-framerate ${this.stillRate(task, source)}`, '-t ' + stillSecondsFor(task, source)])
     }
     if (!isSequence) this.applyTrimInput(cmd, trim)
 

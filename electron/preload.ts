@@ -22,6 +22,9 @@ export interface IElectronAPI {
   quickLook: (path: string, taskId?: string, trimStart?: number, trimEnd?: number, sourceIndex?: number, stillMode?: boolean, screenshotDirectory?: string, timestampDisplayMode?: 'timestamp' | 'framestamp', sequenceFps?: number, sequenceFrameCount?: number) => Promise<void>
   onQuickLookTrimmed: (callback: (taskId: string, path: string) => void) => () => void
   onQuickLookPoints: (callback: (taskId: string, path: string, start: number, end: number, sourceIndex: number) => void) => () => void
+  /** Applies a per-source timing change at once, without waiting for the EDIT JOB to be applied. */
+  applySourceTiming: (taskId: string, sourceKey: string, override: { fps?: number; seconds?: number }) => Promise<void>
+  onSourceTiming: (callback: (taskId: string, sourceKey: string, override: { fps?: number; seconds?: number }) => void) => () => void
   /** Tells the queue a generated clip exists, so it survives the window that built it. */
   rememberPreview: (taskId: string, sourceKey: string, previewPath: string) => Promise<void>
   onSequencePreviewReady: (callback: (taskId: string, sourceKey: string, previewPath: string) => void) => () => void
@@ -90,6 +93,12 @@ const api: IElectronAPI = {
     const handler = (_: any, payload: { taskId: string; sourceKey: string; previewPath: string }) => callback(payload.taskId, payload.sourceKey, payload.previewPath)
     ipcRenderer.on('sequence-preview-ready', handler)
     return () => ipcRenderer.removeListener('sequence-preview-ready', handler)
+  },
+  applySourceTiming: (taskId: string, sourceKey: string, override: { fps?: number; seconds?: number }) => ipcRenderer.invoke('apply-source-timing', taskId, sourceKey, override),
+  onSourceTiming: (callback) => {
+    const handler = (_: any, payload: { taskId: string; sourceKey: string; override: { fps?: number; seconds?: number } }) => callback(payload.taskId, payload.sourceKey, payload.override)
+    ipcRenderer.on('source-timing', handler)
+    return () => ipcRenderer.removeListener('source-timing', handler)
   },
   selectOutputFilename: (path: string, container: string) => ipcRenderer.invoke('select-output-filename', path, container),
   showItemInFolder: (path: string) => ipcRenderer.invoke('show-item-in-folder', path),

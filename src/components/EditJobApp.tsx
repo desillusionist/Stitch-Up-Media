@@ -6,7 +6,9 @@ import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { sequenceLabel } from '../lib/sequenceLabel'
+import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 
@@ -27,7 +29,9 @@ const ZOOM_MAX = 8
 const TAP_THRESHOLD_MS = 250
 const SLOW_MOTION_RATE = 0.5
 
-/** The fields this window owns. Everything else on a task belongs to the queue. */
+/**
+ * The fields this window owns. Everything else on a task belongs to the queue.
+ */
 const editableSlice = (task: QueueTask) => ({
   preset: task.preset,
   outputFilename: task.outputFilename,
@@ -38,21 +42,6 @@ const editableSlice = (task: QueueTask) => ({
   sequenceInput: task.sequenceInput,
   sequenceInputs: task.sequenceInputs,
 })
-
-/**
- * The per-source rates to send back, gathered from both places a rate can live: the
- * record on the source, and an interpreted sequence's own rate.
- */
-const sourceFpsOverrides = (task: QueueTask): Record<string, number> | undefined => {
-  const overrides: Record<string, number> = {}
-  Object.entries(task.sourceMetadata || {}).forEach(([sourcePath, metadata]) => {
-    if (metadata.fps && metadata.fps > 0) overrides[sourcePath] = metadata.fps
-  })
-  Object.entries(task.sequenceInputs || {}).forEach(([sourcePath, sequence]) => {
-    if (sequence.fps > 0) overrides[sourcePath] = sequence.fps
-  })
-  return Object.keys(overrides).length ? overrides : undefined
-}
 
 /** The rates the MEDIA INFO inspector offers, matching the queue's own list. */
 const FPS_CHOICES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]
@@ -208,6 +197,10 @@ export const EditJobApp: React.FC = () => {
 
   const focusedSourceIndex = playback.segmentIndex
   const focusedSource = draft ? (draft.sourcePaths[focusedSourceIndex] || draft.sourcePaths[0]) : undefined
+  // A sequence is named after its whole range rather than the one frame that stands in
+  // for it, the same way the queue's cards name it.
+  const focusedSequence = draft && focusedSource ? sequenceFor(draft, focusedSource) : undefined
+  const focusedLabel = focusedSequence ? sequenceLabel(focusedSequence) : sourceName(focusedSource)
 
   // Every main-lane source gets a target, once per rate, in the background. Nothing
   // on the playback path waits for this: an unresolved source simply renders nothing
@@ -479,6 +472,7 @@ export const EditJobApp: React.FC = () => {
   // rate is a choice rather than a fact about the file, can have it changed here.
   const inspectedSegment = inspectedIndex != null ? mainLane?.segments[inspectedIndex] : undefined
   const inspectedSource = inspectedSegment?.sourcePath ?? (inspectedIndex != null ? draft.sourcePaths[inspectedIndex] : undefined)
+  const inspectedSequence = inspectedSource ? sequenceFor(draft, inspectedSource) : undefined
   const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
   const inspectedEditable = Boolean(inspectedSegment && (inspectedSegment.still || inspectedSegment.sequence))
   const inspectedProbe = inspectedSource ? probedTiming[inspectedSource] : undefined
@@ -495,30 +489,24 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
-   * Records a source's frame rate from MEDIA INFO.
+   * Records a source's timing from MEDIA INFO: its rate, and for a still the length of
+   * the clip made from it.
    *
-   * Both places a rate can live are written, because which one wins depends on the
-   * source: an interpreted sequence's own rate takes precedence, and a still image
-   * falls back to the rate recorded on the source. The same rule the encoder reads.
+   * Written to the draft so this window's monitor and timeline update at once, and sent to
+   * the queue immediately so its card and its Quick Look helper show the same numbers. The
+   * baseline moves with it, otherwise the queue's own confirmation of this change would
+   * arrive looking like a conflicting edit from somewhere else.
    */
-  const setSourceFps = (sourcePath: string, fps: number) => {
-    if (!Number.isFinite(fps) || fps <= 0) return
+  const setSourceTiming = (sourcePath: string, override: SourceTimingOverride) => {
     const current = latest()
-    // A generated clip belongs to the rate it was rendered at, so it is dropped here
-    // as well as on the queue side. Otherwise the monitor and the frame-accurate
-    // helper would keep playing footage at the rate that was just replaced.
-    const previews = { ...(current.imageSequencePreviews || {}) }
-    delete previews[sourcePath]
-    updateDraft({
-      sourceMetadata: { ...(current.sourceMetadata || {}), [sourcePath]: { ...(current.sourceMetadata?.[sourcePath] || {}), fps } },
-      sequenceInputs: current.sequenceInputs?.[sourcePath]
-        ? { ...current.sequenceInputs, [sourcePath]: { ...current.sequenceInputs[sourcePath], fps, duration: current.sequenceInputs[sourcePath].frameCount / fps } }
-        : current.sequenceInputs,
-      sequenceInput: current.sequenceInput?.firstFrame === sourcePath
-        ? { ...current.sequenceInput, fps, duration: current.sequenceInput.frameCount / fps }
-        : current.sequenceInput,
-      imageSequencePreviews: Object.keys(previews).length ? previews : undefined,
-    })
+    const next = withSourceTiming(current, sourcePath, override)
+    if (next === current) return
+    const nextBaseline = baselineRef.current ? withSourceTiming(baselineRef.current, sourcePath, override) : null
+    baselineRef.current = nextBaseline
+    draftRef.current = next
+    setBaseline(nextBaseline)
+    setDraft(next)
+    void window.electronAPI?.applySourceTiming(draft.id, sourcePath, override)
   }
 
   const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
@@ -536,11 +524,15 @@ export const EditJobApp: React.FC = () => {
     if (segment.fadeOut) parts.push(`FADE OUT ${segment.fadeOut.toFixed(2)}s`)
     return parts.join(' // ')
   }
+  const segmentLabel = (segment: TimelineSegment) => {
+    const sequence = draft ? sequenceFor(draft, segment.sourcePath) : undefined
+    return sequence ? sequenceLabel(sequence) : sourceName(segment.sourcePath)
+  }
   const clipTitle = (segment: TimelineSegment) => {
     const kind = segment.sequence
       ? `image sequence, ${segment.sequence.frames} frames at ${segment.sequence.fps} fps`
       : segment.still ? 'still image' : 'media'
-    return `${sourceName(segment.sourcePath)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
+    return `${segmentLabel(segment)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
   }
   const duration = model.duration
 
@@ -671,7 +663,8 @@ export const EditJobApp: React.FC = () => {
                       onClick={() => playback.toggle()}
                     />
                     : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
-            <small>{sourceName(focusedSource)} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS • ${stamp(duration)}` : ''}</small>
+            <small>{focusedLabel} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS` : ''}</small>
+            <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` · USED ${stamp(activeSegment.sourceIn)} → ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} · OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
             <b>{playback.playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>
           </div>
           <div className="transport">
@@ -699,19 +692,34 @@ export const EditJobApp: React.FC = () => {
           </div>
           {inspectedIndex != null && inspectedSource && (
             <div className="media-inspector">
-              <EditorRow label="SOURCE" value={sourceName(inspectedSource)} />
+              <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
               <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
               <EditorRow
-                label="DURATION"
-                value={inspectedSegment ? `${stamp(inspectedSegment.duration)}${inspectedSegment.trimmed ? ` · TRIMMED FROM ${stamp(inspectedSegment.sourceIn)}` : ''}` : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
+                label="USED"
+                value={inspectedSegment ? `${stamp(inspectedSegment.duration)}${inspectedSegment.trimmed ? ` OF ${stamp(sourceDuration(draft, inspectedSource, undefined, resolveTiming))} FROM ${stamp(inspectedSegment.sourceIn)}` : ''}` : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
               />
               <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
                 inspectedEditable
-                  ? <select value={String(inspectedFps)} onChange={(event) => setSourceFps(inspectedSource, Number(event.target.value))}>
+                  ? <select value={String(inspectedFps)} onChange={(event) => setSourceTiming(inspectedSource, { fps: Number(event.target.value) })}>
                     {[...new Set([...FPS_CHOICES, inspectedFps])].sort((a, b) => a - b).map((rate) => <option key={rate} value={String(rate)}>{rate}{FPS_CHOICES.includes(rate) ? '' : ' (CURRENT)'} FPS</option>)}
                   </select>
                   : <input className="editor-input" type="text" value={`${inspectedFps} FPS`} readOnly />
               }</EditorField>
+              {inspectedSegment?.still && (
+                <EditorField label="CLIP LENGTH" hint="THIS IMAGE">{
+                  <input
+                    className="editor-input"
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={stillSecondsFor(draft, inspectedSource)}
+                    onChange={(event) => {
+                      const seconds = Number(event.target.value)
+                      if (Number.isFinite(seconds) && seconds > 0) setSourceTiming(inspectedSource, { seconds })
+                    }}
+                  />
+                }</EditorField>
+              )}
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
@@ -760,7 +768,7 @@ export const EditJobApp: React.FC = () => {
                         style={{ flexBasis: `${duration > 0 ? (segment.duration / duration) * 100 : 0}%` }}
                         title={clipTitle(segment)}
                       >
-                        <span className="timeline-clip-name">{sourceName(segment.sourcePath)}</span>
+                        <span className="timeline-clip-name">{segmentLabel(segment)}</span>
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                         {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
@@ -872,7 +880,7 @@ export const EditJobApp: React.FC = () => {
                 outputFilename: latest().outputFilename,
                 outputFilenameManuallySet: latest().outputFilenameManuallySet,
                 transitions: latest().transitions,
-                sourceFps: sourceFpsOverrides(latest()),
+                sourceTiming: sourceTimingOverrides(latest()),
               }
               void window.electronAPI?.applyEditJob(patch)
             }} disabled={!dirty} title={dirty ? undefined : 'NO CHANGES TO APPLY.'}>OK / APPLY</button></>}

@@ -144,11 +144,10 @@ export interface EditJobPatch {
   outputFilenameManuallySet?: boolean
   transitions?: Record<string, ClipTransition>
   /**
-   * Per-source frame-rate overrides, keyed by source path. Covers both cases the
-   * MEDIA INFO inspector offers: a still image being treated as a clip, and an
-   * interpreted image sequence whose rate the user changed.
+   * Per-source timing the window owns: the rate a still or sequence is rendered at, and
+   * the length of a still's clip. Keyed by source path.
    */
-  sourceFps?: Record<string, number>
+  sourceTiming?: Record<string, { fps?: number; seconds?: number }>
 }
 
 export interface PresetRule {

@@ -1,6 +1,6 @@
 import { QueueTask } from '../types'
 import { mediaKind } from './mediaKind'
-import { isStillFrameJob, sourceFps } from './timelineModel'
+import { isStillFrameJob, sourceFps, stillSecondsFor } from './timelineModel'
 
 /** The subset of the preload bridge this helper needs. */
 export interface QuickLookBridge {
@@ -98,7 +98,7 @@ export const resolveQuickLookRequest = async (
   const needsPreview = Boolean(sequence) || timedStill
 
   const rate = sourceTarget ? sourceFps(task, sourceTarget) : 0
-  const stillSeconds = Math.max(0.1, task.stillImageDuration || 10)
+  const stillSeconds = stillSecondsFor(task, sourceTarget)
   // A sequence's clip is identified by its source. A still's also carries the rate and
   // length it was built at, so changing either one misses the cache and rebuilds rather
   // than handing back footage at the parameters the user just replaced.
