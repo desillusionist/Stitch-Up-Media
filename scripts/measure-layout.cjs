@@ -63,6 +63,18 @@ const caseD = `
       <button class="exact-icon" id="dreset">R</button>
     </div>
   </div>
+  <div class="editor-subsection">
+    <div class="crop-head" id="chead">
+      <select id="csel"><option>NONE</option><option>16:9</option></select>
+      <div class="unit-toggle" id="cunit"><button id="cupct" class="is-on">%</button><button id="cupx">px</button></div>
+    </div>
+    <div class="crop-row" id="crow">
+      <label class="mini-field"><span>L</span><input id="cl" type="number" value="10"></label>
+      <label class="mini-field"><span>T</span><input type="number" value="10"></label>
+      <label class="mini-field"><span>R</span><input type="number" value="10"></label>
+      <label class="mini-field"><span>B</span><input type="number" value="10"></label>
+    </div>
+  </div>
 </div>`
 
 const page = `<!doctype html><html><head><meta charset="utf-8">
@@ -115,6 +127,10 @@ const measure = `(() => {
       fieldHeights: [dw.height, dh.height], iconHeights: [dlock.height, dreset.height],
       leadingFlush: +(rect('dwf').left - exrow.left).toFixed(2), trailingFlush: +(exrow.right - dreset.right).toFixed(2),
       columnGap: +(dh.left - dw.right).toFixed(2) },
+    caseE: { headWidth: rect('chead').width, headHeight: rect('chead').height, selectWidth: rect('csel').width, unitWidth: rect('cunit').width, unitHeightBox: rect('cunit').height,
+      headLeadingFlush: +(rect('csel').left - rect('chead').left).toFixed(2), headTrailingFlush: +(rect('chead').right - rect('cunit').right).toFixed(2),
+      unitButtonWidths: [rect('cupct').width, rect('cupx').width], unitHeight: rect('cupct').height, selectHeight: rect('csel').height,
+      cropRowWidth: rect('crow').width, cropFieldWidth: rect('cl').width },
   }
 })()`
 

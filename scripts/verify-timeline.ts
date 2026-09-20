@@ -3,7 +3,7 @@ import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
-import { aspectSize, clampCrop, cropBands, cropFilter, exactSizeFields, fitFrame, hasCrop, outputFrameSize, resolutionBox, resolutionShortSide, resizeExact } from '../src/lib/outputFrame'
+import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeExact, MAX_CROP } from '../src/lib/outputFrame'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -391,8 +391,12 @@ console.log('\n== cropping ==')
   check('an empty crop is no crop', hasCrop({ left: 0, top: 0, right: 0, bottom: 0 }), false)
   check('and an absent one is none either', hasCrop(undefined), false)
   check('any edge makes it a crop', hasCrop({ left: 0.1, top: 0, right: 0, bottom: 0 }), true)
-  // The whole point of clamping: the filter must never be handed an empty picture.
-  check('a crop cannot eat the whole frame', clampCrop({ left: 0.9, top: 0, right: 0.9, bottom: 0 }), { left: 0.45, top: 0, right: 0, bottom: 0 })
+  // The whole point of clamping: the filter must never be handed an empty picture. Each edge
+  // is capped on its own, so a crop may still reach MAX_CROP in from both sides at once and
+  // the smallest sliver left is the tenth that 2 x MAX_CROP allows.
+  check('a crop cannot eat the whole frame', clampCrop({ left: 0.9, top: 0, right: 0.9, bottom: 0 }), { left: MAX_CROP, top: 0, right: MAX_CROP, bottom: 0 })
+  near('and the sliver it leaves is a tenth', 1 - MAX_CROP * 2, 0.1, 1e-9)
+  check('a negative edge is no edge', clampCrop({ left: -1, top: 0, right: 0, bottom: 0 }).left, 0)
   check('the filter keeps the picture it was asked for', cropFilter({ left: 0.1, top: 0.05, right: 0, bottom: 0.05 }), 'crop=max(2\\,iw*0.900000):max(2\\,ih*0.900000):iw*0.100000:ih*0.050000')
   check('and the smallest side is floored at two pixels', cropFilter({ left: 0, top: 0, right: 0, bottom: 0 }).startsWith('crop=max(2\\,iw*1.000000)'), true)
 
@@ -408,6 +412,36 @@ console.log('\n== cropping ==')
     { left: 25, top: 35, width: 50, height: 15 },
   ])
   check('an untouched picture leaves no shade', cropBands({ left: 0, top: 0, width: 100, height: 50 }, { left: 0, top: 0, width: 100, height: 50 }).every((band) => band.width === 0 || band.height === 0), true)
+}
+
+console.log('\n== crop proportions and units ==')
+{
+  // Reading the same crop in the other unit. The fractions are the stored form; the pixels are
+  // what the fields show, and the two must describe one crop rather than drifting apart.
+  check('a crop read in pixels', cropPixels({ left: 0.1, top: 0.05, right: 0.2, bottom: 0.1 }, { width: 1920, height: 1080 }), { left: 192, top: 54, right: 384, bottom: 108 })
+  check('and read back as fractions', cropFractions({ left: 192, top: 54, right: 384, bottom: 108 }, { width: 1920, height: 1080 }), { left: 0.1, top: 0.05, right: 0.2, bottom: 0.1 })
+  check('a crop of nothing is no pixels either', cropPixels({ left: 0, top: 0, right: 0, bottom: 0 }, { width: 1920, height: 1080 }), { left: 0, top: 0, right: 0, bottom: 0 })
+
+  // The shape a crop keeps, which is what the proportion list matches against.
+  check('no crop keeps the picture shape', keptAspect({ left: 0, top: 0, right: 0, bottom: 0 }, 16 / 9), 16 / 9)
+  near('half the width kept is half the shape', keptAspect({ left: 0.25, top: 0, right: 0.25, bottom: 0 }, 16 / 9)!, 8 / 9)
+  check('a crop that keeps nothing has no shape', keptAspect({ left: 0.5, top: 0, right: 0.5, bottom: 0 }, 16 / 9), undefined)
+
+  // The shapes the list offers. Each must actually KEEP the shape it names, which is the whole
+  // point, and must trim only one axis so the region stays the largest of that shape that fits.
+  const square = cropForProportion(16 / 9, 1)
+  near('a 16:9 picture cropped to 1:1 keeps 1:1', keptAspect(square, 16 / 9)!, 1, 1e-9)
+  check('and trims the sides, not the top', [square.top, square.bottom], [0, 0])
+
+  const vertical = cropForProportion(16 / 9, 9 / 16)
+  near('a 16:9 picture cropped to 9:16 keeps 9:16', keptAspect(vertical, 16 / 9)!, 9 / 16, 1e-9)
+  check('and trims the sides, not the top', [vertical.top, vertical.bottom], [0, 0])
+
+  const landscape = cropForProportion(9 / 16, 16 / 9)
+  near('a portrait picture cropped to landscape keeps 16:9', keptAspect(landscape, 9 / 16)!, 16 / 9, 1e-9)
+  check('and trims the top and bottom instead', [landscape.left, landscape.right], [0, 0])
+
+  check('a picture with no shape asked for gets no crop', cropForProportion(0, 1), { left: 0, top: 0, right: 0, bottom: 0 })
 }
 
 console.log('\n== the exact-size fields ==')

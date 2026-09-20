@@ -94,7 +94,10 @@ export const resizeExact = (current: FrameSize, edge: keyof FrameSize, value: nu
     : { width: Math.max(2, Math.round(rounded / ratio)), height: rounded }
 }
 
-/** How far a crop may reach in from each edge before there is nothing left to encode. */
+/**
+ * How far a crop may reach in from EACH edge. An edge may reach this far on both sides, so the
+ * smallest sliver a crop can leave is 1 - 2 x this, a tenth of the picture.
+ */
 export const MAX_CROP = 0.45
 
 export interface CropFractions {
@@ -108,13 +111,24 @@ export interface CropFractions {
 export const hasCrop = (crop: CropFractions | undefined): boolean =>
   Boolean(crop && (crop.left > 0 || crop.top > 0 || crop.right > 0 || crop.bottom > 0))
 
-/** Keeps a crop inside the frame, so the filter can never be handed an empty picture. */
+/**
+ * Keeps a crop inside the frame, so the filter can never be handed an empty picture.
+ *
+ * Each edge is capped on its own rather than against the edge opposite it. The two were tied
+ * together before, which capped the TOTAL horizontal or vertical crop at MAX_CROP and so made
+ * any crop needing more than that impossible: pulling a 16:9 source to 9:16 needs roughly 68%
+ * off the width, and instead of a centred vertical crop it produced a lopsided one. Capping
+ * each edge independently still leaves at least a tenth of the picture, since 2 x MAX_CROP is
+ * only nine tenths, so the guarantee that nothing is empty is kept.
+ */
 export const clampCrop = (crop: CropFractions): CropFractions => ({
-  left: Math.max(0, Math.min(MAX_CROP, crop.left)),
-  top: Math.max(0, Math.min(MAX_CROP, crop.top)),
-  right: Math.max(0, Math.min(MAX_CROP - Math.min(MAX_CROP, crop.left), crop.right)),
-  bottom: Math.max(0, Math.min(MAX_CROP - Math.min(MAX_CROP, crop.top), crop.bottom)),
+  left: clampEdge(crop.left),
+  top: clampEdge(crop.top),
+  right: clampEdge(crop.right),
+  bottom: clampEdge(crop.bottom),
 })
+
+const clampEdge = (value: number): number => Math.max(0, Math.min(MAX_CROP, Number.isFinite(value) ? value : 0))
 
 /**
  * The crop filter, as fractions of the frame so it needs no knowledge of the resolution.
@@ -160,4 +174,51 @@ export const cropBands = (box: Rect, kept: Rect): Rect[] => {
     { left: kept.left, top: box.top, width: kept.width, height: Math.max(0, kept.top - box.top) },
     { left: kept.left, top: keptBottom, width: kept.width, height: Math.max(0, boxBottom - keptBottom) },
   ]
+}
+
+/** The crop's four edges as whole pixels of a frame, which is the other way to read them. */
+export const cropPixels = (crop: CropFractions, size: FrameSize): CropFractions => ({
+  left: Math.round(crop.left * size.width),
+  top: Math.round(crop.top * size.height),
+  right: Math.round(crop.right * size.width),
+  bottom: Math.round(crop.bottom * size.height),
+})
+
+/** The inverse of cropPixels: the fractions that same pair of pixel edges stands for. */
+export const cropFractions = (pixels: CropFractions, size: FrameSize): CropFractions => ({
+  left: size.width > 0 ? pixels.left / size.width : 0,
+  top: size.height > 0 ? pixels.top / size.height : 0,
+  right: size.width > 0 ? pixels.right / size.width : 0,
+  bottom: size.height > 0 ? pixels.bottom / size.height : 0,
+})
+
+/**
+ * The shape of the region a crop keeps, in a picture of a given shape.
+ *
+ * This is the figure the proportion list matches against, so a crop that happens to keep
+ * 16:9 can be shown as 16:9 rather than as four unrelated numbers.
+ */
+export const keptAspect = (crop: CropFractions, pictureAspect: number): number | undefined => {
+  const keptWidth = 1 - crop.left - crop.right
+  const keptHeight = 1 - crop.top - crop.bottom
+  if (!Number.isFinite(pictureAspect) || pictureAspect <= 0 || keptWidth <= 0 || keptHeight <= 0) return undefined
+  return (pictureAspect * keptWidth) / keptHeight
+}
+
+/**
+ * The crop that makes the kept region a given shape, centred in a picture of a given shape.
+ *
+ * Only the longer dimension is trimmed, so the kept region is the largest of that shape that
+ * fits and no edge is cut twice; the trims are then clamped, which is what keeps an extreme
+ * request from asking for an empty picture.
+ */
+export const cropForProportion = (pictureAspect: number, ratio: number): CropFractions => {
+  const empty = { left: 0, top: 0, right: 0, bottom: 0 }
+  if (!Number.isFinite(pictureAspect) || pictureAspect <= 0 || !Number.isFinite(ratio) || ratio <= 0) return empty
+  if (pictureAspect > ratio) {
+    const trim = (1 - ratio / pictureAspect) / 2
+    return clampCrop({ left: trim, top: 0, right: trim, bottom: 0 })
+  }
+  const trim = (1 - pictureAspect / ratio) / 2
+  return clampCrop({ left: 0, top: trim, right: 0, bottom: trim })
 }

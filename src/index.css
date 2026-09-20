@@ -216,8 +216,8 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-field { display: grid; gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); color: var(--ui-muted); font-size: 10px; }
 .editor-field > span { display: flex; justify-content: space-between; gap: 8px; }
 .editor-field em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: .06em; }
-.editor-field select, .editor-field input { width: 100%; margin: 0; padding: 7px 8px; color: var(--ui-foreground); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; }
-.editor-field select:focus, .editor-field input:focus { border-color: var(--ui-accent); outline: 1px solid var(--ui-accent); }
+.editor-field select, .editor-field input, .crop-head select { width: 100%; margin: 0; padding: 7px 8px; color: var(--ui-foreground); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; }
+.editor-field select:focus, .editor-field input:focus, .crop-head select:focus { border-color: var(--ui-accent); outline: 1px solid var(--ui-accent); }
 .editor-field select:disabled, .editor-field input:disabled { opacity: .45; }
 .editor-input { font-family: monospace !important; text-transform: none; }
 .editor-input::placeholder { color: var(--ui-border); }
@@ -257,6 +257,15 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-row, .exact-row { display: grid; align-items: center; gap: 5px; }
 .crop-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
+/* The shape list and the unit switch, above the crop's four figures. The switch's glyph buttons
+   match the select's height so the row reads as one control rather than two. */
+.crop-head { display: flex; align-items: center; gap: 5px; }
+.crop-head select { flex: 1 1 0; width: auto; min-width: 0; }
+.unit-toggle { display: flex; flex: 0 0 auto; align-items: center; }
+.unit-toggle button { min-width: 30px; height: 30px; padding: 0 6px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
+.unit-toggle button + button { border-left: 0; }
+.unit-toggle button.is-on { color: var(--ui-canvas); background: var(--ui-accent); border-color: var(--ui-accent); }
+.unit-toggle button:disabled { opacity: .4; }
 .mini-field { display: flex; align-items: center; gap: 4px; }
 .mini-field span { color: var(--ui-muted); font-size: 9px; }
 .mini-field input { width: 100%; min-width: 0; padding: 5px 4px; text-align: center; }

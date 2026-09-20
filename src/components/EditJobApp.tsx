@@ -8,7 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, frameStamp, isStillFrameJob, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { cropBands, exactSizeFields, fitFrame, outputFrameSize, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropFractions } from '../lib/outputFrame'
+import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, hasCrop, keptAspect, outputFrameSize, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropFractions } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -110,6 +110,8 @@ export const EditJobApp: React.FC = () => {
   const [zoom, setZoom] = useState(1)
   /** Keeps the exact size's proportions while one of the two fields is edited. */
   const [lockProportion, setLockProportion] = useState(false)
+  /** Whether the crop fields read as per cent of the source or as pixels of it. */
+  const [cropUnit, setCropUnit] = useState<'%' | 'px'>('%')
   /** Boundary whose transition editor is open, by index of the clip it follows. */
   const [openBoundary, setOpenBoundary] = useState<number | null>(null)
   // Monitoring state only. Never written to the task, so muting can never be
@@ -689,16 +691,37 @@ export const EditJobApp: React.FC = () => {
   const dirty = isDirty(draft, baseline ?? draft)
   // The picture's own box inside the stage, which is what a crop selects from: the
   // generated frame the encoder writes may be a different shape, and a crop is of the
-  // source, not of the canvas it is fitted to.
-  const naturalAspect = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize.width / naturalSize.height : null
+  // source, not of the canvas it is fitted to. Its pixel size is also what turns the crop's
+  // fractions into the pixel figures the fields show when the unit is switched to px.
+  const picture = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined
+  const naturalAspect = picture ? picture.width / picture.height : null
   const pictureRect = naturalAspect && stageSize ? fitFrame(stageSize, naturalAspect) : null
   const crop = draft.preset.crop
+  const cropPx = crop && picture ? cropPixels(crop, picture) : null
+  /** The proportion list's value: no crop at all, a shape the crop keeps, or the user's own. */
+  const keptProportion = crop && naturalAspect ? keptAspect(crop, naturalAspect) : undefined
+  const matchedProportion = keptProportion != null
+    ? ASPECTS.find((candidate) => Math.abs(candidate.ratio - keptProportion) < ASPECT_TOLERANCE)?.label
+    : undefined
+  const cropProportion = !crop || !hasCrop(crop) ? 'NONE' : matchedProportion ?? 'CUSTOM'
   // The crop object existing IS the enabled state, and it is deliberately not `hasCrop`:
   // a crop with all four edges at zero removes nothing, so a data test reported the control
   // as off the moment the last field was zeroed, and every attempt to switch it back on set
   // the same all-zero crop again. Whether it removes anything is the encoder's question.
   const cropEnabled = Boolean(crop)
   const setCrop = (next: CropFractions) => updatePreset({ crop: clampCrop(next) })
+  const setCropEdge = (edge: keyof CropFractions, raw: number) => {
+    if (!crop || !cropPx || !picture) return
+    // One edge moves at a time: the other three are already whole pixels of the source, so
+    // only the edited one changes and the rest survive the trip through the inverse.
+    setCrop(cropFractions({ ...cropPx, [edge]: Math.max(0, Math.round(raw)) }, picture))
+  }
+  /** Sets the proportion list: NONE clears the crop, a shape centres the crop on it. */
+  const applyCropProportion = (label: string) => {
+    const option = ASPECTS.find((candidate) => candidate.label === label)
+    if (!option || !naturalAspect) { setCrop({ left: 0, top: 0, right: 0, bottom: 0 }); return }
+    setCrop(cropForProportion(naturalAspect, option.ratio))
+  }
   const cropRect = (() => {
     if (!crop || !pictureRect || !stageSize) return null
     const originX = (stageSize.width - pictureRect.width) / 2
@@ -734,11 +757,17 @@ export const EditJobApp: React.FC = () => {
     const stage = stageRef.current?.getBoundingClientRect()
     if (!stage) return
     const horizontal = edge === 'left' || edge === 'right'
+    // The two leading edges are measured from the picture's own origin; the two trailing ones
+    // are stored as the distance in from the FAR edge. Reading a trailing edge as a leading one
+    // is what made the right and bottom handles run backwards, slamming the crop to its limit on
+    // the first twitch of the pointer and then having to be dragged the opposite way to undo it.
+    const trailing = edge === 'right' || edge === 'bottom'
     const size = horizontal ? cropRect.box.width : cropRect.box.height
     const origin = horizontal ? cropRect.originX : cropRect.originY
     const coordinate = (moveEvent: PointerEvent) => (horizontal ? moveEvent.clientX - stage.left : moveEvent.clientY - stage.top)
     const move = (moveEvent: PointerEvent) => {
-      const value = Math.max(0, Math.min(1, (coordinate(moveEvent) - origin) / Math.max(1, size)))
+      const position = (coordinate(moveEvent) - origin) / Math.max(1, size)
+      const value = Math.max(0, Math.min(1, trailing ? 1 - position : position))
       setCrop({ ...crop, [edge]: value })
     }
     const up = () => {
@@ -1020,6 +1049,17 @@ export const EditJobApp: React.FC = () => {
                 onChange={(checked) => updatePreset({ crop: checked ? (crop ?? { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }) : undefined })}
               />
               {crop && <>
+                <div className="crop-head">
+                  <select value={cropProportion} disabled={!naturalAspect} onChange={(event) => applyCropProportion(event.target.value)} title={naturalAspect ? 'Crop the picture to a shape' : 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.'}>
+                    <option value="NONE">NONE</option>
+                    {ASPECTS.map((candidate) => <option key={candidate.label} value={candidate.label}>{candidate.label}</option>)}
+                    <option value="CUSTOM" disabled>CUSTOM</option>
+                  </select>
+                  <div className="unit-toggle">
+                    <button className={cropUnit === '%' ? 'is-on' : ''} onClick={() => setCropUnit('%')} title="Per cent of the source">%</button>
+                    <button className={cropUnit === 'px' ? 'is-on' : ''} disabled={!picture} onClick={() => setCropUnit('px')} title={picture ? 'Pixels of the source' : 'THE PICTURE HAS NOT LOADED, SO ITS PIXEL SIZE IS UNKNOWN.'}>px</button>
+                  </div>
+                </div>
                 <div className="crop-row">
                   {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
                     <label key={edge} className="mini-field">
@@ -1027,17 +1067,17 @@ export const EditJobApp: React.FC = () => {
                       <input
                         type="number"
                         min="0"
-                        max={Math.round(MAX_CROP * 100)}
+                        max={cropUnit === 'px' && picture ? Math.round(MAX_CROP * (edge === 'left' || edge === 'right' ? picture.width : picture.height)) : Math.round(MAX_CROP * 100)}
                         step="1"
                         className="editor-input"
-                        value={Math.round(crop[edge] * 100)}
-                        onChange={(event) => setCrop({ ...crop, [edge]: (Number(event.target.value) || 0) / 100 })}
-                        title={`${edge} edge, per cent of the frame`}
+                        value={cropUnit === 'px' && cropPx ? cropPx[edge] : Math.round(crop[edge] * 100)}
+                        onChange={(event) => cropUnit === 'px' ? setCropEdge(edge, Number(event.target.value) || 0) : setCrop({ ...crop, [edge]: (Number(event.target.value) || 0) / 100 })}
+                        title={`${edge} edge, ${cropUnit === 'px' ? 'pixels' : 'per cent'} of the source`}
                       />
                     </label>
                   ))}
                 </div>
-                <div className="editor-note">&gt; A CROP IS APPLIED TO THE OUTPUT FRAME BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE AS PER CENT.</div>
+                <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON THE PICTURE; NONE CLEARS IT. A CROP IS APPLIED BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.</div>
               </>}
             </div>
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><input type="number" min="1" className="editor-input" value={draft.preset.fps ?? ''} disabled={audioOnly} onChange={(event) => changeFps(event.target.value)} /></EditorField>
