@@ -63,6 +63,20 @@ export interface AudioTrackItem {
 /** Clip-boundary transitions. Only meaningful where clips are concatenated. */
 export type TransitionType = 'none' | 'fade'
 
+/**
+ * How one clip is placed in the output frame, when it is not left to fit itself.
+ *
+ * Keyed like trimPoints, by the clip that owns it (`"path#index"`), so it follows the clip
+ * through a reorder. An absent entry is the default fit: the whole clip inside the frame, with
+ * the shortfall filled in.
+ */
+export interface SourceFit {
+  /** The axis fixed to the frame's; the other one overflows or falls short. */
+  mode: 'width' | 'height'
+  /** Where the clip sits on the axis that overflows, 0..1. 0.5 is centred. */
+  offset: number
+}
+
 export interface ClipTransition {
   type: TransitionType
   /** Length of the fade on each side of the boundary, in seconds. */
@@ -131,6 +145,11 @@ export interface QueueTask {
    * concatenates, so other job types ignore this.
    */
   transitions?: Record<string, ClipTransition>
+  /**
+   * How each clip is placed in the output frame, keyed by the clip that owns it, mirroring how
+   * trimPoints are keyed. Absent means the default fit.
+   */
+  sourceFit?: Record<string, SourceFit>
 }
 
 /**
@@ -148,6 +167,8 @@ export interface EditJobPatch {
   outputFilename: string
   outputFilenameManuallySet?: boolean
   transitions?: Record<string, ClipTransition>
+  /** Per-clip output fit, keyed like the transitions and carried whole rather than interpreted. */
+  sourceFit?: Record<string, SourceFit>
   /**
    * Per-source timing the window owns: the rate a still or sequence is rendered at, and
    * the length of a still's clip. Keyed by source path.

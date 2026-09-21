@@ -175,6 +175,15 @@ export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: 
   task.trimPoints?.[`${sourcePath}#${index}`] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
 
 /**
+ * The fit a clip carries, by the same keying as its trim, so the two follow it together.
+ *
+ * A clip with none is not the same as a clip fitted by default: the default is the fit, and
+ * this returning nothing is how "nothing chosen" is carried everywhere it is read.
+ */
+export const sourceFitFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
+  task.sourceFit?.[`${sourcePath}#${index}`] || (sourcePath ? task.sourceFit?.[sourcePath] : undefined)
+
+/**
  * Interpreter rate for a source. An image sequence's own fps wins, matching the
  * `displayFps` rule the native frame-accurate preview uses, so both agree on
  * frame numbers for the same media.

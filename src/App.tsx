@@ -75,6 +75,9 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     outputFilename: patch.outputFilename,
     outputFilenameManuallySet: patch.outputFilenameManuallySet,
     transitions: patch.transitions,
+    // Whole, like the transitions: the window owns every clip's fit, so an emptied map is a
+    // decision about the job rather than a field left out of the patch.
+    sourceFit: patch.sourceFit,
     status: task.status === 'done' ? 'pending' : task.status,
   }
   if (!patch.sourceTiming) return next
@@ -96,6 +99,7 @@ const editJobSignature = (task: QueueTask) => JSON.stringify([
   task.outputFilename, task.outputFilenameManuallySet, task.sourceBaseName, task.outputDirectory,
   task.trimPoints, task.sourceMetadata, task.sourceInfo, task.sequenceInput, task.sequenceInputs,
   task.imageSequencePreviews, task.quickLookSourceIndex, task.stillImageDuration, task.transitions,
+  task.sourceFit,
 ])
 
 export const App: React.FC = () => {
@@ -631,14 +635,14 @@ export const App: React.FC = () => {
     setTasks((prev) => {
       const chosen = prev.filter((item) => ids.includes(item.id))
       if (type === 'transcode' && chosen.some((item) => item.type !== 'transcode')) {
-        const split = chosen.flatMap((item) => [...item.sourcePaths, ...(item.additionalAudioTracks || []).map((track) => track.path)].map((sourcePath, index) => ({ ...item, id: `${item.id}-${index}-${Date.now()}`, type: 'transcode' as const, sourcePaths: [sourcePath], additionalAudioTracks: undefined, transitions: undefined, outputFilename: `${sourcePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'output'}_${item.preset.suffix || item.preset.id}.${item.preset.container}`, status: 'pending' as const, progress: 0 })))
+        const split = chosen.flatMap((item) => [...item.sourcePaths, ...(item.additionalAudioTracks || []).map((track) => track.path)].map((sourcePath, index) => ({ ...item, id: `${item.id}-${index}-${Date.now()}`, type: 'transcode' as const, sourcePaths: [sourcePath], additionalAudioTracks: undefined, transitions: undefined, sourceFit: undefined, outputFilename: `${sourcePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'output'}_${item.preset.suffix || item.preset.id}.${item.preset.container}`, status: 'pending' as const, progress: 0 })))
         setSelectedTaskIds(split.map((item) => item.id)); setSelectedTaskId(split[0]?.id); return [...prev.filter((item) => !ids.includes(item.id)), ...split]
       }
       if (type === 'stitch' && chosen.length === 1 && (chosen[0].type === 'combo' || chosen[0].type === 'multitrack')) {
         const item = chosen[0]
         const visual = item.sourcePaths.filter((source) => mediaKind(source) !== 'audio')
         const audio = (item.additionalAudioTracks || []).map((track) => track.path)
-        const makeJob = (paths: string[], suffix: string, index: number) => ({ ...item, id: `${item.id}-stitch-${index}-${Date.now()}`, type: 'stitch' as const, sourcePaths: paths, additionalAudioTracks: undefined, transitions: undefined, outputFilename: `${item.sourceBaseName || suffix}_${suffix}.${item.preset.container}`, status: 'pending' as const, progress: 0 })
+        const makeJob = (paths: string[], suffix: string, index: number) => ({ ...item, id: `${item.id}-stitch-${index}-${Date.now()}`, type: 'stitch' as const, sourcePaths: paths, additionalAudioTracks: undefined, transitions: undefined, sourceFit: undefined, outputFilename: `${item.sourceBaseName || suffix}_${suffix}.${item.preset.container}`, status: 'pending' as const, progress: 0 })
         const split = [visual.length > 0 ? makeJob(visual, 'video', 0) : null, audio.length > 0 ? makeJob(audio, 'audio', 1) : null].filter(Boolean) as QueueTask[]
         setSelectedTaskIds(split.map((job) => job.id)); setSelectedTaskId(split[0]?.id); return [...prev.filter((candidate) => candidate.id !== item.id), ...split]
       }
@@ -660,8 +664,9 @@ export const App: React.FC = () => {
           additionalAudioTracks: wantsTracks
             ? [...allTracks, ...audioSources.map((source, index) => ({ id: `${base.id}-audio-source-${index}-${Date.now()}`, path: source, language: 'und' }))]
             : undefined,
-          // Clips are reshuffled here, so index-scoped fades can no longer be trusted.
+          // Clips are reshuffled here, so index-scoped fades and fits can no longer be trusted.
           transitions: undefined,
+          sourceFit: undefined,
           status: 'pending' as const,
           progress: 0,
           outputFilename: `${base.sourceBaseName || 'merged'}_${type === 'stitch' ? 'stitched' : 'multitrack'}.${base.preset.container}`,
@@ -675,14 +680,14 @@ export const App: React.FC = () => {
           const audioSources = item.sourcePaths.filter((source) => mediaKind(source) === 'audio')
           const existingTracks = item.additionalAudioTracks || []
           const addedTracks = audioSources.map((source, index) => ({ id: `${item.id}-audio-source-${index}-${Date.now()}`, path: source, language: 'und' }))
-          return { ...item, type, comboMode: type === 'combo' ? 'multitrack' as const : undefined, sourcePaths: visualSources, additionalAudioTracks: [...existingTracks, ...addedTracks], transitions: undefined, status: 'pending' as const, progress: 0 }
+          return { ...item, type, comboMode: type === 'combo' ? 'multitrack' as const : undefined, sourcePaths: visualSources, additionalAudioTracks: [...existingTracks, ...addedTracks], transitions: undefined, sourceFit: undefined, status: 'pending' as const, progress: 0 }
         }
         if (type === 'stitch') {
           const fallbackAudio = item.sourcePaths.length ? item.sourcePaths : (item.additionalAudioTracks || []).map((track) => track.path)
-          return { ...item, type, sourcePaths: fallbackAudio, additionalAudioTracks: undefined, transitions: undefined, status: 'pending' as const, progress: 0 }
+          return { ...item, type, sourcePaths: fallbackAudio, additionalAudioTracks: undefined, transitions: undefined, sourceFit: undefined, status: 'pending' as const, progress: 0 }
         }
         const fallbackSource = item.sourcePaths[0] || item.additionalAudioTracks?.[0]?.path
-        return { ...item, type: 'transcode', comboMode: undefined, sourcePaths: fallbackSource ? [fallbackSource] : item.sourcePaths, additionalAudioTracks: undefined, transitions: undefined, status: 'pending' as const, progress: 0 }
+        return { ...item, type: 'transcode', comboMode: undefined, sourcePaths: fallbackSource ? [fallbackSource] : item.sourcePaths, additionalAudioTracks: undefined, transitions: undefined, sourceFit: undefined, status: 'pending' as const, progress: 0 }
       })
     })
   }
@@ -759,6 +764,7 @@ export const App: React.FC = () => {
       // moved rather than staying on whatever now occupies their old index.
       trimPoints: rekeyClipMap(item.trimPoints, item.sourcePaths, sourcePaths),
       transitions: rekeyClipMap(item.transitions, item.sourcePaths, sourcePaths),
+      sourceFit: rekeyClipMap(item.sourceFit, item.sourcePaths, sourcePaths),
       status: item.status === 'done' ? 'pending' as const : item.status,
     } : item))
   }
@@ -791,13 +797,16 @@ export const App: React.FC = () => {
       const nextTrimPoints = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
         return [`${path}#${newIndex}`, item.trimPoints?.[`${path}#${oldIndex}`] || item.trimPoints?.[path]]
       }).filter(([, point]) => Boolean(point)))
+      const nextFits = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
+        return [`${path}#${newIndex}`, item.sourceFit?.[`${path}#${oldIndex}`] || item.sourceFit?.[path]]
+      }).filter(([, fit]) => Boolean(fit)))
       const hasVisual = sourcePaths.some((path) => mediaKind(path) !== 'audio')
       if (!hasVisual && additionalAudioTracks.length) {
         sourcePaths = [...sourcePaths, ...additionalAudioTracks.map((track) => track.path)]
         additionalAudioTracks = []
       }
       const nextSourcePaths = sourcePaths.length ? sourcePaths : item.sourcePaths
-      return { ...item, sourcePaths: nextSourcePaths, additionalAudioTracks: additionalAudioTracks.length ? additionalAudioTracks : undefined, trimPoints: nextTrimPoints, transitions: rekeyClipMap(item.transitions, item.sourcePaths, remainingEntries.map(({ path }) => path)), imageSequencePreviews: removedSequence ? undefined : remainingPreviews, sequenceInput: removedSequence ? undefined : item.sequenceInput, sequenceInputs, type: inferredMode(nextSourcePaths, additionalAudioTracks), status: item.status === 'done' ? 'pending' : item.status }
+      return { ...item, sourcePaths: nextSourcePaths, additionalAudioTracks: additionalAudioTracks.length ? additionalAudioTracks : undefined, trimPoints: nextTrimPoints, transitions: rekeyClipMap(item.transitions, item.sourcePaths, remainingEntries.map(({ path }) => path)), sourceFit: Object.keys(nextFits).length ? nextFits : undefined, imageSequencePreviews: removedSequence ? undefined : remainingPreviews, sequenceInput: removedSequence ? undefined : item.sequenceInput, sequenceInputs, type: inferredMode(nextSourcePaths, additionalAudioTracks), status: item.status === 'done' ? 'pending' : item.status }
     }))
   }
   const handleApplyPreset = (newPreset: EncodingPreset) => {

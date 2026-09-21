@@ -5,9 +5,10 @@ import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey } from '../src/lib/filmstrip'
+import { DEFAULT_FIT_OFFSET, clampFitOffset, fitFilters, fitPlacement, fitSignature, fittedSize } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
-import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
+import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
 /**
@@ -691,6 +692,67 @@ console.log('\n== the monitor zoom ==')
   check('a drawing that overflows has half the overflow each way', [panSlack(800, 500), clampPan(999, 800, 500), clampPan(-999, 800, 500)], [150, 150, -150])
   check('and a pan inside the slack is left alone', clampPan(40, 800, 500), 40)
   check('a nonsense pan is the centre', clampPan(Number.NaN, 800, 500), 0)
+}
+
+console.log('\n== the per-clip output fit ==')
+{
+  // The user's own case: a portrait clip in a landscape frame. FIT TO WIDTH pins the width and
+  // leaves a great deal of height over, which is what the offset then chooses between; FIT TO
+  // HEIGHT pins the height and leaves the width short, which is filled in instead. The same
+  // figures describe the exported frame, the filter chain that makes it, and a thumbnail of it,
+  // so they are asserted once here rather than in each of the three.
+  const source = { width: 720, height: 1280 }
+  const frame = { width: 1920, height: 1080 }
+  const place = (mode: 'width' | 'height', offset = DEFAULT_FIT_OFFSET) => fitPlacement({ source, frame, fit: { mode, offset } })
+
+  check('fitting the width pins it to the frame\'s', fittedSize(source, frame, 'width'), { width: 1920, height: 3414 })
+  check('fitting the height pins that one instead', fittedSize(source, frame, 'height'), { width: 608, height: 1080 })
+  check('and the default keeps the whole clip inside the frame', fittedSize(source, frame, 'contain'), { width: 608, height: 1080 })
+  check('a square clip in a square frame fits it exactly', fittedSize({ width: 900, height: 900 }, { width: 1080, height: 1080 }, 'contain'), { width: 1080, height: 1080 })
+
+  // The overflowing axis is the one with something to spare, and the offset moves along it.
+  check('a fitted width leaves the height over', [place('width')!.overflow, place('width')!.kept], ['height', { x: 0, y: 1167, width: 1920, height: 1080 }])
+  check('centred is the middle of what is over', place('width', 0.5)!.kept.y, Math.round(0.5 * (3414 - 1080)))
+  check('the start shows the top of it', place('width', 0)!.kept.y, 0)
+  check('and the end shows the bottom, with the frame still covered', place('width', 1)!.kept.y + 1080, 3414)
+  check('a position beyond either end is clamped to it', [place('width', 4)!.kept.y, place('width', -4)!.kept.y], [3414 - 1080, 0])
+  check('and a nonsense one is centred', place('width', Number.NaN)!.kept.y, Math.round(0.5 * (3414 - 1080)))
+  check('nothing is chosen when the clip is the wrong way up to overflow', place('width')!.pad, null)
+
+  // A clip that falls short is filled in rather than dragged: a gap is not something to choose
+  // between, so it is centred and the dragger has no axis to be active on.
+  check('a fitted height leaves the width short', place('height')!.pad, { x: 656, y: 0 })
+  check('and there is nothing to choose there', place('height')!.overflow, null)
+  check('while the clip itself is kept whole', place('height')!.kept, { x: 0, y: 0, width: 608, height: 1080 })
+  check('the default fit pads the shortfall too', fitPlacement({ source, frame })!.pad, { x: 656, y: 0 })
+
+  // The chain: scale by both figures, then keep the frame covered or fill it in, then square the
+  // samples. Nothing in it can stretch the picture, whichever way the clip is fitted.
+  check('a fitted width scales, then crops to the frame', fitFilters({ source, frame, fit: { mode: 'width', offset: 0.5 } }), ['scale=1920:3414', 'crop=1920:1080:0:1167', 'setsar=1'])
+  check('a fitted height scales, then pads', fitFilters({ source, frame, fit: { mode: 'height', offset: 0.5 } }), ['scale=608:1080', 'pad=1920:1080:656:0:color=black', 'setsar=1'])
+  check('the default is the same arithmetic with the shortfall filled in', fitFilters({ source, frame }), ['scale=608:1080', 'pad=1920:1080:656:0:color=black', 'setsar=1'])
+  check('a clip already the shape of the frame is only scaled', fitFilters({ source: { width: 1080, height: 1920 }, frame: { width: 1080, height: 1920 } }), ['scale=1080:1920', 'setsar=1'])
+  check('a frame with no size has no chain', fitFilters({ source, frame: { width: 0, height: 0 } }), null)
+  check('and neither has a clip with no size', fitFilters({ source: { width: 0, height: 0 }, frame }), null)
+
+  // The cache key: everything that changes the picture, with the offset quantised so a dragger
+  // still moving does not ask for a new set of thumbnails at every pixel of the drag.
+  const sig = (mode: 'width' | 'height', offset: number) => fitSignature({ source, frame, fit: { mode, offset } })
+  check('a signature names the fit, the position and both boxes', sig('width', 0.5), 'width@0.50@720x1280>1920x1080')
+  check('a hair of movement is not a different picture', sig('width', 0.501) === sig('width', 0.5), true)
+  check('a real move is', sig('width', 0.6) === sig('width', 0.5), false)
+  check('the other axis is a different picture at the same position', sig('height', 0.5) === sig('width', 0.5), false)
+  check('and the default says so rather than naming a fit', fitSignature({ source, frame }), 'contain@1920x1080')
+  check('a nonsense offset is signalled as centred', clampFitOffset(Number.NaN), DEFAULT_FIT_OFFSET)
+
+  // A fit is carried by the clip that owns it, exactly as a trim is.
+  const fitted = { sourceFit: { 'a.mp4#1': { mode: 'width' as const, offset: 0.25 }, 'b.mp4': { mode: 'height' as const, offset: 0.5 } } } as unknown as QueueTask
+  check('a fit is read by the clip that owns it', sourceFitFor(fitted, 'a.mp4', 1), { mode: 'width', offset: 0.25 })
+  check('and not by another occurrence of the same file', sourceFitFor(fitted, 'a.mp4', 0), undefined)
+  check('a bare path still answers, as a bare trim does', sourceFitFor(fitted, 'b.mp4', 3), { mode: 'height', offset: 0.5 })
+  check('a clip with no fit has none', sourceFitFor(fitted, 'c.mp4', 0), undefined)
+  check('and a reorder carries each fit with its clip', rekeyClipMap({ 'a.mp4#0': { mode: 'width' as const, offset: 0.25 }, 'b.mp4#1': { mode: 'height' as const, offset: 0.5 } }, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': { mode: 'width', offset: 0.25 }, 'b.mp4#2': { mode: 'height', offset: 0.5 } })
+  check('a fit set by path alone lands on that clip wherever it moves', rekeyClipMap(fitted.sourceFit, ['a.mp4', 'b.mp4'], ['b.mp4', 'a.mp4']), { 'b.mp4#0': { mode: 'height', offset: 0.5 }, 'a.mp4#1': { mode: 'width', offset: 0.25 } })
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

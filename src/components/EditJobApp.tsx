@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, RotateCcw, Unlink, ZoomIn, ZoomOut } from 'lucide-react'
-import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, TransitionType } from '../types'
+import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
@@ -22,6 +22,7 @@ const ASPECTS: Array<{ label: string; ratio: number }> = [
 ]
 const ASPECT_TOLERANCE = 0.01
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
+import { clampFitOffset, DEFAULT_FIT_OFFSET } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 
@@ -70,7 +71,7 @@ const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft)
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
-  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; label: string }
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; label: string; fitKey: string; visual: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
@@ -802,6 +803,26 @@ export const EditJobApp: React.FC = () => {
     else next[key] = { type, duration }
     updateDraft({ transitions: Object.keys(next).length ? next : undefined })
   }
+  /**
+   * Sets one clip's output fit, or takes it away.
+   *
+   * The two fits are exclusive, because each one fixes a different axis to the frame's: a clip
+   * cannot have both its width and its height pinned to a frame whose shape is its own choice.
+   * Turning the one that is on off leaves the clip with no entry at all, which is the default
+   * fit — not an entry that happens to do nothing, which would then read as "chosen".
+   */
+  const setSourceFit = (key: string, mode: SourceFit['mode'] | null) => {
+    const next = { ...(latest().sourceFit || {}) }
+    const existing = next[key]
+    if (mode === null) delete next[key]
+    else next[key] = {
+      mode,
+      // Switching axes starts centred, since where the clip sits across one axis says nothing
+      // about the other; the same fit switched back keeps where it was put.
+      offset: existing && existing.mode === mode ? clampFitOffset(existing.offset) : DEFAULT_FIT_OFFSET,
+    }
+    updateDraft({ sourceFit: Object.keys(next).length ? next : undefined })
+  }
   const setBoundaryTransition = (index: number, type: TransitionType, duration = 0.5) => {
     const cut = cuts.find((candidate) => candidate.index === index)
     if (!cut) return
@@ -866,13 +887,19 @@ export const EditJobApp: React.FC = () => {
     event.preventDefault()
     event.stopPropagation()
     const point = menuPoint(event)
+    const mainIndex = laneId === model.lanes[0]?.id ? index : null
+    // The clip's own entry in the job, which is what a trim or a fit is keyed by.
+    const clipIndex = mainIndex ?? Math.max(0, draft.sourcePaths.indexOf(segment.sourcePath))
     setTimelineMenu({
       kind: 'clip',
       x: point.x,
       y: point.y,
       sourceIndex: Math.max(0, draft.sourcePaths.indexOf(segment.sourcePath)),
-      mainIndex: laneId === model.lanes[0]?.id ? index : null,
+      mainIndex,
       label: segmentLabel(segment),
+      fitKey: `${segment.sourcePath}#${clipIndex}`,
+      // A fit places a picture in the frame, so it is only offered where there is a picture.
+      visual: model.lanes.find((lane) => lane.id === laneId)?.kind !== 'audio',
     })
   }
   const openLaneMenu = (event: React.MouseEvent, laneId: string, label: string) => {
@@ -1021,6 +1048,7 @@ export const EditJobApp: React.FC = () => {
     outputFilename: latest().outputFilename,
     outputFilenameManuallySet: latest().outputFilenameManuallySet,
     transitions: latest().transitions,
+    sourceFit: latest().sourceFit,
     sourceTiming: sourceTimingOverrides(latest()),
   })
   /**
@@ -1730,6 +1758,26 @@ export const EditJobApp: React.FC = () => {
       {timelineMenu.kind === 'clip' ? <>
         <button role="menuitem" onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void openNativePreview(index) }}>QUICK LOOK...</button>
         <button role="menuitem" onClick={() => { const index = timelineMenu.mainIndex ?? timelineMenu.sourceIndex; setTimelineMenu(null); setInspectedIndex(index) }}>MEDIA INFO</button>
+        {timelineMenu.visual && (() => {
+          const fit = draft.sourceFit?.[timelineMenu.fitKey]
+          return <>
+            <span className="timeline-menu-divider" aria-hidden="true" />
+            <button
+              role="menuitemcheckbox"
+              aria-checked={fit?.mode === 'width'}
+              className={fit?.mode === 'width' ? 'is-on' : ''}
+              onClick={() => { const key = timelineMenu.fitKey; setTimelineMenu(null); setSourceFit(key, fit?.mode === 'width' ? null : 'width') }}
+              title="Fill the output frame's width and crop what the height overflows by. The export follows this."
+            >FIT TO WIDTH</button>
+            <button
+              role="menuitemcheckbox"
+              aria-checked={fit?.mode === 'height'}
+              className={fit?.mode === 'height' ? 'is-on' : ''}
+              onClick={() => { const key = timelineMenu.fitKey; setTimelineMenu(null); setSourceFit(key, fit?.mode === 'height' ? null : 'height') }}
+              title="Fill the output frame's height and crop what the width overflows by. The export follows this."
+            >FIT TO HEIGHT</button>
+          </>
+        })()}
       </> : <>
         <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? '' : 'is-on'} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: false })) }}>COMPACT VIEW</button>
         <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? 'is-on' : ''} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: true })) }}>FILMSTRIP</button>
