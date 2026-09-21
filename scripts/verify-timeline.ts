@@ -5,9 +5,9 @@ import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey } from '../src/lib/filmstrip'
-import { PREVIEW_ZOOM_STEPS, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
+import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
-import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
+import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
 /**
@@ -211,9 +211,13 @@ console.log('\n== the rate a still image is rendered at ==')
   check('and over the preset rate too', sourceFps(probed, '/frame.png'), 30)
   // A JPEG probe can invent a rate. Letting it win would put the number on screen out of
   // step with the rate the encoder renders at, which follows the record then the preset.
+  // A probe reports a length as well as a rate — the type has no room for one without the other —
+  // so the mock reports the still's own length. Only the rate is read here: a still's length is
+  // stillSecondsFor, and never the probe's.
+  const probe = (): SourceTiming => ({ duration: 10, fps: 25 })
   const presetOnly = { ...still, preset: { ...still.preset, fps: 30 } } as unknown as QueueTask
-  check('a probed still rate does not override the preset', sourceFps(presetOnly, '/frame.png', undefined, () => ({ fps: 25 })), 30)
-  check('and with no preset either it is 25', sourceFps(still, '/frame.png', undefined, () => ({ fps: 25 })), 25)
+  check('a probed still rate does not override the preset', sourceFps(presetOnly, '/frame.png', undefined, probe), 30)
+  check('and with no preset either it is 25', sourceFps(still, '/frame.png', undefined, probe), 25)
   check('its length is still the still duration, not a rate', sourceDuration(still, '/frame.png'), 10)
 
   // A sequence carries its own rate, and that is the one both the encoder and the
@@ -664,7 +668,9 @@ console.log('\n== the monitor zoom ==')
   check('a hundred per cent is the raster one for one', view({ kind: 'percent', percent: 100 }), { width: 720, height: 1280 })
   check('a named scale is exactly that scale', view({ kind: 'percent', percent: 50 }), { width: 360, height: 640 })
   check('and four hundred per cent is four times it', view({ kind: 'percent', percent: 400 }), { width: 2880, height: 5120 })
-  check('the shape is kept at every zoom', [{ kind: 'fit' }, { kind: 'fitWidth' }, { kind: 'fitHeight' }, { kind: 'percent', percent: 137 } as const].every((zoom) => {
+  // The shape holds at every kind of zoom, checked as one list so a new kind is added here too.
+  const zooms: PreviewZoom[] = [{ kind: 'fit' }, { kind: 'fitWidth' }, { kind: 'fitHeight' }, { kind: 'percent', percent: 137 }]
+  check('the shape is kept at every zoom', zooms.every((zoom) => {
     const size = zoomedRaster(raster, zoom, viewport)
     return size ? Math.abs(size.width / size.height - 720 / 1280) < 1e-9 : false
   }), true)
