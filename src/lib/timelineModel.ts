@@ -174,6 +174,18 @@ export const sequenceFor = (task: QueueTask, sourcePath: string | undefined): Se
 export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
   task.trimPoints?.[`${sourcePath}#${index}`] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
 
+/** The lane the clips themselves are on, whose audio is whatever they have embedded. */
+export const MAIN_LANE_ID = 'main'
+
+/**
+ * Whether the export carries a lane's audio.
+ *
+ * The M toggle in the editor and the encoder's own mapping both ask this, so a lane cannot be muted
+ * on screen and carried in the output, which is what the two of them deciding separately would
+ * eventually do.
+ */
+export const laneIsMuted = (task: QueueTask, laneId: string): boolean => Boolean(task.mutedLanes?.[laneId])
+
 /**
  * The clip's own place in the job, which is what a trim or a fit is keyed by.
  *
@@ -357,7 +369,7 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
     // ramp is what will actually be rendered.
     applyFades(task, segments)
     const audioOnly = task.sourcePaths.length > 0 && task.sourcePaths.every((sourcePath) => mediaKind(sourcePath) === 'audio')
-    lanes.push({ id: 'main', label: audioOnly ? 'AUDIO 1' : 'VIDEO 1', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: cursor })
+    lanes.push({ id: MAIN_LANE_ID, label: audioOnly ? 'AUDIO 1' : 'VIDEO', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: cursor })
     return { lanes, duration: cursor, unusedVideoSources: [] }
   }
 
@@ -378,8 +390,8 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   // A multi-track job has a single clip, where resolveFades finds no boundary.
   applyFades(task, mainSegments)
   lanes.push({
-    id: 'main',
-    label: mainIsAudio ? 'AUDIO 1' : 'VIDEO 1',
+    id: MAIN_LANE_ID,
+    label: mainIsAudio ? 'AUDIO 1' : 'VIDEO',
     kind: mainIsAudio ? 'audio' : 'video',
     embedded: true,
     segments: mainSegments,
@@ -394,7 +406,7 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
     const language = (track.language || '').toLowerCase()
     lanes.push({
       id: track.id,
-      label: `AUDIO ${index + 2}${language && language !== 'und' ? ` ${language.toUpperCase()}` : ''}`,
+      label: `AUDIO ${index + 1}${language && language !== 'und' ? ` ${language.toUpperCase()}` : ''}`,
       kind: 'audio',
       embedded: false,
       segments: [segment],

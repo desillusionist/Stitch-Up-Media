@@ -320,8 +320,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-lane { display: flex; align-items: stretch; min-height: calc(var(--filmstrip-tile, 32px) + 11px); border-bottom: 1px dotted var(--ui-border); }
 /* Lane label column. Kept equal to LANE_LABEL_WIDTH in EditJobApp, because the
    playhead and the ruler are offset by that figure and a mismatch pushed every
-   clip, and every cut marker, sideways out from under the playhead. */
-.timeline-lane-head { width: 102px; min-width: 102px; display: flex; align-items: center; gap: 6px; padding-top: 12px; color: var(--ui-muted); font-size: 9px; }
+   clip, and every cut marker, sideways out from under the playhead.
+   Frozen to the scroller's own left edge, with the panel behind it, so the lanes scroll under the
+   labels rather than through them; above the playhead, so a skimmer that scrolls past that edge is
+   hidden behind the column instead of drawn over a lane's name. */
+.timeline-lane-head { position: sticky; left: 0; z-index: 4; width: 102px; min-width: 102px; display: flex; align-items: center; gap: 6px; padding-top: 12px; color: var(--ui-muted); background: var(--ui-panel); border-right: 1px dotted var(--ui-border); font-size: 9px; }
 .timeline-lane-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-mute { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 9px; line-height: 1; }
 .lane-mute:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
@@ -346,6 +349,15 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 /* A hairline is impossible to grab, so the skimmer carries a wider transparent area of its own.
    The element's own box is left at the hairline, so the marker stays exactly on its time. */
 .timeline-playhead::after { content: ''; position: absolute; left: -5px; top: 0; bottom: 0; width: 11px; }
+/* A clip whose source carries an audio stream says so on a hairline along its own bottom edge:
+   green while the export still carries that audio, grey while the lane is muted and it does not.
+   Only in the video row, where the audio is embedded and would otherwise be invisible. */
+.clip-audio { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--crt-green); opacity: .85; pointer-events: none; }
+.clip-audio.is-muted { background: var(--ui-muted); opacity: .5; }
+/* The inspector's own close, in the corner of a box that is otherwise all readouts. */
+.media-inspector { position: relative; }
+.inspector-close { position: absolute; top: 4px; right: 5px; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 11px; line-height: 1; }
+.inspector-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .timeline-clip-name { display: block; padding: 7px 6px 0; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
 
 /* Filmstrip view: the cells share the lane exactly, each showing the frame the playhead would

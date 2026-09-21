@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, edgeFade, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
+import { ClipFade, MAIN_LANE_ID, edgeFade, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { fitFilters } from '../../src/lib/sourceFit'
@@ -203,6 +203,9 @@ export class FFmpegEngine {
     if (!isSequence) this.applyTrimInput(cmd, trim)
 
     this.applyPresetToCommand(cmd, task.preset)
+    // A muted lane is one the export does not carry, so its audio is dropped outright rather than
+    // encoded and left silent: a file with no audio stream says so without being listened to.
+    if (laneIsMuted(task, MAIN_LANE_ID)) cmd.outputOptions(['-an'])
     // A preset with no rate of its own means "source", and a still has none, so the
     // recorded rate becomes the output rate rather than leaving it to the encoder.
     if (isStillImage && !task.preset.fps && task.preset.outputMode !== 'audio' && !task.preset.imageOutputMode) {
@@ -321,7 +324,12 @@ export class FFmpegEngine {
 
     this.applyPresetToCommand(cmd, task.preset)
     if (targetBitrate > 0 && task.preset.audioCodec === 'copy') cmd.audioCodec('aac')
-    if (task.preset.container !== 'gif' && task.preset.imageOutputMode !== 'sequence') {
+    // The clips' own audio is what arrives through the concat, so muting the main lane means the
+    // joined output carries none of it — and there is then nothing for the audio options below to
+    // apply to, which is why they are skipped rather than left to be ignored.
+    const carriesMainAudio = !laneIsMuted(task, MAIN_LANE_ID)
+    if (!carriesMainAudio) cmd.outputOptions(['-an'])
+    if (task.preset.container !== 'gif' && task.preset.imageOutputMode !== 'sequence' && carriesMainAudio) {
       cmd.outputOptions([
         `-ar ${targetSampleRate}`,
         `-ac ${targetChannels}`,
@@ -446,7 +454,10 @@ export class FFmpegEngine {
     videoOverride?: string
   ) {
     const videoSource = videoOverride || task.sourcePaths[0]
-    const extraAudios = task.additionalAudioTracks || []
+    // A muted track is one the export does not carry, so it is never even an input: its map would
+    // otherwise be written out below and the stream would reach the output. It does not lengthen the
+    // output either, which is the same decision seen from the other side.
+    const extraAudios = (task.additionalAudioTracks || []).filter((track) => !laneIsMuted(task, track.id))
     const isStillCover = !videoOverride && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(videoSource)
     let videoDuration = 0
     let longestAudioDuration = 0
@@ -488,9 +499,12 @@ export class FFmpegEngine {
     // Video stream mapping
     const outputOptions = ['-map 0:v:0']
 
-    // Map audio from main video if wanted or only additional
-    // Let's map audio 0:a? first, then additional tracks
-    outputOptions.push('-map 0:a?')
+    // The video's own audio belongs to the main lane, so a muted main lane is not mapped at all; and
+    // a job left with no audio anywhere says so, rather than being handed one by ffmpeg's own
+    // default mapping of the first stream it found.
+    const carriesMainAudio = !laneIsMuted(task, MAIN_LANE_ID)
+    if (carriesMainAudio) outputOptions.push('-map 0:a?')
+    else if (extraAudios.length === 0) outputOptions.push('-an')
 
     extraAudios.forEach((track, idx) => {
       const inputIdx = idx + 1

@@ -150,6 +150,14 @@ export interface QueueTask {
    * trimPoints are keyed. Absent means the default fit.
    */
   sourceFit?: Record<string, SourceFit>
+  /**
+   * Lanes whose audio the export does NOT carry, by lane id.
+   *
+   * The same toggle that silences a lane while monitoring decides whether it reaches the output, so
+   * a mute is a decision about the job rather than about the monitor. An absent entry is a lane that
+   * is carried; the map being absent altogether is a job nothing has been muted in.
+   */
+  mutedLanes?: Record<string, boolean>
 }
 
 /**
@@ -169,6 +177,8 @@ export interface EditJobPatch {
   transitions?: Record<string, ClipTransition>
   /** Per-clip output fit, keyed like the transitions and carried whole rather than interpreted. */
   sourceFit?: Record<string, SourceFit>
+  /** Lanes whose audio the export does not carry, carried whole like the fit. */
+  mutedLanes?: Record<string, boolean>
   /**
    * Per-source timing the window owns: the rate a still or sequence is rendered at, and
    * the length of a still's clip. Keyed by source path.

@@ -161,9 +161,15 @@ export const EditJobApp: React.FC = () => {
   const pannedAtRef = useRef(0)
   /** Boundary whose transition editor is open, by index of the clip it follows, or a timeline edge. */
   const [openBoundary, setOpenBoundary] = useState<number | 'head' | 'tail' | null>(null)
-  // Monitoring state only. Never written to the task, so muting can never be
-  // mistaken for a mix-down decision.
-  const [muted, setMuted] = useState<Record<string, boolean>>({})
+  /**
+   * Which lanes are muted, by lane id. It belongs to the task rather than to this window: a muted
+   * lane is one the export does not carry, so it is written into the draft with the rest of the
+   * settings and sent on APPLY. It also silences the monitor, which is what makes a mute something
+   * you can check by ear before you commit it.
+   */
+  const muted = useMemo(() => draft?.mutedLanes ?? {}, [draft?.mutedLanes])
+  /** Whether each source carries an audio stream, which is what a clip's own hairline reports. */
+  const [sourceAudio, setSourceAudio] = useState<Record<string, boolean>>({})
   const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const timelineInnerRef = useRef<HTMLDivElement>(null)
 
@@ -243,6 +249,28 @@ export const EditJobApp: React.FC = () => {
   }, [probeSignature])
 
   const resolveTiming = (sourcePath: string): SourceTiming | undefined => probedTiming[sourcePath]
+
+  // Whether each source has an audio stream of its own, probed once per source: it is a fact about
+  // the file, and it is what a clip's hairline reports, so it must be known for every source and
+  // not only for the ones a probe was already needed for.
+  useEffect(() => {
+    if (!candidateSources.length) return
+    const missing = candidateSources.filter((sourcePath) => sourceAudio[sourcePath] === undefined && !probedPathsRef.current.has(`audio:${sourcePath}`))
+    if (!missing.length) return
+    missing.forEach((sourcePath) => probedPathsRef.current.add(`audio:${sourcePath}`))
+    let cancelled = false
+    void Promise.all(missing.map(async (sourcePath) => {
+      try {
+        const info = await window.electronAPI?.probeMedia(sourcePath)
+        return [sourcePath, Boolean(info?.audioStreams?.length)] as const
+      } catch {
+        return [sourcePath, false] as const
+      }
+    })).then((entries) => {
+      if (!cancelled) setSourceAudio((current) => ({ ...current, ...Object.fromEntries(entries) }))
+    })
+    return () => { cancelled = true }
+  }, [probeSignature])
   const model: TimelineModel | null = useMemo(
     () => (draft ? buildTimeline(draft, { resolveTiming }) : null),
     [timelineSignature, probedTiming],
@@ -859,6 +887,18 @@ export const EditJobApp: React.FC = () => {
    * Turning the one that is on off leaves the clip with no entry at all, which is the default
    * fit — not an entry that happens to do nothing, which would then read as "chosen".
    */
+  /**
+   * Mutes or unmutes a lane, which decides whether the export carries that audio.
+   *
+   * An unmuted lane is left out of the map rather than stored as a false, so a job that has never
+   * been muted carries nothing extra in its record and a lane that is added back is unmuted.
+   */
+  const setLaneMuted = (laneId: string, next: boolean) => {
+    const map = { ...(latest().mutedLanes ?? {}) }
+    if (next) map[laneId] = true
+    else delete map[laneId]
+    updateDraft({ mutedLanes: Object.keys(map).length ? map : undefined })
+  }
   const setSourceFit = (key: string, mode: SourceFit['mode'] | null) => {
     const next = { ...(latest().sourceFit || {}) }
     const existing = next[key]
@@ -1103,6 +1143,7 @@ export const EditJobApp: React.FC = () => {
     outputFilenameManuallySet: latest().outputFilenameManuallySet,
     transitions: latest().transitions,
     sourceFit: latest().sourceFit,
+    mutedLanes: latest().mutedLanes,
     sourceTiming: sourceTimingOverrides(latest()),
   })
   /**
@@ -1592,6 +1633,7 @@ export const EditJobApp: React.FC = () => {
           </div>
           {inspectedIndex != null && inspectedSource && (
             <div className="media-inspector">
+              <button className="inspector-close" onClick={() => setInspectedIndex(null)} aria-label="Close the media info inspector" title="Close">&times;</button>
               <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
               <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
               <EditorRow
@@ -1668,9 +1710,9 @@ export const EditJobApp: React.FC = () => {
                   <div className="timeline-lane-head" onContextMenu={(event) => openLaneMenu(event, lane.id, lane.label)} title="Right-click to choose how this lane's clips are drawn">
                     <button
                       className={`lane-mute${muted[lane.id] ? ' is-muted' : ''}`}
-                      onClick={() => setMuted((current) => ({ ...current, [lane.id]: !current[lane.id] }))}
+                      onClick={() => setLaneMuted(lane.id, !muted[lane.id])}
                       aria-pressed={Boolean(muted[lane.id])}
-                      title={lane.embedded ? 'Mute this stream while monitoring. The export still carries it.' : 'Mute this track while monitoring. This is not a mix-down change.'}
+                      title={lane.embedded ? 'Mute this stream. The export will not carry it.' : 'Mute this track. The export will not carry it.'}
                     >M</button>
                     <span>{lane.label}</span>
                   </div>
@@ -1717,6 +1759,11 @@ export const EditJobApp: React.FC = () => {
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                         {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
+                        {/* A visual clip that carries audio says so, and says whether the export still
+                            carries it: green while it does, grey while the lane is muted. */}
+                        {lane.kind === 'video' && sourceAudio[segment.sourcePath]
+                          ? <span className={`clip-audio${muted[lane.id] ? ' is-muted' : ''}`} aria-hidden="true" />
+                          : null}
                         {/* Anchored to this clip's own trailing edge, so the marker is on
                             the cut by construction. No arithmetic on the timeline's
                             length is involved, which is what put every marker far down

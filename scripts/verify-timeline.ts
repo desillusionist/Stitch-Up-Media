@@ -9,7 +9,7 @@ import { DEFAULT_FIT_OFFSET, clampFitOffset, fitFilters, fitPlacement, fitSignat
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
-import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
+import { buildTimeline, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
 /**
@@ -112,6 +112,17 @@ console.log('\n== tail seeking on a multi-track lane ==')
   check('a click at three minutes is past the video clip', 180 > clip.start + clip.duration, true)
   check('so the element cannot answer for it', elementOwnsPosition(clip, 180, { readyState: 4, ended: true, clock: 10 }), false)
   check('and the audio track does own it', elementOwnsPosition(audio.segments[0], 180, { readyState: 4, ended: false, clock: 180 }), true)
+
+  // The lanes are named once for the whole app, and the numbers count the tracks rather than the
+  // rows: the video row is not a numbered one, and the first added track is the first AUDIO.
+  check('the video lane is just VIDEO', main.label, 'VIDEO')
+  check('and the first added track is AUDIO 1', audio.label, 'AUDIO 1')
+
+  // The mute is the export's decision as well as the monitor's, so both ask the same question.
+  check('a lane is carried until it is muted', laneIsMuted(task, 'trk'), false)
+  const mutedTask = { ...task, mutedLanes: { trk: true } } as unknown as QueueTask
+  check('and is not carried once it is', laneIsMuted(mutedTask, 'trk'), true)
+  check('while another lane is untouched', laneIsMuted(mutedTask, 'main'), false)
 }
 
 console.log('\n== fades on a concatenated lane ==')

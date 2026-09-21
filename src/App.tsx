@@ -75,9 +75,10 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     outputFilename: patch.outputFilename,
     outputFilenameManuallySet: patch.outputFilenameManuallySet,
     transitions: patch.transitions,
-    // Whole, like the transitions: the window owns every clip's fit, so an emptied map is a
-    // decision about the job rather than a field left out of the patch.
+    // Whole, like the transitions: the window owns every clip's fit and every lane's mute, so an
+    // emptied map is a decision about the job rather than a field left out of the patch.
     sourceFit: patch.sourceFit,
+    mutedLanes: patch.mutedLanes,
     status: task.status === 'done' ? 'pending' : task.status,
   }
   if (!patch.sourceTiming) return next
@@ -99,7 +100,7 @@ const editJobSignature = (task: QueueTask) => JSON.stringify([
   task.outputFilename, task.outputFilenameManuallySet, task.sourceBaseName, task.outputDirectory,
   task.trimPoints, task.sourceMetadata, task.sourceInfo, task.sequenceInput, task.sequenceInputs,
   task.imageSequencePreviews, task.quickLookSourceIndex, task.stillImageDuration, task.transitions,
-  task.sourceFit,
+  task.sourceFit, task.mutedLanes,
 ])
 
 export const App: React.FC = () => {
