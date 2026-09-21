@@ -11,7 +11,9 @@ export interface IElectronAPI {
   getPathsTotalSize: (filePaths: string[]) => Promise<number>
   pathExists: (filePath: string) => Promise<boolean>
   /** One image holding evenly-spaced frames across a clip's used range, for the timeline filmstrip. */
-  filmstripStrip: (filePath: string, options?: { count?: number; start?: number; end?: number; height?: number }) => Promise<string | null>
+  filmstripStrip: (filePath: string, options?: { count?: number; start?: number; end?: number }) => Promise<string | null>
+  /** A single frame at one moment, for skimming across a strip. */
+  frameAt: (filePath: string, options?: { bucket?: number; at?: number }) => Promise<string | null>
   selectOutputDir: () => Promise<string | null>
   startTask: (task: QueueTask) => Promise<{ success: boolean; error?: string }>
   startSelectedTasks: (tasks: QueueTask[]) => Promise<{ success: boolean; error?: string }>
@@ -58,7 +60,8 @@ const api: IElectronAPI = {
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
-  filmstripStrip: (filePath: string, options?: { count?: number; start?: number; end?: number; height?: number }) => ipcRenderer.invoke('filmstrip-strip', filePath, options),
+  filmstripStrip: (filePath: string, options?: { count?: number; start?: number; end?: number }) => ipcRenderer.invoke('filmstrip-strip', filePath, options),
+  frameAt: (filePath: string, options?: { bucket?: number; at?: number }) => ipcRenderer.invoke('frame-at', filePath, options),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),
   startSelectedTasks: (tasks: QueueTask[]) => ipcRenderer.invoke('start-selected-tasks', tasks),

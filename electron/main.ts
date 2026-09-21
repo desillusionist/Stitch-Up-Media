@@ -7,6 +7,7 @@ import { QueueManager } from './queue/manager'
 import { QueueTask, AppSettings, EditJobPatch } from '../src/types'
 import { logEvent, getLogFile } from './logger'
 import { resolveByteRange, mimeTypeFor } from './mediaRange'
+import { FILMSTRIP_CELL } from '../src/lib/filmstrip'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -185,17 +186,17 @@ app.whenReady().then(() => {
   // count that guessed the clip's width wrong. Cached in memory, since a clip is redrawn on
   // every scroll and zoom far more often than its footage changes.
   const filmstripCache = new Map<string, string>()
-  ipcMain.handle('filmstrip-strip', async (_, filePath: string, options?: { count?: number; start?: number; end?: number; height?: number }) => {
+  ipcMain.handle('filmstrip-strip', async (_, filePath: string, options?: { count?: number; start?: number; end?: number }) => {
     if (!filePath) return null
     try { if (!fs.statSync(filePath).isFile()) return null } catch { return null }
     const count = Math.max(1, Math.min(24, Math.round(options?.count ?? 12)))
-    const height = Math.max(16, Math.min(120, Math.round(options?.height ?? 48)))
     const start = Math.max(0, options?.start ?? 0)
     const end = options?.end && options.end > start ? options.end : undefined
-    const cacheKey = `${filePath}|${start.toFixed(3)}|${(end ?? -1).toFixed(3)}|${count}|${height}`
+    const cacheKey = `${filePath}|${start.toFixed(3)}|${(end ?? -1).toFixed(3)}|${count}`
     const cached = filmstripCache.get(cacheKey)
     if (cached) return cached
     const length = end != null ? Math.max(0.05, end - start) : undefined
+    const { width: cellWidth, height: cellHeight } = FILMSTRIP_CELL
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-filmstrip-'))
     const stripPath = path.join(dir, 'strip.jpg')
     try {
@@ -203,17 +204,47 @@ app.whenReady().then(() => {
       if (start > 0) args.push('-ss', String(start))
       if (length != null) args.push('-t', String(length))
       args.push('-i', filePath)
-      // Sampled a little past the count, then tiled: the tile filter emits no picture at all if
-      // it is handed fewer frames than it has cells, so a strip sampled to the count exactly
-      // came back empty whenever the last frame landed a hair short.
+      // Every tile is fitted into the same cell with bars filling the rest, so the tiles are all
+      // one size whatever the footage is. Sampled a little past the count, then tiled: the tile
+      // filter emits no picture at all if it is handed fewer frames than it has cells, so a
+      // strip sampled to the count exactly came back empty whenever the last frame landed short.
       const rate = length != null ? (count * 1.15) / length : 4
-      args.push('-vf', `fps=${rate.toFixed(6)},scale=-2:${height},tile=${count}x1`, '-frames:v', '1', '-q:v', '5', stripPath)
+      const tiles = `fps=${rate.toFixed(6)},scale=${cellWidth}:${cellHeight}:force_original_aspect_ratio=decrease,pad=${cellWidth}:${cellHeight}:(ow-iw)/2:(oh-ih)/2:color=black,tile=${count}x1`
+      args.push('-vf', tiles, '-frames:v', '1', '-q:v', '5', stripPath)
       execFileSync('ffmpeg', args, { timeout: 60000 })
       const strip = `data:image/jpeg;base64,${fs.readFileSync(stripPath).toString('base64')}`
       if (filmstripCache.size < 200) filmstripCache.set(cacheKey, strip)
       return strip
     } catch (error) {
-      logEvent('ipc', 'filmstrip failed', { filePath, start, end, count, height, error: String(error) })
+      logEvent('ipc', 'filmstrip failed', { filePath, start, end, count, error: String(error) })
+      return null
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+    }
+  })
+
+  // One frame at one moment, for skimming across a strip. Seeked to the same bucket the renderer
+  // picks, and cached by it, so a pointer creeping across a tile asks for the same frame twice
+  // rather than decoding it twice.
+  const frameCache = new Map<string, string>()
+  ipcMain.handle('frame-at', async (_, filePath: string, options?: { at?: number; bucket?: number }) => {
+    if (!filePath) return null
+    try { if (!fs.statSync(filePath).isFile()) return null } catch { return null }
+    const bucket = Math.max(0, Math.round(options?.bucket ?? (options?.at ?? 0) * 12))
+    const cacheKey = `${filePath}|${bucket}`
+    const cached = frameCache.get(cacheKey)
+    if (cached) return cached
+    const { width: cellWidth, height: cellHeight } = FILMSTRIP_CELL
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-frame-'))
+    const framePath = path.join(dir, 'frame.jpg')
+    try {
+      const tiles = `scale=${cellWidth}:${cellHeight}:force_original_aspect_ratio=decrease,pad=${cellWidth}:${cellHeight}:(ow-iw)/2:(oh-ih)/2:color=black`
+      execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', String(bucket / 12), '-i', filePath, '-vf', tiles, '-frames:v', '1', '-q:v', '5', framePath], { timeout: 20000 })
+      const frame = `data:image/jpeg;base64,${fs.readFileSync(framePath).toString('base64')}`
+      if (frameCache.size < 240) frameCache.set(cacheKey, frame)
+      return frame
+    } catch (error) {
+      logEvent('ipc', 'frame-at failed', { filePath, bucket, error: String(error) })
       return null
     } finally {
       try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}

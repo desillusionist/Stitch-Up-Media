@@ -4,7 +4,7 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
-import { FILMSTRIP_HEIGHT, FILMSTRIP_TILE_WIDTH, filmstripCountForWidth, filmstripKey } from '../src/lib/filmstrip'
+import { FILMSTRIP_CELL, FILMSTRIP_TILE_ASPECT, filmstripCell, filmstripCountFor, filmstripKey, skimBucket } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -561,13 +561,30 @@ console.log('\n== the exact-size fields ==')
 console.log('\n== the timeline filmstrip ==')
 {
   // The count follows the CLIP's width on screen, not the zoom alone, so a short clip is not
-  // packed with dozens of frames while a long one gets a handful spread across its width.
-  check('a clip narrower than one tile takes one tile', filmstripCountForWidth(FILMSTRIP_TILE_WIDTH / 2), 1)
-  check('a clip one tile wide takes one', filmstripCountForWidth(FILMSTRIP_TILE_WIDTH), 1)
-  check('a clip four tiles wide takes four', filmstripCountForWidth(FILMSTRIP_TILE_WIDTH * 4), 4)
-  check('and a very wide one is capped', filmstripCountForWidth(FILMSTRIP_TILE_WIDTH * 90), 24)
-  check('a clip with no width takes one', filmstripCountForWidth(0), 1)
-  check('and a nonsense width does too', filmstripCountForWidth(Number.NaN), 1)
+  // packed with dozens of frames while a long one gets a handful spread across its width. It is
+  // rounded UP, so the tiles always reach the clip's right edge however they land.
+  const tile = 32 * FILMSTRIP_TILE_ASPECT
+  check('a clip one tile wide takes one tile', filmstripCountFor(tile), 1)
+  check('a clip four tiles wide takes four', filmstripCountFor(tile * 4), 4)
+  check('a clip that does not divide evenly still reaches its edge', filmstripCountFor(tile * 4 + 1), 5)
+  check('and a very wide one is capped', filmstripCountFor(tile * 90), 24)
+  check('a clip with no width takes one', filmstripCountFor(0), 1)
+  check('and a nonsense width does too', filmstripCountFor(Number.NaN), 1)
+
+  // The cell the pointer is over, and how far into it: the frame is sampled from the pointer's
+  // place in the clip, so the picture advances across one tile rather than holding until the next.
+  check('the first tile holds the start', filmstripCell(0, 4), { cell: 0, within: 0 })
+  check('halfway across four tiles is the third of them', filmstripCell(0.5, 4), { cell: 2, within: 0 })
+  near('a little into the first tile is a little into the first frame', filmstripCell(0.1, 4)!.within, 0.4, 1e-9)
+  check('and the last fraction cannot fall off the end', filmstripCell(1, 4).cell, 3)
+  check('a nonsense fraction lands on the first tile', filmstripCell(Number.NaN, 4).cell, 0)
+
+  // Skimmed frames are taken in twelfths of a second, so a slow hand asks for one frame rather
+  // than a new decode per pixel of travel.
+  check('a twelfth of a second is its own bucket', skimBucket(1), 12)
+  check('a hair either side shares it', [skimBucket(1.02), skimBucket(0.99)], [12, 12])
+  check('and the next twelfth is the next bucket', skimBucket(1.1), 13)
+  check('a nonsense moment is the first bucket', skimBucket(Number.NaN), 0)
 
   // The key carries the media, the used range AND the tile count. Footage trimmed differently
   // is a different strip, and a strip of one count is not the strip of another, so keying on
@@ -575,7 +592,7 @@ console.log('\n== the timeline filmstrip ==')
   check('a strip key names its media, range and count', filmstripKey('/a.mp4', 1.5, 4, 8), '/a.mp4|1.500|4.000|8')
   check('the same media on another range is another strip', filmstripKey('/a.mp4', 2, 4, 8) === filmstripKey('/a.mp4', 1.5, 4, 8), false)
   check('and so is another tile count', filmstripKey('/a.mp4', 1.5, 4, 8) === filmstripKey('/a.mp4', 1.5, 4, 12), false)
-  check('the tile height is a positive number', FILMSTRIP_HEIGHT > 0, true)
+  check('the cell has a positive size', FILMSTRIP_CELL.width > 0 && FILMSTRIP_CELL.height > 0, true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
