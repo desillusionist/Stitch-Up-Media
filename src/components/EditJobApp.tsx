@@ -27,6 +27,7 @@ import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '.
 import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, placedSource, sourceCropOf } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
+import { NumberField } from './NumberField'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
@@ -887,9 +888,8 @@ export const EditJobApp: React.FC = () => {
     return Math.round(settings?.sequenceFps || 30)
   })()
 
-  const changeFps = (value: string) => {
-    const parsed = Number(value)
-    updatePreset({ fps: value.trim() === '' || !Number.isFinite(parsed) || parsed <= 0 ? undefined : Math.round(parsed) })
+  const changeFps = (value: number | undefined) => {
+    updatePreset({ fps: value === undefined || !Number.isFinite(value) || value <= 0 ? undefined : Math.round(value) })
   }
 
   /**
@@ -1774,16 +1774,12 @@ export const EditJobApp: React.FC = () => {
               }</EditorField>
               {inspectedSegment?.still && (
                 <EditorField label="CLIP LENGTH" hint="THIS IMAGE">{
-                  <input
+                  <NumberField
                     className="editor-input"
-                    type="number"
-                    min="0.1"
-                    step="0.1"
+                    min={0.1}
+                    step={0.1}
                     value={stillSecondsFor(draft, inspectedSource)}
-                    onChange={(event) => {
-                      const seconds = Number(event.target.value)
-                      if (Number.isFinite(seconds) && seconds > 0) setSourceTiming(inspectedSource, { seconds })
-                    }}
+                    onValue={(seconds) => { if (seconds > 0) setSourceTiming(inspectedSource, { seconds }) }}
                   />
                 }</EditorField>
               )}
@@ -2002,8 +1998,8 @@ export const EditJobApp: React.FC = () => {
             <EditorField label="RESOLUTION" reason={videoReason}><select value={draft.preset.resolution} disabled={audioOnly || isGif} onChange={(event) => changeResolution(event.target.value as EncodingPreset['resolution'])}>{RESOLUTIONS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
             <div className="editor-field"><span>EXACT SIZE<em>OVERRIDES RESOLUTION</em></span>
               <div className="exact-row">
-                <label className="mini-field"><span>W</span><input type="number" min="2" step="2" className="editor-input" value={draft.preset.width ?? ''} placeholder={outputFrame ? String(outputFrame.width) : '\u2014'} disabled={audioOnly || isGif} onChange={(event) => setExactEdge('width', Number(event.target.value))} title="Output width in pixels" /></label>
-                <label className="mini-field"><span>H</span><input type="number" min="2" step="2" className="editor-input" value={draft.preset.height ?? ''} placeholder={outputFrame ? String(outputFrame.height) : '\u2014'} disabled={audioOnly || isGif} onChange={(event) => setExactEdge('height', Number(event.target.value))} title="Output height in pixels" /></label>
+                <label className="mini-field"><span>W</span><NumberField min={2} step={2} className="editor-input" value={draft.preset.width} placeholder={outputFrame ? String(outputFrame.width) : '\u2014'} disabled={audioOnly || isGif} onValue={(value) => setExactEdge('width', value)} title="Output width in pixels" /></label>
+                <label className="mini-field"><span>H</span><NumberField min={2} step={2} className="editor-input" value={draft.preset.height} placeholder={outputFrame ? String(outputFrame.height) : '\u2014'} disabled={audioOnly || isGif} onValue={(value) => setExactEdge('height', value)} title="Output height in pixels" /></label>
                 <button className={`exact-icon${lockProportion ? ' is-on' : ''}`} aria-pressed={lockProportion} onClick={() => setLockProportion((on) => !on)} title={lockProportion ? 'Proportions locked' : 'Keep proportions'}>{lockProportion ? <Link size={12} /> : <Unlink size={12} />}</button>
                 <button className="exact-icon" disabled={!exactSet} onClick={clearExactSize} title="Clear exact size" aria-label="Clear exact size"><RotateCcw size={12} /></button>
               </div>
@@ -2031,14 +2027,13 @@ export const EditJobApp: React.FC = () => {
                   {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
                     <label key={edge} className="mini-field">
                       <span>{edge.slice(0, 1).toUpperCase()}</span>
-                      <input
-                        type="number"
-                        min="0"
+                      <NumberField
+                        min={0}
                         max={cropUnit === 'px' && picture ? Math.round(MAX_CROP * (edge === 'left' || edge === 'right' ? picture.width : picture.height)) : Math.round(MAX_CROP * 100)}
-                        step="1"
+                        step={1}
                         className="editor-input"
                         value={cropUnit === 'px' && cropPx ? cropPx[edge] : Math.round(crop[edge] * 100)}
-                        onChange={(event) => setCropEdge(edge, Number(event.target.value) || 0)}
+                        onValue={(raw) => setCropEdge(edge, raw)}
                         title={`${edge} edge, ${cropUnit === 'px' ? 'pixels' : 'per cent'} of the source`}
                       />
                     </label>
@@ -2057,7 +2052,7 @@ export const EditJobApp: React.FC = () => {
                 <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON THE PICTURE; NONE CLEARS IT. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.{lockRatio ? ' WITH THE LOCK ON, EVERY EDIT HOLDS THE OUTPUT\u2019S SHAPE.' : ''}</div>
               </>}
             </div>
-            <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><input type="number" min="1" className="editor-input" value={draft.preset.fps ?? ''} placeholder={String(defaultFps)} disabled={audioOnly} onChange={(event) => changeFps(event.target.value)} /></EditorField>
+            <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={String(defaultFps)} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
             <EditorField label="QUALITY" hint="BITRATE, E.G. 8M" reason={videoReason}><input type="text" className="editor-input" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} /></EditorField>
             <div className="editor-note">&gt; BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.</div>
           </>}
