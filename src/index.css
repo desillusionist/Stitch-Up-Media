@@ -163,11 +163,22 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-stage-pan { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .editor-stage.is-pannable { cursor: grab; }
 .editor-stage.is-pannable:active { cursor: grabbing; }
+/* A drag on the picture moves the clip inside the frame instead, along the one axis it has room
+   on, so the cursor says which way it can be moved rather than that the view can be dragged. */
+.editor-stage.is-fitting.is-fit-x { cursor: ew-resize; }
+.editor-stage.is-fitting.is-fit-y { cursor: ns-resize; }
+.editor-stage.is-fitting .editor-video,
+.editor-stage.is-fitting .editor-still { cursor: inherit; }
 /* The edges of the frame the encoder will write, which is not always the picture's own
    shape: an exact size stretches to it, a named resolution fits inside it. The spread
    shadow dims everything the output does not cover, so the output area reads as a window
    even when its outline coincides with the picture's. It is clipped by the stage. */
 .editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85), 0 0 0 9999px rgba(3, 9, 16, .55); pointer-events: none; }
+/* The window the picture is drawn in: the frame's own box, and clipped by it, so a clip that is
+   fitted to one axis and overflows the other is cut off exactly where the export cuts it. Its
+   opacity is not set, so a fade through black in the monitor still reads on the picture inside. */
+.editor-frame-window { position: absolute; overflow: hidden; }
+.editor-frame-window .editor-screen-message { position: absolute; inset: 0; display: grid; place-items: center; }
 .editor-frame b { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
 /* The crop box, drawn on the picture rather than on the output frame. What it removes is
    dimmed by four explicit bands (see cropBands) rather than one spread shadow, which used

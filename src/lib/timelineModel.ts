@@ -175,6 +175,18 @@ export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: 
   task.trimPoints?.[`${sourcePath}#${index}`] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
 
 /**
+ * The clip's own place in the job, which is what a trim or a fit is keyed by.
+ *
+ * A segment knows its place by the key it was built with, and nothing else carries it, so it is
+ * read back from there rather than re-derived by looking the path up: the same file can appear
+ * twice in one job, and its first occurrence is not the one being shown.
+ */
+export const clipIndexOf = (segment: Pick<TimelineSegment, 'key'>): number => {
+  const index = Number(segment.key.slice(segment.key.lastIndexOf('#') + 1))
+  return Number.isInteger(index) && index >= 0 ? index : 0
+}
+
+/**
  * The fit a clip carries, by the same keying as its trim, so the two follow it together.
  *
  * A clip with none is not the same as a clip fitted by default: the default is the fit, and

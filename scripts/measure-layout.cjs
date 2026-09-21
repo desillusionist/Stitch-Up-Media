@@ -18,6 +18,9 @@ const cssPath = path.join(assets, css)
 // below lays a strip out from it and measures what the browser painted, so "the tile is the size
 // the arithmetic said, whatever the window is doing" is a measurement rather than a reading.
 const { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT } = require('./.filmstrip.cjs')
+// The real placement arithmetic, so the monitor's composite is measured against the figures the
+// encoder is handed rather than against a layout that merely looks plausible.
+const { fitPlacement } = require('./.sourceFit.cjs')
 
 const GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
@@ -86,6 +89,45 @@ const caseD = `
   </div>
 </div>`
 
+// Case H: the monitor's composite. A clipped window holding the picture, the output frame outline
+// centred by the stylesheet, and a picture placed inside the window by the real fit arithmetic.
+// What must hold: the outline and the window agree exactly (one is centred by CSS and the other by
+// the JS, so a disagreement is a half-pixel of drift), and the window is fully covered whenever a
+// fitted clip overflows — the property that makes the crop a crop rather than a gap.
+const monitorStage = `
+<div class="editor-stage" id="hstage" style="width:500px;height:300px;position:relative">
+  <div class="editor-stage-pan" id="hpan">
+    <div class="editor-frame-window" id="hwindow"><img id="hpicture" alt=""></div>
+    <div class="editor-frame" id="hframe"><b>OUTPUT</b></div>
+  </div>
+</div>`
+
+const paintMonitor = (placement, box) => `(() => {
+  const win = document.getElementById('hwindow'); const pic = document.getElementById('hpicture'); const frame = document.getElementById('hframe')
+  Object.assign(win.style, { left: '${box.frameLeft}px', top: '${box.frameTop}px', width: '${box.frameWidth}px', height: '${box.frameHeight}px' })
+  Object.assign(pic.style, { position: 'absolute', left: '${box.pictureLeft}px', top: '${box.pictureTop}px', width: '${box.pictureWidth}px', height: '${box.pictureHeight}px', maxWidth: 'none', maxHeight: 'none' })
+  Object.assign(frame.style, { width: '${box.frameWidth}px', height: '${box.frameHeight}px' })
+  return ${JSON.stringify({ overflow: placement.overflow })}
+})()`
+
+const readMonitor = `(() => {
+  const box = (el) => { const r = el.getBoundingClientRect(); return { left: +r.left.toFixed(2), top: +r.top.toFixed(2), width: +r.width.toFixed(2), height: +r.height.toFixed(2) } }
+  const win = box(document.getElementById('hwindow')); const pic = box(document.getElementById('hpicture')); const frame = box(document.getElementById('hframe'))
+  // What the window actually shows of the picture, which is what a viewer sees.
+  const shown = {
+    left: Math.max(win.left, pic.left), top: Math.max(win.top, pic.top),
+    right: Math.min(win.left + win.width, pic.left + pic.width), bottom: Math.min(win.top + win.height, pic.top + pic.height),
+  }
+  shown.width = +(shown.right - shown.left).toFixed(2); shown.height = +(shown.bottom - shown.top).toFixed(2)
+  return {
+    window: [win.width, win.height], picture: [pic.width, pic.height],
+    outlineVsWindow: [+(frame.left - win.left).toFixed(2), +(frame.top - win.top).toFixed(2), +(frame.width - win.width).toFixed(2)],
+    pictureOverflow: [+(pic.width - win.width).toFixed(2), +(pic.height - win.height).toFixed(2)],
+    coveredWidth: +(shown.width - win.width).toFixed(2), coveredHeight: +(shown.height - win.height).toFixed(2),
+    gapLeft: +(shown.left - win.left).toFixed(2), gapRight: +((win.left + win.width) - shown.right).toFixed(2),
+  }
+})()`
+
 const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></div>'
 
 // Case G: a lane drawn as a filmstrip. The clip is the whole lane, so its width is the lane's, and
@@ -141,6 +183,7 @@ ${caseB}
 ${filmLane}
 </div></div></section>
 <section class="editor-preview"><div class="editor-screen">${caseC}</div></section>
+<section class="editor-preview">${monitorStage}</section>
 </main><aside class="export-sidebar" id="fside">${caseF}</aside></div></div></body></html>`
 
 const htmlPath = path.join(__dirname, '.measure.html')
@@ -209,6 +252,35 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({ width: 1400, height: 900, show: false })
   await win.loadFile(htmlPath)
   const laid = await win.webContents.executeJavaScript(measure)
+  // Case H, once: the monitor's composite for a tall clip in a landscape frame, at the positions
+  // that matter — centred, either end, the other axis, and with no fit at all. The stage's own box
+  // is MEASURED rather than assumed, because the app reads it from an observer and centres the
+  // outline by stylesheet: those two agreeing is one of the things being checked here.
+  const measured = await win.webContents.executeJavaScript(`(() => { const r = document.getElementById('hstage').getBoundingClientRect(); return { width: +r.width.toFixed(2), height: +r.height.toFixed(2) } })()`)
+  const stage = { width: measured.width, height: measured.height }
+  const output = { width: 1920, height: 1080 }
+  const source = { width: 720, height: 1280 }
+  const frameWidth = Math.min(stage.width, stage.height * (output.width / output.height))
+  const frameBox = { width: frameWidth, height: (frameWidth * output.height) / output.width }
+  const round = (value) => Math.round(value * 1000) / 1000
+  const caseH = {}
+  for (const [label, fit] of [
+    ['none', undefined], ['width@0.5', { mode: 'width', offset: 0.5 }], ['width@0', { mode: 'width', offset: 0 }],
+    ['width@1', { mode: 'width', offset: 1 }], ['height@0.5', { mode: 'height', offset: 0.5 }],
+  ]) {
+    const placement = fitPlacement({ source, frame: output, fit })
+    const scale = frameBox.width / output.width
+    const anchor = placement.pad ?? { x: -placement.kept.x, y: -placement.kept.y }
+    const box = {
+      frameLeft: round((stage.width - frameBox.width) / 2), frameTop: round((stage.height - frameBox.height) / 2),
+      frameWidth: round(frameBox.width), frameHeight: round(frameBox.height),
+      pictureLeft: round(anchor.x * scale), pictureTop: round(anchor.y * scale),
+      pictureWidth: round(placement.size.width * scale), pictureHeight: round(placement.size.height * scale),
+    }
+    await win.webContents.executeJavaScript(paintMonitor(placement, box))
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    caseH[label] = { overflow: placement.overflow, kept: placement.kept, ...(await win.webContents.executeJavaScript(readMonitor)) }
+  }
   // The strip is laid out from the width the browser gave the clip, then measured, at several
   // window sizes. What must hold: the tile is the constant tall in every one of them, the count
   // follows the width, and the cells still land exactly on the clip's far edge.
@@ -225,7 +297,7 @@ app.whenReady().then(async () => {
       ...(await win.webContents.executeJavaScript(readFilm)),
     }
   }
-  console.log(JSON.stringify({ ...laid, caseG }, null, 2))
+  console.log(JSON.stringify({ ...laid, caseH, caseG }, null, 2))
   fs.unlinkSync(htmlPath)
   app.quit()
 }).catch((error) => { console.error('HARNESS FAILED', error); app.exit(1) })
