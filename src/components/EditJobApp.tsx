@@ -24,7 +24,7 @@ const ASPECTS: Array<{ label: string; ratio: number }> = [
 ]
 const ASPECT_TOLERANCE = 0.01
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
-import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, fitPlacement, sourceCropOf } from '../lib/sourceFit'
+import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, placedSource, sourceCropOf } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 
@@ -462,20 +462,23 @@ export const EditJobApp: React.FC = () => {
   const stillTileStyle = (segment: TimelineSegment, plan: { thumbWidth: number; thumbHeight?: number }) => {
     const shape = sourceShape[segment.sourcePath]
     if (!shape || !outputFrame) return undefined
-    const placement = fitPlacement({
+    // The still goes through the same two stages as any other clip — the clip's own crop, then its
+    // fit — so its tiles show what the export will show rather than the whole file as it happens to
+    // be shaped. Drawn from the whole picture's box, so the crop box over it still means something.
+    const placed = placedSource({
       source: { width: shape.width, height: shape.height },
       frame: outputFrame,
+      crop: draft ? effectiveCropFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined,
       fit: draft ? sourceFitFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined,
     })
-    if (!placement) return undefined
+    if (!placed) return undefined
     const scale = plan.thumbWidth / outputFrame.width
-    const anchor = placement.pad ?? { x: -placement.kept.x, y: -placement.kept.y }
     return {
       position: 'absolute' as const,
-      left: anchor.x * scale,
-      top: anchor.y * scale,
-      width: placement.size.width * scale,
-      height: placement.size.height * scale,
+      left: placed.source.x * scale,
+      top: placed.source.y * scale,
+      width: placed.source.width * scale,
+      height: placed.source.height * scale,
       maxWidth: 'none' as const,
       maxHeight: 'none' as const,
     }
@@ -1416,22 +1419,24 @@ export const EditJobApp: React.FC = () => {
    *
    * The monitor is showing the assembled output, so the picture is drawn where the encoder will
    * put it: the axis a fit pins is exact, what overflows it is cropped at the offset, and what
-   * falls short is left as the frame's own background. Until the frame's size is known — which
-   * needs the media loaded — the picture is simply centred at the monitor's zoom.
+   * falls short is left as the frame's own background. The crop comes first, so it is the KEPT
+   * region that is fitted and the whole source that is drawn around it — the removed part stays
+   * visible past the frame, which is what keeps the crop box expandable.
+   *
+   * Until the frame's size is known — which needs the media loaded — the picture is simply centred
+   * at the monitor's zoom.
    */
-  const placement = picture && outputFrame ? fitPlacement({ source: picture, frame: outputFrame, fit: activeFit }) : null
+  const placed = picture && outputFrame ? placedSource({ source: picture, frame: outputFrame, crop, fit: activeFit }) : null
+  const placement = placed?.placement ?? null
   const pictureBox = (() => {
     if (!picture || !stageSize) return null
-    if (placement && frameRect && frameOrigin && outputFrame) {
+    if (placed && frameRect && frameOrigin && outputFrame) {
       const scale = frameRect.width / Math.max(1, outputFrame.width)
-      // Drawn from the corner the kept part starts at; where nothing is kept to speak of, the
-      // frame's own padding places it instead.
-      const anchor = placement.pad ?? { x: -placement.kept.x, y: -placement.kept.y }
       return {
-        left: frameOrigin.x + anchor.x * scale,
-        top: frameOrigin.y + anchor.y * scale,
-        width: placement.size.width * scale,
-        height: placement.size.height * scale,
+        left: frameOrigin.x + placed.source.x * scale,
+        top: frameOrigin.y + placed.source.y * scale,
+        width: placed.source.width * scale,
+        height: placed.source.height * scale,
       }
     }
     const size = zoomedRaster(picture, previewZoom, stageSize)

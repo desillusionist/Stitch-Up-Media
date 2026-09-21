@@ -5,7 +5,7 @@ import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
-import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSize, fitFilters, fitPlacement, fitSignature, fittedSize, sourceCropOf } from '../src/lib/sourceFit'
+import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSize, fitFilters, fitPlacement, fitSignature, fittedSize, placedSource, sourceCropOf } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
@@ -861,6 +861,27 @@ console.log('\n== the per-clip crop ==')
   check('a signature carries the crop', sig(middleBand).endsWith('|0.000,0.333,0.000,0.333'), true)
   check('a different crop is a different picture', sig(middleBand) === sig({ left: 0.1, top: 0, right: 0, bottom: 0 }), false)
   check('and no crop says so', sig(undefined).endsWith('|full'), true)
+
+  // What the monitor draws. A crop is a box over a picture rather than a smaller picture, so the
+  // whole source is drawn AROUND the kept region: the region lands exactly where the fit put it,
+  // and the part the crop removes lies the same distance beyond it that the crop cut off — still
+  // on screen, which is what lets the box be dragged back over it.
+  const placed = placedSource({ source, frame, crop: middleBand })
+  const plain = placedSource({ source, frame })
+  check('a clip with no crop is drawn exactly as the fit places it everywhere else',
+    plain && [plain.source.width, plain.source.height, plain.source.x, plain.source.y],
+    plain && [plain.placement.size.width, plain.placement.size.height, plain.placement.pad?.x, plain.placement.pad?.y])
+  check('a nonsense source has nowhere to be drawn', placedSource({ source: { width: 0, height: 0 }, frame }), null)
+  if (placed) {
+    // The kept region's own box, in frame pixels, read back off the whole source's box.
+    near('the kept region is as tall as the fit made it', placed.source.height * region.h, placed.placement.size.height, 1)
+    near('and sits where the fit put it', placed.source.y + region.y * placed.source.height, placed.placement.pad?.y ?? 0, 1)
+    check('with the rest of the picture drawn around it', placed.source.height > frame.height, true)
+    check('and as wide as the fit made it too', Math.abs(placed.source.width * region.w - placed.placement.size.width) < 1, true)
+    // The two scales differ only by the fit's own rounding to an even pair, which is a sub-pixel of
+    // the source: the drawing never stretches a picture by anything a viewer could see.
+    check('with the two axes scaled to within a fraction of a pixel of each other', Math.abs(placed.source.width / source.width - placed.source.height / source.height) < 0.002, true)
+  }
 }
 
 console.log('\n== the waveform ==')

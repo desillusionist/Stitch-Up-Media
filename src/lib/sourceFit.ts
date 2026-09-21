@@ -190,6 +190,40 @@ export const cropFractionsOf = (region: SourceCrop): CropFractions => ({
 const round6 = (value: number) => Math.round(value * 1e6) / 1e6
 
 /**
+ * Both stages of a clip as one drawing instruction: where the WHOLE source sits, and where the part
+ * the crop keeps sits inside the frame.
+ *
+ * The crop and the fit are two stages, and the monitor, the strips and the encoder must agree about
+ * both. The fit is only ever asked about the region the crop KEPT, since that is what it is placing;
+ * but what is drawn is the whole source — a crop is a box over a picture, not a smaller picture — so
+ * the source's own box is worked back from the kept region's placement: the kept region's corner is
+ * at the placement's edge, and the rest of the source lies the same distance beyond it that the crop
+ * cut off. The result is that the kept part lands exactly where the export will put it, and the part
+ * the crop removes is still there to be seen, and still there to drag the box back over.
+ *
+ * Everything is in the frame's own pixels, including the negative offsets, which is what lets a
+ * fitted, cropped clip spill past the frame the way the export's own crop of it will.
+ */
+export const placedSource = (input: { source: FrameSize; frame: FrameSize; crop?: CropFractions; fit?: SourceFit }): { placement: FitPlacement; source: { x: number; y: number; width: number; height: number } } | null => {
+  const kept = croppedSize(input.source, input.crop)
+  if (!(kept.width > 0) || !(kept.height > 0)) return null
+  const placement = fitPlacement({ source: kept, frame: input.frame, fit: input.fit })
+  if (!placement) return null
+  // Frame pixels per source pixel, which is the same on both axes because the fit never stretches.
+  const scaleX = placement.size.width / kept.width
+  const scaleY = placement.size.height / kept.height
+  const region = cropRegion(input.crop)
+  const width = input.source.width * scaleX
+  const height = input.source.height * scaleY
+  // Where the kept region's own corner lands: the frame's window into it, or the gap it was centred in.
+  const anchor = placement.pad ?? { x: -placement.kept.x, y: -placement.kept.y }
+  return {
+    placement,
+    source: { x: anchor.x - region.x * width, y: anchor.y - region.y * height, width, height },
+  }
+}
+
+/**
  * The whole chain for one clip, as the encoder, the thumbnails and the monitor all read it.
  *
  * Crop first, in the source's own space: it decides WHAT of the clip is kept, and it is stored
