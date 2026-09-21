@@ -8,7 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, edgeFade, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { filmstripCell, filmstripCountFor, filmstripKey, skimBucket } from '../lib/filmstrip'
+import { FILMSTRIP_CLIP_HEIGHT, filmstripCell, filmstripKey, skimBucket } from '../lib/filmstrip'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions, FitMode } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
@@ -124,8 +124,8 @@ export const EditJobApp: React.FC = () => {
   const [lockProportion, setLockProportion] = useState(false)
   /** Lanes drawn as strips of frames rather than as a plain clip panel, by lane id. */
   const [filmstripLanes, setFilmstripLanes] = useState<Record<string, boolean>>({})
-  /** Strips already built, keyed by media, used range and tile count. */
-  const [filmstrips, setFilmstrips] = useState<Record<string, string>>({})
+  /** Strips already built, keyed by media, used range and the window they were fitted to. */
+  const [filmstrips, setFilmstrips] = useState<Record<string, { frames: string[]; aspect: number }>>({})
   /**
    * The frame the pointer is over on a strip, and which tile it belongs to.
    *
@@ -133,7 +133,7 @@ export const EditJobApp: React.FC = () => {
    * overview is still there underneath and returning to it when the pointer leaves is just
    * dropping this rather than rebuilding anything.
    */
-  const [skim, setSkim] = useState<{ key: string; cell: number; count: number; frame: string } | null>(null)
+  const [skim, setSkim] = useState<{ key: string; cell: number; frame: string } | null>(null)
   /** The newest skim request. An older answer arriving late must not replace a newer one. */
   const skimTokenRef = useRef(0)
   /** The bucket already asked for, so a pointer creeping across one tile asks once. */
@@ -301,24 +301,26 @@ export const EditJobApp: React.FC = () => {
     // The lane's width in pixels at this zoom, which is what decides how many tiles a clip
     // needs: the inner timeline is the scroller's width times the zoom, less the label column.
     const laneWidth = Math.max(0, (timelineScrollRef.current?.clientWidth ?? 0) * filmstripZoom - LANE_LABEL_WIDTH)
-    const wanted: Array<{ key: string; target: string; start: number; end: number; count: number }> = []
+    const wanted: Array<{ key: string; target: string; start: number; end: number; windowWidth: number }> = []
     lanes.lanes.forEach((lane) => {
       if (!filmstripLanes[lane.id]) return
       lane.segments.forEach((segment) => {
         if (segment.still) return
         const target = mediaTargets[segment.sourcePath]?.path
         if (!target) return
-        const count = filmstripCountFor(laneWidth * (lanes.duration > 0 ? segment.duration / lanes.duration : 0))
-        const key = filmstripKey(target, segment.sourceIn, segment.duration, count)
+        // The window the strip is fitted to is the clip's own width, so widening the timeline
+        // asks for more tiles across the same span rather than fewer of the range.
+        const windowWidth = laneWidth * (lanes.duration > 0 ? segment.duration / lanes.duration : 0)
+        const key = filmstripKey(target, segment.sourceIn, segment.duration, windowWidth)
         if (filmstrips[key] || filmstripWaitingRef.current.has(key)) return
-        wanted.push({ key, target, start: segment.sourceIn, end: segment.sourceIn + segment.duration, count })
+        wanted.push({ key, target, start: segment.sourceIn, end: segment.sourceIn + segment.duration, windowWidth })
       })
     })
     if (!wanted.length) return
     wanted.forEach(({ key }) => filmstripWaitingRef.current.add(key))
     let cancelled = false
-    void Promise.all(wanted.map(async ({ key, target, start, end, count }) => {
-      const strip = await bridge.filmstripStrip(target, { count, start, end })
+    void Promise.all(wanted.map(async ({ key, target, start, end, windowWidth }) => {
+      const strip = await bridge.filmstripStrip(target, { start, end, windowWidth, clipHeight: FILMSTRIP_CLIP_HEIGHT })
       return [key, strip] as const
     })).then((entries) => {
       if (cancelled) return
@@ -326,8 +328,9 @@ export const EditJobApp: React.FC = () => {
         const next = { ...current }
         entries.forEach(([key, strip]) => {
           // A strip that could not be built is forgotten rather than left pending forever, so
-          // the next render can try again instead of the clip being stuck with no frames.
-          if (strip) next[key] = strip
+          // the next render can try again instead of the clip being stuck with no frames. Its
+          // tiles' shape is kept with it, so a skimmed frame can be asked for at the same shape.
+          if (strip && strip.frames.length) next[key] = { frames: strip.frames, aspect: strip.thumbWidth / Math.max(1, strip.thumbHeight) }
           else filmstripWaitingRef.current.delete(key)
         })
         return next
@@ -734,7 +737,7 @@ export const EditJobApp: React.FC = () => {
     if (!target || segment.still) return undefined
     const laneWidth = Math.max(0, (timelineScrollRef.current?.clientWidth ?? 0) * zoom - LANE_LABEL_WIDTH)
     const share = duration > 0 ? segment.duration / duration : 0
-    return filmstripKey(target, segment.sourceIn, segment.duration, filmstripCountFor(laneWidth * share))
+    return filmstripKey(target, segment.sourceIn, segment.duration, laneWidth * share)
   }
   /**
    * Skims across a clip's strip.
@@ -750,26 +753,26 @@ export const EditJobApp: React.FC = () => {
   const skimFilmstrip = (event: React.MouseEvent<HTMLElement>, segment: TimelineSegment) => {
     const target = mediaTargets[segment.sourcePath]?.path
     const key = stripKeyFor(segment)
+    const strip = key ? filmstrips[key] : undefined
     const bridge = window.electronAPI
-    if (!target || !key || !filmstrips[key] || !bridge?.frameAt || segment.duration <= 0) return
+    if (!target || !key || !strip || !bridge?.frameAt || segment.duration <= 0) return
     const box = event.currentTarget.getBoundingClientRect()
     if (box.width <= 0) return
     const fraction = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width))
-    const count = filmstripCountFor(box.width)
-    const { cell } = filmstripCell(fraction, count)
+    const { cell } = filmstripCell(fraction, strip.frames.length)
     const moment = segment.sourceIn + fraction * segment.duration
     playback.seek(segment.start + fraction * segment.duration)
     const token = skimTokenRef.current + 1
     skimTokenRef.current = token
     // The tile under the pointer follows it at once, so the marking tracks the cursor even
     // while the frame for it is still being decoded.
-    setSkim((current) => (current && current.key === key ? { ...current, cell, count } : current))
+    setSkim((current) => (current && current.key === key ? { ...current, cell } : current))
     const bucket = skimBucket(moment)
     if (skimBucketRef.current === bucket) return
     skimBucketRef.current = bucket
-    void bridge.frameAt(target, { bucket }).then((frame) => {
+    void bridge.frameAt(target, { bucket, aspect: strip.aspect }).then((frame) => {
       if (!frame || skimTokenRef.current !== token) return
-      setSkim({ key, cell, count, frame })
+      setSkim({ key, cell, frame })
     })
   }
   const endSkim = () => {
@@ -1301,22 +1304,24 @@ export const EditJobApp: React.FC = () => {
                         onMouseMove={filmstripLanes[lane.id] ? (event) => skimFilmstrip(event, segment) : undefined}
                         onMouseLeave={filmstripLanes[lane.id] ? endSkim : undefined}
                       >
-                        {/* The strip is an image rather than a repeating background so a tile's
-                            place on screen is a fixed fraction of the image, which is what lets
-                            the skimmed frame be drawn over the very tile the pointer is on. A
-                            still has no frames to sample and one frame repeated is its strip. */}
+                        {/* The strip is one image per tile at the source's own shape, so the tiles abut
+                            with nothing between them and each one's place follows from its own size.
+                            The skimmed frame is laid over its tile rather than replacing it, so the
+                            row never reflows and the overview is still there underneath. A still has
+                            no frames to sample and one frame repeated is its strip. */}
                         {filmstripLanes[lane.id] && (() => {
                           const key = stripKeyFor(segment)
                           const strip = key ? filmstrips[key] : undefined
-                          const live = key && skim && skim.key === key ? skim : null
                           if (!strip && !segment.still) return null
+                          const tiles = strip?.frames ?? [mediaUrl(segment.sourcePath)]
+                          const live = key && skim && skim.key === key ? skim : null
                           return <div className="timeline-clip-film" aria-hidden="true">
-                            <span className="timeline-clip-strip">
-                              <img src={strip ?? mediaUrl(segment.sourcePath)} alt="" draggable={false} />
-                              {live && live.frame && (
-                                <span className="timeline-clip-skim" style={{ left: `${(live.cell / live.count) * 100}%`, width: `${100 / live.count}%`, backgroundImage: `url(${live.frame})` }} />
-                              )}
-                            </span>
+                            {tiles.map((frame, tile) => (
+                              <span className="timeline-clip-tile" key={tile}>
+                                <img src={frame} alt="" draggable={false} />
+                                {live && live.cell === tile && <img className="timeline-clip-skim" src={live.frame} alt="" draggable={false} />}
+                              </span>
+                            ))}
                           </div>
                         })()}
                         <span className="timeline-clip-name">{segmentLabel(segment)}</span>

@@ -1,59 +1,83 @@
 /**
  * Filmstrip rules for the EDIT JOB timeline.
  *
- * A clip in filmstrip view shows frames sampled across the range the clip actually uses, so
- * the tiles are of the trimmed footage rather than of the whole source. The same questions are
- * asked here as in the QUICK LOOK helper — how many tiles, and which ones — so the timeline and
- * the helper cannot disagree about what a clip contains.
- */
-
-/**
- * The cell every tile is padded into.
+ * A clip in filmstrip view shows frames sampled across the range the clip actually uses, so the
+ * tiles are of the trimmed footage rather than of the whole source.
  *
- * Every tile is the same size whatever shape the source is, with the picture fitted inside and
- * bars filling the rest. That is what makes the strip's geometry knowable: a tile's width on
- * screen can be worked out from the clip's height alone, so the number of tiles can be chosen
- * to cover the clip's width, and a skimmed frame can be placed on the very tile it belongs to.
- * A strip of natural-aspect tiles could not do either, because nothing outside the image knows
- * how wide its tiles came out.
+ * The one thing that must never happen is partial coverage: a strip that stops short of the
+ * clip's end is lying about what the clip contains. Coverage comes from the STEP being derived
+ * from the tile count — `step = totalFrames / thumbCount` — so however many tiles fit, they
+ * always span the whole range. Widening the window raises the count and lowers the step, which
+ * packs MORE frames into the SAME span. A fixed step would instead make coverage
+ * `thumbCount x step`, so it would only reach the end when the window happened to be huge.
  */
-export const FILMSTRIP_CELL = { width: 114, height: 64 }
 
-/** The cell's width for its height, which is what a tile's width on screen is derived from. */
-export const FILMSTRIP_TILE_ASPECT = FILMSTRIP_CELL.width / FILMSTRIP_CELL.height
-
-/** The height a clip is drawn at. The lane sets it; this is what the count is worked out from. */
+/** How tall a tile is drawn. The lane sets it, and the tile count is worked out from it. */
 export const FILMSTRIP_CLIP_HEIGHT = 32
 
-/**
- * How many tiles a clip needs, from its width on screen.
- *
- * The count follows the CLIP's width, not the zoom alone. Keying it to the zoom meant a
- * two-second clip and a two-minute one at the same zoom asked for the same number of tiles, so
- * a short clip packed dozens of frames into a few pixels while a long one spread a handful
- * across its whole width. It is rounded UP so the tiles always reach the clip's right edge,
- * which is also what stops the last of the range being cut off with no tile to show it.
- */
-export const filmstripCountFor = (clipWidth: number): number => {
-  const tileWidth = FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_TILE_ASPECT
-  if (!(clipWidth > 0) || !Number.isFinite(clipWidth)) return 1
-  return Math.max(1, Math.min(24, Math.ceil(clipWidth / tileWidth)))
+/** The multiple the tiles are generated at, so they stay crisp on a retina panel. */
+export const FILMSTRIP_SCALE = 2
+
+/** No strip needs more tiles than this, whatever the window width. */
+export const FILMSTRIP_MAX_TILES = 24
+
+export interface FilmstripPlan {
+  /** A tile's width, from the source's own shape, so the tiles abut with nothing between them. */
+  thumbWidth: number
+  /** How many tiles fit across the window. */
+  thumbCount: number
+  /** Frames between one tile and the next. Fractional on purpose — never floor it. */
+  step: number
+  /** The frame each tile shows: the middle of its own cell, so the strip starts and ends level. */
+  frames: number[]
 }
 
 /**
- * The identity of one strip: the media, the range of it used, and how finely it was sampled.
+ * How many tiles a strip has, how far apart they are sampled, and which frame each shows.
  *
- * All four belong in the key. The same footage trimmed differently is a different strip, and a
- * strip sampled at one count is not the strip sampled at another, so keying on the media alone
- * would serve a five-tile strip for a twenty-tile request.
+ * `thumbWidth` is aspect-aware, which is what keeps bars out from between the tiles: a tile is
+ * as wide as its own picture, not as wide as a fixed cell some other picture would have fitted.
+ * `step` stays fractional, because flooring it accumulates rounding error and the last tile
+ * then lands short of the clip's end. The samples are taken at each cell's midpoint, so the
+ * first and last tiles sit level within the range rather than both crowding its near edge.
+ *
+ * The leftover of `floor` — under one tile's width — is trailing space, not missing coverage.
+ * Narrowing `step` to fill it would pull the last tile back off the end and lose exactly what
+ * this is for.
  */
-export const filmstripKey = (target: string, sourceIn: number, duration: number, count: number): string =>
-  `${target}|${sourceIn.toFixed(3)}|${duration.toFixed(3)}|${count}`
+export const computeFilmstrip = (o: {
+  windowWidth: number
+  thumbHeight: number
+  srcWidth: number
+  srcHeight: number
+  /** duration in seconds x fps */
+  totalFrames: number
+}): FilmstripPlan => {
+  const aspect = o.srcWidth > 0 && o.srcHeight > 0 ? o.srcWidth / o.srcHeight : 16 / 9
+  const thumbHeight = o.thumbHeight > 0 ? o.thumbHeight : FILMSTRIP_CLIP_HEIGHT
+  const thumbWidth = Math.max(1, Math.round(thumbHeight * aspect))
+  const windowWidth = Number.isFinite(o.windowWidth) ? o.windowWidth : 0
+  const thumbCount = Math.max(1, Math.min(FILMSTRIP_MAX_TILES, Math.floor(windowWidth / thumbWidth)))
+  const totalFrames = Math.max(1, Math.round(o.totalFrames))
+  const step = totalFrames / thumbCount
+  const last = totalFrames - 1
+  const frames = Array.from({ length: thumbCount }, (_, index) => Math.min(last, Math.round((index + 0.5) * step)))
+  return { thumbWidth, thumbCount, step, frames }
+}
 
 /**
- * Which of a strip's tiles a fraction of the clip falls in, and how far into it.
+ * The identity of one strip: the media, the range of it used, and the window it was fitted to.
  *
- * The cell is what the frame is drawn over; the within-cell fraction is what the frame is
+ * The window rather than the resulting tile count, because the count is worked out from the
+ * media's own shape, which the caller does not know until the strip comes back.
+ */
+export const filmstripKey = (target: string, sourceIn: number, duration: number, windowWidth: number): string =>
+  `${target}|${sourceIn.toFixed(3)}|${duration.toFixed(3)}|${Math.round(windowWidth)}`
+
+/**
+ * Which tile a fraction of the clip falls in, and how far into it.
+ *
+ * The tile is what the live frame is drawn over; the within-tile fraction is what the frame is
  * sampled at, so moving across one tile still advances the picture rather than holding it until
  * the pointer crosses into the next.
  */

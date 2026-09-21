@@ -4,7 +4,7 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
-import { FILMSTRIP_CELL, FILMSTRIP_TILE_ASPECT, filmstripCell, filmstripCountFor, filmstripKey, skimBucket } from '../src/lib/filmstrip'
+import { computeFilmstrip, FILMSTRIP_MAX_TILES, filmstripCell, filmstripKey, skimBucket } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -560,16 +560,37 @@ console.log('\n== the exact-size fields ==')
 
 console.log('\n== the timeline filmstrip ==')
 {
-  // The count follows the CLIP's width on screen, not the zoom alone, so a short clip is not
-  // packed with dozens of frames while a long one gets a handful spread across its width. It is
-  // rounded UP, so the tiles always reach the clip's right edge however they land.
-  const tile = 32 * FILMSTRIP_TILE_ASPECT
-  check('a clip one tile wide takes one tile', filmstripCountFor(tile), 1)
-  check('a clip four tiles wide takes four', filmstripCountFor(tile * 4), 4)
-  check('a clip that does not divide evenly still reaches its edge', filmstripCountFor(tile * 4 + 1), 5)
-  check('and a very wide one is capped', filmstripCountFor(tile * 90), 24)
-  check('a clip with no width takes one', filmstripCountFor(0), 1)
-  check('and a nonsense width does too', filmstripCountFor(Number.NaN), 1)
+  // Coverage is the whole point: the samples must span the clip however many tiles fit, and a
+  // wider window must buy DENSITY, not less of the range. That is what deriving the step from
+  // the tile count does, and it is what a fixed step cannot do.
+  const wide = computeFilmstrip({ windowWidth: 640, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 240 })
+  check('a tile is as wide as its own picture', wide.thumbWidth, Math.round(32 * (1920 / 1080)))
+  check('the count is how many fit across the window', wide.thumbCount, Math.floor(640 / wide.thumbWidth))
+  near('the step is the frames divided by the count', wide.step, 240 / wide.thumbCount, 1e-9)
+  check('the first tile is sampled inside the range, not before it', wide.frames[0] >= 0, true)
+  check('and the last tile is still inside it', wide.frames[wide.frames.length - 1] <= 239, true)
+  check('with one frame per tile', wide.frames.length, wide.thumbCount)
+
+  // The coverage test: the last sample must sit in the last step of the range. A fixed step would
+  // leave it near the start on a wide window, which is the bug this guards.
+  const narrower = computeFilmstrip({ windowWidth: 320, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 240 })
+  check('a narrower window fits fewer tiles', narrower.thumbCount < wide.thumbCount, true)
+  check('but still reaches the far end of the range', narrower.frames[narrower.frames.length - 1] > 240 - narrower.step, true)
+  check('and so does the wide one', wide.frames[wide.frames.length - 1] > 240 - wide.step, true)
+  check('the wide window samples more densely than the narrow one', wide.step < narrower.step, true)
+
+  // A portrait source keeps its own shape, so its tiles abut instead of being padded into a cell.
+  const portrait = computeFilmstrip({ windowWidth: 640, thumbHeight: 32, srcWidth: 720, srcHeight: 1280, totalFrames: 240 })
+  check('a portrait picture makes narrow tiles', portrait.thumbWidth, Math.round(32 * (720 / 1280)))
+  check('so more of them fit', portrait.thumbCount > wide.thumbCount, true)
+
+  // Degenerate inputs still describe a whole clip rather than nothing.
+  const tiny = computeFilmstrip({ windowWidth: 8, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 240 })
+  check('a window narrower than a tile still shows one', tiny.thumbCount, 1)
+  near('and that one tile is the middle of the clip', tiny.frames[0], Math.round(0.5 * 240), 1e-9)
+  check('an enormous window is capped', computeFilmstrip({ windowWidth: 100000, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 240 }).thumbCount, FILMSTRIP_MAX_TILES)
+  check('a nonsense source shape falls back to 16:9', computeFilmstrip({ windowWidth: 640, thumbHeight: 32, srcWidth: 0, srcHeight: 0, totalFrames: 240 }).thumbWidth, Math.round(32 * (16 / 9)))
+  check('and a clip with no frames still samples frame zero', computeFilmstrip({ windowWidth: 640, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 0 }).frames.every((frame) => frame === 0), true)
 
   // The cell the pointer is over, and how far into it: the frame is sampled from the pointer's
   // place in the clip, so the picture advances across one tile rather than holding until the next.
@@ -592,7 +613,7 @@ console.log('\n== the timeline filmstrip ==')
   check('a strip key names its media, range and count', filmstripKey('/a.mp4', 1.5, 4, 8), '/a.mp4|1.500|4.000|8')
   check('the same media on another range is another strip', filmstripKey('/a.mp4', 2, 4, 8) === filmstripKey('/a.mp4', 1.5, 4, 8), false)
   check('and so is another tile count', filmstripKey('/a.mp4', 1.5, 4, 8) === filmstripKey('/a.mp4', 1.5, 4, 12), false)
-  check('the cell has a positive size', FILMSTRIP_CELL.width > 0 && FILMSTRIP_CELL.height > 0, true)
+  check('the cell has a positive size', FILMSTRIP_MAX_TILES > 0, true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

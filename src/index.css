@@ -324,13 +324,15 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-playhead::after { content: ''; position: absolute; left: -5px; top: 0; bottom: 0; width: 11px; }
 .timeline-clip-name { display: block; padding: 7px 6px 0; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
 
-/* Filmstrip view: the strip drawn as an image, so a tile's place on screen is a plain fraction
-   of the image's width and a skimmed frame can be laid over the exact tile the pointer is on.
-   The clip's own label is hidden so the frames are what is read. */
+/* Filmstrip view: one image per tile at the source's own shape, so the tiles abut with nothing
+   between them. The clip's own label is hidden so the frames are what is read. */
 .timeline-lane .timeline-clip-film { position: absolute; inset: 0; z-index: 0; display: flex; overflow: hidden; }
-.timeline-clip-strip { position: relative; display: block; flex: 0 0 auto; height: 100%; }
-.timeline-clip-strip > img { display: block; height: 100%; width: auto; }
-.timeline-clip-skim { position: absolute; top: 0; bottom: 0; display: block; background-repeat: no-repeat; background-size: 100% 100%; }
+.timeline-clip-tile { position: relative; flex: 0 0 auto; display: block; height: 100%; }
+.timeline-clip-tile > img { display: block; height: 100%; width: auto; }
+/* The live frame fills its own tile without moving it: absolute, so the row cannot reflow when
+   the picture above it changes, and cover, so a rounding's worth of shape difference is cropped
+   rather than stretched. */
+.timeline-clip-skim { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .timeline-lane .timeline-clip.is-film .timeline-clip-name,
 .timeline-lane .timeline-clip.is-film small { display: none; }
 /* The strip's own marking, drawn OVER the frames rather than as an outline underneath them,
