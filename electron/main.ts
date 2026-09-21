@@ -7,7 +7,8 @@ import { QueueManager } from './queue/manager'
 import { QueueTask, AppSettings, EditJobPatch } from '../src/types'
 import { logEvent, getLogFile } from './logger'
 import { resolveByteRange, mimeTypeFor } from './mediaRange'
-import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE } from '../src/lib/filmstrip'
+import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
+import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -188,62 +189,71 @@ app.whenReady().then(() => {
   // strip out, and the frames it needs are then mostly ones already here: only the in-between
   // frames are extracted. One pass per request rather than one seek per frame, and the pass is
   // a select on the frame indices asked for, so exactly those come back, in order.
-  const frameCache = new Map<string, Map<number, string>>()
+  const frameCache = new Map<string, Map<string, string>>()
   const frameWidthCache = new Map<string, number>()
   const framesFor = (filePath: string) => {
     const existing = frameCache.get(filePath)
     if (existing) return existing
-    const created = new Map<number, string>()
+    const created = new Map<string, string>()
     frameCache.set(filePath, created)
     if (frameCache.size > 40) frameCache.delete(frameCache.keys().next().value as string)
     return created
   }
-  // The tile's pixel width, from the source's own shape. Probed once per file: the shape of a
-  // piece of footage does not change.
-  const thumbWidthFor = async (filePath: string) => {
-    const known = frameWidthCache.get(filePath)
+  // The tile's pixel width, from the OUTPUT shape, so every clip's strip is laid out the same.
+  // The shape of a piece of footage does not change, so the probe is done once per file.
+  const thumbWidthFor = async (filePath: string, outputAspect: number) => {
+    const cacheKey = `${filePath}|${outputAspect.toFixed(4)}`
+    const known = frameWidthCache.get(cacheKey)
     if (known !== undefined) return known
-    let aspect = 16 / 9
-    try {
-      const probe = await probeFile(filePath)
-      const resolution = probe?.videoStreams?.[0]?.resolution?.split('x').map(Number)
-      if (resolution && resolution[0] > 0 && resolution[1] > 0) aspect = resolution[0] / resolution[1]
-    } catch {}
     const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
-    const width = even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE * aspect)
-    if (frameWidthCache.size < 80) frameWidthCache.set(filePath, width)
+    const width = even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE * outputAspect)
+    if (frameWidthCache.size < 80) frameWidthCache.set(cacheKey, width)
     return width
   }
-  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number }) => {
+  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number; outputAspect?: number; crop?: CropFractions }) => {
     const times = (options?.times ?? []).filter((time) => Number.isFinite(time) && time >= 0)
     const fps = options?.fps && options.fps > 0 ? options.fps : 30
+    const outputAspect = options?.outputAspect && options.outputAspect > 0 ? options.outputAspect : 16 / 9
+    const crop = options?.crop
     if (!filePath || !times.length) return []
     try { if (!fs.statSync(filePath).isFile()) return [] } catch { return [] }
     const have = framesFor(filePath)
-    const keyOf = (time: number) => Math.max(0, Math.round(time * fps))
-    const width = await thumbWidthFor(filePath)
+    const keyOf = (time: number) => frameKey(Math.max(0, Math.round(time * fps)), outputAspect, crop)
+    const width = await thumbWidthFor(filePath, outputAspect)
     const height = Math.max(2, Math.round(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE / 2) * 2)
     // One extraction per frame, each seeking straight to the moment it wants. Seeking the INPUT
     // is a fast keyframe seek, and it works on any source however its frames are numbered: the
     // alternative, selecting frame numbers out of the whole file, only lines up when they are
     // counted from the source's own start, and decodes everything up to the furthest one.
-    const jobs: Array<{ index: number; time: number }> = []
-    const queued = new Set<number>()
+    const jobs: Array<{ key: string; time: number }> = []
+    const queued = new Set<string>()
     times.forEach((time) => {
-      const index = keyOf(time)
-      if (have.has(index) || queued.has(index)) return
-      queued.add(index)
-      jobs.push({ index, time })
+      const key = keyOf(time)
+      if (have.has(key) || queued.has(key)) return
+      queued.add(key)
+      jobs.push({ key, time })
     })
-    const extract = async ({ index, time }: { index: number; time: number }) => {
+    const extract = async ({ key, time }: { key: string; time: number }) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-frame-'))
       const framePath = path.join(dir, 'frame.jpg')
       try {
-        const scale = `scale=${width}:${height}:force_original_aspect_ratio=decrease`
-        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', time.toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', scale, '-q:v', '4', framePath], { timeout: 30000 })
-        have.set(index, `data:image/jpeg;base64,${fs.readFileSync(framePath).toString('base64')}`)
+        // The clip's own fit chain, exactly as the encoder builds it for the output frame: the
+        // source crop first, then the picture fitted inside the output shape, then padded out to
+        // it. So a thumbnail shows the frame as the export will, bars and all, rather than the
+        // raw source. The canvas is the output's SHAPE at an arbitrary size, because fitting and
+        // padding are the same operation at any size and the result is scaled to the tile after.
+        const canvasWidth = 640
+        const canvasHeight = Math.max(2, Math.round(canvasWidth / outputAspect / 2) * 2)
+        const chain: string[] = []
+        if (crop && hasCrop(crop)) chain.push(cropFilter(crop))
+        chain.push(`scale=${canvasWidth}:${canvasHeight}:force_original_aspect_ratio=decrease`)
+        chain.push(`pad=${canvasWidth}:${canvasHeight}:(ow-iw)/2:(oh-ih)/2:color=black`)
+        chain.push('setsar=1')
+        chain.push(`scale=${width}:${height}`)
+        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', time.toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', chain.join(','), '-q:v', '4', framePath], { timeout: 30000 })
+        have.set(key, `data:image/jpeg;base64,${fs.readFileSync(framePath).toString('base64')}`)
       } catch (error) {
-        logEvent('ipc', 'frame extraction failed', { filePath, time, index, error: String(error) })
+        logEvent('ipc', 'frame extraction failed', { filePath, time, key, error: String(error) })
       } finally {
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
       }

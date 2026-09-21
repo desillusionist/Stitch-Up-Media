@@ -8,7 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, edgeFade, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, filmstripCell, skimFrame } from '../lib/filmstrip'
+import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, filmstripCell, frameKey, skimFrame } from '../lib/filmstrip'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions, FitMode } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
@@ -131,8 +131,8 @@ export const EditJobApp: React.FC = () => {
    */
   const lanesObserverRef = useRef<ResizeObserver | null>(null)
   const [laneArea, setLaneArea] = useState(0)
-  /** Every fetched frame, by source and ABSOLUTE FRAME INDEX, so zooming reuses them. */
-  const [frameImages, setFrameImages] = useState<Record<string, Record<number, string>>>({})
+  /** Every fetched frame, by source and the key its picture belongs to, so zooming reuses them. */
+  const [frameImages, setFrameImages] = useState<Record<string, Record<string, string>>>({})
   /** Frames already asked for and not yet answered, so none is asked for twice. */
   const framesPendingRef = useRef<Record<string, true>>({})
   /** Each source's own shape and rate, which is what the strip's geometry is worked out from. */
@@ -350,6 +350,52 @@ export const EditJobApp: React.FC = () => {
   }, [filmstripLanes, timelineSignature, shapeSignature])
 
   /**
+   * The shape of the output frame, which is what every thumbnail is shaped after.
+   *
+   * Worked out for the JOB rather than for whichever clip is under the playhead, because the
+   * whole point is that the cells are the same size in every clip: taking each clip's own shape
+   * would put several times as many tiles in a portrait clip as in a landscape one. An exact
+   * size or a named resolution settles it outright; with neither, the source's own shape is the
+   * output's, since the encoder normalizes every clip to one canvas.
+   */
+  const filmstripOutputAspect = (() => {
+    const preset = draft?.preset
+    if (!preset) return 16 / 9
+    if (preset.width && preset.height) return preset.width / preset.height
+    const box = resolutionBox(preset.resolution)
+    if (box) return box.width / box.height
+    const shape = sourceShape[focusedSource ?? ''] ?? sourceShape[draft?.sourcePaths[0] ?? '']
+    return shape ? shape.width / shape.height : 16 / 9
+  })()
+  /**
+   * The strip's layout for a clip, from the lane as it is right now.
+   *
+   * Everything comes from the CURRENT lane width, so a zoom or a resize re-lays the strip out
+   * rather than serving one laid out for a width that no longer exists. That is what keeps the
+   * cells filling the lane exactly and the samples spanning the whole trim.
+   */
+  const planFor = (segment: TimelineSegment, total: number) => {
+    const shape = sourceShape[segment.sourcePath]
+    if (!shape || laneArea <= 0 || total <= 0 || segment.duration <= 0) return undefined
+    const laneWidth = Math.max(0, laneArea * zoom - LANE_LABEL_WIDTH) * (segment.duration / total)
+    return computeFilmstrip({
+      laneWidth,
+      thumbHeight: FILMSTRIP_CLIP_HEIGHT,
+      outputAspect: filmstripOutputAspect,
+      fps: shape.fps,
+      inSec: segment.sourceIn,
+      outSec: segment.sourceIn + segment.duration,
+    })
+  }
+  /** The key a thumbnail's picture is held under: the frame, the output shape, and the crop. */
+  const keyFor = (frame: number) => frameKey(frame, filmstripOutputAspect, draft?.preset.crop)
+  /** A frame already fetched. */
+  const frameImageFor = (segment: TimelineSegment, frame: number) => {
+    const target = mediaTargets[segment.sourcePath]?.path
+    return target ? frameImages[target]?.[keyFor(frame)] : undefined
+  }
+
+  /**
    * Fetches the frames the visible strips are showing and do not have yet.
    *
    * Keyed by absolute source frame, so a zoom or a resize asks mostly for frames already here
@@ -361,20 +407,20 @@ export const EditJobApp: React.FC = () => {
   useEffect(() => {
     const bridge = window.electronAPI
     if (!bridge?.framesAt || !model) return
-    const wanted = new Map<string, { jobs: Array<{ time: number; index: number }>; fps: number }>()
+    const wanted = new Map<string, { jobs: Array<{ time: number; key: string }>; fps: number }>()
     model.lanes.forEach((lane) => {
       if (!filmstripLanes[lane.id]) return
       lane.segments.forEach((segment) => {
-        const plan = planFor(segment)
+        const plan = planFor(segment, model.duration)
         const shape = sourceShape[segment.sourcePath]
         const target = mediaTargets[segment.sourcePath]?.path
         if (!plan || !shape || !target) return
         const entry = wanted.get(target) ?? { jobs: [], fps: shape.fps }
         plan.times.forEach((time, cell) => {
-          const index = plan.frames[cell]
-          if (frameImages[target]?.[index]) return
-          if (framesPendingRef.current[`${target}#${index}`]) return
-          entry.jobs.push({ time, index })
+          const key = keyFor(plan.frames[cell])
+          if (frameImages[target]?.[key]) return
+          if (framesPendingRef.current[`${target}#${key}`]) return
+          entry.jobs.push({ time, key })
         })
         if (entry.jobs.length) wanted.set(target, entry)
       })
@@ -382,8 +428,8 @@ export const EditJobApp: React.FC = () => {
     if (!wanted.size) return
     let cancelled = false
     void Promise.all([...wanted].map(async ([target, { jobs, fps }]) => {
-      jobs.forEach(({ index }) => { framesPendingRef.current[`${target}#${index}`] = true })
-      const images = await bridge.framesAt(target, { times: jobs.map((job) => job.time), fps })
+      jobs.forEach(({ key }) => { framesPendingRef.current[`${target}#${key}`] = true })
+      const images = await bridge.framesAt(target, { times: jobs.map((job) => job.time), fps, outputAspect: filmstripOutputAspect, crop: draft?.preset.crop })
       return [target, jobs, images] as const
     })).then((entries) => {
       if (cancelled) return
@@ -392,12 +438,12 @@ export const EditJobApp: React.FC = () => {
         let arrived = false
         entries.forEach(([target, jobs, images]) => {
           const store = { ...(next[target] ?? {}) }
-          jobs.forEach(({ index }, position) => {
+          jobs.forEach(({ key }, position) => {
             // A frame that could not be extracted is forgotten rather than left pending, so a
             // later layout can try it again instead of that tile being blank forever.
-            delete framesPendingRef.current[`${target}#${index}`]
+            delete framesPendingRef.current[`${target}#${key}`]
             const image = images[position]
-            if (image) { store[index] = image; arrived = true }
+            if (image) { store[key] = image; arrived = true }
           })
           next[target] = store
         })
@@ -405,7 +451,7 @@ export const EditJobApp: React.FC = () => {
       })
     })
     return () => { cancelled = true }
-  }, [filmstripLanes, laneZoom, laneArea, mediaTargets, sourceShape, timelineSignature, frameImages])
+  }, [filmstripLanes, laneZoom, laneArea, mediaTargets, sourceShape, timelineSignature, frameImages, filmstripOutputAspect, draft?.preset.crop])
 
   // A context menu closes on the next press anywhere, or on Escape.
   useEffect(() => {
@@ -800,32 +846,6 @@ export const EditJobApp: React.FC = () => {
     return `${segmentLabel(segment)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
   }
   /**
-   * The strip's layout for a clip, from the lane as it is right now.
-   *
-   * Everything comes from the CURRENT lane width, so a zoom or a resize re-lays the strip out
-   * rather than serving one laid out for a width that no longer exists. That is what keeps the
-   * cells filling the lane exactly and the samples spanning the whole trim.
-   */
-  const planFor = (segment: TimelineSegment) => {
-    const shape = sourceShape[segment.sourcePath]
-    if (!shape || laneArea <= 0 || duration <= 0 || segment.duration <= 0) return undefined
-    const laneWidth = Math.max(0, laneArea * zoom - LANE_LABEL_WIDTH) * (segment.duration / duration)
-    return computeFilmstrip({
-      laneWidth,
-      thumbHeight: FILMSTRIP_CLIP_HEIGHT,
-      srcWidth: shape.width,
-      srcHeight: shape.height,
-      fps: shape.fps,
-      inSec: segment.sourceIn,
-      outSec: segment.sourceIn + segment.duration,
-    })
-  }
-  /** A frame already fetched, by absolute source frame index. */
-  const frameImageFor = (segment: TimelineSegment, frame: number) => {
-    const target = mediaTargets[segment.sourcePath]?.path
-    return target ? frameImages[target]?.[frame] : undefined
-  }
-  /**
    * Skims across a clip's strip.
    *
    * The pointer's place in the clip gives both the tile it is over and the moment to sample,
@@ -838,7 +858,7 @@ export const EditJobApp: React.FC = () => {
    */
   const skimFilmstrip = (event: React.MouseEvent<HTMLElement>, segment: TimelineSegment) => {
     const target = mediaTargets[segment.sourcePath]?.path
-    const plan = planFor(segment)
+    const plan = planFor(segment, duration)
     const shape = sourceShape[segment.sourcePath]
     const bridge = window.electronAPI
     if (!target || !plan || !shape || !bridge?.framesAt || segment.duration <= 0) return
@@ -853,14 +873,14 @@ export const EditJobApp: React.FC = () => {
     const token = skimTokenRef.current + 1
     skimTokenRef.current = token
     setSkim({ sourcePath: target, cell, index })
-    const pending = `${target}#${index}`
-    if (frameImages[target]?.[index] || framesPendingRef.current[pending]) return
+    const pending = `${target}#${keyFor(index)}`
+    if (frameImageFor(segment, index) || framesPendingRef.current[pending]) return
     framesPendingRef.current[pending] = true
-    void bridge.framesAt(target, { times: [segment.sourceIn + fraction * segment.duration], fps: shape.fps }).then((images) => {
+    void bridge.framesAt(target, { times: [segment.sourceIn + fraction * segment.duration], fps: shape.fps, outputAspect: filmstripOutputAspect, crop: draft.preset.crop }).then((images) => {
       delete framesPendingRef.current[pending]
       const image = images[0]
       if (!image || skimTokenRef.current !== token) return
-      setFrameImages((current) => ({ ...current, [target]: { ...(current[target] ?? {}), [index]: image } }))
+      setFrameImages((current) => ({ ...current, [target]: { ...(current[target] ?? {}), [keyFor(index)]: image } }))
     })
   }
   const endSkim = () => {
@@ -1398,7 +1418,7 @@ export const EditJobApp: React.FC = () => {
                             frame has not arrived yet draws nothing until it does. A still has no
                             frames to sample and one frame across the clip is its strip. */}
                         {filmstripLanes[lane.id] && (() => {
-                          const plan = planFor(segment)
+                          const plan = planFor(segment, duration)
                           if (segment.still) return <div className="timeline-clip-film" aria-hidden="true">
                             <span className="timeline-clip-tile" style={{ width: '100%' }}><img src={mediaUrl(segment.sourcePath)} alt="" draggable={false} /></span>
                           </div>

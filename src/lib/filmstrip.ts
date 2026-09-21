@@ -21,7 +21,7 @@ export const FILMSTRIP_SCALE = 2
 export const FILMSTRIP_MAX_TILES = 24
 
 export interface FilmstripPlan {
-  /** A tile's width, from the source's own shape, so the tiles abut with nothing between them. */
+  /** A tile's width. From the OUTPUT shape, so every clip's strip has the same density. */
   thumbWidth: number
   /** How many tiles fit across the lane as it is right now. */
   thumbCount: number
@@ -38,33 +38,41 @@ export interface FilmstripPlan {
 /**
  * Lay a clip's strip out across the lane as it is now.
  *
+ * Every thumbnail stands for a frame of the ASSEMBLED OUTPUT, not of the source, so the cell's
+ * shape is the output frame's and is the same for every clip whatever shape its footage is.
+ * That is what makes density uniform across a lane: were the cells as wide as each source's own
+ * picture, a portrait clip would pack several times as many tiles into the same lane as a
+ * landscape one, and the strips would not read as the same thing at all.
+ *
  * Order matters here and each line is one of the rules:
- *   thumbWidth from the source's own shape, so nothing is padded and no bars appear between
- *   tiles; thumbCount from how many of those fit across the lane; cellWidth from dividing the
- *   lane among them, so the cells fill it exactly with no trailing gap; inFrame and trimmed
- *   from the clip's own trim; step from the trimmed length over the tile count, kept
- *   FRACTIONAL, because flooring it accumulates rounding error and the last tile then lands
- *   short of the clip's end; and each sample at its own cell's midpoint, offset by inFrame and
- *   clamped inside the trim, so a thumbnail matches the frame the playhead would show there.
+ *   thumbWidth from the output's own shape; thumbCount from how many of those fit across the
+ *   lane, never more than there are frames to show; cellWidth from dividing the lane among them,
+ *   so the cells fill it exactly with no trailing gap; inFrame and trimmed from the clip's own
+ *   trim; step from the trimmed length over the tile count, kept FRACTIONAL, because flooring it
+ *   accumulates rounding error and the last tile then lands short of the clip's end; and each
+ *   sample at its own cell's midpoint, offset by inFrame and clamped inside the trim, so a
+ *   thumbnail matches the frame the playhead would show there.
  */
 export const computeFilmstrip = (o: {
   laneWidth: number
   thumbHeight: number
-  srcWidth: number
-  srcHeight: number
+  /** The output frame's width over its height, which every cell is shaped after. */
+  outputAspect: number
   fps: number
   inSec: number
   outSec: number
 }): FilmstripPlan => {
-  const aspect = o.srcWidth > 0 && o.srcHeight > 0 ? o.srcWidth / o.srcHeight : 16 / 9
+  const outputAspect = Number.isFinite(o.outputAspect) && o.outputAspect > 0 ? o.outputAspect : 16 / 9
   const thumbHeight = o.thumbHeight > 0 ? o.thumbHeight : FILMSTRIP_CLIP_HEIGHT
-  const thumbWidth = Math.max(1, Math.round(thumbHeight * aspect))
+  const thumbWidth = Math.max(1, Math.round(thumbHeight * outputAspect))
   const laneWidth = Number.isFinite(o.laneWidth) ? Math.max(0, o.laneWidth) : 0
-  const thumbCount = Math.max(1, Math.min(FILMSTRIP_MAX_TILES, Math.round(laneWidth / thumbWidth)))
-  const cellWidth = laneWidth / thumbCount
   const fps = o.fps > 0 ? o.fps : 30
   const inFrame = Math.max(0, Math.round(o.inSec * fps))
   const trimmed = Math.max(1, Math.round((o.outSec - o.inSec) * fps))
+  // Never more tiles than there are frames to fill them with: past that the same frame would be
+  // asked for twice over, which is work for nothing.
+  const thumbCount = Math.max(1, Math.min(FILMSTRIP_MAX_TILES, Math.round(laneWidth / thumbWidth), trimmed))
+  const cellWidth = laneWidth / thumbCount
   const step = trimmed / thumbCount
   // A time and the frame it falls on, derived together so the picture a tile shows and the key
   // it is cached under cannot drift apart. The time is what is asked for, because seeking to a
@@ -73,6 +81,20 @@ export const computeFilmstrip = (o: {
   const times = Array.from({ length: thumbCount }, (_, index) => o.inSec + ((index + 0.5) * step) / fps)
   const frames = times.map((time) => Math.max(inFrame, Math.min(inFrame + trimmed - 1, Math.round(time * fps))))
   return { thumbWidth, thumbCount, cellWidth, step, times, frames }
+}
+
+/**
+ * The identity of a thumbnail: the frame, the output shape it was composited into, and the crop
+ * that was applied on the way.
+ *
+ * All three belong in the key, because all three change the picture. Changing the output shape
+ * or the crop must make the old thumbnails unusable rather than leaving a strip showing frames
+ * composited some other way, which is exactly what a source-frame-only key would do.
+ */
+export const frameKey = (index: number, outputAspect: number, crop?: { left: number; top: number; right: number; bottom: number }): string => {
+  const shape = (Number.isFinite(outputAspect) && outputAspect > 0 ? outputAspect : 16 / 9).toFixed(4)
+  const cropped = crop ? `${crop.left.toFixed(3)},${crop.top.toFixed(3)},${crop.right.toFixed(3)},${crop.bottom.toFixed(3)}` : 'none'
+  return `${index}|${shape}|${cropped}`
 }
 
 /**

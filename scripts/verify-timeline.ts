@@ -4,7 +4,7 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
-import { computeFilmstrip, FILMSTRIP_MAX_TILES, filmstripCell, skimFrame } from '../src/lib/filmstrip'
+import { computeFilmstrip, FILMSTRIP_MAX_TILES, filmstripCell, frameKey, skimFrame } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -564,9 +564,9 @@ console.log('\n== the timeline filmstrip ==')
   // the whole point: the samples must span the clip's whole TRIM however many tiles fit, and a
   // wider lane must buy density rather than less of the range. That is what deriving the step
   // from the tile count does, and what a fixed step cannot do.
-  const base = { thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, fps: 30, inSec: 0, outSec: 8 }
+  const base = { thumbHeight: 32, outputAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 }
   const wide = computeFilmstrip({ ...base, laneWidth: 640 })
-  check('a tile is as wide as its own picture', wide.thumbWidth, Math.round(32 * (1920 / 1080)))
+  check('a tile is as wide as the OUTPUT frame', wide.thumbWidth, Math.round(32 * (16 / 9)))
   check('the count is how many fit across the lane', wide.thumbCount, Math.round(640 / wide.thumbWidth))
   near('the cells share the lane exactly', wide.cellWidth * wide.thumbCount, 640, 1e-9)
   near('the step is the trimmed frames over the count', wide.step, Math.round(8 * 30) / wide.thumbCount, 1e-9)
@@ -595,16 +595,29 @@ console.log('\n== the timeline filmstrip ==')
   check('but still reaches the far end', narrow.frames[narrow.frames.length - 1] > Math.round(8 * 30) - 1 - narrow.step, true)
   check('and the wide lane samples more densely', wide.step < narrow.step, true)
 
-  // A portrait source keeps its own shape, so its tiles are narrow rather than padded.
-  const portrait = computeFilmstrip({ ...base, laneWidth: 640, srcWidth: 720, srcHeight: 1280 })
-  check('a portrait picture makes narrow tiles', portrait.thumbWidth, Math.round(32 * (720 / 1280)))
-  check('so more of them fit', portrait.thumbCount > wide.thumbCount, true)
+  // Uniformity: the cells are shaped after the OUTPUT frame, never after each clip's own
+  // picture, so every clip's strip has the same density. Were they shaped after their sources,
+  // a portrait clip would pack several times as many tiles into the same lane as a landscape
+  // one and the strips would not read as the same thing at all.
+  const portraitOutput = computeFilmstrip({ ...base, laneWidth: 640, outputAspect: 9 / 16 })
+  check('a portrait OUTPUT makes narrow tiles', portraitOutput.thumbWidth, Math.round(32 * (9 / 16)))
+  check('so more of them fit', portraitOutput.thumbCount > wide.thumbCount, true)
+  const twoClips = [computeFilmstrip({ ...base, laneWidth: 400 }), computeFilmstrip({ ...base, laneWidth: 400 })]
+  check('and two clips of the same lane width lay out identically', twoClips[0].thumbWidth === twoClips[1].thumbWidth && twoClips[0].thumbCount === twoClips[1].thumbCount, true)
+
+  // Never more tiles than there are frames to fill them: past that the same frame would be
+  // asked for twice over, which is work for nothing.
+  const sparse = computeFilmstrip({ ...base, laneWidth: 640, inSec: 0, outSec: 3 / 30 })
+  check('a three-frame trim cannot fill more than three tiles', sparse.thumbCount, 3)
+  check('and each tile still gets its own frame', sparse.frames.length, 3)
+
+  check('a nonsense output shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, outputAspect: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
 
   // Degenerate inputs still describe a whole clip rather than nothing.
   check('a lane narrower than a tile still shows one', computeFilmstrip({ ...base, laneWidth: 8 }).thumbCount, 1)
   near('and that one tile is the middle of the trim', computeFilmstrip({ ...base, laneWidth: 8 }).frames[0], Math.round(0.5 * 240), 1e-9)
   check('an enormous lane is capped', computeFilmstrip({ ...base, laneWidth: 100000 }).thumbCount, FILMSTRIP_MAX_TILES)
-  check('a nonsense source shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, srcWidth: 0, srcHeight: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
+  check('a nonsense output shape still lays out', computeFilmstrip({ ...base, laneWidth: 640, outputAspect: Number.NaN }).thumbCount > 0, true)
   check('a zero-width lane still yields one cell', computeFilmstrip({ ...base, laneWidth: 0 }).thumbCount, 1)
   check('and a clip with no frames still samples inside itself', computeFilmstrip({ ...base, laneWidth: 640, inSec: 4, outSec: 4 }).frames.every((frame) => frame === 120), true)
 
@@ -622,6 +635,15 @@ console.log('\n== the timeline filmstrip ==')
   check('and a later moment is a later frame', skimFrame(1.5, 30) > skimFrame(1, 30), true)
   check('a nonsense moment is the first frame', skimFrame(Number.NaN, 30), 0)
   check('a clip with no rate still gives a frame', skimFrame(1, 0), 30)
+
+  // A thumbnail's key carries the frame, the output shape it was composited into and the crop
+  // applied on the way. Changing the shape or the crop must make the old pictures unusable, or
+  // a strip would be left showing frames composited some other way.
+  check('a key names its frame, shape and crop', frameKey(120, 16 / 9), '120|1.7778|none')
+  check('the same frame in another output shape is another picture', frameKey(120, 16 / 9) === frameKey(120, 4 / 3), false)
+  check('and so is the same frame cropped differently', frameKey(120, 16 / 9) === frameKey(120, 16 / 9, { left: 0.1, top: 0, right: 0, bottom: 0 }), false)
+  check('while the same frame, shape and crop is the same picture', frameKey(120, 16 / 9, { left: 0.1, top: 0, right: 0, bottom: 0 }) === frameKey(120, 16 / 9, { left: 0.1, top: 0, right: 0, bottom: 0 }), true)
+  check('a nonsense shape falls back rather than colliding', frameKey(1, 0), '1|1.7778|none')
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
