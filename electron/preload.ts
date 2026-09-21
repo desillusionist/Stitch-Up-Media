@@ -21,6 +21,12 @@ export interface IElectronAPI {
     source?: { width: number; height: number }
     fit?: SourceFit
     crop?: { left: number; top: number; right: number; bottom: number }
+    /**
+     * What the frame is cached by: the SOURCE the picture belongs to, which for a sequence is not
+     * the file it is read out of. A generated clip is rebuilt under a new name, and a cache keyed on
+     * that name was thrown away with it, so every tile was extracted again for an unchanged picture.
+     */
+    cacheId?: string
   }) => Promise<string[]>
   /** A file's audio as peaks for the timeline's waveform, or null when it has none. */
   waveformFor: (filePath: string) => Promise<number[] | null>
@@ -80,7 +86,7 @@ const api: IElectronAPI = {
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
-  framesAt: (filePath: string, options?: { times?: number[]; fps?: number; signature?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: SourceFit; crop?: { left: number; top: number; right: number; bottom: number } }) => ipcRenderer.invoke('frames-at', filePath, options),
+  framesAt: (filePath: string, options?: { times?: number[]; fps?: number; signature?: string; cacheId?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: SourceFit; crop?: { left: number; top: number; right: number; bottom: number } }) => ipcRenderer.invoke('frames-at', filePath, options),
   waveformFor: (filePath: string) => ipcRenderer.invoke('waveform-for', filePath),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),

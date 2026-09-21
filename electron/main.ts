@@ -11,6 +11,7 @@ import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/fil
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { clipFilters } from '../src/lib/sourceFit'
 import { peaksFromSamples } from '../src/lib/waveform'
+import { runFfmpeg } from './ffmpeg/run'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -190,21 +191,21 @@ app.whenReady().then(() => {
     try { return fs.existsSync(filePath) } catch { return false }
   })
 
-  // Filmstrip tiles for the timeline: frames sampled evenly across the range a clip actually
-  // uses, one image per tile. The tiles' own shape goes back with them, so a skimmed frame can
-  // be asked for at the same shape and laid over a tile without moving it. Cached in memory,
-  // since a clip is redrawn on every scroll and zoom far more often than its footage changes.
-  // Frames for the timeline filmstrip and for skimming across it, cached by the SOURCE FRAME
-  // they are, never by where a tile happens to sit. Zooming or resizing a lane re-lays the
-  // strip out, and the frames it needs are then mostly ones already here: only the in-between
-  // frames are extracted. One pass per request rather than one seek per frame, and the pass is
-  // a select on the frame indices asked for, so exactly those come back, in order.
+  // Filmstrip tiles for the timeline: frames sampled evenly across the range a clip actually uses,
+  // one image per tile. Cached in memory, since a clip is redrawn on every scroll and zoom far more
+  // often than its footage changes.
+  //
+  // Keyed by the SOURCE the picture belongs to and then by the source frame it is, never by where a
+  // tile happens to sit and never by the file the frame was read out of. A tile that moves when the
+  // lane is re-laid out is the same picture and comes from the cache, so a zoom extracts only the
+  // frames it did not already have; and since a generated clip is rebuilt under a new name, keying on
+  // the file would have thrown the whole cache away every rebuild for pictures that had not changed.
   const frameCache = new Map<string, Map<string, string>>()
-  const framesFor = (filePath: string) => {
-    const existing = frameCache.get(filePath)
+  const framesFor = (cacheId: string) => {
+    const existing = frameCache.get(cacheId)
     if (existing) return existing
     const created = new Map<string, string>()
-    frameCache.set(filePath, created)
+    frameCache.set(cacheId, created)
     if (frameCache.size > 40) frameCache.delete(frameCache.keys().next().value as string)
     return created
   }
@@ -216,7 +217,7 @@ app.whenReady().then(() => {
     const height = even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE)
     return { width: even(height * outAspect), height }
   }
-  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number; signature?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: SourceFit; crop?: CropFractions }) => {
+  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number; signature?: string; cacheId?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: SourceFit; crop?: CropFractions }) => {
     const times = (options?.times ?? []).filter((time) => Number.isFinite(time) && time >= 0)
     const fps = options?.fps && options.fps > 0 ? options.fps : 30
     const frame = options?.frame
@@ -227,8 +228,12 @@ app.whenReady().then(() => {
     // drawn for. It names the frame, of which the tile's own size is the scaled copy.
     const signature = options?.signature ?? ''
     if (!filePath || !times.length) return []
-    try { if (!fs.statSync(filePath).isFile()) return [] } catch { return [] }
-    const have = framesFor(filePath)
+    try { if (!(await fs.promises.stat(filePath)).isFile()) return [] } catch { return [] }
+    // Cached by the SOURCE, never by the file the frame is read out of. For a sequence those differ:
+    // the file is a generated clip, and a clip is rebuilt — at another rate, after a purge — under a
+    // new name every time. Keyed by that name the cache could never survive a rebuild, so every tile
+    // was extracted again for a picture that had not changed; keyed by the source it does.
+    const have = framesFor(options?.cacheId || filePath)
     const keyOf = (time: number) => `${frameKey(Math.max(0, Math.round(time * fps)), signature)}`
     const outAspect = frame && frame.width > 0 && frame.height > 0 ? frame.width / frame.height : 16 / 9
     const { width, height } = tileSizeFor(outAspect)
@@ -267,16 +272,17 @@ app.whenReady().then(() => {
           if (crop && hasCrop(crop)) chain.push(cropFilter(crop))
           chain.push(`scale=${width}:${height}`)
         }
-        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', time.toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', chain.join(','), '-q:v', '4', framePath], { timeout: 30000 })
-        have.set(key, `data:image/jpeg;base64,${fs.readFileSync(framePath).toString('base64')}`)
+        await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-ss', time.toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', chain.join(','), '-q:v', '4', framePath], 30000)
+        have.set(key, `data:image/jpeg;base64,${(await fs.promises.readFile(framePath)).toString('base64')}`)
       } catch (error) {
         logEvent('ipc', 'frame extraction failed', { filePath, time, key, error: String(error) })
       } finally {
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
       }
     }
-    // A few at a time: a whole strip at once would be one process per tile, and one at a time
-    // would take as long as they add up to.
+    // A few at a time. This bound is the machine's — each worker is an ffmpeg decoding a frame — so it
+    // is deliberately small; what matters is that it is real, since a worker that never yields gave
+    // no concurrency at all however many were started.
     const lanes = 4
     let next = 0
     await Promise.all(Array.from({ length: Math.min(lanes, jobs.length) }, async () => {
@@ -405,7 +411,7 @@ app.whenReady().then(() => {
       // An explicit length pins it to exactly the frames the timeline expects.
       if (images.length > 1 && options?.duration && options.duration > 0) args.push('-t', String(options.duration))
       args.push(previewPath)
-      execFileSync('ffmpeg', args, { timeout: 120000 })
+      await runFfmpeg(args, 120000)
       return previewPath
     } catch (error) {
       logEvent('ipc', 'image-sequence preview failed', { count: images.length, rate, stillSeconds, args: args.join(' '), error: String(error) })

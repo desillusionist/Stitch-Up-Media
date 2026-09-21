@@ -12,6 +12,7 @@ scripts/.filmstrip.cjs
 scripts/.sourceFit.cjs
 scripts/.timelineScale.cjs
 scripts/.waveform.cjs
+scripts/.ffmpegRun.cjs
 scripts/.measure.html
 
 # Logs

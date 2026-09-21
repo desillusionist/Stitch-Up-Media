@@ -13,6 +13,7 @@
     "measure": "npm run build && esbuild src/lib/filmstrip.ts --bundle --platform=node --format=cjs --outfile=scripts/.filmstrip.cjs --log-level=warning && esbuild src/lib/sourceFit.ts --bundle --platform=node --format=cjs --outfile=scripts/.sourceFit.cjs --log-level=warning && esbuild src/lib/timelineScale.ts --bundle --platform=node --format=cjs --outfile=scripts/.timelineScale.cjs --log-level=warning && electron scripts/measure-layout.cjs",
     "verify-fit": "npm run build && esbuild src/lib/sourceFit.ts --bundle --platform=node --format=cjs --outfile=scripts/.sourceFit.cjs --log-level=warning && node scripts/check-fit-chain.cjs",
     "verify-wave": "npm run build && esbuild src/lib/waveform.ts --bundle --platform=node --format=cjs --outfile=scripts/.waveform.cjs --log-level=warning && node scripts/check-waveform.cjs",
+    "verify-run": "esbuild electron/ffmpeg/run.ts --bundle --platform=node --format=cjs --outfile=scripts/.ffmpegRun.cjs --log-level=warning && node scripts/check-ffmpeg-run.cjs",
     "check-mount": "npm run build && electron scripts/check-editor-mount.cjs",
     "preview": "vite preview",
     "electron:dev": "vite",

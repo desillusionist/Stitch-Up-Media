@@ -690,6 +690,14 @@ console.log('\n== the timeline filmstrip ==')
 
   check('a nonsense picture shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, outAspect: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
 
+  // A sequence is counted at the rate the TIMELINE works in, and the strip has to be given that rate.
+  // Given the one probing its first FRAME invents — an image has no rate of its own, and ffprobe names
+  // one anyway — the same ten seconds is 250 frames rather than 240, and the last tiles sample frames
+  // the sequence does not have. The cap on the count is the trimmed frames, which is the wrong number.
+  const sequence = (fps: number) => computeFilmstrip({ thumbHeight: 32, outAspect: 16 / 9, fps, inSec: 0, outSec: 240 / 24, laneWidth: 100000 })
+  check('a strip counts a sequence at the rate it is played at', Math.max(...sequence(24).frames), 239)
+  check('counted at the rate probing invents, it samples past the end', Math.max(...sequence(25).frames), 249)
+
   // The lane's width is the only thing that decides the count, and a tile's own width never
   // follows it. There used to be a fixed ceiling on the count, and past it every tile grew
   // instead of more of them appearing, so a wider window or a deeper zoom magnified the strip

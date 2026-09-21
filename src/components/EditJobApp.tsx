@@ -510,6 +510,20 @@ export const EditJobApp: React.FC = () => {
    * resize re-lays the strip out rather than serving one laid out for a width that no longer
    * exists.
    */
+  /**
+   * The rate a clip's strip counts its frames at.
+   *
+   * For an image sequence that is the rate the timeline is WORKING IN, not the rate probing its first
+   * frame invents. An image has no rate of its own and ffprobe names one anyway — 25, usually — which
+   * disagreed with the 24 the sequence is played at, so the strip counted ten seconds as 250 frames
+   * instead of 240 and its last tiles sampled frames the sequence does not have. Everything that
+   * counts frames has to count them the same way, which is what `sourceFps` is for.
+   */
+  const stripFpsFor = (segment: TimelineSegment): number => {
+    const sequence = draft ? sequenceFor(draft, segment.sourcePath) : undefined
+    if (draft && sequence) return sourceFps(draft, segment.sourcePath, sequence, resolveTiming)
+    return sourceShape[segment.sourcePath]?.fps ?? 30
+  }
   const planFor = (segment: TimelineSegment) => {
     const shape = sourceShape[segment.sourcePath]
     if (!shape || segment.duration <= 0) return undefined
@@ -519,7 +533,7 @@ export const EditJobApp: React.FC = () => {
       laneWidth: laneWidthFor(segment.duration, zoom),
       thumbHeight: FILMSTRIP_CLIP_HEIGHT,
       outAspect: frameAspect,
-      fps: shape.fps,
+      fps: stripFpsFor(segment),
       inSec: segment.sourceIn,
       outSec: segment.sourceIn + segment.duration,
     })
@@ -599,11 +613,17 @@ export const EditJobApp: React.FC = () => {
     const rate = sourceFps(draft, segment.sourcePath, sequence, resolveTiming)
     return rememberedPreviewFor(draft, segment.sourcePath, rate) ?? null
   }
-  /** A frame already fetched. */
-  const frameImageFor = (segment: TimelineSegment, frame: number) => {
-    const target = pictureSourceFor(segment)
-    return target ? frameImages[target]?.[keyFor(segment, frame)] : undefined
-  }
+  /**
+   * A frame already fetched.
+   *
+   * Held against the SOURCE rather than against the file it was read from. For a sequence those are
+   * two different things — the file is a generated clip, and a clip gets rebuilt under a new name —
+   * and keying on the name means the pictures taken for the old one are invisible to the new, for a
+   * picture that has not changed. The source is what the frame index means, so the source is what it
+   * is filed under.
+   */
+  const frameImageFor = (segment: TimelineSegment, frame: number) =>
+    frameImages[segment.sourcePath]?.[keyFor(segment, frame)]
 
   /**
    * Fetches the frames the visible strips are showing and do not have yet.
@@ -625,7 +645,7 @@ export const EditJobApp: React.FC = () => {
     if (!bridge?.framesAt || !model || !outputFrame) return
     // Grouped by the source AND the signature, not by the source alone: the same file can appear
     // twice in a job with a different fit on each, and those are different pictures.
-    const wanted = new Map<string, { target: string; signature: string; jobs: Array<{ time: number; key: string }>; fps: number; source: { width: number; height: number }; fit?: SourceFit; crop?: CropFractions }>()
+    const wanted = new Map<string, { target: string; cacheId: string; signature: string; jobs: Array<{ time: number; key: string }>; fps: number; source: { width: number; height: number }; fit?: SourceFit; crop?: CropFractions }>()
     model.lanes.forEach((lane) => {
       if (!filmstripLanes[lane.id]) return
       lane.segments.forEach((segment) => {
@@ -636,17 +656,18 @@ export const EditJobApp: React.FC = () => {
         // straight from the file rather than extracted.
         if (!plan || !shape || !target || segment.still) return
         const signature = signatureFor(segment)
+        const cacheId = segment.sourcePath
         const fit = draft ? sourceFitFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined
         // The clip's own crop, which the chain crops with before it fits: a strip is a picture of the
         // output, and the output is cropped.
         const crop = draft ? effectiveCropFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined
         const source = { width: shape.width, height: shape.height }
-        const id = `${target}#${signature}`
-        const entry = wanted.get(id) ?? { target, signature, jobs: [], fps: shape.fps, source, fit, crop }
+        const id = `${cacheId}#${signature}`
+        const entry = wanted.get(id) ?? { target, cacheId, signature, jobs: [], fps: stripFpsFor(segment), source, fit, crop }
         plan.times.forEach((time, cell) => {
           const key = keyFor(segment, plan.frames[cell])
-          if (frameImages[target]?.[key]) return
-          if (framesPendingRef.current[`${target}#${key}`]) return
+          if (frameImages[cacheId]?.[key]) return
+          if (framesPendingRef.current[`${cacheId}#${key}`]) return
           entry.jobs.push({ time, key })
         })
         if (entry.jobs.length) wanted.set(id, entry)
@@ -654,20 +675,21 @@ export const EditJobApp: React.FC = () => {
     })
     if (!wanted.size) return
     // Everything asked for, so that the marks can be released when the answer comes back.
-    const asked = [...wanted].flatMap(([, { target, jobs }]) => jobs.map(({ key }) => `${target}#${key}`))
+    const asked = [...wanted].flatMap(([, { cacheId, jobs }]) => jobs.map(({ key }) => `${cacheId}#${key}`))
     const timer = window.setTimeout(() => {
       asked.forEach((key) => { framesPendingRef.current[key] = true })
-      void Promise.all([...wanted].map(async ([, { target, signature, jobs, fps, source, fit, crop }]) => {
+      void Promise.all([...wanted].map(async ([, { target, cacheId, signature, jobs, fps, source, fit, crop }]) => {
         const images = await bridge.framesAt(target, {
           times: jobs.map((job) => job.time),
           fps,
           signature,
+          cacheId,
           frame: outputFrame,
           source,
           fit,
           crop,
         })
-        return [target, jobs, images] as const
+        return [cacheId, jobs, images] as const
       })).then((entries) => {
         // Released whether or not a later layout has moved on: a mark left behind is a frame that
         // is never asked for again, so those tiles would stay blank for good. The pictures are
@@ -677,13 +699,13 @@ export const EditJobApp: React.FC = () => {
         setFrameImages((current) => {
           const next = { ...current }
           let arrived = false
-          entries.forEach(([target, jobs, images]) => {
-            const store = { ...(next[target] ?? {}) }
+          entries.forEach(([cacheId, jobs, images]) => {
+            const store = { ...(next[cacheId] ?? {}) }
             jobs.forEach(({ key }, position) => {
               const image = images[position]
               if (image) { store[key] = image; arrived = true }
             })
-            next[target] = store
+            next[cacheId] = store
           })
           return arrived ? next : current
         })
