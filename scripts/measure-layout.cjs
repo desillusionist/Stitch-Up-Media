@@ -20,7 +20,7 @@ const cssPath = path.join(assets, css)
 const { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT } = require('./.filmstrip.cjs')
 // The real placement arithmetic, so the monitor's composite is measured against the figures the
 // encoder is handed rather than against a layout that merely looks plausible.
-const { fitPlacement, placedSource } = require('./.sourceFit.cjs')
+const { placedSource } = require('./.sourceFit.cjs')
 // The real timeline metric, so the widths measured here are the ones the timeline draws with — and
 // so a case can show that resizing the window does not change a single one of them.
 const { laneWidthFor, pxPerSec } = require('./.timelineScale.cjs')
@@ -128,29 +128,34 @@ const monitorStage = `
   </div>
 </div>`
 
-const paintMonitor = (placement, box) => `(() => {
+const paintMonitor = (box) => `(() => {
   const win = document.getElementById('hwindow'); const pic = document.getElementById('hpicture'); const frame = document.getElementById('hframe')
   Object.assign(win.style, { left: '${box.frameLeft}px', top: '${box.frameTop}px', width: '${box.frameWidth}px', height: '${box.frameHeight}px' })
   Object.assign(pic.style, { position: 'absolute', left: '${box.pictureLeft}px', top: '${box.pictureTop}px', width: '${box.pictureWidth}px', height: '${box.pictureHeight}px', maxWidth: 'none', maxHeight: 'none' })
   Object.assign(frame.style, { width: '${box.frameWidth}px', height: '${box.frameHeight}px' })
-  return ${JSON.stringify({ overflow: placement.overflow })}
+  return true
 })()`
 
 const readMonitor = `(() => {
   const box = (el) => { const r = el.getBoundingClientRect(); return { left: +r.left.toFixed(2), top: +r.top.toFixed(2), width: +r.width.toFixed(2), height: +r.height.toFixed(2) } }
   const win = box(document.getElementById('hwindow')); const pic = box(document.getElementById('hpicture')); const frame = box(document.getElementById('hframe'))
-  // What the window actually shows of the picture, which is what a viewer sees.
-  const shown = {
-    left: Math.max(win.left, pic.left), top: Math.max(win.top, pic.top),
-    right: Math.min(win.left + win.width, pic.left + pic.width), bottom: Math.min(win.top + win.height, pic.top + pic.height),
-  }
-  shown.width = +(shown.right - shown.left).toFixed(2); shown.height = +(shown.bottom - shown.top).toFixed(2)
+  // How much of the WINDOW the picture keeps, clamped to it: a picture pushed clear of the canvas
+  // covers none of it and leaves the whole window as background, whichever side it went off.
+  const relLeft = +(pic.left - win.left).toFixed(2), relTop = +(pic.top - win.top).toFixed(2)
+  const visLeft = Math.max(0, Math.min(win.width, relLeft)), visRight = Math.max(0, Math.min(win.width, relLeft + pic.width))
+  const visTop = Math.max(0, Math.min(win.height, relTop)), visBottom = Math.max(0, Math.min(win.height, relTop + pic.height))
   return {
     window: [win.width, win.height], picture: [pic.width, pic.height],
+    // Where the picture was painted within the window, which is the position the arithmetic asked
+    // for and must reach the screen unchanged.
+    pictureVsWindow: [relLeft, relTop],
+    // The outline is centred by the stylesheet and the window by these figures: the two agreeing is
+    // what says the frame the user is shown IS the frame the picture was placed on.
     outlineVsWindow: [+(frame.left - win.left).toFixed(2), +(frame.top - win.top).toFixed(2), +(frame.width - win.width).toFixed(2)],
-    pictureOverflow: [+(pic.width - win.width).toFixed(2), +(pic.height - win.height).toFixed(2)],
-    coveredWidth: +(shown.width - win.width).toFixed(2), coveredHeight: +(shown.height - win.height).toFixed(2),
-    gapLeft: +(shown.left - win.left).toFixed(2), gapRight: +((win.left + win.width) - shown.right).toFixed(2),
+    // The background the picture leaves showing on each edge of the window.
+    gapLeft: +visLeft.toFixed(2), gapRight: +(win.width - visRight).toFixed(2),
+    gapTop: +visTop.toFixed(2), gapBottom: +(win.height - visBottom).toFixed(2),
+    coveredWidth: +(visRight - visLeft).toFixed(2), coveredHeight: +(visBottom - visTop).toFixed(2),
   }
 })()`
 
@@ -371,11 +376,20 @@ app.whenReady().then(async () => {
   const round = (value) => Math.round(value * 1000) / 1000
   const caseH = {}
   const caseI = {}
+  const monitorProblems = []
+  // The positions that matter under the free X/Y model: centred (where nothing has moved), the two
+  // extremes of each axis, a picture left showing bars, and one pushed clear of the canvas — which is
+  // now a position rather than an error, and the case where the window shows background and nothing
+  // else. The window and the outline are both derived here rather than assumed, because the app
+  // centres the outline by stylesheet and the window by these figures: agreeing is the check.
   for (const [label, fit] of [
-    ['none', undefined], ['width@0.5', { mode: 'width', offset: 0.5 }], ['width@0', { mode: 'width', offset: 0 }],
-    ['width@1', { mode: 'width', offset: 1 }], ['height@0.5', { mode: 'height', offset: 0.5 }],
+    ['none', undefined],
+    ['width centred', { mode: 'width', offset: { x: 0, y: 0 } }],
+    ['width moved down', { mode: 'width', offset: { x: 0, y: 0.4 } }],
+    ['height centred', { mode: 'height', offset: { x: 0, y: 0 } }],
+    ['height moved left', { mode: 'height', offset: { x: -0.25, y: 0 } }],
+    ['pushed clear of the canvas', { mode: 'contain', offset: { x: 1.2, y: 0 } }],
   ]) {
-    const placement = fitPlacement({ source, frame: output, fit })
     const place = placedSource({ source, frame: output, fit })
     const scale = frameBox.width / output.width
     const box = {
@@ -384,9 +398,44 @@ app.whenReady().then(async () => {
       pictureLeft: round(place.source.x * scale), pictureTop: round(place.source.y * scale),
       pictureWidth: round(place.source.width * scale), pictureHeight: round(place.source.height * scale),
     }
-    await run(paintMonitor(placement, box))
+    // What the screen must show, worked out here from the same figures that were painted: the picture
+    // at exactly the painted size and position, and the background on whatever edge it does not
+    // reach — clamped to the window, so a picture off the canvas leaves the whole of it as
+    // background rather than a negative bar.
+    const relLeft = box.pictureLeft, relTop = box.pictureTop
+    const visLeft = Math.max(0, Math.min(box.frameWidth, relLeft)), visRight = Math.max(0, Math.min(box.frameWidth, relLeft + box.pictureWidth))
+    const visTop = Math.max(0, Math.min(box.frameHeight, relTop)), visBottom = Math.max(0, Math.min(box.frameHeight, relTop + box.pictureHeight))
+    const expected = {
+      picture: [box.pictureWidth, box.pictureHeight],
+      pictureVsWindow: [relLeft, relTop],
+      gapLeft: round(visLeft), gapTop: round(visTop),
+      gapRight: round(box.frameWidth - visRight), gapBottom: round(box.frameHeight - visBottom),
+    }
+    await run(paintMonitor(box))
     await new Promise((resolve) => setTimeout(resolve, 60))
-    caseH[label] = { overflow: placement.overflow, kept: placement.kept, ...(await run(readMonitor)) }
+    const shot = await run(readMonitor)
+    caseH[label] = { expected, measured: shot }
+    if (shot.HARNESS_ERROR) { monitorProblems.push(`the monitor could not be read for ${label}`); continue }
+    const close = (a, b) => Math.abs(a - b) <= 1
+    // The outline is centred by the stylesheet; the window by the arithmetic above. Half a pixel of
+    // drift between them is the frame the picture was placed on being a different frame to the one
+    // the user is shown, which is the whole thing this case exists to rule out.
+    if (shot.outlineVsWindow.some((value) => Math.abs(value) > 0.5)) {
+      monitorProblems.push(`the output outline and the picture's window disagree at ${label}: ${JSON.stringify(shot.outlineVsWindow)}`)
+    }
+    if (!shot.picture.every((value, axis) => close(value, expected.picture[axis]))) {
+      monitorProblems.push(`the picture is not the size the fit asked for at ${label}: ${JSON.stringify(shot.picture)} of ${JSON.stringify(expected.picture)}`)
+    }
+    if (!shot.pictureVsWindow.every((value, axis) => close(value, expected.pictureVsWindow[axis]))) {
+      monitorProblems.push(`the picture is not where the offset put it at ${label}: ${JSON.stringify(shot.pictureVsWindow)} of ${JSON.stringify(expected.pictureVsWindow)}`)
+    }
+    // Each edge's background, side by side, so a picture that is short on one edge and over on the
+    // other cannot pass by cancelling out.
+    for (const edge of ['gapLeft', 'gapTop', 'gapRight', 'gapBottom']) {
+      if (!close(shot[edge], expected[edge])) {
+        monitorProblems.push(`the background at the ${edge.slice(3).toLowerCase()} of ${label} is ${shot[edge]}px, not the ${expected[edge]}px the position leaves`)
+      }
+    }
   }
   // The strip is laid out from the width the browser gave the clip, then measured, at several
   // window sizes. What must hold: the tile is the constant tall in every one of them, the count
@@ -419,6 +468,7 @@ app.whenReady().then(async () => {
   // The harness has grown past "print it and read it": the checks the numbers are for are stated, and
   // one that fails is a line of output and a non-zero exit rather than something to be spotted.
   const problems = Array.isArray(laid.problems) ? laid.problems : []
+  problems.push(...monitorProblems)
   if (problems.length) {
     console.error(`\n${problems.length} LAYOUT PROBLEM(S)\n${problems.map((problem) => `  - ${problem}`).join('\n')}\n`)
   }

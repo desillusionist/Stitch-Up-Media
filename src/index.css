@@ -163,12 +163,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-stage-pan { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .editor-stage.is-pannable { cursor: grab; }
 .editor-stage.is-pannable:active { cursor: grabbing; }
-/* A drag on the picture moves the clip inside the frame instead, along the one axis it has room
-   on, so the cursor says which way it can be moved rather than that the view can be dragged. */
-.editor-stage.is-fitting.is-fit-x { cursor: ew-resize; }
-.editor-stage.is-fitting.is-fit-y { cursor: ns-resize; }
-.editor-stage.is-fitting .editor-video,
-.editor-stage.is-fitting .editor-still { cursor: inherit; }
+/* A drag on the picture PLACES it on the canvas, in both directions and without a limit, so the
+   cursor says so rather than saying which axis happens to have room. */
+.editor-stage.is-placing { cursor: move; }
+.editor-stage.is-placing .editor-video,
+.editor-stage.is-placing .editor-still { cursor: inherit; }
 /* The edges of the frame the encoder will write, which is not always the picture's own
    shape: an exact size stretches to it, a named resolution fits inside it. The spread
    shadow dims everything the output does not cover, so the output area reads as a window
@@ -325,10 +324,8 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-confirm-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .crop-confirm-actions button { padding: 6px 9px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
 .crop-confirm-actions button.is-danger { color: var(--ui-error); border-color: var(--ui-error); }
-/* The fit's offset figure. One axis, so one slider and one field reading the same percentage. */
-.offset-row { display: grid; grid-template-columns: minmax(0, 1fr) 54px auto; align-items: center; gap: 6px; }
-.offset-row input[type="range"] { width: 100%; accent-color: var(--ui-accent); }
-.offset-row input[type="range"]:disabled { opacity: .4; }
+/* The picture's position. Two figures of the frame's own percentages, side by side. */
+.offset-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: center; gap: 6px; }
 .offset-row input.editor-input { padding: 5px 4px; text-align: center; }
 .offset-unit { color: var(--ui-muted); font-size: 9px; }
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }

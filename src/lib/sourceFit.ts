@@ -2,31 +2,48 @@ import { CropFractions, FitMode, FrameSize } from './outputFrame'
 import { SourceCrop, SourceFit } from '../types'
 
 /**
- * Per-clip output fit: how one clip is placed in the output frame when it does not simply fit.
+ * Per-clip output framing: how one clip is scaled, and where the result sits.
  *
- * The default is `contain` — the whole picture inside the frame, with the shortfall filled in —
- * which is what every clip did before this existed, so a clip with no fit of its own renders
- * exactly as it always has.
+ * Two separate decisions, which is the whole shape of this model. The FIT decides SCALE ONLY: the
+ * default is `contain`, the whole picture inside the frame, and FIT TO WIDTH or FIT TO HEIGHT fix one
+ * axis to the frame's and let the other follow from the picture's own aspect, so nothing is ever
+ * stretched. The OFFSET then decides POSITION: where the scaled picture sits on the output canvas, as
+ * fractions of that canvas, with 0, 0 centred.
  *
- * FIT TO WIDTH fixes the clip's width to the frame's and lets the height do what it likes; FIT TO
- * HEIGHT does the same the other way up. One axis is therefore always exact, and the other either
- * overflows — and is cropped, with `offset` choosing which part of it stays — or falls short, and
- * is then filled in. Nothing is ever stretched: the shape is held by scaling the picture's own
- * aspect, so the only choices left are which part to keep and what colour the gap is.
+ * The offset is NOT clamped, and that is deliberate rather than merely permitted. A picture may be
+ * moved until it is partly or wholly off the canvas, and where it does not cover the canvas the
+ * background shows: bars are what a position produces. The model before this had one clamped axis
+ * whose whole job was to keep the frame COVERED, which made a position impossible to express and cost
+ * the freedom to place a letterboxed picture where it reads best.
  *
  * Every figure here is derived from the placement rather than from ffmpeg's own aspect handling,
- * because the same figures have to describe the exported frame AND the filter chain that makes it
- * AND a thumbnail of it. Rounding is to even pixels, which is the only size the encoders accept.
+ * because the same figures have to describe the exported frame AND the filter chain that makes it AND
+ * a thumbnail of it. Rounding is to even pixels, which is the only size the encoders accept.
  */
 
-/** Centred: where a clip that does not fit sits unless it is moved. */
-export const DEFAULT_FIT_OFFSET = 0.5
+/** Centred: where a picture sits until it is moved. */
+export const DEFAULT_FIT_OFFSET: { x: number; y: number } = { x: 0, y: 0 }
 
-/** The offset as a place between the clip's two extremes, with nonsense falling back to centred. */
-export const clampFitOffset = (offset: number): number =>
-  Number.isFinite(offset) ? Math.max(0, Math.min(1, offset)) : DEFAULT_FIT_OFFSET
+/** An offset with nonsense in it read as nothing, so a bad record cannot place a picture anywhere. */
+export const normaliseFitOffset = (offset: { x?: unknown; y?: unknown } | undefined): { x: number; y: number } => ({
+  x: typeof offset?.x === 'number' && Number.isFinite(offset.x) ? offset.x : 0,
+  y: typeof offset?.y === 'number' && Number.isFinite(offset.y) ? offset.y : 0,
+})
+
+/**
+ * What a record SAYS, without working anything out: a pair if it already is one, and centred if it is
+ * the single number this used to be. For the callers that are about to overwrite the record anyway —
+ * a fit being switched, a menu being used — where the old number's meaning needs sizes nobody there
+ * has. `fitOffsetFor` is the reader that works it out.
+ */
+export const storedFitOffset = (fit: SourceFit | undefined): { x: number; y: number } => {
+  const raw = fit?.offset as unknown
+  return raw && typeof raw === 'object' ? normaliseFitOffset(raw as { x?: unknown; y?: unknown }) : { ...DEFAULT_FIT_OFFSET }
+}
 
 const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
+/** Even, and able to be negative: a position may be off either edge of the canvas. */
+const evenSigned = (value: number) => Math.round(value / 2) * 2
 
 /**
  * The clip's own box once its shape is held and one axis is fixed to the frame's.
@@ -45,79 +62,103 @@ export const fittedSize = (source: FrameSize, frame: FrameSize, mode: FitMode): 
   return byWidth.height <= frame.height ? byWidth : { width: even(frame.height * ratio), height: frame.height }
 }
 
+/**
+ * The offset a fit really stands for, given the sizes it is being applied to.
+ *
+ * The record's own shape is `{ x, y }` and that is all anything writes. What is ALSO read is the
+ * single number this used to be — a place along the one axis a fit left over, counted in the slack
+ * that axis had — because jobs written by the older model are still on disk and their pan can be
+ * worked out exactly rather than thrown away: the picture used to sit at `-offset * slack` on that
+ * axis, centred is `-slack / 2`, and the difference between the two is what the new offset means.
+ * Where the old fit left no slack the number did nothing at all, so it reads as centred, which is
+ * what it looked like.
+ */
+export const fitOffsetWithin = (fit: SourceFit | undefined, size: FrameSize, frame: FrameSize): { x: number; y: number } => {
+  const raw = fit?.offset as unknown
+  if (raw && typeof raw === 'object') return normaliseFitOffset(raw as { x?: unknown; y?: unknown })
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return { ...DEFAULT_FIT_OFFSET }
+  const mode = fit?.mode ?? 'contain'
+  if (mode === 'contain') return { ...DEFAULT_FIT_OFFSET }
+  const axis: 'width' | 'height' = mode === 'width' ? 'height' : 'width'
+  const slack = size[axis] - frame[axis]
+  if (!(slack > 0) || !(frame[axis] > 0)) return { ...DEFAULT_FIT_OFFSET }
+  const moved = ((0.5 - Math.max(0, Math.min(1, raw))) * slack) / frame[axis]
+  return axis === 'height' ? { x: 0, y: moved } : { x: moved, y: 0 }
+}
+
+/** The same, for a caller that has the source rather than the size the fit scales it to. */
+export const fitOffsetFor = (fit: SourceFit | undefined, source: FrameSize, frame: FrameSize): { x: number; y: number } =>
+  fitOffsetWithin(fit, fittedSize(source, frame, fit?.mode ?? 'contain'), frame)
+
 export interface FitPlacement {
-  /** The clip's box after scaling, in frame pixels. */
+  /** The picture's box after scaling, in frame pixels. */
   size: FrameSize
-  /** The part of it the frame keeps, in the clip's own scaled pixels. */
-  kept: { x: number; y: number; width: number; height: number }
-  /** Where the clip falls short of the frame, which is filled in; null when it covers it. */
-  pad: { x: number; y: number } | null
-  /**
-   * The axis with something to spare, and so something to choose. It is the axis the offset
-   * moves along, and the only axis the reposition dragger is ever active on.
-   */
-  overflow: 'width' | 'height' | null
+  /** Where that box's top-left corner sits on the canvas, in frame pixels. May be off the canvas. */
+  at: { x: number; y: number }
 }
 
 /**
- * Where a clip sits inside the output frame, and what is kept or filled in to get there.
+ * Where the scaled picture sits on the output canvas.
  *
- * With no fit given the answer is `contain`, which is what the encoder did before there was a
- * choice, so the default case goes through the same arithmetic as the chosen ones rather than
- * down a separate path that could drift from it.
+ * Centred and then moved, so the offset is a displacement from the middle rather than from an edge:
+ * 0, 0 is exactly where the picture sat before there was a position at all, and a frame whose size
+ * changes does not move a picture that has not been moved. With no fit given the answer is `contain`,
+ * which is what the encoder did before there was a choice, so the default case goes through the same
+ * arithmetic as the chosen ones rather than down a separate path that could drift from it.
  */
 export const fitPlacement = (input: { source: FrameSize; frame: FrameSize; fit?: SourceFit }): FitPlacement | null => {
   const { source, frame } = input
   if (!(source.width > 0) || !(source.height > 0) || !(frame.width > 0) || !(frame.height > 0)) return null
-  const mode: FitMode = input.fit?.mode ?? 'contain'
-  const size = fittedSize(source, frame, mode)
+  const size = fittedSize(source, frame, input.fit?.mode ?? 'contain')
   if (!(size.width > 0) || !(size.height > 0)) return null
-  const axis: 'width' | 'height' = mode === 'width' ? 'height' : 'width'
-  const slack = size[axis] - frame[axis]
-  if (mode !== 'contain' && slack > 0) {
-    // The clip covers the frame on this axis, so the frame chooses which part of it stays. The
-    // start is clamped by the offset's own range, which is what keeps the frame fully covered:
-    // no position it can take leaves a gap at either end.
-    const start = Math.round(clampFitOffset(input.fit?.offset ?? DEFAULT_FIT_OFFSET) * slack)
-    return {
-      size,
-      kept: axis === 'height'
-        ? { x: 0, y: start, width: frame.width, height: frame.height }
-        : { x: start, y: 0, width: frame.width, height: frame.height },
-      pad: null,
-      overflow: axis,
-    }
-  }
-  // It falls short, so the frame is filled in around it. Nothing is chosen here: a gap is not
-  // something to drag, and centring is the only place a letterbox or pillarbox belongs.
+  const offset = fitOffsetWithin(input.fit, size, frame)
   return {
     size,
-    kept: { x: 0, y: 0, width: size.width, height: size.height },
-    pad: { x: Math.round((frame.width - size.width) / 2), y: Math.round((frame.height - size.height) / 2) },
-    overflow: null,
+    at: {
+      x: evenSigned((frame.width - size.width) / 2 + offset.x * frame.width),
+      y: evenSigned((frame.height - size.height) / 2 + offset.y * frame.height),
+    },
   }
 }
 
 /**
- * The filter chain that places one clip in the output frame.
+ * The filter chain that places one clip on the output canvas.
  *
- * Scale first, and by both figures rather than by `force_original_aspect_ratio`, so the box the
- * chain works on is the box this arithmetic worked out; then the crop that keeps the frame
- * covered, or the pad that fills it in; then `setsar=1`, because a clip whose samples are not
- * square would otherwise be concat'ed into the output with the wrong shape.
+ * Scale by both figures rather than by `force_original_aspect_ratio`, so the box the chain works on is
+ * the box this arithmetic worked out. What follows depends on whether the scaled picture is still
+ * inside the canvas. Inside it, `pad` places it and fills what it does not cover, which is the
+ * letterbox and pillarbox case and needs no crop at all. Over an edge, `pad` cannot be used — it
+ * refuses an output smaller than its input, and it SILENTLY CENTRES the input when handed a negative
+ * offset rather than putting it off the canvas — so the part of the picture that IS on the canvas is
+ * cropped out of it first and then padded into place at its own corner, which is the crop side of the
+ * same operation and needs no negative offset anywhere. And where the position leaves no part of the
+ * picture on the canvas at all, the answer is a canvas of nothing but background: a sliver is cropped
+ * out, painted over with the background colour, and then padded, so the picture contributes no pixel
+ * to the result rather than a two-pixel smudge in a corner.
  */
 export const fitFilters = (input: { source: FrameSize; frame: FrameSize; fit?: SourceFit }): string[] | null => {
   const placement = fitPlacement(input)
   if (!placement) return null
-  const { size, kept, pad } = placement
+  const { frame } = input
+  const { size, at } = placement
   const filters = [`scale=${size.width}:${size.height}`]
-  if (kept.width !== size.width || kept.height !== size.height || kept.x !== 0 || kept.y !== 0) {
-    filters.push(`crop=${kept.width}:${kept.height}:${kept.x}:${kept.y}`)
+  // The part of the picture that is on the canvas, and where that part belongs on it. Both are even,
+  // because the size and the position are, which is why no rounding is needed on the way through.
+  const visibleAt = { x: Math.max(0, at.x), y: Math.max(0, at.y) }
+  const from = { x: Math.min(Math.max(0, -at.x), size.width), y: Math.min(Math.max(0, -at.y), size.height) }
+  const visible = {
+    width: Math.min(size.width - from.x, frame.width - visibleAt.x),
+    height: Math.min(size.height - from.y, frame.height - visibleAt.y),
   }
-  // Only when there is really a gap to fill: a clip whose box already is the frame would
-  // otherwise carry a pad of nothing, which is one more filter on every frame for no reason.
-  if (pad && (size.width !== input.frame.width || size.height !== input.frame.height)) {
-    filters.push(`pad=${input.frame.width}:${input.frame.height}:${pad.x}:${pad.y}:color=black`)
+  if (visible.width < 2 || visible.height < 2) {
+    filters.push('crop=2:2:0:0', 'drawbox=x=0:y=0:w=2:h=2:color=black:t=fill', `pad=${frame.width}:${frame.height}:0:0:color=black`)
+  } else {
+    if (from.x > 0 || from.y > 0 || visible.width !== size.width || visible.height !== size.height) {
+      filters.push(`crop=${visible.width}:${visible.height}:${from.x}:${from.y}`)
+    }
+    if (visibleAt.x > 0 || visibleAt.y > 0 || visible.width !== frame.width || visible.height !== frame.height) {
+      filters.push(`pad=${frame.width}:${frame.height}:${visibleAt.x}:${visibleAt.y}:color=black`)
+    }
   }
   filters.push('setsar=1')
   return filters
@@ -126,32 +167,26 @@ export const fitFilters = (input: { source: FrameSize; frame: FrameSize; fit?: S
 /**
  * What a placement looks like to a cache.
  *
- * Everything that changes the picture belongs in it: the mode, the offset — quantised, so a drag
- * that is still moving does not ask for a new set of thumbnails at every pixel — and the two
- * boxes. Frames cached under one placement must never be served for another.
+ * Everything that changes the picture belongs in it: the mode, the position — quantised, so a drag
+ * that is still moving does not ask for a new set of thumbnails at every pixel — and the two boxes.
+ * Frames cached under one placement must never be served for another. The position is written in the
+ * CONVERTED form, so a record from the older model and its equivalent pair share a signature rather
+ * than asking for the same thumbnails twice.
  */
 export const fitSignature = (input: { source?: FrameSize; frame?: FrameSize; fit?: SourceFit; crop?: CropFractions }): string => {
   const box = (size?: FrameSize) => (size && size.width > 0 && size.height > 0 ? `${size.width}x${size.height}` : '-')
-  // Quantised to a tenth of a per cent, so a crop box being dragged does not ask for a new strip at
-  // every pixel of the drag — the same reason the fit's offset is quantised.
+  // Quantised to a thousandth of the frame, so a crop box or a picture being dragged does not ask for
+  // a new strip at every pixel of the drag.
   const region = input.crop
     ? [input.crop.left, input.crop.top, input.crop.right, input.crop.bottom].map((edge) => (Number.isFinite(edge) ? edge.toFixed(3) : '0')).join(',')
     : 'full'
   if (!input.fit) return `contain@${box(input.frame)}|${region}`
-  const offset = Math.round(clampFitOffset(input.fit.offset) * 100) / 100
-  return `${input.fit.mode}@${offset.toFixed(2)}@${box(input.source)}>${box(input.frame)}|${region}`
+  const offset = input.source && input.frame
+    ? fitOffsetFor(input.fit, input.source, input.frame)
+    : storedFitOffset(input.fit)
+  const at = [offset.x, offset.y].map((value) => (Math.round(value * 1000) / 1000).toFixed(3)).join(',')
+  return `${input.fit.mode}@${at}@${box(input.source)}>${box(input.frame)}|${region}`
 }
-
-/**
- * The word for the axis a fit's overflow moves the clip ALONG.
- *
- * A fit pins one axis to the frame's and leaves the other over, and it is the over one the clip is
- * moved along: FIT TO WIDTH on a tall clip leaves the height over, so the clip is offset vertically.
- * The naming is worth a function because it is the opposite of what the fit is called, which is
- * exactly the sort of thing to get backwards once and then trust.
- */
-export const offsetAxisLabel = (overflow: FitPlacement['overflow']): 'VERTICAL' | 'HORIZONTAL' | null =>
-  overflow === 'height' ? 'VERTICAL' : overflow === 'width' ? 'HORIZONTAL' : null
 
 /**
  * The region a clip's crop keeps, in whole pixels of the source.
@@ -202,35 +237,34 @@ const round6 = (value: number) => Math.round(value * 1e6) / 1e6
 
 /**
  * Both stages of a clip as one drawing instruction: where the WHOLE source sits, and where the part
- * the crop keeps sits inside the frame.
+ * the crop keeps sits upon the canvas.
  *
  * The crop and the fit are two stages, and the monitor, the strips and the encoder must agree about
  * both. The fit is only ever asked about the region the crop KEPT, since that is what it is placing;
  * but what is drawn is the whole source — a crop is a box over a picture, not a smaller picture — so
- * the source's own box is worked back from the kept region's placement: the kept region's corner is
- * at the placement's edge, and the rest of the source lies the same distance beyond it that the crop
- * cut off. The result is that the kept part lands exactly where the export will put it, and the part
- * the crop removes is still there to be seen, and still there to drag the box back over.
+ * the source's own box is worked back from the kept region's own: the region's corner is at the
+ * placement's corner, and the rest of the source lies beyond it by exactly what the crop cut off.
  *
- * Everything is in the frame's own pixels, including the negative offsets, which is what lets a
- * fitted, cropped clip spill past the frame the way the export's own crop of it will.
+ * Everything is in the frame's own pixels, including negative positions, which is what lets a moved
+ * clip spill past the canvas the way the export's own
+ * position of it will.
  */
 export const placedSource = (input: { source: FrameSize; frame: FrameSize; crop?: CropFractions; fit?: SourceFit }): { placement: FitPlacement; source: { x: number; y: number; width: number; height: number } } | null => {
   const kept = croppedSize(input.source, input.crop)
   if (!(kept.width > 0) || !(kept.height > 0)) return null
   const placement = fitPlacement({ source: kept, frame: input.frame, fit: input.fit })
   if (!placement) return null
-  // Frame pixels per source pixel, which is the same on both axes because the fit never stretches.
+  // Frame pixels per source pixel, per axis: the fit's box is rounded to an even pair, so taking one
+  // axis's factor for both would put the kept region a fraction of a pixel off the box the export
+  // really scales it to.
   const scaleX = placement.size.width / kept.width
   const scaleY = placement.size.height / kept.height
   const region = cropRegion(input.crop)
   const width = input.source.width * scaleX
   const height = input.source.height * scaleY
-  // Where the kept region's own corner lands: the frame's window into it, or the gap it was centred in.
-  const anchor = placement.pad ?? { x: -placement.kept.x, y: -placement.kept.y }
   return {
     placement,
-    source: { x: anchor.x - region.x * width, y: anchor.y - region.y * height, width, height },
+    source: { x: placement.at.x - region.x * width, y: placement.at.y - region.y * height, width, height },
   }
 }
 

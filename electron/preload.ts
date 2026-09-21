@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { QueueTask, MediaProbeInfo, AppSettings, EditJobPatch } from '../src/types'
+import { QueueTask, MediaProbeInfo, AppSettings, EditJobPatch, SourceFit } from '../src/types'
 
 export interface IElectronAPI {
   probeMedia: (filePath: string) => Promise<MediaProbeInfo>
@@ -19,7 +19,7 @@ export interface IElectronAPI {
     /** The output frame the clip is placed in, and the clip's own pixel size. */
     frame?: { width: number; height: number }
     source?: { width: number; height: number }
-    fit?: { mode: 'width' | 'height'; offset: number }
+    fit?: SourceFit
     crop?: { left: number; top: number; right: number; bottom: number }
   }) => Promise<string[]>
   /** A file's audio as peaks for the timeline's waveform, or null when it has none. */
@@ -80,7 +80,7 @@ const api: IElectronAPI = {
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
-  framesAt: (filePath: string, options?: { times?: number[]; fps?: number; signature?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: { mode: 'width' | 'height'; offset: number }; crop?: { left: number; top: number; right: number; bottom: number } }) => ipcRenderer.invoke('frames-at', filePath, options),
+  framesAt: (filePath: string, options?: { times?: number[]; fps?: number; signature?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: SourceFit; crop?: { left: number; top: number; right: number; bottom: number } }) => ipcRenderer.invoke('frames-at', filePath, options),
   waveformFor: (filePath: string) => ipcRenderer.invoke('waveform-for', filePath),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),

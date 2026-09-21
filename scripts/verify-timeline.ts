@@ -5,7 +5,7 @@ import { dropPreviewsFor, previewKey, rememberedPreviewFor, sourceOfPreview, sou
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
-import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSize, fitFilters, fitPlacement, fitSignature, fittedSize, offsetAxisLabel, placedSource, sourceCropOf } from '../src/lib/sourceFit'
+import { DEFAULT_FIT_OFFSET, clipFilters, cropRegion, croppedSize, fitFilters, fitOffsetFor, fitPlacement, fitSignature, fittedSize, placedSource, sourceCropOf, storedFitOffset } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
@@ -13,7 +13,7 @@ import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } fro
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
-import { EncodingPreset, QueueTask } from '../src/types'
+import { EncodingPreset, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask } from '../src/lib/sourceRemoval'
 
 /**
@@ -717,10 +717,10 @@ console.log('\n== the timeline filmstrip ==')
   // cached under one placement must never be served for another, which is exactly what toggling a
   // fit or dragging the offset would otherwise do.
   const signature = (over: Partial<Parameters<typeof thumbnailSignature>[0]> = {}) => thumbnailSignature({ source: { width: 720, height: 1280 }, frame: { width: 1920, height: 1080 }, ...over })
-  check('a key names its frame and its signature', frameKey(120, 'width@0.50@720x1280>1920x1080|none'), '120|width@0.50@720x1280>1920x1080|none')
-  check('the same frame under another placement is another picture', frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })) === frameKey(120, signature({ fit: { mode: 'height', offset: 0.5 } })), false)
-  check('and so is the same placement moved', frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })) === frameKey(120, signature({ fit: { mode: 'width', offset: 0.2 } })), false)
-  check('while the same placement is the same picture', frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })) === frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })), true)
+  check('a key names its frame and its signature', frameKey(120, 'width@0.000,0.000@720x1280>1920x1080|none'), '120|width@0.000,0.000@720x1280>1920x1080|none')
+  check('the same frame under another placement is another picture', frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0 } } })) === frameKey(120, signature({ fit: { mode: 'height', offset: { x: 0, y: 0 } } })), false)
+  check('and so is the same placement moved', frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0 } } })) === frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0.2 } } })), false)
+  check('while the same placement is the same picture', frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0 } } })) === frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0 } } })), true)
   check('a job crop is part of it too', signature({ crop: { left: 0.1, top: 0, right: 0.1, bottom: 0 } }) === signature(), false)
   check('and no fit at all is its own signature', signature(), 'contain@1920x1080|full|none')
 }
@@ -772,83 +772,97 @@ console.log('\n== the monitor zoom ==')
 
 console.log('\n== the per-clip output fit ==')
 {
-  // The user's own case: a portrait clip in a landscape frame. FIT TO WIDTH pins the width and
-  // leaves a great deal of height over, which is what the offset then chooses between; FIT TO
-  // HEIGHT pins the height and leaves the width short, which is filled in instead. The same
-  // figures describe the exported frame, the filter chain that makes it, and a thumbnail of it,
-  // so they are asserted once here rather than in each of the three.
+  // The user's own case: a portrait clip in a landscape frame. FIT TO WIDTH pins the width and leaves
+  // a great deal of height over; FIT TO HEIGHT pins the height and leaves the width short. The same
+  // figures describe the exported frame, the filter chain that makes it, and a thumbnail of it, so
+  // they are asserted once here rather than in each of the three.
   const source = { width: 720, height: 1280 }
   const frame = { width: 1920, height: 1080 }
-  const place = (mode: 'width' | 'height', offset = DEFAULT_FIT_OFFSET) => fitPlacement({ source, frame, fit: { mode, offset } })
+  const place = (mode: 'width' | 'height' | 'contain', offset?: { x: number; y: number }) => fitPlacement({ source, frame, fit: { mode, offset: offset ?? DEFAULT_FIT_OFFSET } })
 
-  check('fitting the width pins it to the frame\'s', fittedSize(source, frame, 'width'), { width: 1920, height: 3414 })
+  check('fitting the width pins it to the frame\u2019s', fittedSize(source, frame, 'width'), { width: 1920, height: 3414 })
   check('fitting the height pins that one instead', fittedSize(source, frame, 'height'), { width: 608, height: 1080 })
   check('and the default keeps the whole clip inside the frame', fittedSize(source, frame, 'contain'), { width: 608, height: 1080 })
   check('a square clip in a square frame fits it exactly', fittedSize({ width: 900, height: 900 }, { width: 1080, height: 1080 }, 'contain'), { width: 1080, height: 1080 })
 
-  // The overflowing axis is the one with something to spare, and the offset moves along it.
-  check('a fitted width leaves the height over', [place('width')!.overflow, place('width')!.kept], ['height', { x: 0, y: 1167, width: 1920, height: 1080 }])
-  check('centred is the middle of what is over', place('width', 0.5)!.kept.y, Math.round(0.5 * (3414 - 1080)))
-  check('the start shows the top of it', place('width', 0)!.kept.y, 0)
-  check('and the end shows the bottom, with the frame still covered', place('width', 1)!.kept.y + 1080, 3414)
-  check('a position beyond either end is clamped to it', [place('width', 4)!.kept.y, place('width', -4)!.kept.y], [3414 - 1080, 0])
-  check('and a nonsense one is centred', place('width', Number.NaN)!.kept.y, Math.round(0.5 * (3414 - 1080)))
-  check('nothing is chosen when the clip is the wrong way up to overflow', place('width')!.pad, null)
+  // At 0, 0 the picture is where it has always been: the axis a fit pins is the frame's, what overflows
+  // it is centred, and what falls short is centred in the space it leaves. That is the whole promise of
+  // the position being a displacement from the middle rather than from an edge.
+  check('the fitted width overflows the height, centred on it', place('width')!.at, { x: 0, y: -1166 })
+  // Centred to within the even pixel the position is rounded to: 3414 over a frame 1080 tall leaves
+  // 2334 of slack, whose half is 1167 — odd. A picture a pixel off dead centre is the price of an even
+  // position, and it is one that no viewer pays any attention to.
+  near('which is the middle of what is over', place('width')!.size.height + place('width')!.at.y * 2, frame.height, 2)
+  check('the fitted height sits centred across the frame', place('height')!.at, { x: 656, y: 0 })
+  check('and so does a clip with no fit of its own', place('contain')!.at, { x: 656, y: 0 })
 
-  // A clip that falls short is filled in rather than dragged: a gap is not something to choose
-  // between, so it is centred and the dragger has no axis to be active on.
-  check('a fitted height leaves the width short', place('height')!.pad, { x: 656, y: 0 })
-  check('and there is nothing to choose there', place('height')!.overflow, null)
-  check('while the clip itself is kept whole', place('height')!.kept, { x: 0, y: 0, width: 608, height: 1080 })
-  check('the default fit pads the shortfall too', fitPlacement({ source, frame })!.pad, { x: 656, y: 0 })
+  // The position moves it, in the frame's own fractions, in both directions and on both axes.
+  check('a quarter of the frame to the right is a quarter of it', place('contain', { x: 0.25, y: 0 })!.at.x - place('contain')!.at.x, 480)
+  check('and downwards likewise', place('width', { x: 0, y: 0.25 })!.at.y - place('width')!.at.y, 270)
+  check('a negative position moves it the other way', place('contain', { x: -0.25, y: 0 })!.at.x - place('contain')!.at.x, -480)
+  // Nothing is clamped: a picture may be pushed clear of the canvas, which is what a position past an
+  // edge is, and the background shows where it no longer reaches.
+  check('a position clear of the frame is allowed', place('contain', { x: 1, y: 0 })!.at.x, 2576)
 
-  // The chain: scale by both figures, then keep the frame covered or fill it in, then square the
-  // samples. Nothing in it can stretch the picture, whichever way the clip is fitted.
-  check('a fitted width scales, then crops to the frame', fitFilters({ source, frame, fit: { mode: 'width', offset: 0.5 } }), ['scale=1920:3414', 'crop=1920:1080:0:1167', 'setsar=1'])
-  check('a fitted height scales, then pads', fitFilters({ source, frame, fit: { mode: 'height', offset: 0.5 } }), ['scale=608:1080', 'pad=1920:1080:656:0:color=black', 'setsar=1'])
+  // The chain: scale by both figures, place it on the canvas, then square the samples. Nothing in it
+  // can stretch the picture, whichever way the clip is fitted or wherever it is put.
+  check('a fitted width scales, then crops to the frame', fitFilters({ source, frame, fit: { mode: 'width', offset: DEFAULT_FIT_OFFSET } }), ['scale=1920:3414', 'crop=1920:1080:0:1166', 'setsar=1'])
+  check('a fitted height scales, then pads', fitFilters({ source, frame, fit: { mode: 'height', offset: DEFAULT_FIT_OFFSET } }), ['scale=608:1080', 'pad=1920:1080:656:0:color=black', 'setsar=1'])
   check('the default is the same arithmetic with the shortfall filled in', fitFilters({ source, frame }), ['scale=608:1080', 'pad=1920:1080:656:0:color=black', 'setsar=1'])
   check('a clip already the shape of the frame is only scaled', fitFilters({ source: { width: 1080, height: 1920 }, frame: { width: 1080, height: 1920 } }), ['scale=1080:1920', 'setsar=1'])
   check('a frame with no size has no chain', fitFilters({ source, frame: { width: 0, height: 0 } }), null)
   check('and neither has a clip with no size', fitFilters({ source: { width: 0, height: 0 }, frame }), null)
+  // Moved but still inside the canvas: the pad carries the position, and the picture is cropped out of
+  // nowhere, so there is one fewer filter on it than on the overflow case.
+  check('a picture moved inside the canvas is placed, not cropped', fitFilters({ source, frame, fit: { mode: 'contain', offset: { x: 0.2, y: 0 } } }), ['scale=608:1080', 'pad=1920:1080:1040:0:color=black', 'setsar=1'])
+  // Moved past an edge: what is on the canvas is cropped out of the picture and padded into place, and
+  // the side it moved away from is background. Half a frame to the left of centred puts the picture's
+  // own left 304 pixels beyond the canvas, so what survives is its right 304 at the canvas's edge.
+  check('a picture moved over an edge is cropped to what is on the canvas', fitFilters({ source, frame, fit: { mode: 'contain', offset: { x: -0.5, y: 0 } } }), ['scale=608:1080', 'crop=304:1080:304:0', 'pad=1920:1080:0:0:color=black', 'setsar=1'])
+  // `pad` refuses an output smaller than its input and SILENTLY CENTRES on a negative offset, so the
+  // picture's sliver is cropped out and painted over before the canvas is padded: the result is pure
+  // background rather than the two-pixel smudge `pad` would otherwise leave in the middle.
+  check('a picture pushed clear of the canvas is background and nothing else', fitFilters({ source, frame, fit: { mode: 'contain', offset: { x: 1, y: 0 } } }), ['scale=608:1080', 'crop=2:2:0:0', 'drawbox=x=0:y=0:w=2:h=2:color=black:t=fill', 'pad=1920:1080:0:0:color=black', 'setsar=1'])
 
-  // The cache key: everything that changes the picture, with the offset quantised so a dragger
-  // still moving does not ask for a new set of thumbnails at every pixel of the drag.
-  const sig = (mode: 'width' | 'height', offset: number) => fitSignature({ source, frame, fit: { mode, offset } })
-  check('a signature names the fit, the position, both boxes and the crop', sig('width', 0.5), 'width@0.50@720x1280>1920x1080|full')
-  check('a hair of movement is not a different picture', sig('width', 0.501) === sig('width', 0.5), true)
-  check('a real move is', sig('width', 0.6) === sig('width', 0.5), false)
-  check('the other axis is a different picture at the same position', sig('height', 0.5) === sig('width', 0.5), false)
+  // The cache key: everything that changes the picture — the mode, both figures of the position, the
+  // two boxes and the crop — with the position quantised so a dragger still moving does not ask for a
+  // new set of thumbnails at every pixel of the drag.
+  const sig = (mode: 'width' | 'height' | 'contain', x: number, y: number) => fitSignature({ source, frame, fit: { mode, offset: { x, y } } })
+  check('a signature names the fit, the position, both boxes and the crop', sig('width', 0, 0), 'width@0.000,0.000@720x1280>1920x1080|full')
+  check('a hair of movement is not a different picture', sig('width', 0, 0.0004) === sig('width', 0, 0), true)
+  check('a real move is', sig('width', 0, 0.01) === sig('width', 0, 0), false)
+  check('each axis counts', sig('width', 0.01, 0) === sig('width', 0, 0.01), false)
+  check('the scale is a different picture at the same position', sig('height', 0, 0) === sig('width', 0, 0), false)
   check('and the default says so rather than naming a fit', fitSignature({ source, frame }), 'contain@1920x1080|full')
-  check('a nonsense offset is signalled as centred', clampFitOffset(Number.NaN), DEFAULT_FIT_OFFSET)
+
+  // The OLD record: a single number, a place along the one axis a fit left over, counted in the slack
+  // that axis had. It converts exactly, because the picture's old position and the centred position are
+  // both known sums — and where the old fit left no slack the number did nothing at all, so it reads as
+  // centred, which is what it looked like on screen.
+  const legacy = (mode: 'width' | 'height' | 'contain', offset: number) => ({ mode, offset } as unknown as SourceFit)
+  check('the old centre is the new centre', fitOffsetFor(legacy('width', 0.5), source, frame), { x: 0, y: 0 })
+  near('the old start is the top of the picture', fitOffsetFor(legacy('width', 0), source, frame).y, 1167 / 1080, 1e-9)
+  near('and the old end is the bottom of it', fitOffsetFor(legacy('width', 1), source, frame).y, -1167 / 1080, 1e-9)
+  check('and the conversion puts the picture back where it was', (() => {
+    const converted = fitPlacement({ source, frame, fit: legacy('width', 0) })!
+    // The old model's own arithmetic: the frame kept a 1080-tall window 0 pixels into the picture.
+    return converted.at.y
+  })(), 0)
+  check('an offset on an axis with no slack did nothing, so it converts to nothing', fitOffsetFor(legacy('height', 0.2), source, frame), { x: 0, y: 0 })
+  check('and there is nothing to convert without a fit', fitOffsetFor(undefined, source, frame), { x: 0, y: 0 })
+  // What a record SAYS, for the callers that overwrite it: a pair as it stands, the old number centred.
+  check('a pair is read as it stands', storedFitOffset({ mode: 'contain', offset: { x: 0.1, y: -0.2 } }), { x: 0.1, y: -0.2 })
+  check('and the old number as centred', storedFitOffset(legacy('width', 0)), { x: 0, y: 0 })
+  check('a nonsense pair is centred', storedFitOffset({ mode: 'width', offset: { x: Number.NaN, y: 2 } as never }), { x: 0, y: 2 })
 
   // A fit is carried by the clip that owns it, exactly as a trim is.
-  const fitted = { sourceFit: { 'a.mp4#1': { mode: 'width' as const, offset: 0.25 }, 'b.mp4': { mode: 'height' as const, offset: 0.5 } } } as unknown as QueueTask
-  check('a fit is read by the clip that owns it', sourceFitFor(fitted, 'a.mp4', 1), { mode: 'width', offset: 0.25 })
+  const fitted = { sourceFit: { 'a.mp4#1': { mode: 'width' as const, offset: { x: 0.1, y: 0 } }, 'b.mp4': { mode: 'height' as const, offset: { x: 0, y: 0 } } } } as unknown as QueueTask
+  check('a fit is read by the clip that owns it', sourceFitFor(fitted, 'a.mp4', 1), { mode: 'width', offset: { x: 0.1, y: 0 } })
   check('and not by another occurrence of the same file', sourceFitFor(fitted, 'a.mp4', 0), undefined)
-  check('a bare path still answers, as a bare trim does', sourceFitFor(fitted, 'b.mp4', 3), { mode: 'height', offset: 0.5 })
+  check('a bare path still answers, as a bare trim does', sourceFitFor(fitted, 'b.mp4', 3), { mode: 'height', offset: { x: 0, y: 0 } })
   check('a clip with no fit has none', sourceFitFor(fitted, 'c.mp4', 0), undefined)
-  check('and a reorder carries each fit with its clip', rekeyClipMap({ 'a.mp4#0': { mode: 'width' as const, offset: 0.25 }, 'b.mp4#1': { mode: 'height' as const, offset: 0.5 } }, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': { mode: 'width', offset: 0.25 }, 'b.mp4#2': { mode: 'height', offset: 0.5 } })
-  check('a fit set by path alone lands on that clip wherever it moves', rekeyClipMap(fitted.sourceFit, ['a.mp4', 'b.mp4'], ['b.mp4', 'a.mp4']), { 'b.mp4#0': { mode: 'height', offset: 0.5 }, 'a.mp4#1': { mode: 'width', offset: 0.25 } })
-
-  // The offset the dragger and the OFFSET sub-section both write moves the clip along the axis the
-  // fit leaves OVER, which is the opposite of the axis the fit is named after. A tall clip fitted to
-  // the width overflows height, so it is offset VERTICALLY; the same clip fitted to the height fits
-  // inside the frame, has nothing over, and has nothing to offset at all.
-  const tall = { width: 720, height: 1280 }
-  const wide = { width: 1920, height: 1080 }
-  const sized = { width: 1920, height: 1080 }
-  const portraitFrame = { width: 1080, height: 1920 }
-  const over = (source: { width: number; height: number }, frame: { width: number; height: number }, mode?: 'width' | 'height') =>
-    fitPlacement({ source, frame, fit: mode ? { mode, offset: 0.5 } : undefined })!.overflow
-  check('a width fit on a tall clip has the height over', over(tall, sized, 'width'), 'height')
-  check('so that is the vertical one', offsetAxisLabel(over(tall, sized, 'width')), 'VERTICAL')
-  check('and a height fit on a wide clip has the width over', over(wide, portraitFrame, 'height'), 'width')
-  check('so that is the horizontal one', offsetAxisLabel(over(wide, portraitFrame, 'height')), 'HORIZONTAL')
-  // The subtle half, and the one that decides whether the sub-section is offered at all: a fit that
-  // leaves its other axis SHORT rather than over has nothing to pan — the gap is filled in and
-  // centred, and there is no choice to make about which part of the clip stays in the frame.
-  check('a height fit on a tall clip leaves the width short, not over', over(tall, sized, 'height'), null)
-  check('and a clip with no fit has nothing over either', [over(tall, sized, undefined), offsetAxisLabel(over(tall, sized, undefined))], [null, null])
+  check('and a reorder carries each fit with its clip', rekeyClipMap({ 'a.mp4#0': { mode: 'width' as const, offset: { x: 0.1, y: 0 } }, 'b.mp4#1': { mode: 'height' as const, offset: { x: 0, y: 0 } } }, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': { mode: 'width', offset: { x: 0.1, y: 0 } }, 'b.mp4#2': { mode: 'height', offset: { x: 0, y: 0 } } })
+  check('a fit set by path alone lands on that clip wherever it moves', rekeyClipMap(fitted.sourceFit, ['a.mp4', 'b.mp4'], ['b.mp4', 'a.mp4']), { 'b.mp4#0': { mode: 'height', offset: { x: 0, y: 0 } }, 'a.mp4#1': { mode: 'width', offset: { x: 0.1, y: 0 } } })
 }
 
 console.log('\n== a fit on a job whose clips are not joined ==')
@@ -860,7 +874,7 @@ console.log('\n== a fit on a job whose clips are not joined ==')
   const job = (preset: Partial<EncodingPreset>) => ({
     type: 'transcode',
     sourcePaths: ['a.mp4'],
-    sourceFit: { 'a.mp4#0': { mode: 'width', offset: 0.5 } },
+    sourceFit: { 'a.mp4#0': { mode: 'width', offset: { x: 0, y: 0 } } },
     preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p', ...preset },
   }) as unknown as QueueTask
   check('a fit on a muxed visual is the encoder business', usesClipFraming(job({}), 'a.mp4', 0), true)
@@ -914,9 +928,9 @@ console.log('\n== the per-clip crop ==')
 
   // The chain: the crop first, at the pixels the region stands for, and then the fit worked out from
   // what was kept rather than from the source it came out of.
-  const chain = clipFilters({ source, frame, crop: middleBand, fit: { mode: 'width', offset: 0.5 } })
+  const chain = clipFilters({ source, frame, crop: middleBand, fit: { mode: 'width', offset: { x: 0, y: 0 } } })
   check('the crop comes first in the chain', chain?.slice(0, 2), ['crop=720:428:0:426', 'scale=1920:1142'])
-  check('an uncropped clip is only placed', clipFilters({ source: { width: 1920, height: 1080 }, frame, fit: { mode: 'width', offset: 0.5 } }), ['scale=1920:1080', 'setsar=1'])
+  check('an uncropped clip is only placed', clipFilters({ source: { width: 1920, height: 1080 }, frame, fit: { mode: 'width', offset: { x: 0, y: 0 } } }), ['scale=1920:1080', 'setsar=1'])
   check('a crop with no fit is placed the default way', clipFilters({ source, frame, crop: middleBand }), ['crop=720:428:0:426', 'scale=1816:1080', 'pad=1920:1080:52:0:color=black', 'setsar=1'])
   check('and a clip with neither is the whole picture in the frame', clipFilters({ source: { width: 608, height: 1080 }, frame }), ['scale=608:1080', 'pad=1920:1080:656:0:color=black', 'setsar=1'])
 
@@ -935,12 +949,12 @@ console.log('\n== the per-clip crop ==')
   const plain = placedSource({ source, frame })
   check('a clip with no crop is drawn exactly as the fit places it everywhere else',
     plain && [plain.source.width, plain.source.height, plain.source.x, plain.source.y],
-    plain && [plain.placement.size.width, plain.placement.size.height, plain.placement.pad?.x, plain.placement.pad?.y])
+    plain && [plain.placement.size.width, plain.placement.size.height, plain.placement.at.x, plain.placement.at.y])
   check('a nonsense source has nowhere to be drawn', placedSource({ source: { width: 0, height: 0 }, frame }), null)
   if (placed) {
     // The kept region's own box, in frame pixels, read back off the whole source's box.
     near('the kept region is as tall as the fit made it', placed.source.height * region.h, placed.placement.size.height, 1)
-    near('and sits where the fit put it', placed.source.y + region.y * placed.source.height, placed.placement.pad?.y ?? 0, 1)
+    near('and sits where the fit put it', placed.source.y + region.y * placed.source.height, placed.placement.at.y, 1)
     check('with the rest of the picture drawn around it', placed.source.height > frame.height, true)
     check('and as wide as the fit made it too', Math.abs(placed.source.width * region.w - placed.placement.size.width) < 1, true)
     // The two scales differ only by the fit's own rounding to an even pair, which is a sub-pixel of

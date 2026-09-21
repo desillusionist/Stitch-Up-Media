@@ -99,10 +99,22 @@ export interface SourceCrop {
  * the shortfall filled in.
  */
 export interface SourceFit {
-  /** The axis fixed to the frame's; the other one overflows or falls short. */
-  mode: 'width' | 'height'
-  /** Where the clip sits on the axis that overflows, 0..1. 0.5 is centred. */
-  offset: number
+  /**
+   * The axis fixed to the frame's; the other one overflows or falls short. `contain` fixes neither,
+   * which is the default fit — a clip carrying only a `contain` fit is one that has been given a
+   * POSITION and no change of scale.
+   */
+  mode: 'contain' | 'width' | 'height'
+  /**
+   * Where the picture sits on the output canvas, as fractions of the OUTPUT frame: 0, 0 is centred,
+   * which is where it sits when nothing has been moved.
+   *
+   * Fractions of the frame rather than pixels, so a change of resolution or aspect ratio does not
+   * invalidate it. NOT clamped: a position may be negative, or far enough to push the picture wholly
+   * or partly off the canvas, and where the picture does not cover the canvas the background shows.
+   * That is the point of a position — bars are what a position produces, not a mistake in it.
+   */
+  offset: { x: number; y: number }
 }
 
 export interface ClipTransition {
