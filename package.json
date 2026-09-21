@@ -12,6 +12,7 @@
     "verify": "esbuild scripts/verify-timeline.ts --bundle --platform=node --format=cjs --outfile=scripts/.verify-timeline.cjs --log-level=warning && node scripts/.verify-timeline.cjs",
     "measure": "npm run build && esbuild src/lib/filmstrip.ts --bundle --platform=node --format=cjs --outfile=scripts/.filmstrip.cjs --log-level=warning && esbuild src/lib/sourceFit.ts --bundle --platform=node --format=cjs --outfile=scripts/.sourceFit.cjs --log-level=warning && esbuild src/lib/timelineScale.ts --bundle --platform=node --format=cjs --outfile=scripts/.timelineScale.cjs --log-level=warning && electron scripts/measure-layout.cjs",
     "verify-fit": "npm run build && esbuild src/lib/sourceFit.ts --bundle --platform=node --format=cjs --outfile=scripts/.sourceFit.cjs --log-level=warning && node scripts/check-fit-chain.cjs",
+    "verify-wave": "npm run build && esbuild src/lib/waveform.ts --bundle --platform=node --format=cjs --outfile=scripts/.waveform.cjs --log-level=warning && node scripts/check-waveform.cjs",
     "preview": "vite preview",
     "electron:dev": "vite",
     "dist": "npm run build && electron-builder --mac",

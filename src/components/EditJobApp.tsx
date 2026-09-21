@@ -9,6 +9,7 @@ import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, clipIndexOf, edgeFade, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
+import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
 import { ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
@@ -170,6 +171,9 @@ export const EditJobApp: React.FC = () => {
   const muted = useMemo(() => draft?.mutedLanes ?? {}, [draft?.mutedLanes])
   /** Whether each source carries an audio stream, which is what a clip's own hairline reports. */
   const [sourceAudio, setSourceAudio] = useState<Record<string, boolean>>({})
+  /** Each source's audio as peaks, read once per file, for a lane drawn as a waveform. */
+  const [waveforms, setWaveforms] = useState<Record<string, number[]>>({})
+  const waveformsAskedRef = useRef<Set<string>>(new Set())
   const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const timelineInnerRef = useRef<HTMLDivElement>(null)
 
@@ -275,6 +279,27 @@ export const EditJobApp: React.FC = () => {
     () => (draft ? buildTimeline(draft, { resolveTiming }) : null),
     [timelineSignature, probedTiming],
   )
+  // The audio of every lane being drawn as a waveform, read once per file. It is the file's audio
+  // rather than the clip's, so a trim or a zoom needs no new reading: what is drawn of it changes,
+  // what it is does not. It waits until there is a lane showing one, since a file that is only ever
+  // drawn as a clip of frames never needs decoding for its peaks.
+  useEffect(() => {
+    const bridge = window.electronAPI
+    if (!bridge?.waveformFor || !model) return
+    const wanted = new Set<string>()
+    model.lanes.forEach((lane) => {
+      if (lane.kind !== 'audio' || !filmstripLanes[lane.id]) return
+      lane.segments.forEach((segment) => { wanted.add(segment.sourcePath) })
+    })
+    const missing = [...wanted].filter((sourcePath) => !waveformsAskedRef.current.has(sourcePath))
+    if (!missing.length) return
+    missing.forEach((sourcePath) => waveformsAskedRef.current.add(sourcePath))
+    let cancelled = false
+    void Promise.all(missing.map(async (sourcePath) => [sourcePath, (await bridge.waveformFor(sourcePath)) ?? []] as const)).then((entries) => {
+      if (!cancelled) setWaveforms((current) => ({ ...current, ...Object.fromEntries(entries) }))
+    })
+    return () => { cancelled = true }
+  }, [filmstripLanes, timelineSignature, model])
   // Frame rate of the primary source, for stepping and reverse. Kept separate from
   // the displayed rate because the hook is created before a segment is known.
   const primaryFps = draft ? sourceFps(draft, draft.sourcePaths[0], undefined, resolveTiming) : 25
@@ -1733,7 +1758,7 @@ export const EditJobApp: React.FC = () => {
                             strip. Nothing on the strip is hovered or skimmed: the frames are read,
                             not scrubbed, and the clip underneath keeps every pointer event — which
                             is what the right-click menu needs. */}
-                        {filmstripLanes[lane.id] && (() => {
+                        {lane.kind === 'video' && filmstripLanes[lane.id] && (() => {
                           const plan = planFor(segment)
                           if (!plan) return null
                           // A still has one picture and no frames to sample, so every cell shows it:
@@ -1753,6 +1778,23 @@ export const EditJobApp: React.FC = () => {
                                 {shown ? <img src={shown} alt="" draggable={false} style={stillStyle} /> : null}
                               </span>
                             })}
+                          </div>
+                        })()}
+                        {lane.kind === 'audio' && filmstripLanes[lane.id] && (() => {
+                          // The waveform, on the helper's own rules: two-pixel bars on a four-pixel
+                          // stride either side of the centre, each the loudest bucket it covers, in
+                          // green. One path for the whole drawing, because a zoomed-in lane is
+                          // thousands of bars and thousands of elements would make it crawl.
+                          const width = laneWidthFor(segment.duration, zoom)
+                          const peaks = waveforms[segment.sourcePath]
+                          const shown = peaks && peaks.length
+                            ? peaksForTrim(peaks, segment.sourceIn, segment.sourceIn + segment.duration, sourceDuration(draft, segment.sourcePath, undefined, resolveTiming))
+                            : []
+                          return <div className="timeline-clip-wave" aria-hidden="true">
+                            <svg width="100%" height="100%" viewBox={`0 0 ${Math.max(1, width)} ${FILMSTRIP_CLIP_HEIGHT}`} preserveAspectRatio="none">
+                              <line x1="0" y1={FILMSTRIP_CLIP_HEIGHT / 2} x2={Math.max(1, width)} y2={FILMSTRIP_CLIP_HEIGHT / 2} stroke="var(--ui-border)" strokeWidth="1" />
+                              {shown.length ? <path d={waveformPath({ peaks: shown, width, height: FILMSTRIP_CLIP_HEIGHT })} stroke="var(--crt-green)" strokeWidth={WAVEFORM_BAR} fill="none" /> : null}
+                            </svg>
                           </div>
                         })()}
                         <span className="timeline-clip-name">{segmentLabel(segment)}</span>
@@ -1986,7 +2028,7 @@ export const EditJobApp: React.FC = () => {
         })()}
       </> : <>
         <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? '' : 'is-on'} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: false })) }}>COMPACT VIEW</button>
-        <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? 'is-on' : ''} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: true })) }}>FILMSTRIP</button>
+        <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? 'is-on' : ''} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: true })) }}>{model.lanes.find((lane) => lane.id === timelineMenu.laneId)?.kind === 'audio' ? 'WAVEFORM' : 'FILMSTRIP'}</button>
       </>}
     </div>}
   </div>

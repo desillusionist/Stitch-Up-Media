@@ -22,6 +22,8 @@ export interface IElectronAPI {
     fit?: { mode: 'width' | 'height'; offset: number }
     crop?: { left: number; top: number; right: number; bottom: number }
   }) => Promise<string[]>
+  /** A file's audio as peaks for the timeline's waveform, or null when it has none. */
+  waveformFor: (filePath: string) => Promise<number[] | null>
   selectOutputDir: () => Promise<string | null>
   startTask: (task: QueueTask) => Promise<{ success: boolean; error?: string }>
   startSelectedTasks: (tasks: QueueTask[]) => Promise<{ success: boolean; error?: string }>
@@ -69,6 +71,7 @@ const api: IElectronAPI = {
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
   framesAt: (filePath: string, options?: { times?: number[]; fps?: number; signature?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: { mode: 'width' | 'height'; offset: number }; crop?: { left: number; top: number; right: number; bottom: number } }) => ipcRenderer.invoke('frames-at', filePath, options),
+  waveformFor: (filePath: string) => ipcRenderer.invoke('waveform-for', filePath),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),
   startSelectedTasks: (tasks: QueueTask[]) => ipcRenderer.invoke('start-selected-tasks', tasks),

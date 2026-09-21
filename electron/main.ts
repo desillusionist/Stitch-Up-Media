@@ -10,6 +10,7 @@ import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { fitFilters } from '../src/lib/sourceFit'
+import { peaksFromSamples } from '../src/lib/waveform'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -278,6 +279,37 @@ app.whenReady().then(() => {
       }
     }))
     return times.map((time) => have.get(keyOf(time)) ?? '')
+  })
+
+  /**
+   * A file's audio as peaks, read once per file and kept, since the drawing is done in the timeline
+   * from figures rather than from the audio itself.
+   *
+   * The audio is decoded to mono unsigned-float samples at a low rate — enough to describe a
+   * waveform's shape, and a fraction of the size of the file's own audio — and then bucketed by the
+   * same arithmetic the drawing uses. A file with no audio answers with nothing, which the timeline
+   * draws as a flat line, and a file that cannot be read is remembered as having none rather than
+   * being attempted again on every render.
+   */
+  const audioPeaksCache = new Map<string, number[] | null>()
+  const peaksFor = async (filePath: string): Promise<number[] | null> => {
+    if (audioPeaksCache.has(filePath)) return audioPeaksCache.get(filePath) ?? null
+    let peaks: number[] | null = null
+    try {
+      const raw = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', filePath, '-vn', '-ac', '1', '-ar', '8000', '-f', 'f32le', '-'], { maxBuffer: 256 * 1024 * 1024 })
+      const samples = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4))
+      peaks = samples.length ? peaksFromSamples(samples) : null
+    } catch (error) {
+      logEvent('ipc', 'waveform extraction failed', { filePath, error: String(error) })
+    }
+    audioPeaksCache.set(filePath, peaks)
+    if (audioPeaksCache.size > 40) audioPeaksCache.delete(audioPeaksCache.keys().next().value as string)
+    return peaks
+  }
+  ipcMain.handle('waveform-for', async (_, filePath: string) => {
+    if (!filePath) return null
+    try { if (!fs.statSync(filePath).isFile()) return null } catch { return null }
+    return await peaksFor(filePath)
   })
 
   ipcMain.handle('get-paths-total-size', async (_, filePaths: string[]) => {

@@ -9,6 +9,7 @@ import { DEFAULT_FIT_OFFSET, clampFitOffset, fitFilters, fitPlacement, fitSignat
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
+import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
@@ -798,6 +799,42 @@ console.log('\n== the timeline metric ==')
   check('a longer output fits the same area at a smaller zoom', fitZoom(60, 900) < fitZoom(30, 900), true)
   check('a fit is held inside the zoom range', [clampZoom(fitZoom(1, 100000)), clampZoom(fitZoom(100000, 1))], [ZOOM_MAX, ZOOM_MIN])
   check('and a fit of nothing is 1x', [fitZoom(0, 900), fitZoom(30, 0), clampZoom(Number.NaN)], [1, 1, 1])
+}
+
+console.log('\n== the waveform ==')
+{
+  // The helper's rules, which the timeline borrows: root mean square per bucket, normalised against
+  // the loudest bucket in the file, drawn as bars either side of the centre. The real decode is
+  // checked against a real audio file by `npm run verify-wave`; this is the arithmetic around it.
+  const silence = peaksFromSamples(new Float32Array(8000), 4)
+  const tone = new Float32Array(8000)
+  for (let index = 0; index < 4000; index++) tone[index] = 0.5
+  const halves = peaksFromSamples(tone, 4)
+  check('a file is read into the buckets asked for', silence.length, 4)
+  check('silence is flat', silence, [0, 0, 0, 0])
+  check('a loud half is loud and a silent half flat', [halves[0] > 0.9, halves[3]], [true, 0])
+  check('and the loudest bucket is the file own scale', Math.max(...halves), 1)
+  check('nothing at all is read as flat', peaksFromSamples(new Float32Array(0), 3), [0, 0, 0])
+  check('a louder file is not a different shape', normalisePeaks([2, 1, 0]).map((peak) => Math.round(peak * 100) / 100), [1, 0.5, 0])
+
+  // A trim shows the part of the file it covers, which is what makes a trimmed clip's waveform agree
+  // with the frames beside it.
+  const wide = peaksFromSamples(tone, 100)
+  check('a trim takes the part of the file it covers', [peaksForTrim(wide, 0, 0.5, 1).length, peaksForTrim(wide, 0.5, 1, 1).length], [50, 50])
+  check('and reads the silence where the file is silent', peaksForTrim(wide, 0.5, 1, 1).every((peak) => peak === 0), true)
+  check('a file with no known length is shown whole', peaksForTrim(wide, 0, 1, 0).length, 100)
+
+  // The drawing: one path, bars on a stride, each straddling the centre line.
+  const path = waveformPath({ peaks: [1, 0, 1, 0], width: 16, height: 32 })
+  const bars = [...path.matchAll(/M([\d.]+) ([\d.]+)L([\d.]+) ([\d.]+)/g)]
+  check('one bar per stride of the clip', bars.length, 4)
+  check('every bar is on the centre line', bars.every(([, , top, , bottom]) => Math.abs(32 - (Number(top) + Number(bottom))) < 1e-9), true)
+  check('a silent bar is still a bar', bars[1][4], (32 / 2 + 1).toFixed(2))
+  check('and a loud one reaches further', Number(bars[0][2]) < Number(bars[1][2]), true)
+  check('the bar is as wide as the helper draws it', Number(bars[0][1]), WAVEFORM_BAR / 2)
+  check('a clip with no width draws nothing', [waveformPath({ peaks: [1], width: 0, height: 32 }), waveformPath({ peaks: [], width: 40, height: 32 })], ['', ''])
+  check('the reading is the helper own resolution', WAVEFORM_PEAKS, 2000)
+  check('and no more bars than buckets', waveformPath({ peaks: Array.from({ length: 10 }, () => 1), width: 100000, height: 32 }).length < 600, true)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
