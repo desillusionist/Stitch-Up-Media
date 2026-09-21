@@ -63,6 +63,22 @@ export const transitionDuration = (task: QueueTask, sourcePath: string, index: n
 }
 
 /**
+ * The two edges of the whole timeline, where a fade is cut from or to black.
+ *
+ * They are keyed by the edge rather than by a clip, because an edge belongs to the timeline
+ * rather than to whichever clip happens to be first: reordering the clips must not move the
+ * fade, and no clip-scoped key could promise that.
+ */
+export const HEAD_FADE_KEY = '#head'
+export const TAIL_FADE_KEY = '#tail'
+
+/** The fade asked for at the head or the tail of the timeline, in seconds. */
+export const edgeFade = (task: QueueTask, edge: 'head' | 'tail'): number => {
+  const transition: ClipTransition | undefined = task.transitions?.[edge === 'head' ? HEAD_FADE_KEY : TAIL_FADE_KEY]
+  return transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
+}
+
+/**
  * A boundary fade cannot exceed half of either neighbour, or the two sides would
  * overlap inside a clip. The encoder and the timeline both clamp through this, so
  * the picture and the drawn ramp cannot disagree.
@@ -71,11 +87,19 @@ export const maxFadeAtBoundary = (leftDuration: number, rightDuration: number) =
   Math.max(0, Math.min(leftDuration, rightDuration) / 2)
 
 /**
- * Resolves the fades actually applied to each clip. A boundary fades the
- * preceding clip out and the following clip in. The last clip has no boundary
- * after it, so any request there is ignored.
+ * The longest fade an edge can take: the whole clip, less whatever a boundary at the
+ * other end of the SAME clip already uses, so the two never overlap.
  */
-export const resolveFades = (durations: number[], requests: number[]): ClipFade[] => {
+export const maxEdgeFade = (duration: number, neighbourFade: number) =>
+  Math.max(0, duration - Math.max(0, neighbourFade))
+
+/**
+ * Resolves the fades actually applied to each clip. A boundary fades the
+ * preceding clip out and the following clip in, and an edge fades the first clip in
+ * from black or the last clip out to black. The last clip has no boundary after it, so
+ * any request there is ignored.
+ */
+export const resolveFades = (durations: number[], requests: number[], edges: { head?: number; tail?: number } = {}): ClipFade[] => {
   const fades: ClipFade[] = durations.map(() => ({ fadeIn: 0, fadeOut: 0 }))
   for (let index = 0; index < durations.length - 1; index++) {
     const requested = Math.max(requests[index] || 0, 0)
@@ -83,6 +107,15 @@ export const resolveFades = (durations: number[], requests: number[]): ClipFade[
     if (applied <= 0) continue
     fades[index].fadeOut = applied
     fades[index + 1].fadeIn = applied
+  }
+  const last = durations.length - 1
+  if (last >= 0) {
+    // The edges are clamped against the same clip's boundary fade, not against a neighbour's,
+    // because there is no neighbour on the outside of the timeline to make room for.
+    const head = Math.max(edges.head || 0, 0)
+    if (head > 0) fades[0].fadeIn = Math.min(head, maxEdgeFade(durations[0], fades[0].fadeOut))
+    const tail = Math.max(edges.tail || 0, 0)
+    if (tail > 0) fades[last].fadeOut = Math.min(tail, maxEdgeFade(durations[last], fades[last].fadeIn))
   }
   return fades
 }
@@ -262,6 +295,7 @@ const applyFades = (task: QueueTask, segments: TimelineSegment[]) => {
   const fades = resolveFades(
     segments.map((segment) => segment.duration),
     segments.map((segment, index) => transitionDuration(task, segment.sourcePath, index)),
+    { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') },
   )
   segments.forEach((segment, index) => {
     if (fades[index].fadeIn > 0) segment.fadeIn = fades[index].fadeIn

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, resolveFades, segmentTiming, sourceDuration, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
+import { ClipFade, edgeFade, resolveFades, segmentTiming, sourceDuration, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { probeFile } from './probe'
@@ -279,7 +279,7 @@ export class FFmpegEngine {
     }
     // Fade placement is clamped by the shared rule, so a request that would overlap
     // inside a clip is reduced rather than producing a broken ramp.
-    const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)))
+    const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)), { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })
     try {
       for (let index = 0; index < task.sourcePaths.length; index++) {
         const normalized = path.join(os.tmpdir(), `stitch_${task.id}_${index}.mkv`)
@@ -361,7 +361,7 @@ export class FFmpegEngine {
         this.trimPoint(task, source, index),
       ).duration)
     }
-    const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)))
+    const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)), { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })
     try {
       for (let index = 0; index < task.sourcePaths.length; index++) {
         const output = path.join(os.tmpdir(), `combo_${task.id}_${index}.mkv`)

@@ -352,6 +352,9 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    offset, so the box is centred on the edge by construction rather than by any
    arithmetic on the timeline's length. */
 .boundary-add { position: absolute; top: 50%; right: -8.5px; transform: translateY(-50%); z-index: 3; box-sizing: border-box; width: 17px; height: 17px; padding: 0; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); }
+/* The head marker sits on the first clip's leading edge instead, which is the timeline's start. */
+.boundary-add.is-head { right: auto; left: -8.5px; }
+.boundary-add.is-head { right: auto; left: -8.5px; }
 /* The plus is drawn rather than typed, and centred with inset/margin auto rather
    than left/top 50 per cent: that pair resolves against the padding box, so the
    border used to push the glyph a pixel off centre. */

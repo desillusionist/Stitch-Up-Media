@@ -6,7 +6,7 @@ import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { FILMSTRIP_HEIGHT, FILMSTRIP_TILE_WIDTH, filmstripCountForWidth, filmstripKey } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
-import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
+import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
 /**
@@ -123,6 +123,39 @@ console.log('\n== fades on a concatenated lane ==')
   check('the last clip has no boundary after it', resolveFades([4, 4], [0.5, 0.5]), [
     { fadeIn: 0, fadeOut: 0.5 }, { fadeIn: 0.5, fadeOut: 0 },
   ])
+
+  // The two edges of the timeline, which cut from and to black. They touch one clip each, so the
+  // middle of the job is left alone however long they are asked to be.
+  check('a head fade cuts from black on the first clip only', resolveFades([4, 4], [0, 0], { head: 1 }), [
+    { fadeIn: 1, fadeOut: 0 }, { fadeIn: 0, fadeOut: 0 },
+  ])
+  check('a tail fade cuts to black on the last clip only', resolveFades([4, 4], [0, 0], { tail: 1 }), [
+    { fadeIn: 0, fadeOut: 0 }, { fadeIn: 0, fadeOut: 1 },
+  ])
+  check('both edges at once still leave the middle alone', resolveFades([4, 4, 4], [0, 0, 0], { head: 1, tail: 2 }), [
+    { fadeIn: 1, fadeOut: 0 }, { fadeIn: 0, fadeOut: 0 }, { fadeIn: 0, fadeOut: 2 },
+  ])
+  // An edge shares its clip with the boundary at the other end of the SAME clip, so the two are
+  // fitted together rather than allowed to overlap.
+  check('a head fade cannot run into its own clip\'s tail fade', resolveFades([4, 4], [1], { head: 5 }), [
+    { fadeIn: 3, fadeOut: 1 }, { fadeIn: 1, fadeOut: 0 },
+  ])
+  check('and a tail fade cannot run into its own head fade', resolveFades([4, 4], [1], { tail: 5 }), [
+    { fadeIn: 0, fadeOut: 1 }, { fadeIn: 1, fadeOut: 3 },
+  ])
+  near('an edge can take the whole clip when nothing else uses it', maxEdgeFade(6, 0), 6)
+  near('and only what is left when a boundary already does', maxEdgeFade(6, 2), 4)
+
+  // The edge keys are their own, so no clip-scoped key can collide with them.
+  const edgeTask = {
+    id: 'e', type: 'stitch', status: 'pending', progress: 0, sourcePaths: ['/a.mp4'],
+    outputDirectory: '/out', outputFilename: 'o.mp4',
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    transitions: { '#head': { type: 'fade', duration: 1 }, '#tail': { type: 'fade', duration: 2 }, '/a.mp4#0': { type: 'fade', duration: 3 } },
+  } as unknown as QueueTask
+  near('the head edge reads its own key', edgeFade(edgeTask, 'head'), 1)
+  near('the tail edge reads its own', edgeFade(edgeTask, 'tail'), 2)
+  near('and neither is confused with a clip boundary', edgeFade({ ...edgeTask, transitions: { '/a.mp4#0': { type: 'fade', duration: 3 } } } as unknown as QueueTask, 'tail'), 0)
   check('a trim shortens the clip before fades are placed', segmentTiming(20, { in: 5, out: 9 }), { duration: 4, sourceIn: 5, trimmed: true })
 }
 
