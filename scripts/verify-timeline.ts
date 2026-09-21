@@ -1,7 +1,7 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
-import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
+import { dropPreviewsFor, previewKey, rememberedPreviewFor, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
@@ -995,6 +995,28 @@ console.log('\n== taking a source out of a job ==')
   check('one picture and one track is a multi-track job', inferredMode(['a.mp4'], [{ path: 's.wav' }]), 'multitrack')
   check('two pictures and a track is a combo', inferredMode(['a.mp4', 'b.mp4'], [{ path: 's.wav' }]), 'combo')
   check('tracks alone are joined if there are two of them', [inferredMode(['s.wav']), inferredMode(['s.wav', 't.wav'])], ['transcode', 'stitch'])
+}
+
+console.log('\n== where a sequence picture is without asking ==')
+{
+  // The editor reads a built clip's whereabouts off the task rather than waiting for a round trip to
+  // confirm it exists, which is what stops the monitor saying PREPARING on every open of a job whose
+  // clips are all built. The key carries the rate, so a clip built at another rate is not this
+  // source's clip — it is a different length from the one the timeline expects.
+  const frame = '/seq/f_0001.png'
+  const spec = (rate: number) => previewKey(frame, `seq:${rate}:240`)
+  const task = {
+    id: 's', type: 'stitch', sourcePaths: [frame], outputDirectory: '/out', outputFilename: 'o.mov',
+    preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    status: 'pending', progress: 0,
+    sequenceInputs: { [frame]: { dir: '/seq', pattern: 'f_%04d.png', globPattern: '*', startNumber: 1, frameCount: 240, hasGaps: false, missing: [], fps: 24, firstFrame: frame } },
+    imageSequencePreviews: { [spec(24)]: '/tmp/seq-24fps.mp4', [spec(30)]: '/tmp/seq-30fps.mp4' },
+  } as unknown as QueueTask
+  check('a clip built at the rate in hand is found', rememberedPreviewFor(task, frame, 24), '/tmp/seq-24fps.mp4')
+  check('and the one built at another rate is not mistaken for it', rememberedPreviewFor(task, frame, 30), '/tmp/seq-30fps.mp4')
+  check('a rate with no clip built at it has none', rememberedPreviewFor(task, frame, 25), undefined)
+  check('a source that is not a sequence has no generated clip', rememberedPreviewFor(task, '/other.mp4', 24), undefined)
+  check('and neither has nothing at all', rememberedPreviewFor(task, undefined, 24), undefined)
 }
 console.log('\n== where a right-click menu goes ==')
 {

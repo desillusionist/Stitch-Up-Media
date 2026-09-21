@@ -4,7 +4,7 @@ import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SourceCrop, Sourc
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
-import { resolveQuickLookRequest } from '../lib/quickLookTarget'
+import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
@@ -373,17 +373,24 @@ export const EditJobApp: React.FC = () => {
   const focusedSequence = draft && focusedSource ? sequenceFor(draft, focusedSource) : undefined
   const focusedLabel = focusedSequence ? sequenceLabel(focusedSequence) : sourceName(focusedSource)
 
-  // Every main-lane source gets a target, once per rate, in the background. Nothing
-  // on the playback path waits for this: an unresolved source simply renders nothing
-  // for the moment it takes, which is one IPC round trip rather than a clip build.
+  // An image sequence's generated clip is resolved here, once per rate, in the background. Nothing on
+  // the playback path waits for it: the window draws the clip the queue remembers for it, and only
+  // falls back to an unresolved state while a clip is being built for the first time.
+  //
+  // Only sequences are asked about. Every other source's target is the file itself — there is nothing
+  // to build and nothing to resolve — so asking was a round trip per source, and a source whose rate
+  // arrives with its probe was asked about twice, once at the default rate and once at its own.
   useEffect(() => {
     const task = draftRef.current
     if (!task) { setMediaTargets({}); return }
     const wanted = new Map<string, string>()
     Array.from(new Set(task.sourcePaths)).forEach((sourcePath) => {
-      const rate = sourceFps(task, sourcePath, undefined, resolveTiming)
+      const sequence = sequenceFor(task, sourcePath)
+      if (!sequence) return
+      const rate = sourceFps(task, sourcePath, sequence, resolveTiming)
       wanted.set(`${sourcePath}\u0000${rate}`, sourcePath)
     })
+    if (!wanted.size) return
     const missing = [...wanted.keys()].filter((key) => resolvedTargetsRef.current[key] === undefined)
     if (!missing.length) return
     let cancelled = false
@@ -528,9 +535,33 @@ export const EditJobApp: React.FC = () => {
       maxHeight: 'none' as const,
     }
   }
+  /**
+   * The file a segment's picture is read from: a generated clip for an image sequence, the source
+   * itself for everything else.
+   *
+   * Read off the task rather than waited for. A sequence needs a clip built and the queue remembers
+   * where it is, so a clip that exists can be drawn straight away — asking over IPC whether it still
+   * exists first is a round trip whose only visible effect is the monitor saying PREPARING on every
+   * open, for a clip that is not being prepared at all. Everything that is not a sequence needs no
+   * resolution whatsoever: its own file IS the target.
+   *
+   * The remembered clip's key carries the rate and frame count it was built at, so a clip built at
+   * another rate is not this source's clip and is not drawn as one; it would play the sequence at the
+   * wrong speed until the right one was resolved, which is worse than a moment of PREPARING.
+   */
+  const pictureSourceFor = (segment: TimelineSegment | undefined): string | null => {
+    if (!segment) return null
+    const resolved = mediaTargets[segment.sourcePath]
+    if (resolved) return resolved.path
+    if (!draft) return segment.sourcePath
+    const sequence = sequenceFor(draft, segment.sourcePath)
+    if (!sequence) return segment.sourcePath
+    const rate = sourceFps(draft, segment.sourcePath, sequence, resolveTiming)
+    return rememberedPreviewFor(draft, segment.sourcePath, rate) ?? null
+  }
   /** A frame already fetched. */
   const frameImageFor = (segment: TimelineSegment, frame: number) => {
-    const target = mediaTargets[segment.sourcePath]?.path
+    const target = pictureSourceFor(segment)
     return target ? frameImages[target]?.[keyFor(segment, frame)] : undefined
   }
 
@@ -560,7 +591,7 @@ export const EditJobApp: React.FC = () => {
       lane.segments.forEach((segment) => {
         const plan = planFor(segment)
         const shape = sourceShape[segment.sourcePath]
-        const target = mediaTargets[segment.sourcePath]?.path
+        const target = pictureSourceFor(segment)
         // A still has no frames to sample: its one picture repeated is its strip, and it is drawn
         // straight from the file rather than extracted.
         if (!plan || !shape || !target || segment.still) return
@@ -619,7 +650,7 @@ export const EditJobApp: React.FC = () => {
       })
     }, FILMSTRIP_SETTLE_MS)
     return () => { window.clearTimeout(timer) }
-  }, [filmstripLanes, laneZoom, mediaTargets, sourceShape, timelineSignature, frameImages, draft?.preset.crop, outputFrame, draft?.sourceFit])
+  }, [filmstripLanes, laneZoom, mediaTargets, sourceShape, timelineSignature, frameImages, draft?.preset.crop, draft?.imageSequencePreviews, outputFrame, draft?.sourceFit])
 
   // A context menu closes on the next press anywhere, or on Escape.
   useEffect(() => {
@@ -1064,7 +1095,6 @@ export const EditJobApp: React.FC = () => {
   }
 
   const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
-  const sequenceSources = new Set([...Object.keys(draft.sequenceInputs || {}), ...(draft.sequenceInput ? [draft.sequenceInput.firstFrame] : [])])
   const playable = model.duration > 0
   const stamp = (seconds: number) => settings?.timestampDisplayMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
   const segmentDetail = (segment: TimelineSegment) => {
@@ -1172,20 +1202,14 @@ export const EditJobApp: React.FC = () => {
   })()
 
   /**
-   * A sequence frame cannot be handed to a video element, so it plays through the
-   * resolved preview. Returning null keeps the element idle until that preview
-   * exists, rather than letting it fail on a PNG.
+   * The media a segment plays through, as a URL.
+   *
+   * A sequence frame cannot be handed to a video element, so it plays through the clip that was
+   * generated for it; everything else is its own file, handed over without asking anyone.
    */
   const sourceUrlFor = (segment: TimelineSegment | undefined): string | null => {
-    if (!segment) return null
-    // A sequence frame cannot be handed to a video element, so it plays through the
-    // resolved preview. Returning null keeps the element idle until that exists,
-    // rather than letting it fail on a PNG.
-    if (sequenceSources.has(segment.sourcePath)) {
-      const target = mediaTargets[segment.sourcePath]
-      return target ? mediaUrl(target.path) : null
-    }
-    return mediaUrl(segment.sourcePath)
+    const target = pictureSourceFor(segment)
+    return target ? mediaUrl(target) : null
   }
   const elementUrl = sourceUrlFor(playback.segment)
 
@@ -1825,8 +1849,15 @@ export const EditJobApp: React.FC = () => {
               <div className="editor-stage-pan" style={{ transform: `translate(${panX}px, ${panY}px)` }}>
                 {/* The frame's own window: the picture is drawn inside it and clipped by it, so
                     what the monitor shows is the output's own area and not the picture spilling
-                    past it. A clip fitted to the width really is cropped at the frame's edges. */}
-                {frameRect && frameOrigin && <div className="editor-frame-window" style={{ left: frameOrigin.x, top: frameOrigin.y, width: frameRect.width, height: frameRect.height }}>
+                    past it. A clip fitted to the width really is cropped at the frame's edges.
+
+                    The MEDIA is mounted whether or not the frame's size is known yet, which is the
+                    point of the `is-open` state: for a frame that follows the source there is no
+                    resolution and no exact size to take the size from, so it can only come from the
+                    media — and a monitor that waited for a size before mounting the media was
+                    waiting for the media to tell it. Until then the picture fills the stage at its
+                    own proportions, and the outline, the fit and the crop box appear with the size. */}
+                <div className={`editor-frame-window${frameRect && frameOrigin ? '' : ' is-open'}`} style={frameRect && frameOrigin ? { left: frameOrigin.x, top: frameOrigin.y, width: frameRect.width, height: frameRect.height } : undefined}>
                   {playback.error
                     ? <span className="editor-screen-message">{playback.error}</span>
                     : stillFrameJob
@@ -1846,8 +1877,7 @@ export const EditJobApp: React.FC = () => {
                             onClick={toggleFromClick}
                           />
                           : <span className="editor-screen-message">{screenMessage}</span>}
-                </div>}
-                {!frameRect && <span className="editor-screen-message">{screenMessage}</span>}
+                </div>
                 {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
                 {cropShade.map((band, index) => (
                   <div key={index} className="editor-crop-shade" style={{ left: band.left, top: band.top, width: band.width, height: band.height }} aria-hidden="true" />

@@ -178,6 +178,14 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    fitted to one axis and overflows the other is cut off exactly where the export cuts it. Its
    opacity is not set, so a fade through black in the monitor still reads on the picture inside. */
 .editor-frame-window { position: absolute; overflow: hidden; }
+/* Before the output frame's size is known — which, for a frame that follows the source, means before
+   the media has reported its own — the picture fills the stage instead of sitting inside the frame's
+   window. The media is mounted either way, which is what lets it report the size the frame is
+   waiting for; the outline, the fit and the crop box appear with the size. The picture is centred
+   at its own proportions so that what is on screen before then is not a corner of something. */
+.editor-frame-window.is-open { inset: 0; display: flex; align-items: center; justify-content: center; }
+.editor-frame-window.is-open .editor-video,
+.editor-frame-window.is-open .editor-still { width: auto; height: auto; max-width: 100%; max-height: 100%; }
 .editor-frame-window .editor-screen-message { position: absolute; inset: 0; display: grid; place-items: center; }
 .editor-frame b { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
 /* The crop box, drawn on the picture rather than on the output frame. What it removes is

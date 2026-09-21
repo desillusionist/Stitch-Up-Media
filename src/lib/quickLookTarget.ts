@@ -1,6 +1,6 @@
 import { QueueTask } from '../types'
 import { mediaKind } from './mediaKind'
-import { isStillFrameJob, sourceFps, stillSecondsFor } from './timelineModel'
+import { isStillFrameJob, sequenceFor, sourceFps, stillSecondsFor } from './timelineModel'
 
 /** The subset of the preload bridge this helper needs. */
 export interface QuickLookBridge {
@@ -60,6 +60,29 @@ export const sourceOfPreview = (previews: Record<string, string> | undefined, pr
 /** Drops every generated clip recorded for a source, whatever it was built at. */
 export const dropPreviewsFor = (previews: Record<string, string>, sourcePath: string): void => {
   Object.keys(previews).forEach((key) => { if (sourceOfPreviewKey(key) === sourcePath) delete previews[key] })
+}
+
+/**
+ * The generated clip a task already has for a source, at the rate the timeline is working in.
+ *
+ * The counterpart of `previewKey` for READING rather than writing, and the reason it exists is that
+ * the editor needs to know where a sequence's picture is without asking anybody: a clip that has been
+ * built is on disk and its path is recorded on the task, so a window that opens on a job whose clips
+ * are all built has everything it needs in front of it. Asking first is one IPC round trip per
+ * source, and it shows up as the monitor saying PREPARING on every open for a clip that is not being
+ * prepared at all.
+ *
+ * The rate is part of the key because the clip was rendered at one: a clip built at another rate is a
+ * different length from the one the timeline expects, so it is not this source's clip and must not be
+ * drawn as one — playing a sequence at the wrong speed for a moment is worse than saying PREPARING.
+ * Nothing is returned for a source that is not an image sequence, because nothing else has a
+ * generated clip: its own file is its picture.
+ */
+export const rememberedPreviewFor = (task: QueueTask, sourcePath: string | undefined, rate: number): string | undefined => {
+  if (!sourcePath) return undefined
+  const sequence = sequenceFor(task, sourcePath)
+  if (!sequence) return undefined
+  return task.imageSequencePreviews?.[previewKey(sourcePath, `seq:${rate}:${sequence.frameCount}`)]
 }
 
 /**
