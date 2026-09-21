@@ -190,7 +190,6 @@ app.whenReady().then(() => {
   // frames are extracted. One pass per request rather than one seek per frame, and the pass is
   // a select on the frame indices asked for, so exactly those come back, in order.
   const frameCache = new Map<string, Map<string, string>>()
-  const frameWidthCache = new Map<string, number>()
   const framesFor = (filePath: string) => {
     const existing = frameCache.get(filePath)
     if (existing) return existing
@@ -199,27 +198,22 @@ app.whenReady().then(() => {
     if (frameCache.size > 40) frameCache.delete(frameCache.keys().next().value as string)
     return created
   }
-  // The tile's pixel width, from the OUTPUT shape, so every clip's strip is laid out the same.
-  // The shape of a piece of footage does not change, so the probe is done once per file.
-  const thumbWidthFor = async (filePath: string, outputAspect: number) => {
-    const cacheKey = `${filePath}|${outputAspect.toFixed(4)}`
-    const known = frameWidthCache.get(cacheKey)
-    if (known !== undefined) return known
+  // The tile's pixel width, from the source's own shape, so a tile is already the shape of its
+  // picture and covering its cell crops a sliver rather than a third of the frame.
+  const thumbWidthFor = (srcAspect: number) => {
     const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
-    const width = even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE * outputAspect)
-    if (frameWidthCache.size < 80) frameWidthCache.set(cacheKey, width)
-    return width
+    return even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE * srcAspect)
   }
-  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number; outputAspect?: number; crop?: CropFractions }) => {
+  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number; srcAspect?: number; crop?: CropFractions }) => {
     const times = (options?.times ?? []).filter((time) => Number.isFinite(time) && time >= 0)
     const fps = options?.fps && options.fps > 0 ? options.fps : 30
-    const outputAspect = options?.outputAspect && options.outputAspect > 0 ? options.outputAspect : 16 / 9
+    const srcAspect = options?.srcAspect && options.srcAspect > 0 ? options.srcAspect : 16 / 9
     const crop = options?.crop
     if (!filePath || !times.length) return []
     try { if (!fs.statSync(filePath).isFile()) return [] } catch { return [] }
     const have = framesFor(filePath)
-    const keyOf = (time: number) => frameKey(Math.max(0, Math.round(time * fps)), outputAspect, crop)
-    const width = await thumbWidthFor(filePath, outputAspect)
+    const keyOf = (time: number) => frameKey(Math.max(0, Math.round(time * fps)), srcAspect)
+    const width = thumbWidthFor(srcAspect)
     const height = Math.max(2, Math.round(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE / 2) * 2)
     // One extraction per frame, each seeking straight to the moment it wants. Seeking the INPUT
     // is a fast keyframe seek, and it works on any source however its frames are numbered: the
@@ -237,18 +231,11 @@ app.whenReady().then(() => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-frame-'))
       const framePath = path.join(dir, 'frame.jpg')
       try {
-        // The clip's own fit chain, exactly as the encoder builds it for the output frame: the
-        // source crop first, then the picture fitted inside the output shape, then padded out to
-        // it. So a thumbnail shows the frame as the export will, bars and all, rather than the
-        // raw source. The canvas is the output's SHAPE at an arbitrary size, because fitting and
-        // padding are the same operation at any size and the result is scaled to the tile after.
-        const canvasWidth = 640
-        const canvasHeight = Math.max(2, Math.round(canvasWidth / outputAspect / 2) * 2)
+        // The clip's own source crop first, if it has one, then the frame scaled to the tile. No
+        // fitting and no padding: the QUICK LOOK helper draws its thumbnails by filling each cell
+        // with the frame, which is what keeps every cell full and nothing letterboxed.
         const chain: string[] = []
         if (crop && hasCrop(crop)) chain.push(cropFilter(crop))
-        chain.push(`scale=${canvasWidth}:${canvasHeight}:force_original_aspect_ratio=decrease`)
-        chain.push(`pad=${canvasWidth}:${canvasHeight}:(ow-iw)/2:(oh-ih)/2:color=black`)
-        chain.push('setsar=1')
         chain.push(`scale=${width}:${height}`)
         execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', time.toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', chain.join(','), '-q:v', '4', framePath], { timeout: 30000 })
         have.set(key, `data:image/jpeg;base64,${fs.readFileSync(framePath).toString('base64')}`)

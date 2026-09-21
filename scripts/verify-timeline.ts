@@ -564,9 +564,9 @@ console.log('\n== the timeline filmstrip ==')
   // the whole point: the samples must span the clip's whole TRIM however many tiles fit, and a
   // wider lane must buy density rather than less of the range. That is what deriving the step
   // from the tile count does, and what a fixed step cannot do.
-  const base = { thumbHeight: 32, outputAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 }
+  const base = { thumbHeight: 32, srcAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 }
   const wide = computeFilmstrip({ ...base, laneWidth: 640 })
-  check('a tile is as wide as the OUTPUT frame', wide.thumbWidth, Math.round(32 * (16 / 9)))
+  check('a tile is as wide as its own picture', wide.thumbWidth, Math.round(32 * (16 / 9)))
   check('the count is how many fit across the lane', wide.thumbCount, Math.round(640 / wide.thumbWidth))
   near('the cells share the lane exactly', wide.cellWidth * wide.thumbCount, 640, 1e-9)
   near('the step is the trimmed frames over the count', wide.step, Math.round(8 * 30) / wide.thumbCount, 1e-9)
@@ -595,15 +595,14 @@ console.log('\n== the timeline filmstrip ==')
   check('but still reaches the far end', narrow.frames[narrow.frames.length - 1] > Math.round(8 * 30) - 1 - narrow.step, true)
   check('and the wide lane samples more densely', wide.step < narrow.step, true)
 
-  // Uniformity: the cells are shaped after the OUTPUT frame, never after each clip's own
-  // picture, so every clip's strip has the same density. Were they shaped after their sources,
-  // a portrait clip would pack several times as many tiles into the same lane as a landscape
-  // one and the strips would not read as the same thing at all.
-  const portraitOutput = computeFilmstrip({ ...base, laneWidth: 640, outputAspect: 9 / 16 })
-  check('a portrait OUTPUT makes narrow tiles', portraitOutput.thumbWidth, Math.round(32 * (9 / 16)))
-  check('so more of them fit', portraitOutput.thumbCount > wide.thumbCount, true)
-  const twoClips = [computeFilmstrip({ ...base, laneWidth: 400 }), computeFilmstrip({ ...base, laneWidth: 400 })]
-  check('and two clips of the same lane width lay out identically', twoClips[0].thumbWidth === twoClips[1].thumbWidth && twoClips[0].thumbCount === twoClips[1].thumbCount, true)
+  // The QUICK LOOK helper's rule: the tile is the shape of its own picture, so filling a cell
+  // with it crops a sliver. A portrait source therefore makes narrow tiles and so more of them,
+  // which is the helper's behaviour too rather than a fault.
+  const portrait = computeFilmstrip({ ...base, laneWidth: 640, srcAspect: 9 / 16 })
+  check('a portrait picture makes narrow tiles', portrait.thumbWidth, Math.round(32 * (9 / 16)))
+  check('so more of them fit', portrait.thumbCount > wide.thumbCount, true)
+  const likely = [computeFilmstrip({ ...base, laneWidth: 400 }), computeFilmstrip({ ...base, laneWidth: 400 })]
+  check('and two clips of the same picture and lane lay out identically', likely[0].thumbWidth === likely[1].thumbWidth && likely[0].thumbCount === likely[1].thumbCount, true)
 
   // Never more tiles than there are frames to fill them: past that the same frame would be
   // asked for twice over, which is work for nothing.
@@ -611,13 +610,13 @@ console.log('\n== the timeline filmstrip ==')
   check('a three-frame trim cannot fill more than three tiles', sparse.thumbCount, 3)
   check('and each tile still gets its own frame', sparse.frames.length, 3)
 
-  check('a nonsense output shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, outputAspect: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
+  check('a nonsense picture shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, srcAspect: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
 
   // Degenerate inputs still describe a whole clip rather than nothing.
   check('a lane narrower than a tile still shows one', computeFilmstrip({ ...base, laneWidth: 8 }).thumbCount, 1)
   near('and that one tile is the middle of the trim', computeFilmstrip({ ...base, laneWidth: 8 }).frames[0], Math.round(0.5 * 240), 1e-9)
   check('an enormous lane is capped', computeFilmstrip({ ...base, laneWidth: 100000 }).thumbCount, FILMSTRIP_MAX_TILES)
-  check('a nonsense output shape still lays out', computeFilmstrip({ ...base, laneWidth: 640, outputAspect: Number.NaN }).thumbCount > 0, true)
+  check('a nonsense picture shape still lays out', computeFilmstrip({ ...base, laneWidth: 640, srcAspect: Number.NaN }).thumbCount > 0, true)
   check('a zero-width lane still yields one cell', computeFilmstrip({ ...base, laneWidth: 0 }).thumbCount, 1)
   check('and a clip with no frames still samples inside itself', computeFilmstrip({ ...base, laneWidth: 640, inSec: 4, outSec: 4 }).frames.every((frame) => frame === 120), true)
 
@@ -636,14 +635,13 @@ console.log('\n== the timeline filmstrip ==')
   check('a nonsense moment is the first frame', skimFrame(Number.NaN, 30), 0)
   check('a clip with no rate still gives a frame', skimFrame(1, 0), 30)
 
-  // A thumbnail's key carries the frame, the output shape it was composited into and the crop
-  // applied on the way. Changing the shape or the crop must make the old pictures unusable, or
-  // a strip would be left showing frames composited some other way.
-  check('a key names its frame, shape and crop', frameKey(120, 16 / 9), '120|1.7778|none')
-  check('the same frame in another output shape is another picture', frameKey(120, 16 / 9) === frameKey(120, 4 / 3), false)
-  check('and so is the same frame cropped differently', frameKey(120, 16 / 9) === frameKey(120, 16 / 9, { left: 0.1, top: 0, right: 0, bottom: 0 }), false)
-  check('while the same frame, shape and crop is the same picture', frameKey(120, 16 / 9, { left: 0.1, top: 0, right: 0, bottom: 0 }) === frameKey(120, 16 / 9, { left: 0.1, top: 0, right: 0, bottom: 0 }), true)
-  check('a nonsense shape falls back rather than colliding', frameKey(1, 0), '1|1.7778|none')
+  // A thumbnail's key carries the frame and the source shape it was drawn at, because a tile is
+  // generated at its own picture's width and footage whose shape changed must not be served the
+  // pictures drawn for the old one.
+  check('a key names its frame and its shape', frameKey(120, 16 / 9), '120|1.7778')
+  check('the same frame at another shape is another picture', frameKey(120, 16 / 9) === frameKey(120, 4 / 3), false)
+  check('while the same frame at the same shape is the same picture', frameKey(120, 16 / 9) === frameKey(120, 16 / 9), true)
+  check('a nonsense shape falls back rather than colliding', frameKey(1, 0), '1|1.7778')
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

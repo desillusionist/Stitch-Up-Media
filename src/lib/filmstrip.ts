@@ -21,7 +21,7 @@ export const FILMSTRIP_SCALE = 2
 export const FILMSTRIP_MAX_TILES = 24
 
 export interface FilmstripPlan {
-  /** A tile's width. From the OUTPUT shape, so every clip's strip has the same density. */
+  /** A tile's width, from the source's own picture. */
   thumbWidth: number
   /** How many tiles fit across the lane as it is right now. */
   thumbCount: number
@@ -38,33 +38,30 @@ export interface FilmstripPlan {
 /**
  * Lay a clip's strip out across the lane as it is now.
  *
- * Every thumbnail stands for a frame of the ASSEMBLED OUTPUT, not of the source, so the cell's
- * shape is the output frame's and is the same for every clip whatever shape its footage is.
- * That is what makes density uniform across a lane: were the cells as wide as each source's own
- * picture, a portrait clip would pack several times as many tiles into the same lane as a
- * landscape one, and the strips would not read as the same thing at all.
+ * This is the QUICK LOOK helper's own arithmetic, moved to the timeline: the tile is as wide as
+ * its own picture, the count is how many of those fit across the lane, and the cells are equal
+ * shares of the lane. Every cell is then filled with its picture — `resizeAspectFill`, which is
+ * `object-fit: cover` on the web side — so a cell is never letterboxed and the strip reads as
+ * one row of frames rather than a row of frames in assorted frames.
  *
- * Order matters here and each line is one of the rules:
- *   thumbWidth from the output's own shape; thumbCount from how many of those fit across the
- *   lane, never more than there are frames to show; cellWidth from dividing the lane among them,
- *   so the cells fill it exactly with no trailing gap; inFrame and trimmed from the clip's own
- *   trim; step from the trimmed length over the tile count, kept FRACTIONAL, because flooring it
- *   accumulates rounding error and the last tile then lands short of the clip's end; and each
- *   sample at its own cell's midpoint, offset by inFrame and clamped inside the trim, so a
- *   thumbnail matches the frame the playhead would show there.
+ * The tile's width coming from the SOURCE is what makes that filling harmless: a tile is already
+ * the shape of its own picture, so covering its cell crops a sliver rather than a third of the
+ * frame. Shaping the cells after the OUTPUT instead meant a portrait clip's thumbnails were
+ * cropped down to a landscape slice, and padding them to fit meant bars of a different thickness
+ * on every clip.
  */
 export const computeFilmstrip = (o: {
   laneWidth: number
   thumbHeight: number
-  /** The output frame's width over its height, which every cell is shaped after. */
-  outputAspect: number
+  /** The source's own width over its height. */
+  srcAspect: number
   fps: number
   inSec: number
   outSec: number
 }): FilmstripPlan => {
-  const outputAspect = Number.isFinite(o.outputAspect) && o.outputAspect > 0 ? o.outputAspect : 16 / 9
+  const srcAspect = Number.isFinite(o.srcAspect) && o.srcAspect > 0 ? o.srcAspect : 16 / 9
   const thumbHeight = o.thumbHeight > 0 ? o.thumbHeight : FILMSTRIP_CLIP_HEIGHT
-  const thumbWidth = Math.max(1, Math.round(thumbHeight * outputAspect))
+  const thumbWidth = Math.max(1, Math.round(thumbHeight * srcAspect))
   const laneWidth = Number.isFinite(o.laneWidth) ? Math.max(0, o.laneWidth) : 0
   const fps = o.fps > 0 ? o.fps : 30
   const inFrame = Math.max(0, Math.round(o.inSec * fps))
@@ -84,18 +81,14 @@ export const computeFilmstrip = (o: {
 }
 
 /**
- * The identity of a thumbnail: the frame, the output shape it was composited into, and the crop
- * that was applied on the way.
+ * The identity of a thumbnail: the frame, and the source shape it was drawn at.
  *
- * All three belong in the key, because all three change the picture. Changing the output shape
- * or the crop must make the old thumbnails unusable rather than leaving a strip showing frames
- * composited some other way, which is exactly what a source-frame-only key would do.
+ * The shape belongs in the key because a thumbnail is generated at its tile's width, which comes
+ * from the source. Footage whose shape has changed must not be served the pictures drawn for the
+ * old one.
  */
-export const frameKey = (index: number, outputAspect: number, crop?: { left: number; top: number; right: number; bottom: number }): string => {
-  const shape = (Number.isFinite(outputAspect) && outputAspect > 0 ? outputAspect : 16 / 9).toFixed(4)
-  const cropped = crop ? `${crop.left.toFixed(3)},${crop.top.toFixed(3)},${crop.right.toFixed(3)},${crop.bottom.toFixed(3)}` : 'none'
-  return `${index}|${shape}|${cropped}`
-}
+export const frameKey = (index: number, srcAspect: number): string =>
+  `${index}|${(Number.isFinite(srcAspect) && srcAspect > 0 ? srcAspect : 16 / 9).toFixed(4)}`
 
 /**
  * Which tile a fraction of the clip falls in, and how far into it.
