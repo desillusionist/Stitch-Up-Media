@@ -112,8 +112,20 @@ export const resizeExact = (current: FrameSize, edge: keyof FrameSize, value: nu
 }
 
 /**
- * How far a crop may reach in from EACH edge. An edge may reach this far on both sides, so the
- * smallest sliver a crop can leave is 1 - 2 x this, a tenth of the picture.
+ * The least of the picture, per axis, that a crop always leaves. It is the one guarantee the filter
+ * needs: an encoder rejects an empty frame outright, and everything else about how far a crop may
+ * reach is a matter of what the user asked for.
+ */
+export const MIN_KEPT = 0.1
+
+/**
+ * How far one edge may reach in on its own, with the edge opposite it reaching the same way.
+ *
+ * Kept as a figure in its own right because it is what the controls are labelled with and what a
+ * READER of the code means by "as far as a crop can go": both edges at this leaves exactly MIN_KEPT.
+ * It is not, and must not become, a cap on how far ONE edge can travel: a box being MOVED along an
+ * axis has an edge going out exactly as far as the other comes in, and a cap each would hold it
+ * within a tenth of the picture's middle — which is the bug this distinction was drawn to fix.
  */
 export const MAX_CROP = 0.45
 
@@ -131,21 +143,52 @@ export const hasCrop = (crop: CropFractions | undefined): boolean =>
 /**
  * Keeps a crop inside the frame, so the filter can never be handed an empty picture.
  *
- * Each edge is capped on its own rather than against the edge opposite it. The two were tied
- * together before, which capped the TOTAL horizontal or vertical crop at MAX_CROP and so made
- * any crop needing more than that impossible: pulling a 16:9 source to 9:16 needs roughly 68%
- * off the width, and instead of a centred vertical crop it produced a lopsided one. Capping
- * each edge independently still leaves at least a tenth of the picture, since 2 x MAX_CROP is
- * only nine tenths, so the guarantee that nothing is empty is kept.
+ * Each axis is capped on its own, by what the two edges of it take TOGETHER, which is the only
+ * figure that decides whether anything is left. Tying the two edges together was the first attempt
+ * at this and capped the total at MAX_CROP, which made any crop needing more than that impossible:
+ * pulling a 16:9 source to 9:16 needs roughly 68% off the width and instead produced a lopsided
+ * crop. Capping only the TOTAL still leaves at least MIN_KEPT of the picture, so the guarantee that
+ * nothing is empty is kept, while how far each edge separately reaches is left to the user.
  */
-export const clampCrop = (crop: CropFractions): CropFractions => ({
-  left: clampEdge(crop.left),
-  top: clampEdge(crop.top),
-  right: clampEdge(crop.right),
-  bottom: clampEdge(crop.bottom),
-})
+export const clampCrop = (crop: CropFractions): CropFractions => {
+  const [left, right] = clampAxis(crop.left, crop.right)
+  const [top, bottom] = clampAxis(crop.top, crop.bottom)
+  return { left, top, right, bottom }
+}
 
-const clampEdge = (value: number): number => Math.max(0, Math.min(MAX_CROP, Number.isFinite(value) ? value : 0))
+const clampEdge = (value: number): number => Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0))
+
+/**
+ * One axis, kept inside the picture and keeping at least MIN_KEPT of it.
+ *
+ * The cap is on the TOTAL the two edges take, not on each of them, and the difference is a matter of
+ * what a crop is FOR. Capping each edge at MAX_CROP means the whole middle band of the picture is
+ * unreachable: a crop that keeps only a third of a portrait's height could then be moved only a
+ * tenth of the way up or down it, and could never be put at the top or the bottom at all — where a
+ * crop of a ninth of it, moved to the top, takes a tenth off the top and NONE off the bottom.
+ *
+ * Whatever the total overshoots by is taken off both ends evenly, so a crop that was centred stays
+ * centred and one that was not keeps its balance; where an end has less to give than its share, the
+ * other end gives the rest. Both edges at MAX_CROP still pass through unchanged, which is what makes
+ * this a widening of the old rule rather than a different one.
+ */
+const clampAxis = (near: number, far: number): [number, number] => {
+  let a = clampEdge(near)
+  let b = clampEdge(far)
+  let excess = a + b - (1 - MIN_KEPT)
+  if (excess <= 0) return [a, b]
+  const half = Math.min(excess / 2, a, b)
+  a -= half
+  b -= half
+  excess -= half * 2
+  if (excess > 0) {
+    const fromA = Math.min(a, excess)
+    a -= fromA
+    excess -= fromA
+  }
+  if (excess > 0) b -= Math.min(b, excess)
+  return [a, b]
+}
 
 /**
  * The crop filter, as fractions of the frame so it needs no knowledge of the resolution.
@@ -296,18 +339,23 @@ export const holdCropShape = (crop: CropFractions, ratio: number, pictureAspect:
 /**
  * Slides a crop across the picture without changing its size.
  *
- * Both edges of an axis move together, which is what keeps the region the same shape. The
- * move stops when either edge would leave the picture or pass MAX_CROP, so a box that already
- * reaches the cap on both sides of an axis cannot move along it at all.
+ * Both edges of an axis move together, which is what keeps the region the same shape, and the travel
+ * is bounded by the picture's own edges: the box can be put anywhere from hard against one edge to
+ * hard against the other, and the region it keeps is the same size everywhere in between. It was
+ * bounded by MAX_CROP instead, which allowed it a tenth of the picture's middle and no more, so a
+ * crop of a third of the height could not be moved to the top or the bottom of it — the size of the
+ * region has nothing to do with how far along the axis it may sit, and only the latter is at stake
+ * here.
  */
 export const shiftCrop = (crop: CropFractions, dx: number, dy: number): CropFractions => {
-  const rightwards = Math.max(-Math.min(crop.left, MAX_CROP - crop.right), Math.min(dx, Math.min(crop.right, MAX_CROP - crop.left)))
-  const downwards = Math.max(-Math.min(crop.top, MAX_CROP - crop.bottom), Math.min(dy, Math.min(crop.bottom, MAX_CROP - crop.top)))
+  const safe = clampCrop(crop)
+  const rightwards = Math.max(-safe.left, Math.min(dx, safe.right))
+  const downwards = Math.max(-safe.top, Math.min(dy, safe.bottom))
   return {
-    left: crop.left + rightwards,
-    top: crop.top + downwards,
-    right: crop.right - rightwards,
-    bottom: crop.bottom - downwards,
+    left: safe.left + rightwards,
+    top: safe.top + downwards,
+    right: safe.right - rightwards,
+    bottom: safe.bottom - downwards,
   }
 }
 

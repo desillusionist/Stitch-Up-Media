@@ -10,9 +10,12 @@ import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
-import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
+import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MIN_KEPT, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
 import { ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
+
+/** The edge opposite each of the four, which is what bounds how far one of them may reach in. */
+const OPPOSITE_EDGE: Record<keyof CropFractions, keyof CropFractions> = { left: 'right', right: 'left', top: 'bottom', bottom: 'top' }
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -2125,7 +2128,9 @@ export const EditJobApp: React.FC = () => {
                       <span>{edge.slice(0, 1).toUpperCase()}</span>
                       <NumberField
                         min={0}
-                        max={cropUnit === 'px' && picture ? Math.round(MAX_CROP * (edge === 'left' || edge === 'right' ? picture.width : picture.height)) : Math.round(MAX_CROP * 100)}
+                        max={cropUnit === 'px' && picture
+                          ? Math.round((1 - MIN_KEPT - crop[OPPOSITE_EDGE[edge]]) * (edge === 'left' || edge === 'right' ? picture.width : picture.height))
+                          : Math.round((1 - MIN_KEPT - crop[OPPOSITE_EDGE[edge]]) * 100)}
                         step={1}
                         className="editor-input"
                         value={cropUnit === 'px' && cropPx ? cropPx[edge] : Math.round(crop[edge] * 100)}

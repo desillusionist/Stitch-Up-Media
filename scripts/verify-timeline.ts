@@ -526,7 +526,28 @@ console.log('\n== moving and resizing the crop ==')
   // It stops at the picture rather than shrinking itself against the edge.
   check('a move past the right edge stops with nothing left over', shiftCrop(box, 1, 0), { left: 0.2, top: 0.1, right: 0, bottom: 0.1 })
   check('and the same the other way', shiftCrop(box, -1, 0), { left: 0, top: 0.1, right: 0.2, bottom: 0.1 })
-  check('a crop already at the cap both sides cannot move along it', shiftCrop({ left: MAX_CROP, top: 0.1, right: MAX_CROP, bottom: 0.1 }, 0.1, 0), { left: MAX_CROP, top: 0.1, right: MAX_CROP, bottom: 0.1 })
+  // A crop with a tenth of the picture left in it is still a crop the user may put anywhere: what
+  // is capped is the total the two edges take, and moving gives exactly as much as it takes.
+  const sliver = { left: MAX_CROP, top: MAX_CROP, right: MAX_CROP, bottom: MAX_CROP }
+  check('a crop at its thinnest can still slide along the axis', shiftCrop(sliver, 0.1, 0), { left: 0.55, top: MAX_CROP, right: 0.35, bottom: MAX_CROP })
+  check('all the way to the near edge', shiftCrop(sliver, 1, 0), { left: 0.9, top: MAX_CROP, right: 0, bottom: MAX_CROP })
+  check('and all the way to the far one', shiftCrop(sliver, -1, 0), { left: 0, top: MAX_CROP, right: 0.9, bottom: MAX_CROP })
+
+  // The case that was reported: a portrait source cropped to landscape, which keeps a third of its
+  // height, could be moved about a tenth of the way up or down it and no further — so the top and the
+  // bottom of the picture were unreachable. The region's size has nothing to do with where on the
+  // axis it may sit.
+  const band = cropForProportion(9 / 16, 16 / 9)
+  near('the crop keeps a third of the portrait', 1 - band.top - band.bottom, 0.3164, 0.001)
+  near('and can be moved to the very top', shiftCrop(band, 0, -1).top, 0, 1e-9)
+  near('and to the very bottom', shiftCrop(band, 0, 1).bottom, 0, 1e-9)
+  near('with the same height all the way', 1 - shiftCrop(band, 0, 1).top - shiftCrop(band, 0, 1).bottom, 1 - band.top - band.bottom, 1e-9)
+  // A single edge may still reach in a long way on its own, as long as the axis keeps a tenth.
+  check('one edge may take most of the picture', clampCrop({ left: 0.8, top: 0.6, right: 0, bottom: 0 }), { left: 0.8, top: 0.6, right: 0, bottom: 0 })
+  check('but not all of it, however it is shared out', (() => { const c = clampCrop({ left: 0.9, top: 0.4, right: 0.05, bottom: 0.9 }); return [c.left > 0 && c.right > 0, c.top > 0 && c.bottom > 0] })(), [true, true])
+  const packed = clampCrop({ left: 0.9, top: 0.4, right: 0.05, bottom: 0.9 })
+  near('and what is left on the packed axis is the tenth', 1 - packed.left - packed.right, 0.1, 1e-9)
+  near('and the same on the other', 1 - packed.top - packed.bottom, 0.1, 1e-9)
 
   const picture = { width: 1920, height: 1080 }
   const from = { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }
