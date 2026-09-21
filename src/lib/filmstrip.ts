@@ -10,16 +10,20 @@
 /** How tall the tiles are drawn. The frame generator samples at the same height. */
 export const FILMSTRIP_HEIGHT = 34
 
+/** A tile's nominal width at that height, used to work out how many a clip needs. */
+export const FILMSTRIP_TILE_WIDTH = Math.round(FILMSTRIP_HEIGHT * 1.5)
+
 /**
- * How many tiles a clip shows, from the timeline's zoom.
+ * How many tiles a clip needs, from its width on screen.
  *
- * A clip is as wide as its share of the output, so zooming in is the only way to ask for more
- * detail about it: a fixed count would spend the same few tiles on a two-second clip and on a
- * two-minute one. Bounded at both ends, since a tile narrower than a few pixels is noise and a
- * strip of dozens is a slower ffmpeg run for pixels nobody can see.
+ * The count follows the CLIP's width, not the zoom alone. Keying it to the zoom meant a
+ * two-second clip and a two-minute one at the same zoom asked for the same number of tiles, so
+ * a short clip packed dozens of frames into a few pixels while a long one spread a handful
+ * across its whole width. Bounded at both ends: below one there is no strip, and above a couple
+ * of dozen the extra frames cost a longer ffmpeg run for pixels nobody can resolve.
  */
-export const filmstripCountForZoom = (zoom: number): number =>
-  Math.max(4, Math.min(24, Math.round(6 * (Number.isFinite(zoom) && zoom > 0 ? zoom : 1))))
+export const filmstripCountForWidth = (clipWidth: number): number =>
+  Math.max(1, Math.min(24, Math.round((Number.isFinite(clipWidth) ? clipWidth : 0) / FILMSTRIP_TILE_WIDTH)))
 
 /**
  * The identity of one strip: the media, the range of it used, and how finely it was sampled.

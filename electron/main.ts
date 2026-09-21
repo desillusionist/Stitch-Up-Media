@@ -178,14 +178,17 @@ app.whenReady().then(() => {
     try { return fs.existsSync(filePath) } catch { return false }
   })
 
-  // Filmstrip tiles for the timeline: a handful of frames sampled evenly across the range a
-  // clip actually uses, handed back as data URLs. Cached in memory because a clip is redrawn
-  // on every scroll and zoom far more often than its footage changes.
-  const filmstripCache = new Map<string, string[]>()
-  ipcMain.handle('filmstrip-frames', async (_, filePath: string, options?: { count?: number; start?: number; end?: number; height?: number }) => {
-    if (!filePath) return []
-    try { if (!fs.statSync(filePath).isFile()) return [] } catch { return [] }
-    const count = Math.max(2, Math.min(24, Math.round(options?.count ?? 12)))
+  // Filmstrip tiles for the timeline: one image holding a handful of frames sampled evenly
+  // across the range a clip actually uses, which the clip repeats across its width. One tiled
+  // image rather than a frame per tile is what lets the tiles keep their own shape: the clip
+  // scales the strip to its height and repeats it, so nothing is ever squeezed to fit a tile
+  // count that guessed the clip's width wrong. Cached in memory, since a clip is redrawn on
+  // every scroll and zoom far more often than its footage changes.
+  const filmstripCache = new Map<string, string>()
+  ipcMain.handle('filmstrip-strip', async (_, filePath: string, options?: { count?: number; start?: number; end?: number; height?: number }) => {
+    if (!filePath) return null
+    try { if (!fs.statSync(filePath).isFile()) return null } catch { return null }
+    const count = Math.max(1, Math.min(24, Math.round(options?.count ?? 12)))
     const height = Math.max(16, Math.min(120, Math.round(options?.height ?? 48)))
     const start = Math.max(0, options?.start ?? 0)
     const end = options?.end && options.end > start ? options.end : undefined
@@ -194,24 +197,24 @@ app.whenReady().then(() => {
     if (cached) return cached
     const length = end != null ? Math.max(0.05, end - start) : undefined
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-filmstrip-'))
+    const stripPath = path.join(dir, 'strip.jpg')
     try {
       const args = ['-hide_banner', '-loglevel', 'error', '-y']
       if (start > 0) args.push('-ss', String(start))
       if (length != null) args.push('-t', String(length))
       args.push('-i', filePath)
-      // fps samples evenly across whatever was read, so the tiles span the used range rather
-      // than clustering at its head, and -frames:v pins the count so a short clip cannot come
-      // back with fewer tiles than the strip has room for.
-      const rate = length != null ? count / length : 4
-      args.push('-vf', `fps=${rate.toFixed(6)},scale=-2:${height}`, '-frames:v', String(count), '-q:v', '5', path.join(dir, 'f%03d.jpg'))
+      // Sampled a little past the count, then tiled: the tile filter emits no picture at all if
+      // it is handed fewer frames than it has cells, so a strip sampled to the count exactly
+      // came back empty whenever the last frame landed a hair short.
+      const rate = length != null ? (count * 1.15) / length : 4
+      args.push('-vf', `fps=${rate.toFixed(6)},scale=-2:${height},tile=${count}x1`, '-frames:v', '1', '-q:v', '5', stripPath)
       execFileSync('ffmpeg', args, { timeout: 60000 })
-      const files = fs.readdirSync(dir).filter((name) => name.endsWith('.jpg')).sort()
-      const frames = files.slice(0, count).map((name) => `data:image/jpeg;base64,${fs.readFileSync(path.join(dir, name)).toString('base64')}`)
-      if (frames.length && filmstripCache.size < 200) filmstripCache.set(cacheKey, frames)
-      return frames
+      const strip = `data:image/jpeg;base64,${fs.readFileSync(stripPath).toString('base64')}`
+      if (filmstripCache.size < 200) filmstripCache.set(cacheKey, strip)
+      return strip
     } catch (error) {
       logEvent('ipc', 'filmstrip failed', { filePath, start, end, count, height, error: String(error) })
-      return []
+      return null
     } finally {
       try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
     }

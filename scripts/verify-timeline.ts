@@ -4,7 +4,7 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
-import { FILMSTRIP_HEIGHT, filmstripCountForZoom, filmstripKey } from '../src/lib/filmstrip'
+import { FILMSTRIP_HEIGHT, FILMSTRIP_TILE_WIDTH, filmstripCountForWidth, filmstripKey } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -527,12 +527,14 @@ console.log('\n== the exact-size fields ==')
 
 console.log('\n== the timeline filmstrip ==')
 {
-  // The count follows the zoom, so zooming in buys detail about a clip instead of spending the
-  // same few tiles on a two-second clip and on a two-minute one.
-  check('a fit timeline asks for a short strip', filmstripCountForZoom(1), 6)
-  check('and zooming in asks for more', filmstripCountForZoom(4), 24)
-  check('but a tile narrower than a few pixels is noise', filmstripCountForZoom(0.1), 4)
-  check('and a nonsense zoom falls back to fit', filmstripCountForZoom(Number.NaN), 6)
+  // The count follows the CLIP's width on screen, not the zoom alone, so a short clip is not
+  // packed with dozens of frames while a long one gets a handful spread across its width.
+  check('a clip narrower than one tile takes one tile', filmstripCountForWidth(FILMSTRIP_TILE_WIDTH / 2), 1)
+  check('a clip one tile wide takes one', filmstripCountForWidth(FILMSTRIP_TILE_WIDTH), 1)
+  check('a clip four tiles wide takes four', filmstripCountForWidth(FILMSTRIP_TILE_WIDTH * 4), 4)
+  check('and a very wide one is capped', filmstripCountForWidth(FILMSTRIP_TILE_WIDTH * 90), 24)
+  check('a clip with no width takes one', filmstripCountForWidth(0), 1)
+  check('and a nonsense width does too', filmstripCountForWidth(Number.NaN), 1)
 
   // The key carries the media, the used range AND the tile count. Footage trimmed differently
   // is a different strip, and a strip of one count is not the strip of another, so keying on
