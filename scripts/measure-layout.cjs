@@ -21,35 +21,43 @@ const { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT } = require('./.filmstrip.cjs')
 // The real placement arithmetic, so the monitor's composite is measured against the figures the
 // encoder is handed rather than against a layout that merely looks plausible.
 const { fitPlacement } = require('./.sourceFit.cjs')
+// The real timeline metric, so the widths measured here are the ones the timeline draws with — and
+// so a case can show that resizing the window does not change a single one of them.
+const { contentWidthFor, laneWidthFor, pxPerSec } = require('./.timelineScale.cjs')
+
+/** The zoom the harness lays the timeline out at, and the label column both sides agree on. */
+const ZOOM = 1
+const LANE_LABEL_WIDTH = 102
 
 const GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
-// Mirrors the JSX: each clip carries an explicit share of the output, and the main
-// lane's last-but-one clip carries the marker on its trailing edge.
-const lane = (id, clips, gap, marker) => `
+// Mirrors the JSX: each clip is as wide as its own length at the timeline's rate, and the main
+// lane's last-but-one clip carries the marker on its trailing edge. The widths are the rate's
+// alone — the window is not consulted anywhere here, which is the property being measured.
+const lane = (id, clips, gapSeconds, marker) => `
 <div class="timeline-lane" id="${id}">
   <div class="timeline-lane-head"><button class="lane-mute">M</button><span>VIDEO 1</span></div>
   <div class="timeline-lane-track" id="track-${id}">
-    ${clips.map(([name, id2, share, withMarker]) => `<div class="timeline-clip" id="${id2}" style="flex-basis:${share}%">
+    ${clips.map(([name, id2, seconds, withMarker]) => `<div class="timeline-clip" id="${id2}" style="width:${laneWidthFor(seconds, ZOOM)}px">
       <span class="timeline-clip-name">${name}</span><small>d</small>
       ${withMarker ? `<button class="boundary-add" id="${marker}"></button>` : ''}
     </div>`).join('')}
-    ${gap > 0 ? `<div class="timeline-fill" style="flex-basis:${gap}%"></div>` : ''}
+    ${gapSeconds > 0 ? `<div class="timeline-fill" style="width:${laneWidthFor(gapSeconds, ZOOM)}px"></div>` : ''}
   </div>
 </div>`
 
-// Case A: a plain stitch. Two clips of 4s and 6s out of a 10s output.
+// Case A: a plain stitch. Two clips of 4s and 6s out of a 10s output, playhead on the cut.
 const caseA = `
-${lane('A', [['a', 'a0', 40, true], ['b', 'a1', 60, false]], 0, 'am0')}
-<div class="timeline-playhead" id="aph" style="left:calc(102px + 0.4 * (100% - 102px))"></div>`
+${lane('A', [['a', 'a0', 4, true], ['b', 'a1', 6, false]], 0, 'am0')}
+<div class="timeline-playhead" id="aph" style="left:${LANE_LABEL_WIDTH + 4 * pxPerSec(ZOOM)}px"></div>`
 
-// Case B: a combo whose 4s + 6s of video is followed by a 590s audio track, so the
-// output is 600s. The video clips are a fraction of a percent of the lane, which is
-// the case that used to put the marker hundreds of pixels from its cut.
+// Case B: a combo whose 4s + 6s of video is followed by 590s of nothing, and a 600s audio lane.
+// The video clips are a fraction of a per cent of the timeline, which is the case that used to put
+// the marker hundreds of pixels from its cut. It is also the case with something to scroll.
 const caseB = `
-${lane('B', [['a', 'b0', (4 / 600) * 100, true], ['b', 'b1', (6 / 600) * 100, false]], (590 / 600) * 100, 'bm0')}
-${lane('B2', [['long.wav', 'b2', 100, false]], 0, '')}
-<div class="timeline-playhead" id="bph" style="left:calc(102px + ${4 / 600} * (100% - 102px))"></div>`
+${lane('B', [['a', 'b0', 4, true], ['b', 'b1', 6, false]], 590, 'bm0')}
+${lane('B2', [['long.wav', 'b2', 600, false]], 0, '')}
+<div class="timeline-playhead" id="bph" style="left:${LANE_LABEL_WIDTH + 4 * pxPerSec(ZOOM)}px"></div>`
 
 // Case C: the preview overlay. A square output frame centred in a wide stage, its label
 // anchored to the frame's top-left, and one crop band down the left edge. This checks the
@@ -135,11 +143,14 @@ const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></
 // plan, inside a row whose height comes from the one constant. The strips are painted by the
 // harness after the page's own layout has been measured, because the count comes from the width
 // the browser actually gave the clip.
+/** The clip the strip case is drawn for, in seconds, so every figure below has one source. */
+const FILM_SECONDS = 8
 const filmLane = `
 <div class="timeline-lane" id="flane">
   <div class="timeline-lane-head"><button class="lane-mute">M</button><span>VIDEO 1</span></div>
-  <div class="timeline-lane-track"><div class="timeline-clip is-film" id="fclip" style="flex-basis:100%"><div class="timeline-clip-film" id="ffilm"></div></div></div>
+  <div class="timeline-lane-track"><div class="timeline-clip is-film" id="fclip" style="width:${laneWidthFor(FILM_SECONDS, ZOOM)}px"><div class="timeline-clip-film" id="ffilm"></div></div></div>
 </div>`
+
 
 const filmClipWidth = `+document.getElementById('fclip').getBoundingClientRect().width.toFixed(2)`
 
@@ -173,10 +184,10 @@ const caseF = `
 const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${cssPath}">
 </head><body><div class="edit-job-shell"><div class="editor-body"><main class="editor-main">
-<section class="timeline-panel"><div class="timeline-lanes"><div class="timeline-lanes-inner" style="width:100%">
+<section class="timeline-panel"><div class="timeline-lanes" id="lanesA"><div class="timeline-lanes-inner" style="width:${contentWidthFor(10, ZOOM, LANE_LABEL_WIDTH)}px">
 ${caseA}
 </div></div></section>
-<section class="timeline-panel"><div class="timeline-lanes"><div class="timeline-lanes-inner" style="width:100%">
+<section class="timeline-panel"><div class="timeline-lanes" id="lanesB"><div class="timeline-lanes-inner" style="width:${contentWidthFor(600, ZOOM, LANE_LABEL_WIDTH)}px">
 ${caseB}
 </div></div></section>
 <section class="timeline-panel"><div class="timeline-lanes"><div class="timeline-lanes-inner" id="flanes" style="width:100%;--filmstrip-tile:${FILMSTRIP_CLIP_HEIGHT}px">
@@ -212,6 +223,7 @@ const measure = `(() => {
   const dreset = rect('dreset')
   const content = document.getElementById('fcontent')
   const fside = rect('fside')
+  const scrollerB = document.getElementById('lanesB')
   // The pan moves the drawing and nothing else, and it moves all of it: the frame and the crop
   // band must travel together, by exactly the offset, or the crop would come off the picture.
   const pan = document.getElementById('cpan')
@@ -244,6 +256,9 @@ const measure = `(() => {
       actionsVsSidebarBottom: +(fside.bottom - rect('factions').bottom).toFixed(2), actionsVsContent: +(rect('factions').top - rect('fcontent').bottom).toFixed(2),
       contentScrolls: content.scrollHeight > content.clientHeight + 1, contentViewport: content.clientHeight, contentFull: content.scrollHeight,
       titleStillVisible: +(fside.bottom - rect('ftitle').top).toFixed(2) >= fside.height },
+    // The width a lane is drawn at, and how much of it the panel can show. One of these must move
+    // when the window does and the other must not: that separation is the whole of this model.
+    widths: { clip: rect('b0').width, lanes: rect('b2').width, viewport: scrollerB ? scrollerB.clientWidth : 0, content: scrollerB ? scrollerB.scrollWidth : 0 },
   }
 })()`
 
@@ -264,6 +279,7 @@ app.whenReady().then(async () => {
   const frameBox = { width: frameWidth, height: (frameWidth * output.height) / output.width }
   const round = (value) => Math.round(value * 1000) / 1000
   const caseH = {}
+  const caseI = {}
   for (const [label, fit] of [
     ['none', undefined], ['width@0.5', { mode: 'width', offset: 0.5 }], ['width@0', { mode: 'width', offset: 0 }],
     ['width@1', { mode: 'width', offset: 1 }], ['height@0.5', { mode: 'height', offset: 0.5 }],
@@ -289,15 +305,26 @@ app.whenReady().then(async () => {
     win.setContentSize(width, height)
     await new Promise((resolve) => setTimeout(resolve, 250))
     const clipWidth = await win.webContents.executeJavaScript(filmClipWidth)
-    const plan = computeFilmstrip({ laneWidth: clipWidth, thumbHeight: FILMSTRIP_CLIP_HEIGHT, outAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 })
+    // Laid out from the timeline's rate and the clip's trim — the two inputs the app uses — rather
+    // than from any measured box, so the plan is a figure of the zoom alone.
+    const plan = computeFilmstrip({ laneWidth: laneWidthFor(FILM_SECONDS, ZOOM), thumbHeight: FILMSTRIP_CLIP_HEIGHT, outAspect: 16 / 9, fps: 30, inSec: 0, outSec: FILM_SECONDS })
     await win.webContents.executeJavaScript(paintFilm(plan))
     await new Promise((resolve) => setTimeout(resolve, 80))
     caseG[label] = {
       clipWidth, thumbWidth: plan.thumbWidth, thumbCount: plan.thumbCount, cellWidth: +plan.cellWidth.toFixed(3),
       ...(await win.webContents.executeJavaScript(readFilm)),
     }
+    // The same strip, laid out from the timeline's rate as the strip's own figure, must not move
+    // either: the plan comes from the zoom and the clip's trim, so a window is not an input to it.
+    caseI[label] = {
+      clip: +(await win.webContents.executeJavaScript(`+document.getElementById('b0').getBoundingClientRect().width.toFixed(2)`)),
+      lane: +(await win.webContents.executeJavaScript(`+document.getElementById('b2').getBoundingClientRect().width.toFixed(2)`)),
+      viewport: await win.webContents.executeJavaScript(`document.getElementById('lanesB').clientWidth`),
+      content: await win.webContents.executeJavaScript(`document.getElementById('lanesB').scrollWidth`),
+      plan: plan.cellWidth,
+    }
   }
-  console.log(JSON.stringify({ ...laid, caseH, caseG }, null, 2))
+  console.log(JSON.stringify({ ...laid, caseH, caseI, caseG }, null, 2))
   fs.unlinkSync(htmlPath)
   app.quit()
 }).catch((error) => { console.error('HARNESS FAILED', error); app.exit(1) })

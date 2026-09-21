@@ -8,6 +8,7 @@ import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/films
 import { DEFAULT_FIT_OFFSET, clampFitOffset, fitFilters, fitPlacement, fitSignature, fittedSize } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
+import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
 import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
 
@@ -762,6 +763,30 @@ console.log('\n== the per-clip output fit ==')
   check('a clip with no fit has none', sourceFitFor(fitted, 'c.mp4', 0), undefined)
   check('and a reorder carries each fit with its clip', rekeyClipMap({ 'a.mp4#0': { mode: 'width' as const, offset: 0.25 }, 'b.mp4#1': { mode: 'height' as const, offset: 0.5 } }, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': { mode: 'width', offset: 0.25 }, 'b.mp4#2': { mode: 'height', offset: 0.5 } })
   check('a fit set by path alone lands on that clip wherever it moves', rekeyClipMap(fitted.sourceFit, ['a.mp4', 'b.mp4'], ['b.mp4', 'a.mp4']), { 'b.mp4#0': { mode: 'height', offset: 0.5 }, 'a.mp4#1': { mode: 'width', offset: 0.25 } })
+}
+
+console.log('\n== the timeline metric ==')
+{
+  // A lane's width is the zoom's business and nobody else's. There is no viewport anywhere in these
+  // figures, which is what makes a window resize change only how much of the timeline is on screen:
+  // the same duration at the same zoom is the same width, however wide the panel happens to be.
+  check('the rate is the zoom alone', [pxPerSec(1), pxPerSec(2), pxPerSec(0.5)], [BASE_PX_PER_SECOND, BASE_PX_PER_SECOND * 2, BASE_PX_PER_SECOND / 2])
+  check('a nonsense zoom is 1x', pxPerSec(Number.NaN), BASE_PX_PER_SECOND)
+  check('a lane is its own length at that rate', [laneWidthFor(4, 1), laneWidthFor(600, 1)], [96, 14400])
+  check('a trim shortens it', laneWidthFor(3.5, 2) < laneWidthFor(4, 2), true)
+  check('and a nonsense length is nothing', [laneWidthFor(Number.NaN, 1), laneWidthFor(-5, 1)], [0, 0])
+  check('the content is the lanes plus the label column', contentWidthFor(600, 1, 102), 14502)
+  check('doubling the zoom doubles the content', contentWidthFor(600, 2, 102), 102 + 28800)
+  check('a point in the lane area is read against the rate', [secondsAt(96, 1), secondsAt(48, 2)], [4, 1])
+  check('and a point before the lanes is the start', secondsAt(-40, 1), -40 / BASE_PX_PER_SECOND)
+
+  // FIT is the one place the viewport is consulted, and it is a decision rather than a state: the
+  // zoom it sets is a zoom like any other, so the next resize reveals more of the timeline instead
+  // of re-deciding what the zoom should be.
+  check('fit makes the whole output exactly as wide as the lane area', laneWidthFor(30, fitZoom(30, 900)), 900)
+  check('a longer output fits the same area at a smaller zoom', fitZoom(60, 900) < fitZoom(30, 900), true)
+  check('a fit is held inside the zoom range', [clampZoom(fitZoom(1, 100000)), clampZoom(fitZoom(100000, 1))], [ZOOM_MAX, ZOOM_MIN])
+  check('and a fit of nothing is 1x', [fitZoom(0, 900), fitZoom(30, 0), clampZoom(Number.NaN)], [1, 1, 1])
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

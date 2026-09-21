@@ -11,6 +11,7 @@ import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
+import { ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -37,8 +38,6 @@ const RESOLUTIONS: Array<EncodingPreset['resolution']> = ['source', '4k', '1080p
 
 /** Lane label column width. Mirrored in CSS and in the playhead offset. */
 const LANE_LABEL_WIDTH = 102
-const ZOOM_MIN = 1
-const ZOOM_MAX = 8
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
 const TAP_THRESHOLD_MS = 250
 const SLOW_MOTION_RATE = 0.5
@@ -120,7 +119,8 @@ export const EditJobApp: React.FC = () => {
   // Paths already handed to the prober. A failed probe is not retried, so the
   // effect cannot loop on an unreadable file.
   const probedPathsRef = useRef<Set<string>>(new Set())
-  // Horizontal scale only: lane widths stay proportional to real durations.
+  // Horizontal scale only, and it is the only thing that decides how wide a lane is drawn: see
+  // src/lib/timelineScale.ts. A window resize changes how much of the timeline is on screen.
   const [zoom, setZoom] = useState(1)
   /** Keeps the exact size's proportions while one of the two fields is edited. */
   const [lockProportion, setLockProportion] = useState(false)
@@ -131,8 +131,6 @@ export const EditJobApp: React.FC = () => {
    * than assumed: the strip is laid out from it, so a window resize must move it exactly as a
    * zoom does, and a width read only once would go stale the moment the window changed.
    */
-  const lanesObserverRef = useRef<ResizeObserver | null>(null)
-  const [laneArea, setLaneArea] = useState(0)
   /** Every fetched frame, by source and the key its picture belongs to, so zooming reuses them. */
   const [frameImages, setFrameImages] = useState<Record<string, Record<string, string>>>({})
   /** Frames already asked for and not yet answered, so none is asked for twice. */
@@ -316,36 +314,17 @@ export const EditJobApp: React.FC = () => {
    * Binds the lane-width observer when the timeline mounts, and measures it.
    *
    * A callback ref rather than an effect, because the timeline does not exist until a queue item
+   * A callback ref rather than an effect, because the timeline does not exist until a queue item
    * has arrived: an effect with no dependencies ran while the window was still saying WAITING FOR
-   * QUEUE ITEM, found no element, and never ran again. The lane width stayed zero and every strip
-   * was laid out from nothing, which is why the strip came out empty however right the arithmetic
-   * was. Re-measuring on a resize is what keeps a re-laid-out lane from going unnoticed.
+   * QUEUE ITEM, found no element, and never ran again.
    *
-   * Every width is taken, as soon as it is there, with nothing to settle first. The count comes
-   * from it, so a width that lags the box is a count that lags the box — and while it lagged, the
-   * tiles stretched to fill the clip, which is a resize that magnified the strip instead of
-   * packing more frames into it. Laying the strips out is cheap; the frames themselves are
-   * fetched on a settle, further down.
+   * Nothing is measured here, and that is the point of the timeline's geometry: a lane's width is
+   * the zoom's business, not the window's. The element is kept so that FIT can ask how much lane is
+   * visible when it is pressed, and so the skimmer can be followed — both of which read the box at
+   * the moment they need it rather than being told about every change to it.
    */
   const attachLanes = useCallback((element: HTMLDivElement | null) => {
-    lanesObserverRef.current?.disconnect()
-    lanesObserverRef.current = null
     timelineScrollRef.current = element
-    if (!element) return
-    let frame: number | null = null
-    const measure = () => {
-      if (frame != null) return
-      // One measurement per animation frame at most, so a drag of the window edge is followed
-      // frame by frame rather than once it stops.
-      frame = window.requestAnimationFrame(() => {
-        frame = null
-        setLaneArea(Math.max(0, element.clientWidth))
-      })
-    }
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(element)
-    lanesObserverRef.current = observer
   }, [])
 
   // Each strip source's own shape and rate, once. These are facts about the file, so they are
@@ -386,12 +365,13 @@ export const EditJobApp: React.FC = () => {
    * resize re-lays the strip out rather than serving one laid out for a width that no longer
    * exists.
    */
-  const planFor = (segment: TimelineSegment, total: number) => {
+  const planFor = (segment: TimelineSegment) => {
     const shape = sourceShape[segment.sourcePath]
-    if (!shape || laneArea <= 0 || total <= 0 || segment.duration <= 0) return undefined
-    const laneWidth = Math.max(0, laneArea * zoom - LANE_LABEL_WIDTH) * (segment.duration / total)
+    if (!shape || segment.duration <= 0) return undefined
+    // The lane's width is the clip's trimmed length at the timeline's rate, which is a function of
+    // the zoom alone: nothing here is read from the window, so a resize cannot re-lay a strip out.
     return computeFilmstrip({
-      laneWidth,
+      laneWidth: laneWidthFor(segment.duration, zoom),
       thumbHeight: FILMSTRIP_CLIP_HEIGHT,
       outAspect: frameAspect,
       fps: shape.fps,
@@ -475,7 +455,7 @@ export const EditJobApp: React.FC = () => {
     model.lanes.forEach((lane) => {
       if (!filmstripLanes[lane.id]) return
       lane.segments.forEach((segment) => {
-        const plan = planFor(segment, model.duration)
+        const plan = planFor(segment)
         const shape = sourceShape[segment.sourcePath]
         const target = mediaTargets[segment.sourcePath]?.path
         // A still has no frames to sample: its one picture repeated is its strip, and it is drawn
@@ -533,7 +513,7 @@ export const EditJobApp: React.FC = () => {
       })
     }, FILMSTRIP_SETTLE_MS)
     return () => { window.clearTimeout(timer) }
-  }, [filmstripLanes, laneZoom, laneArea, mediaTargets, sourceShape, timelineSignature, frameImages, draft?.preset.crop, outputFrame, draft?.sourceFit])
+  }, [filmstripLanes, laneZoom, mediaTargets, sourceShape, timelineSignature, frameImages, draft?.preset.crop, outputFrame, draft?.sourceFit])
 
   // A context menu closes on the next press anywhere, or on Escape.
   useEffect(() => {
@@ -1049,9 +1029,12 @@ export const EditJobApp: React.FC = () => {
     event.stopPropagation()
     const scrubTo = (clientX: number) => {
       const rect = inner.getBoundingClientRect()
-      const usable = rect.width - LANE_LABEL_WIDTH
-      if (usable <= 0) return
-      playback.seek(Math.max(0, Math.min(1, (clientX - rect.left - LANE_LABEL_WIDTH) / usable)) * duration)
+      if (duration <= 0) return
+      // Read off the timeline's rate rather than off the rendered width, so a point maps to its time
+      // whatever the panel is doing — and a timeline shorter than the panel maps no further than
+      // its own end rather than across the empty space beside it.
+      const seconds = secondsAt(clientX - rect.left - LANE_LABEL_WIDTH, zoom)
+      playback.seek(Math.max(0, Math.min(1, seconds / duration)) * duration)
     }
     const move = (moveEvent: PointerEvent) => scrubTo(moveEvent.clientX)
     const up = () => {
@@ -1651,17 +1634,31 @@ export const EditJobApp: React.FC = () => {
           <div className="timeline-head">
             <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
             <div className="timeline-zoom">
-              <button onClick={() => setZoom((current) => Math.max(ZOOM_MIN, current / 2))} disabled={zoom <= ZOOM_MIN} aria-label="Make the timeline shorter" title="Magnify out"><ZoomOut size={11} /></button>
-              <span className="timeline-zoom-value">{zoom}×</span>
-              <button onClick={() => setZoom((current) => Math.min(ZOOM_MAX, current * 2))} disabled={zoom >= ZOOM_MAX} aria-label="Make the timeline longer" title="Magnify in"><ZoomIn size={11} /></button>
-              <button onClick={() => setZoom(1)} disabled={zoom === 1} title="Fit the whole timeline">FIT</button>
+              <button onClick={() => setZoom((current) => clampZoom(current / 2))} disabled={zoom <= ZOOM_MIN} aria-label="Make the timeline shorter" title="Magnify out"><ZoomOut size={11} /></button>
+              <span className="timeline-zoom-value">{Math.round(zoom * 100) / 100}×</span>
+              <button onClick={() => setZoom((current) => clampZoom(current * 2))} disabled={zoom >= ZOOM_MAX} aria-label="Make the timeline longer" title="Magnify in"><ZoomIn size={11} /></button>
+              <button
+                onClick={() => {
+                  // The viewport is read here and nowhere else: a fit is a decision, not a state the
+                  // timeline lives in, so a later resize reveals more or less of it instead of
+                  // re-deciding what the zoom should be.
+                  const scroller = timelineScrollRef.current
+                  if (!scroller) return
+                  setZoom(clampZoom(fitZoom(duration, scroller.clientWidth - LANE_LABEL_WIDTH)))
+                }}
+                disabled={duration <= 0}
+                title="Fit the whole timeline into the panel"
+              >FIT</button>
             </div>
           </div>
           <div className="timeline-lanes" ref={attachLanes} onWheel={scrubByWheel}>
-            <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${zoom * 100}%`, '--filmstrip-tile': `${FILMSTRIP_CLIP_HEIGHT}px` } as React.CSSProperties}>
+            <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${contentWidthFor(duration, zoom, LANE_LABEL_WIDTH)}px`, '--filmstrip-tile': `${FILMSTRIP_CLIP_HEIGHT}px` } as React.CSSProperties}>
               <div className="timeline-ruler">
+                {/* Placed by TIME rather than by a share of the row: when a short timeline is
+                    stretched to fill the panel, a percentage would put mid-way at the middle of the
+                    panel instead of at half the output. */}
                 {Array.from({ length: 5 }, (_, index) => index / 4).map((fraction) => (
-                  <span key={fraction} style={{ left: `${fraction * 100}%`, transform: fraction === 0 ? 'none' : fraction === 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
+                  <span key={fraction} style={{ left: `${laneWidthFor(duration * fraction, zoom)}px`, transform: fraction === 0 ? 'none' : fraction === 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
                     {duration > 0 ? stamp(duration * fraction) : '--:--:--.--'}
                   </span>
                 ))}
@@ -1682,7 +1679,7 @@ export const EditJobApp: React.FC = () => {
                       <div
                         key={segment.key}
                         className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
-                        style={{ flexBasis: `${duration > 0 ? (segment.duration / duration) * 100 : 0}%` }}
+                        style={{ width: `${laneWidthFor(segment.duration, zoom)}px` }}
                         title={clipTitle(segment)}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
                       >
@@ -1695,7 +1692,7 @@ export const EditJobApp: React.FC = () => {
                             not scrubbed, and the clip underneath keeps every pointer event — which
                             is what the right-click menu needs. */}
                         {filmstripLanes[lane.id] && (() => {
-                          const plan = planFor(segment, duration)
+                          const plan = planFor(segment)
                           if (!plan) return null
                           // A still has one picture and no frames to sample, so every cell shows it:
                           // the same rule as any other clip, with the frame never changing. It is
@@ -1750,11 +1747,11 @@ export const EditJobApp: React.FC = () => {
                         )}
                       </div>
                     ))}
-                    {laneGap(lane) > 0 && <div className="timeline-fill" style={{ flexBasis: `${(laneGap(lane) / duration) * 100}%` }} title="No media on this lane" />}
+                    {laneGap(lane) > 0 && <div className="timeline-fill" style={{ width: `${laneWidthFor(laneGap(lane), zoom)}px` }} title="No media on this lane" />}
                   </div>
                 </div>
               ))}
-              <div className="timeline-playhead" style={{ left: `calc(${LANE_LABEL_WIDTH}px + ${playheadFraction} * (100% - ${LANE_LABEL_WIDTH}px))` }} onPointerDown={beginSkimmerDrag} title="Drag to move the skimmer" role="presentation" />
+              <div className="timeline-playhead" style={{ left: `${LANE_LABEL_WIDTH + playheadFraction * laneWidthFor(duration, zoom)}px` }} onPointerDown={beginSkimmerDrag} title="Drag to move the skimmer" role="presentation" />
             </div>
           </div>
           {selectedBoundary && (() => {
