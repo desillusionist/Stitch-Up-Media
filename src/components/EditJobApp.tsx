@@ -27,6 +27,7 @@ import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '.
 import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, placedSource, sourceCropOf } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
+import { emptyHistory, DraftHistory, recordChange, stepHistory as stepBack } from '../lib/draftHistory'
 import { NumberField } from './NumberField'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
@@ -166,6 +167,19 @@ export const EditJobApp: React.FC = () => {
   const panRef = useRef({ x: 0, y: 0 })
   /** When a pan last ended, so the click it ends with is not also read as a click on the media. */
   const pannedAtRef = useRef(0)
+  /**
+   * Undo and redo for the edits made in this window.
+   *
+   * A stack of whole drafts rather than of the changes: every control in here writes through
+   * `updateDraft`, so a snapshot taken before each write IS the previous state, and stepping back is
+   * a plain `setDraft`. Only the draft moves — never the baseline — so undoing back past the last
+   * APPLY leaves the window unsaved again, which is exactly what it is.
+   *
+   * Held in a ref because the key handler is bound once, at the window, and cannot close over a
+   * function that is rebuilt on every render.
+   */
+  const historyRef = useRef<DraftHistory<QueueTask>>(emptyHistory())
+  const undoRedoRef = useRef<{ undo: () => void; redo: () => void }>({ undo: () => undefined, redo: () => undefined })
   /** Boundary whose transition editor is open, by index of the clip it follows, or a timeline edge. */
   const [openBoundary, setOpenBoundary] = useState<number | 'head' | 'tail' | null>(null)
   /**
@@ -704,8 +718,18 @@ export const EditJobApp: React.FC = () => {
       return !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'color'].includes(type)
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isTyping(event.target)) return
       const code = event.code
+      // Undo and redo, before the text-entry guard: an edit made by dragging the crop box or the
+      // window's own controls leaves the caret wherever it was, and a shortcut that only works when
+      // nothing is focused is a shortcut that mostly does not work. A field being typed in yields to
+      // the value that arrives, so undoing does not leave a stale figure on screen.
+      if ((event.metaKey || event.ctrlKey) && code === 'KeyZ') {
+        event.preventDefault()
+        if (event.shiftKey) undoRedoRef.current.redo()
+        else undoRedoRef.current.undo()
+        return
+      }
+      if (isTyping(event.target)) return
       if (code === 'Space' || event.key === ' ') {
         event.preventDefault()
         playbackRef.current.toggle()
@@ -827,11 +851,30 @@ export const EditJobApp: React.FC = () => {
    */
   const latest = () => draftRef.current ?? draft
 
+  /**
+   * Writes a change to the draft, remembering what it was before.
+   *
+   * The rule about what is worth remembering is `recordChange`'s, which returns nothing for a write
+   * that writes the same values: those go to the draft like any other write, they are simply not a
+   * step anyone would want to take back to.
+   */
   const updateDraft = (changes: Partial<QueueTask>) => {
-    const next = { ...latest(), ...changes }
+    const current = latest()
+    const history = recordChange(historyRef.current, current, changes)
+    if (history) historyRef.current = history
+    const next = { ...current, ...changes }
     draftRef.current = next
     setDraft(next)
   }
+  /** Steps the draft back or forward one edit, if there is one to step to. */
+  const stepHistory = (direction: 'undo' | 'redo') => {
+    const moved = stepBack(historyRef.current, latest(), direction)
+    if (!moved) return
+    historyRef.current = moved.history
+    draftRef.current = moved.state
+    setDraft(moved.state)
+  }
+  undoRedoRef.current = { undo: () => stepHistory('undo'), redo: () => stepHistory('redo') }
   const updatePreset = (changes: Partial<EncodingPreset>) => updateDraft({ preset: { ...latest().preset, ...changes } })
 
   const changeContainer = (container: EncodingPreset['container']) => {
@@ -1794,7 +1837,7 @@ export const EditJobApp: React.FC = () => {
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
-          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. J / L SHUTTLE AND SPEED UP ON REPEAT; K+J OR K+L IS SLOW MOTION; A QUICK TAP STEPS ONE FRAME. IN / OUT POINTS COME FROM THE NATIVE PREVIEW.</div>
+          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. J / L SHUTTLE AND SPEED UP ON REPEAT; K+J OR K+L IS SLOW MOTION; A QUICK TAP STEPS ONE FRAME. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
         </section>
 
         <section className="timeline-panel">

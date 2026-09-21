@@ -9,6 +9,7 @@ import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSiz
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
+import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, QueueTask } from '../src/types'
@@ -905,6 +906,44 @@ console.log('\n== the per-clip crop ==')
   }
 }
 
+console.log('\n== undo and redo ==')
+{
+  // A draft and the changes a control makes to it. The records are the interesting part: every caller
+  // builds them anew whether or not it is changing anything, so identity says nothing about them.
+  const draft = { fps: 30, mutedLanes: { main: true } }
+  check('a record of the same content is the same value', sameField({ main: true }, { main: true }), true)
+  check('and a different content is not', sameField({ main: true }, { main: false }), false)
+  check('a figure follows identity', [sameField(30, 30), sameField(30, 25)], [true, false])
+  check('and nothing is not zero', sameField(undefined, 0), false)
+
+  // A change that changes nothing is not a step: a crop dragged against an edge it is already at, or
+  // a mute switched on twice, would otherwise leave a stack of identical states behind.
+  check('writing the same figure again is not a change', recordChange(emptyHistory<typeof draft>(), draft, { fps: 30 }), null)
+  check('nor is writing the same record again', recordChange(emptyHistory<typeof draft>(), draft, { mutedLanes: { main: true } }), null)
+  const recorded = recordChange(emptyHistory<typeof draft>(), draft, { fps: 25 })
+  check('a real change remembers what was there', recorded?.past, [draft])
+  check('and starts no branch ahead of it', recorded?.future, [])
+
+  // Stepping: back and forward again lands where it started, and neither end runs away.
+  const first = { past: [draft], future: [] }
+  const undone = stepHistory(first, { fps: 25, mutedLanes: { main: true } }, 'undo')
+  check('undo shows what was there', undone?.state, draft)
+  check('and keeps what it came from for a redo', undone?.history.future, [{ fps: 25, mutedLanes: { main: true } }])
+  const redone = stepHistory(undone!.history, undone!.state, 'redo')
+  check('redo shows it again', redone?.state, { fps: 25, mutedLanes: { main: true } })
+  check('and the stack is back as it was', redone?.history, first)
+  check('nothing to undo at the start', stepHistory(emptyHistory<typeof draft>(), draft, 'undo'), null)
+  check('and nothing to redo at the end', stepHistory(first, draft, 'redo'), null)
+
+  // The cap. It is a limit on how far back a window can step, not a count of edits made.
+  let deep = emptyHistory<{ step: number }>()
+  for (let index = 0; index < HISTORY_LIMIT + 10; index++) {
+    const before = { step: index }
+    deep = recordChange(deep, before, { step: index + 1 }) as typeof deep
+  }
+  check('the history stops growing at its limit', deep.past.length, HISTORY_LIMIT)
+  check('and the oldest states are the ones let go', deep.past[0], { step: 10 })
+}
 console.log('\n== the waveform ==')
 {
   // The helper's rules, which the timeline borrows: root mean square per bucket, normalised against
