@@ -8,8 +8,9 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, edgeFade, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, filmstripCell, frameKey, skimFrame } from '../lib/filmstrip'
-import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions, FitMode } from '../lib/outputFrame'
+import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey } from '../lib/filmstrip'
+import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
+import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -137,22 +138,26 @@ export const EditJobApp: React.FC = () => {
   const framesPendingRef = useRef<Record<string, true>>({})
   /** Each source's own shape and rate, which is what the strip's geometry is worked out from. */
   const [sourceShape, setSourceShape] = useState<Record<string, { width: number; height: number; fps: number }>>({})
-  /**
-   * The frame the pointer is over on a strip, and which tile it belongs to.
-   *
-   * It is drawn over that one tile rather than replacing the strip, so the representative
-   * overview is still there underneath and returning to it when the pointer leaves is just
-   * dropping this rather than rebuilding anything.
-   */
-  const [skim, setSkim] = useState<{ sourcePath: string; cell: number; index: number } | null>(null)
-  /** The newest skim request. An older answer arriving late must not replace a newer one. */
-  const skimTokenRef = useRef(0)
   /** Where a right-click on the timeline opened its menu, and what it was on. */
   const [timelineMenu, setTimelineMenu] = useState<TimelineMenu | null>(null)
   /** Whether the crop fields read as per cent of the source or as pixels of it. */
   const [cropUnit, setCropUnit] = useState<'%' | 'px'>('%')
-  /** How the picture and the output frame are fitted into the monitor. */
-  const [previewFit, setPreviewFit] = useState<FitMode>('contain')
+  /**
+   * How the monitor sizes the output frame and the picture.
+   *
+   * A viewer setting and nothing more: it is not the clip's own fit into the output, which is a
+   * different control with a deliberately different name, and it never reaches the export.
+   */
+  const [previewZoom, setPreviewZoom] = useState<PreviewZoom>(DEFAULT_PREVIEW_ZOOM)
+  /** Whether the zoom in force was asked for as CUSTOM, which keeps its own field open. */
+  const [zoomCustom, setZoomCustom] = useState(false)
+  const [zoomText, setZoomText] = useState('100')
+  /** How far the drawing has been panned inside the monitor. View only, and clamped to its slack. */
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  /** Read while dragging, so a crop can still be dragged while the picture is panned. */
+  const panRef = useRef({ x: 0, y: 0 })
+  /** When a pan last ended, so the click it ends with is not also read as a click on the media. */
+  const pannedAtRef = useRef(0)
   /** Boundary whose transition editor is open, by index of the clip it follows, or a timeline edge. */
   const [openBoundary, setOpenBoundary] = useState<number | 'head' | 'tail' | null>(null)
   // Monitoring state only. Never written to the task, so muting can never be
@@ -852,50 +857,6 @@ export const EditJobApp: React.FC = () => {
       : segment.still ? 'still image' : 'media'
     return `${segmentLabel(segment)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
   }
-  /**
-   * Skims across a clip's strip.
-   *
-   * The pointer's place in the clip gives both the tile it is over and the moment to sample,
-   * so the picture advances as the pointer crosses a single tile rather than holding still
-   * until it reaches the next. The monitor is sent to the same moment, which is the point of
-   * skimming: the strip is for finding a frame, the monitor is for seeing it.
-   *
-   * Only the newest request is allowed to land. Without that, a slower answer from where the
-   * pointer used to be arrives after a faster one from where it is and drags the frame back.
-   */
-  const skimFilmstrip = (event: React.MouseEvent<HTMLElement>, segment: TimelineSegment) => {
-    const target = mediaTargets[segment.sourcePath]?.path
-    const plan = planFor(segment, duration)
-    const shape = sourceShape[segment.sourcePath]
-    const bridge = window.electronAPI
-    if (!target || !plan || !shape || !bridge?.framesAt || segment.duration <= 0) return
-    const box = event.currentTarget.getBoundingClientRect()
-    if (box.width <= 0) return
-    const fraction = Math.max(0, Math.min(1, (event.clientX - box.left) / box.width))
-    const { cell } = filmstripCell(fraction, plan.thumbCount)
-    // The frame is asked for by the source frame the pointer is really over, offset by the trim,
-    // so the tile matches what the monitor is showing rather than the strip's own sampling.
-    const index = skimFrame(segment.sourceIn + fraction * segment.duration, shape.fps)
-    playback.seek(segment.start + fraction * segment.duration)
-    const token = skimTokenRef.current + 1
-    skimTokenRef.current = token
-    setSkim({ sourcePath: target, cell, index })
-    const pending = `${target}#${keyFor(segment, index)}`
-    if (frameImageFor(segment, index) || framesPendingRef.current[pending]) return
-    framesPendingRef.current[pending] = true
-    void bridge.framesAt(target, { times: [segment.sourceIn + fraction * segment.duration], fps: shape.fps, srcAspect: shape.width / shape.height, crop: draft.preset.crop }).then((images) => {
-      delete framesPendingRef.current[pending]
-      const image = images[0]
-      if (!image || skimTokenRef.current !== token) return
-      setFrameImages((current) => ({ ...current, [target]: { ...(current[target] ?? {}), [keyFor(segment, index)]: image } }))
-    })
-  }
-  const endSkim = () => {
-    // The representative overview comes straight back, because the live frame was only ever
-    // drawn over its tile: nothing has to be rebuilt.
-    skimTokenRef.current += 1
-    setSkim(null)
-  }
   /** Keeps a right-click menu on screen when the click landed near an edge. */
   const menuPoint = (event: React.MouseEvent) => ({
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - 200)),
@@ -1081,10 +1042,12 @@ export const EditJobApp: React.FC = () => {
   // fractions into the pixel figures the fields show when the unit is switched to px.
   const picture = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined
   const naturalAspect = picture ? picture.width / picture.height : null
-  const pictureRect = naturalAspect && stageSize ? fitFrameBy(stageSize, naturalAspect, previewFit) : null
+  // The monitor's zoom decides the size of both what is drawn, and it is asked for the panel as
+  // it is right now: a fit follows a resize, a percentage is the raster's own pixels and does not.
+  const pictureRect = picture && stageSize ? zoomedRaster(picture, previewZoom, stageSize) : null
   // The media is given the picture's own box rather than stretched to the panel and letterboxed
   // inside it, so the crop box and the picture agree exactly instead of the crop being drawn in
-  // a space the picture only partly occupies. Under `contain` this is what object-fit did anyway.
+  // a space the picture only partly occupies. Under FIT this is what object-fit did anyway.
   const mediaStyle = pictureRect
     ? { width: pictureRect.width, height: pictureRect.height, flex: '0 0 auto' as const, maxWidth: 'none' as const, maxHeight: 'none' as const }
     : null
@@ -1157,7 +1120,10 @@ export const EditJobApp: React.FC = () => {
     // the first twitch of the pointer and then having to be dragged the opposite way to undo it.
     const trailing = edge === 'right' || edge === 'bottom'
     const size = horizontal ? cropRect.box.width : cropRect.box.height
-    const origin = horizontal ? cropRect.originX : cropRect.originY
+    // The picture's origin as it is DRAWN, which is where it sits inside the stage plus however
+    // far the pan has moved it. Without the pan a crop dragged while zoomed in would read the
+    // pointer against a picture that is no longer under it.
+    const origin = (horizontal ? cropRect.originX : cropRect.originY) + (horizontal ? panRef.current.x : panRef.current.y)
     const coordinate = (moveEvent: PointerEvent) => (horizontal ? moveEvent.clientX - stage.left : moveEvent.clientY - stage.top)
     const move = (moveEvent: PointerEvent) => {
       const position = (coordinate(moveEvent) - origin) / Math.max(1, size)
@@ -1218,8 +1184,8 @@ export const EditJobApp: React.FC = () => {
         ratio,
         free,
         point: {
-          x: (moveEvent.clientX - stage.left - cropRect.originX) / Math.max(1, cropRect.box.width),
-          y: (moveEvent.clientY - stage.top - cropRect.originY) / Math.max(1, cropRect.box.height),
+          x: (moveEvent.clientX - stage.left - cropRect.originX - panRef.current.x) / Math.max(1, cropRect.box.width),
+          y: (moveEvent.clientY - stage.top - cropRect.originY - panRef.current.y) / Math.max(1, cropRect.box.height),
         },
       }))
     }
@@ -1236,7 +1202,96 @@ export const EditJobApp: React.FC = () => {
     exact: draft.preset.width && draft.preset.height ? { width: draft.preset.width, height: draft.preset.height } : undefined,
     box: resolutionBox(draft.preset.resolution),
   })
-  const frameRect = outputFrame && stageSize ? fitFrameBy(stageSize, outputFrame.width / outputFrame.height, previewFit) : null
+  const frameRect = outputFrame && stageSize ? zoomedRaster(outputFrame, previewZoom, stageSize) : null
+
+  /**
+   * What the monitor is drawing, as one box, and how far it can be moved inside the panel.
+   *
+   * The picture and the output frame outline can disagree in size, so the larger of the two is
+   * what has to be reachable: a pan that could not reach the outline's edge would hide the very
+   * thing the outline is there to show.
+   */
+  const drawnSize = {
+    width: Math.max(pictureRect?.width ?? 0, frameRect?.width ?? 0),
+    height: Math.max(pictureRect?.height ?? 0, frameRect?.height ?? 0),
+  }
+  const drawable = stageSize && panSlack(drawnSize.width, stageSize.width) + panSlack(drawnSize.height, stageSize.height) > 0
+  const panX = stageSize ? clampPan(pan.x, drawnSize.width, stageSize.width) : 0
+  const panY = stageSize ? clampPan(pan.y, drawnSize.height, stageSize.height) : 0
+  // The pan the drag handlers need. A crop's edges are stored as fractions of the picture, so a
+  // drag has to know where the picture is being drawn before it can turn a pointer into one.
+  panRef.current = { x: panX, y: panY }
+
+  /**
+   * Drags the drawing around inside the monitor, when there is drawing to spare.
+   *
+   * View only: it moves the pixels inside the panel and reaches nothing else, so the export and
+   * every clip's own fit stay exactly where they were. A press that never travels is left to
+   * whatever it landed on, so the media still toggles playback on a plain click, and a press on
+   * the crop box belongs to the crop.
+   */
+  const beginPan = (event: React.PointerEvent) => {
+    const target = event.target as Element | null
+    if (target?.closest('.editor-crop') || !drawable || !stageSize) return
+    const start = { x: event.clientX, y: event.clientY }
+    const from = { x: panX, y: panY }
+    let moved = false
+    const move = (moveEvent: PointerEvent) => {
+      const dx = moveEvent.clientX - start.x
+      const dy = moveEvent.clientY - start.y
+      // Three pixels of travel before anything moves: below that the press is a click, and the
+      // media's own play toggle is waiting for it.
+      if (!moved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return
+      moved = true
+      setPan({
+        x: clampPan(from.x + dx, drawnSize.width, stageSize.width),
+        y: clampPan(from.y + dy, drawnSize.height, stageSize.height),
+      })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      if (moved) pannedAtRef.current = Date.now()
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  /** A plain click on the media still plays and pauses; the click a pan ends with does not. */
+  const toggleFromClick = () => {
+    if (Date.now() - pannedAtRef.current < 250) return
+    playback.toggle()
+  }
+
+  /** The zoom list: the named scales, the three fits, and the user's own figure. */
+  const zoomOption = zoomCustom
+    ? 'custom'
+    : previewZoom.kind === 'percent'
+      ? (isPresetZoom(previewZoom.percent) ? String(previewZoom.percent) : 'custom')
+      : previewZoom.kind
+  const chooseZoom = (option: string) => {
+    if (option === 'fit' || option === 'fitWidth' || option === 'fitHeight') {
+      setZoomCustom(false)
+      setPreviewZoom({ kind: option })
+      return
+    }
+    if (option === 'custom') {
+      // Opens on the zoom already in force, so the field starts from what is on screen.
+      const percent = previewZoom.kind === 'percent' ? previewZoom.percent : 100
+      setZoomCustom(true)
+      setZoomText(String(percent))
+      setPreviewZoom({ kind: 'percent', percent })
+      return
+    }
+    setZoomCustom(false)
+    setPreviewZoom({ kind: 'percent', percent: Number(option) })
+  }
+  const typeZoom = (text: string) => {
+    setZoomText(text)
+    const typed = Number(text)
+    // A half-typed figure is not a zoom: "1" on the way to "137" is not one per cent.
+    if (text.trim() === '' || !Number.isFinite(typed) || typed < MIN_PREVIEW_ZOOM) return
+    setPreviewZoom({ kind: 'percent', percent: clampPreviewZoom(typed) })
+  }
   // The exact-size fields. Empty means "not overridden": the placeholder shows the frame the
   // encoder is already writing, and editing either edge pins the pair to that starting point.
   const exactSize = exactSizeFields({ width: draft.preset.width, height: draft.preset.height }, outputFrame)
@@ -1275,39 +1330,43 @@ export const EditJobApp: React.FC = () => {
           <div className="panel-kicker">PREVIEW // ASSEMBLED OUTPUT</div>
           <div className="editor-screen" onWheel={scrubByWheel}>
             {/* The media sits in its own measured stage, so the output frame outline can
-                be drawn around the picture rather than around the panel. */}
-            <div className="editor-stage" ref={attachStage}>
-              {playback.error
-                ? <span className="editor-screen-message">{playback.error}</span>
-                : stillFrameJob
-                  ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} />
-                  : playback.segment?.still
-                    ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} />
-                    : elementUrl
-                      ? <video
-                        ref={playback.attachVideo}
-                        className="editor-video"
-                        src={elementUrl}
-                        preload="metadata"
-                        playsInline
-                        style={{ ...mediaStyle, opacity: previewGain }}
-                        onContextMenu={(event) => event.preventDefault()}
-                        onLoadedMetadata={measureNatural}
-                        onClick={() => playback.toggle()}
-                      />
-                      : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
-              {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
-              {cropShade.map((band, index) => (
-                <div key={index} className="editor-crop-shade" style={{ left: band.left, top: band.top, width: band.width, height: band.height }} aria-hidden="true" />
-              ))}
-              {cropRect && <div className="editor-crop" style={{ left: cropRect.left, top: cropRect.top, width: cropRect.width, height: cropRect.height }} onPointerDown={beginCropMove}>
-                {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
-                  <span key={edge} className={`crop-handle is-${edge}`} onPointerDown={(event) => beginCropDrag(edge, event)} role="presentation" />
+                be drawn around the picture rather than around the panel. The stage is also the
+                pan surface: everything drawn lives in one layer inside it and moves together
+                when a zoom has left more than the panel can show. */}
+            <div className={`editor-stage${drawable ? ' is-pannable' : ''}`} ref={attachStage} onPointerDown={beginPan}>
+              <div className="editor-stage-pan" style={{ transform: `translate(${panX}px, ${panY}px)` }}>
+                {playback.error
+                  ? <span className="editor-screen-message">{playback.error}</span>
+                  : stillFrameJob
+                    ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} />
+                    : playback.segment?.still
+                      ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} />
+                      : elementUrl
+                        ? <video
+                          ref={playback.attachVideo}
+                          className="editor-video"
+                          src={elementUrl}
+                          preload="metadata"
+                          playsInline
+                          style={{ ...mediaStyle, opacity: previewGain }}
+                          onContextMenu={(event) => event.preventDefault()}
+                          onLoadedMetadata={measureNatural}
+                          onClick={toggleFromClick}
+                        />
+                        : <span className="editor-screen-message">{duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'}</span>}
+                {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
+                {cropShade.map((band, index) => (
+                  <div key={index} className="editor-crop-shade" style={{ left: band.left, top: band.top, width: band.width, height: band.height }} aria-hidden="true" />
                 ))}
-                {(['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as const).map((corner) => (
-                  <span key={corner} className={`crop-corner is-${corner}`} onPointerDown={(event) => beginCropCorner(corner, event)} role="presentation" />
-                ))}
-              </div>}
+                {cropRect && <div className="editor-crop" style={{ left: cropRect.left, top: cropRect.top, width: cropRect.width, height: cropRect.height }} onPointerDown={beginCropMove}>
+                  {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
+                    <span key={edge} className={`crop-handle is-${edge}`} onPointerDown={(event) => beginCropDrag(edge, event)} role="presentation" />
+                  ))}
+                  {(['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as const).map((corner) => (
+                    <span key={corner} className={`crop-corner is-${corner}`} onPointerDown={(event) => beginCropCorner(corner, event)} role="presentation" />
+                  ))}
+                </div>}
+              </div>
             </div>
             <small>{focusedLabel} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS` : ''}</small>
             <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` · USED ${stamp(activeSegment.sourceIn)} → ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} · OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
@@ -1334,8 +1393,32 @@ export const EditJobApp: React.FC = () => {
           </div>
           <div className="editor-preview-actions">
             <span className="preview-divider" aria-hidden="true" />
-            <button className={previewFit === 'width' ? 'is-open' : ''} onClick={() => setPreviewFit((current) => current === 'width' ? 'contain' : 'width')} title="Fill the monitor's width; click again to fit the whole frame">FIT TO WIDTH</button>
-            <button className={previewFit === 'height' ? 'is-open' : ''} onClick={() => setPreviewFit((current) => current === 'height' ? 'contain' : 'height')} title="Fill the monitor's height; click again to fit the whole frame">FIT TO HEIGHT</button>
+            <label className="preview-zoom">
+              <span>ZOOM</span>
+              <select
+                value={zoomOption}
+                onChange={(event) => chooseZoom(event.target.value)}
+                title="How large the monitor draws the output frame. The export is not affected, and neither is a clip's own fit."
+                aria-label="Zoom the preview monitor"
+              >
+                {PREVIEW_ZOOM_STEPS.map((step) => <option key={step} value={String(step)}>{step}%</option>)}
+                <option value="fitWidth">FIT WIDTH</option>
+                <option value="fitHeight">FIT HEIGHT</option>
+                <option value="fit">FIT</option>
+                <option value="custom">CUSTOM...</option>
+              </select>
+            </label>
+            {zoomOption === 'custom' && <label className="mini-field preview-zoom-field">
+              <input
+                type="number"
+                min={MIN_PREVIEW_ZOOM}
+                max={MAX_PREVIEW_ZOOM}
+                value={zoomText}
+                onChange={(event) => typeZoom(event.target.value)}
+                aria-label="Zoom percentage"
+              />
+              <span>%</span>
+            </label>}
           </div>
           {inspectedIndex != null && inspectedSource && (
             <div className="media-inspector">
@@ -1415,26 +1498,24 @@ export const EditJobApp: React.FC = () => {
                         style={{ flexBasis: `${duration > 0 ? (segment.duration / duration) * 100 : 0}%` }}
                         title={clipTitle(segment)}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
-                        onMouseMove={filmstripLanes[lane.id] ? (event) => skimFilmstrip(event, segment) : undefined}
-                        onMouseLeave={filmstripLanes[lane.id] ? endSkim : undefined}
                       >
                         {/* The cells share the lane exactly, so there is no gap at the end, and each
-                            shows the frame the playhead would show at that place on the lane. The
-                            skimmed frame is drawn over its own tile rather than replacing the set,
-                            so nothing is ever cleared while a new set is on its way, and a tile whose
-                            frame has not arrived yet draws nothing until it does. A still has no
-                            frames to sample and one frame across the clip is its strip. */}
+                            shows the frame the playhead would show at that place on the lane. A tile
+                            whose frame has not arrived yet draws nothing until it does, and the tiles
+                            around it keep theirs, so the strip fills in rather than flashing empty.
+                            A still has no frames to sample and one frame across the clip is its
+                            strip. Nothing on the strip is hovered or skimmed: the frames are read,
+                            not scrubbed, and the clip underneath keeps every pointer event — which
+                            is what the right-click menu needs. */}
                         {filmstripLanes[lane.id] && (() => {
                           const plan = planFor(segment, duration)
                           if (!plan) return null
-                          const target = mediaTargets[segment.sourcePath]?.path
-                          const live = skim && target && skim.sourcePath === target ? skim : null
                           // A still has one picture and no frames to sample, so every cell shows it:
                           // the same rule as any other clip, with the frame never changing.
                           const stillUrl = segment.still ? mediaUrl(segment.sourcePath) : null
                           return <div className="timeline-clip-film" aria-hidden="true">
                             {plan.frames.map((frame, cell) => {
-                              const shown = stillUrl ?? (live && live.cell === cell ? (frameImageFor(segment, live.index) ?? frameImageFor(segment, frame)) : frameImageFor(segment, frame))
+                              const shown = stillUrl ?? frameImageFor(segment, frame)
                               // Painted at the width the arithmetic gave the cell, in pixels. A share
                               // of the clip looks the same until the clip's width changes before the
                               // count catches up — which is every frame of a window resize — and then

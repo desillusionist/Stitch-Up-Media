@@ -111,28 +111,3 @@ export const computeFilmstrip = (o: {
  */
 export const frameKey = (index: number, srcAspect: number): string =>
   `${index}|${(Number.isFinite(srcAspect) && srcAspect > 0 ? srcAspect : 16 / 9).toFixed(4)}`
-
-/**
- * Which tile a fraction of the clip falls in, and how far into it.
- *
- * The tile is what the live frame is drawn over; the within-tile fraction is what the frame is
- * sampled at, so moving across one tile still advances the picture rather than holding it until
- * the pointer crosses into the next.
- */
-export const filmstripCell = (fraction: number, count: number): { cell: number; within: number } => {
-  const tiles = Math.max(1, Math.round(count))
-  const clamped = Number.isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) : 0
-  const cell = Math.max(0, Math.min(tiles - 1, Math.floor(clamped * tiles)))
-  return { cell, within: clamped * tiles - cell }
-}
-
-/**
- * The source frame a skimmed moment falls on, quantised to about a twelfth of a second.
- *
- * The quantising stops the picture flickering between neighbouring frames on a still hand, and
- * keeps the frame cache useful while the pointer is being dragged slowly. The result is an
- * absolute source frame index, which is the same key the strip's own frames are cached under,
- * so a skimmed frame and a strip frame are never extracted twice.
- */
-export const skimFrame = (seconds: number, fps: number): number =>
-  Math.max(0, Math.round((Math.round((Number.isFinite(seconds) ? seconds : 0) * 12) / 12) * (fps > 0 ? fps : 30)))

@@ -4,7 +4,8 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
-import { computeFilmstrip, filmstripCell, frameKey, skimFrame } from '../src/lib/filmstrip'
+import { computeFilmstrip, frameKey } from '../src/lib/filmstrip'
+import { PREVIEW_ZOOM_STEPS, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -630,20 +631,9 @@ console.log('\n== the timeline filmstrip ==')
   check('a zero-width lane still yields one cell', computeFilmstrip({ ...base, laneWidth: 0 }).thumbCount, 1)
   check('and a clip with no frames still samples inside itself', computeFilmstrip({ ...base, laneWidth: 640, inSec: 4, outSec: 4 }).frames.every((frame) => frame === 120), true)
 
-  // The cell the pointer is over, and how far into it.
-  check('the first tile holds the start', filmstripCell(0, 4), { cell: 0, within: 0 })
-  check('halfway across four tiles is the third of them', filmstripCell(0.5, 4), { cell: 2, within: 0 })
-  near('a little into the first tile is a little into the first frame', filmstripCell(0.1, 4)!.within, 0.4, 1e-9)
-  check('and the last fraction cannot fall off the end', filmstripCell(1, 4).cell, 3)
-  check('a nonsense fraction lands on the first tile', filmstripCell(Number.NaN, 4).cell, 0)
-
-  // A skimmed moment becomes an absolute source frame, which is the key its frame is cached
-  // under: the same key the strip's own frames use, so neither is ever extracted twice.
-  check('a skimmed moment becomes a source frame', skimFrame(1, 30), 30)
-  check('two moments a hair apart share one frame', skimFrame(1.01, 30) === skimFrame(0.99, 30), true)
-  check('and a later moment is a later frame', skimFrame(1.5, 30) > skimFrame(1, 30), true)
-  check('a nonsense moment is the first frame', skimFrame(Number.NaN, 30), 0)
-  check('a clip with no rate still gives a frame', skimFrame(1, 0), 30)
+  // The cell the pointer is over and which frame it samples lived here, along with the quantising
+  // that kept a skim from flickering. Both went with the hover-skim itself: the strip is read, not
+  // scrubbed, so nothing needs to know which tile a pointer is over.
 
   // A thumbnail's key carries the frame and the source shape it was drawn at, because a tile is
   // generated at its own picture's width and footage whose shape changed must not be served the
@@ -652,6 +642,49 @@ console.log('\n== the timeline filmstrip ==')
   check('the same frame at another shape is another picture', frameKey(120, 16 / 9) === frameKey(120, 4 / 3), false)
   check('while the same frame at the same shape is the same picture', frameKey(120, 16 / 9) === frameKey(120, 16 / 9), true)
   check('a nonsense shape falls back rather than colliding', frameKey(1, 0), '1|1.7778')
+}
+
+console.log('\n== the monitor zoom ==')
+{
+  // The user's own case: a portrait source in a landscape panel. A fit must keep the whole frame
+  // in view, and only a fit may be answered from the panel — a percentage is the raster's own
+  // pixels, so it is the same figure whatever the panel is doing. That is the whole distinction
+  // between the two halves of the list, and it is what makes a resize hold a percentage still.
+  const viewport = { width: 500, height: 300 }
+  const other = { width: 900, height: 700 }
+  const raster = { width: 720, height: 1280 }
+  const height = (size: { width: number; height: number } | null) => size && Math.round(size.height * 100) / 100
+  const width = (size: { width: number; height: number } | null) => size && Math.round(size.width * 100) / 100
+  const view = (zoom: Parameters<typeof zoomedRaster>[1]) => zoomedRaster(raster, zoom, viewport)
+
+  check('fit keeps the whole frame inside the panel', height(view({ kind: 'fit' })), 300)
+  check('and touches it on one axis', width(view({ kind: 'fit' })), 168.75)
+  check('fit width fills the width and overflows the height', [width(view({ kind: 'fitWidth' })), height(view({ kind: 'fitWidth' }))], [500, 888.89])
+  check('fit height fills the height', [width(view({ kind: 'fitHeight' })), height(view({ kind: 'fitHeight' }))], [168.75, 300])
+  check('a hundred per cent is the raster one for one', view({ kind: 'percent', percent: 100 }), { width: 720, height: 1280 })
+  check('a named scale is exactly that scale', view({ kind: 'percent', percent: 50 }), { width: 360, height: 640 })
+  check('and four hundred per cent is four times it', view({ kind: 'percent', percent: 400 }), { width: 2880, height: 5120 })
+  check('the shape is kept at every zoom', [{ kind: 'fit' }, { kind: 'fitWidth' }, { kind: 'fitHeight' }, { kind: 'percent', percent: 137 } as const].every((zoom) => {
+    const size = zoomedRaster(raster, zoom, viewport)
+    return size ? Math.abs(size.width / size.height - 720 / 1280) < 1e-9 : false
+  }), true)
+
+  // A fit is answered from the panel, a percentage is not: that is the whole point of the split.
+  check('a fit follows a resize', height(zoomedRaster(raster, { kind: 'fit' }, other)), 700)
+  check('a percentage does not', zoomedRaster(raster, { kind: 'percent', percent: 100 }, other), zoomedRaster(raster, { kind: 'percent', percent: 100 }, viewport))
+  check('a nonsense raster draws nothing', zoomedRaster({ width: 0, height: 0 }, { kind: 'fit' }, viewport), null)
+
+  check('the named scales are what the list offers', [25, 50, 75, 100, 150, 200, 400].every((step) => isPresetZoom(step) && PREVIEW_ZOOM_STEPS.includes(step as never)), true)
+  check('and nothing else is', [0, 33, 137, 401, 1000].some((percent) => isPresetZoom(percent)), false)
+  check('a typed figure is whole and inside the range', [137.4, 1, 5000, 0, Number.NaN].map(clampPreviewZoom), [137, 5, 800, 100, 100])
+  check('the fitting keeps its own vocabulary', [zoomFitMode({ kind: 'fit' }), zoomFitMode({ kind: 'fitWidth' }), zoomFitMode({ kind: 'fitHeight' })], ['contain', 'width', 'height'])
+
+  // Panning is view only, and only exists where there is something to spare: half the overflow
+  // each way from the centre, so no part of the drawing can be pushed out of reach.
+  check('a drawing that fits cannot be panned', [panSlack(400, 500), clampPan(50, 400, 500)], [0, 0])
+  check('a drawing that overflows has half the overflow each way', [panSlack(800, 500), clampPan(999, 800, 500), clampPan(-999, 800, 500)], [150, 150, -150])
+  check('and a pan inside the slack is left alone', clampPan(40, 800, 500), 40)
+  check('a nonsense pan is the centre', clampPan(Number.NaN, 800, 500), 0)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

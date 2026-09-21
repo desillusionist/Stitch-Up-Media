@@ -50,11 +50,14 @@ ${lane('B2', [['long.wav', 'b2', 100, false]], 0, '')}
 
 // Case C: the preview overlay. A square output frame centred in a wide stage, its label
 // anchored to the frame's top-left, and one crop band down the left edge. This checks the
-// overlay geometry a reader cannot judge from the stylesheet.
+// overlay geometry a reader cannot judge from the stylesheet. The drawing sits in the pan layer,
+// exactly as the JSX puts it, so the pan can be measured moving it as one.
 const caseC = `
 <div class="editor-stage" id="stage" style="width:500px;height:300px">
-  <div class="editor-frame" id="cframe" style="width:200px;height:200px"><b id="clabel">OUTPUT 1080×1080</b></div>
-  <div class="editor-crop-shade" id="cshade" style="left:0;top:0;width:25px;height:300px"></div>
+  <div class="editor-stage-pan" id="cpan">
+    <div class="editor-frame" id="cframe" style="width:200px;height:200px"><b id="clabel">OUTPUT 1080×1080</b></div>
+    <div class="editor-crop-shade" id="cshade" style="left:0;top:0;width:25px;height:300px"></div>
+  </div>
 </div>`
 
 // Case D: the exact-size row. Two fields that must split the space evenly and two glyph
@@ -166,6 +169,12 @@ const measure = `(() => {
   const dreset = rect('dreset')
   const content = document.getElementById('fcontent')
   const fside = rect('fside')
+  // The pan moves the drawing and nothing else, and it moves all of it: the frame and the crop
+  // band must travel together, by exactly the offset, or the crop would come off the picture.
+  const pan = document.getElementById('cpan')
+  pan.style.transform = 'translate(40px,-30px)'
+  const moved = { frame: rect('cframe'), shade: rect('cshade'), layer: rect('cpan') }
+  pan.style.transform = ''
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0') },
@@ -175,7 +184,9 @@ const measure = `(() => {
     caseC: { stage: [stage.width, stage.height], frame: [cframe.width, cframe.height],
       centeredX: +(cframe.center - stage.center).toFixed(2), centeredY: +(cframe.centerY - stage.centerY).toFixed(2),
       labelVsFrameLeft: +(clabel.left - cframe.left).toFixed(2), labelVsFrameTop: +(clabel.top - cframe.top).toFixed(2),
-      shadeLeft: cshade.left, shadeHeight: cshade.height },
+      shadeLeft: cshade.left, shadeHeight: cshade.height,
+      panLayerBox: [moved.layer.width, moved.layer.height], panMovedFrame: [+(moved.frame.left - cframe.left).toFixed(2), +(moved.frame.top - cframe.top).toFixed(2)],
+      panMovedShade: +(moved.shade.left - cshade.left).toFixed(2) },
     caseD: { rowWidth: exrow.width, fieldWidths: [dw.width, dh.width], iconWidths: [dlock.width, dreset.width],
       fieldHeights: [dw.height, dh.height], iconHeights: [dlock.height, dreset.height],
       leadingFlush: +(rect('dwf').left - exrow.left).toFixed(2), trailingFlush: +(exrow.right - dreset.right).toFixed(2),
