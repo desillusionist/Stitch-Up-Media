@@ -7,7 +7,7 @@ import { QueueManager } from './queue/manager'
 import { QueueTask, AppSettings, EditJobPatch } from '../src/types'
 import { logEvent, getLogFile } from './logger'
 import { resolveByteRange, mimeTypeFor } from './mediaRange'
-import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE } from '../src/lib/filmstrip'
+import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE } from '../src/lib/filmstrip'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -183,90 +183,66 @@ app.whenReady().then(() => {
   // uses, one image per tile. The tiles' own shape goes back with them, so a skimmed frame can
   // be asked for at the same shape and laid over a tile without moving it. Cached in memory,
   // since a clip is redrawn on every scroll and zoom far more often than its footage changes.
-  const filmstripCache = new Map<string, { frames: string[]; thumbWidth: number; thumbHeight: number }>()
-  ipcMain.handle('filmstrip-strip', async (_, filePath: string, options?: { start?: number; end?: number; windowWidth?: number; clipHeight?: number }) => {
-    if (!filePath) return null
-    try { if (!fs.statSync(filePath).isFile()) return null } catch { return null }
-    const start = Math.max(0, options?.start ?? 0)
-    const end = options?.end && options.end > start ? options.end : undefined
-    const windowWidth = Math.max(1, options?.windowWidth ?? 200)
-    const clipHeight = Math.max(8, options?.clipHeight ?? FILMSTRIP_CLIP_HEIGHT)
-    const cacheKey = `${filePath}|${start.toFixed(3)}|${(end ?? -1).toFixed(3)}|${Math.round(windowWidth)}|${Math.round(clipHeight)}`
-    const cached = filmstripCache.get(cacheKey)
-    if (cached) return cached
-    // The source's own shape decides a tile's width, so the tiles abut with nothing between
-    // them. A fixed cell would have pillarboxed every portrait frame, which reads as gaps.
-    const probe = await probeFile(filePath).catch(() => null)
-    const resolution = probe?.videoStreams?.[0]?.resolution?.split('x').map(Number)
-    const srcWidth = resolution && resolution[0] > 0 ? resolution[0] : 16
-    const srcHeight = resolution && resolution[1] > 0 ? resolution[1] : 9
-    const fps = probe?.videoStreams?.[0]?.fps && probe.videoStreams[0].fps > 0 ? probe.videoStreams[0].fps : 30
-    const span = end != null ? Math.max(0.05, end - start) : Math.max(0.05, (probe?.duration ?? 0) - start)
-    const plan = computeFilmstrip({ windowWidth, thumbHeight: clipHeight, srcWidth, srcHeight, totalFrames: span * fps })
-    const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
-    const outWidth = even(plan.thumbWidth * FILMSTRIP_SCALE)
-    const outHeight = even(clipHeight * FILMSTRIP_SCALE)
-    // One pass, not one seek per tile. The seek is half a step in, so each tile shows the middle
-    // of its own cell and the strip starts and ends level within the range, and the rate is one
-    // frame per step, so the LAST tile lands within a step of the clip's end rather than partway
-    // through it. The rate and the count come from the same step, which is what keeps the
-    // coverage whole however many tiles the window fitted.
-    const stepSeconds = span / plan.thumbCount
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-filmstrip-'))
+  // Frames for the timeline filmstrip and for skimming across it, cached by the SOURCE FRAME
+  // they are, never by where a tile happens to sit. Zooming or resizing a lane re-lays the
+  // strip out, and the frames it needs are then mostly ones already here: only the in-between
+  // frames are extracted. One pass per request rather than one seek per frame, and the pass is
+  // a select on the frame indices asked for, so exactly those come back, in order.
+  const frameCache = new Map<string, Map<number, string>>()
+  const frameWidthCache = new Map<string, number>()
+  const framesFor = (filePath: string) => {
+    const existing = frameCache.get(filePath)
+    if (existing) return existing
+    const created = new Map<number, string>()
+    frameCache.set(filePath, created)
+    if (frameCache.size > 40) frameCache.delete(frameCache.keys().next().value as string)
+    return created
+  }
+  // The tile's pixel width, from the source's own shape. Probed once per file: the shape of a
+  // piece of footage does not change.
+  const thumbWidthFor = async (filePath: string) => {
+    const known = frameWidthCache.get(filePath)
+    if (known !== undefined) return known
+    let aspect = 16 / 9
     try {
-      const args = ['-hide_banner', '-loglevel', 'error', '-y']
-      args.push('-ss', String(start + stepSeconds / 2))
-      args.push('-t', String(Math.max(0.02, span - stepSeconds / 2)))
-      args.push('-i', filePath)
-      const tiles = `fps=${(1 / stepSeconds).toFixed(6)},scale=${outWidth}:${outHeight}:force_original_aspect_ratio=decrease`
-      args.push('-vf', tiles, '-frames:v', String(plan.thumbCount), '-q:v', '5', path.join(dir, 't%03d.jpg'))
-      execFileSync('ffmpeg', args, { timeout: 90000 })
-      const files = fs.readdirSync(dir).filter((name) => name.endsWith('.jpg')).sort()
-      const frames = files.map((name) => `data:image/jpeg;base64,${fs.readFileSync(path.join(dir, name)).toString('base64')}`)
-      if (!frames.length) return null
-      // The tiles' own pixel size goes back with them, so a skimmed frame can be generated at
-      // the same shape and drawn over a tile without moving it.
-      const result = { frames, thumbWidth: plan.thumbWidth * FILMSTRIP_SCALE, thumbHeight: outHeight }
-      if (filmstripCache.size < 200) filmstripCache.set(cacheKey, result)
-      return result
-    } catch (error) {
-      logEvent('ipc', 'filmstrip failed', { filePath, start, end, windowWidth, error: String(error) })
-      return null
-    } finally {
-      try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
-    }
-  })
-
-  // One frame at one moment, for skimming across a strip. Seeked to the same bucket the renderer
-  // picks, and cached by it, so a pointer creeping across a tile asks for the same frame twice
-  // rather than decoding it twice. Generated at the tile's own shape, so drawing it over a tile
-  // does not move it.
-  const frameCache = new Map<string, string>()
-  ipcMain.handle('frame-at', async (_, filePath: string, options?: { bucket?: number; at?: number; aspect?: number }) => {
-    if (!filePath) return null
-    try { if (!fs.statSync(filePath).isFile()) return null } catch { return null }
-    const bucket = Math.max(0, Math.round(options?.bucket ?? (options?.at ?? 0) * 12))
-    const aspect = options?.aspect && options.aspect > 0 ? options.aspect : 16 / 9
-    const cacheKey = `${filePath}|${bucket}|${aspect.toFixed(4)}`
-    const cached = frameCache.get(cacheKey)
-    if (cached) return cached
+      const probe = await probeFile(filePath)
+      const resolution = probe?.videoStreams?.[0]?.resolution?.split('x').map(Number)
+      if (resolution && resolution[0] > 0 && resolution[1] > 0) aspect = resolution[0] / resolution[1]
+    } catch {}
     const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
-    const outHeight = even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE)
-    const outWidth = even(outHeight * aspect)
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-frame-'))
-    const framePath = path.join(dir, 'frame.jpg')
-    try {
-      const scale = `scale=${outWidth}:${outHeight}:force_original_aspect_ratio=decrease`
-      execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', String(bucket / 12), '-i', filePath, '-vf', scale, '-frames:v', '1', '-q:v', '5', framePath], { timeout: 20000 })
-      const frame = `data:image/jpeg;base64,${fs.readFileSync(framePath).toString('base64')}`
-      if (frameCache.size < 240) frameCache.set(cacheKey, frame)
-      return frame
-    } catch (error) {
-      logEvent('ipc', 'frame-at failed', { filePath, bucket, error: String(error) })
-      return null
-    } finally {
-      try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+    const width = even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE * aspect)
+    if (frameWidthCache.size < 80) frameWidthCache.set(filePath, width)
+    return width
+  }
+  ipcMain.handle('frames-at', async (_, filePath: string, options?: { frames?: number[] }) => {
+    const wanted = [...new Set((options?.frames ?? []).filter((frame) => Number.isFinite(frame) && frame >= 0).map((frame) => Math.round(frame)))].sort((a, b) => a - b)
+    if (!filePath || !wanted.length) return []
+    try { if (!fs.statSync(filePath).isFile()) return [] } catch { return [] }
+    const have = framesFor(filePath)
+    const missing = wanted.filter((frame) => !have.has(frame))
+    if (missing.length) {
+      const height = Math.max(2, Math.round(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE / 2) * 2)
+      const width = await thumbWidthFor(filePath)
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-frames-'))
+      try {
+        // The commas inside each eq() are escaped: an unescaped one separates filters and would
+        // split the select in half.
+        const selector = missing.map((frame) => `eq(n\\,${frame})`).join('+')
+        const filters = `select=${selector},scale=${width}:${height}:force_original_aspect_ratio=decrease`
+        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', filePath, '-vf', filters, '-vsync', '0', path.join(dir, 'f%05d.jpg')], { timeout: 120000 })
+        const files = fs.readdirSync(dir).filter((name) => name.endsWith('.jpg')).sort()
+        // The frames come back in ascending index order, which is the order they were asked for.
+        files.forEach((name, position) => {
+          if (position >= missing.length) return
+          have.set(missing[position], `data:image/jpeg;base64,${fs.readFileSync(path.join(dir, name)).toString('base64')}`)
+        })
+      } catch (error) {
+        logEvent('ipc', 'frames-at failed', { filePath, count: missing.length, error: String(error) })
+      } finally {
+        try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+      }
     }
+    return wanted.map((frame) => have.get(frame) ?? '')
   })
 
   ipcMain.handle('get-paths-total-size', async (_, filePaths: string[]) => {

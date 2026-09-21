@@ -4,7 +4,7 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
-import { computeFilmstrip, FILMSTRIP_MAX_TILES, filmstripCell, filmstripKey, skimBucket } from '../src/lib/filmstrip'
+import { computeFilmstrip, FILMSTRIP_MAX_TILES, filmstripCell, skimFrame } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -560,60 +560,62 @@ console.log('\n== the exact-size fields ==')
 
 console.log('\n== the timeline filmstrip ==')
 {
-  // Coverage is the whole point: the samples must span the clip however many tiles fit, and a
-  // wider window must buy DENSITY, not less of the range. That is what deriving the step from
-  // the tile count does, and it is what a fixed step cannot do.
-  const wide = computeFilmstrip({ windowWidth: 640, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 240 })
+  // The lane width is dynamic, so every figure is recomputed from the one in hand. Coverage is
+  // the whole point: the samples must span the clip's whole TRIM however many tiles fit, and a
+  // wider lane must buy density rather than less of the range. That is what deriving the step
+  // from the tile count does, and what a fixed step cannot do.
+  const base = { thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, fps: 30, inSec: 0, outSec: 8 }
+  const wide = computeFilmstrip({ ...base, laneWidth: 640 })
   check('a tile is as wide as its own picture', wide.thumbWidth, Math.round(32 * (1920 / 1080)))
-  check('the count is how many fit across the window', wide.thumbCount, Math.floor(640 / wide.thumbWidth))
-  near('the step is the frames divided by the count', wide.step, 240 / wide.thumbCount, 1e-9)
-  check('the first tile is sampled inside the range, not before it', wide.frames[0] >= 0, true)
-  check('and the last tile is still inside it', wide.frames[wide.frames.length - 1] <= 239, true)
-  check('with one frame per tile', wide.frames.length, wide.thumbCount)
+  check('the count is how many fit across the lane', wide.thumbCount, Math.round(640 / wide.thumbWidth))
+  near('the cells share the lane exactly', wide.cellWidth * wide.thumbCount, 640, 1e-9)
+  near('the step is the trimmed frames over the count', wide.step, Math.round(8 * 30) / wide.thumbCount, 1e-9)
 
-  // The coverage test: the last sample must sit in the last step of the range. A fixed step would
-  // leave it near the start on a wide window, which is the bug this guards.
-  const narrower = computeFilmstrip({ windowWidth: 320, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 240 })
-  check('a narrower window fits fewer tiles', narrower.thumbCount < wide.thumbCount, true)
-  check('but still reaches the far end of the range', narrower.frames[narrower.frames.length - 1] > 240 - narrower.step, true)
-  check('and so does the wide one', wide.frames[wide.frames.length - 1] > 240 - wide.step, true)
-  check('the wide window samples more densely than the narrow one', wide.step < narrower.step, true)
+  // Sampling is inside the TRIM, offset by the in-point, so each tile matches the frame the
+  // playhead would show at that place on the lane.
+  const trimmed = computeFilmstrip({ ...base, laneWidth: 640, inSec: 2, outSec: 6 })
+  const first = Math.round(2 * 30)
+  const last = Math.round(6 * 30) - 1
+  check('the first sample is inside the trim, not before it', trimmed.frames[0] >= first, true)
+  check('and the last is still inside it', trimmed.frames[trimmed.frames.length - 1] <= last, true)
+  check('nothing is sampled from outside the trim', trimmed.frames.every((frame) => frame >= first && frame <= last), true)
+  check('the last sample reaches the far end of the trim', trimmed.frames[trimmed.frames.length - 1] > last - trimmed.step, true)
+  check('with one sample per tile', trimmed.frames.length, trimmed.thumbCount)
 
-  // A portrait source keeps its own shape, so its tiles abut instead of being padded into a cell.
-  const portrait = computeFilmstrip({ windowWidth: 640, thumbHeight: 32, srcWidth: 720, srcHeight: 1280, totalFrames: 240 })
+  // Density, not coverage: a wider lane fits more tiles AND samples more densely across the
+  // same span, and a narrower one still reaches the end.
+  const narrow = computeFilmstrip({ ...base, laneWidth: 320 })
+  check('a narrower lane fits fewer tiles', narrow.thumbCount < wide.thumbCount, true)
+  check('but still reaches the far end', narrow.frames[narrow.frames.length - 1] > Math.round(8 * 30) - 1 - narrow.step, true)
+  check('and the wide lane samples more densely', wide.step < narrow.step, true)
+
+  // A portrait source keeps its own shape, so its tiles are narrow rather than padded.
+  const portrait = computeFilmstrip({ ...base, laneWidth: 640, srcWidth: 720, srcHeight: 1280 })
   check('a portrait picture makes narrow tiles', portrait.thumbWidth, Math.round(32 * (720 / 1280)))
   check('so more of them fit', portrait.thumbCount > wide.thumbCount, true)
 
   // Degenerate inputs still describe a whole clip rather than nothing.
-  const tiny = computeFilmstrip({ windowWidth: 8, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 240 })
-  check('a window narrower than a tile still shows one', tiny.thumbCount, 1)
-  near('and that one tile is the middle of the clip', tiny.frames[0], Math.round(0.5 * 240), 1e-9)
-  check('an enormous window is capped', computeFilmstrip({ windowWidth: 100000, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 240 }).thumbCount, FILMSTRIP_MAX_TILES)
-  check('a nonsense source shape falls back to 16:9', computeFilmstrip({ windowWidth: 640, thumbHeight: 32, srcWidth: 0, srcHeight: 0, totalFrames: 240 }).thumbWidth, Math.round(32 * (16 / 9)))
-  check('and a clip with no frames still samples frame zero', computeFilmstrip({ windowWidth: 640, thumbHeight: 32, srcWidth: 1920, srcHeight: 1080, totalFrames: 0 }).frames.every((frame) => frame === 0), true)
+  check('a lane narrower than a tile still shows one', computeFilmstrip({ ...base, laneWidth: 8 }).thumbCount, 1)
+  near('and that one tile is the middle of the trim', computeFilmstrip({ ...base, laneWidth: 8 }).frames[0], Math.round(0.5 * 240), 1e-9)
+  check('an enormous lane is capped', computeFilmstrip({ ...base, laneWidth: 100000 }).thumbCount, FILMSTRIP_MAX_TILES)
+  check('a nonsense source shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, srcWidth: 0, srcHeight: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
+  check('a zero-width lane still yields one cell', computeFilmstrip({ ...base, laneWidth: 0 }).thumbCount, 1)
+  check('and a clip with no frames still samples inside itself', computeFilmstrip({ ...base, laneWidth: 640, inSec: 4, outSec: 4 }).frames.every((frame) => frame === 120), true)
 
-  // The cell the pointer is over, and how far into it: the frame is sampled from the pointer's
-  // place in the clip, so the picture advances across one tile rather than holding until the next.
+  // The cell the pointer is over, and how far into it.
   check('the first tile holds the start', filmstripCell(0, 4), { cell: 0, within: 0 })
   check('halfway across four tiles is the third of them', filmstripCell(0.5, 4), { cell: 2, within: 0 })
   near('a little into the first tile is a little into the first frame', filmstripCell(0.1, 4)!.within, 0.4, 1e-9)
   check('and the last fraction cannot fall off the end', filmstripCell(1, 4).cell, 3)
   check('a nonsense fraction lands on the first tile', filmstripCell(Number.NaN, 4).cell, 0)
 
-  // Skimmed frames are taken in twelfths of a second, so a slow hand asks for one frame rather
-  // than a new decode per pixel of travel.
-  check('a twelfth of a second is its own bucket', skimBucket(1), 12)
-  check('a hair either side shares it', [skimBucket(1.02), skimBucket(0.99)], [12, 12])
-  check('and the next twelfth is the next bucket', skimBucket(1.1), 13)
-  check('a nonsense moment is the first bucket', skimBucket(Number.NaN), 0)
-
-  // The key carries the media, the used range AND the tile count. Footage trimmed differently
-  // is a different strip, and a strip of one count is not the strip of another, so keying on
-  // the media alone would serve a short strip for a request that wanted a long one.
-  check('a strip key names its media, range and count', filmstripKey('/a.mp4', 1.5, 4, 8), '/a.mp4|1.500|4.000|8')
-  check('the same media on another range is another strip', filmstripKey('/a.mp4', 2, 4, 8) === filmstripKey('/a.mp4', 1.5, 4, 8), false)
-  check('and so is another tile count', filmstripKey('/a.mp4', 1.5, 4, 8) === filmstripKey('/a.mp4', 1.5, 4, 12), false)
-  check('the cell has a positive size', FILMSTRIP_MAX_TILES > 0, true)
+  // A skimmed moment becomes an absolute source frame, which is the key its frame is cached
+  // under: the same key the strip's own frames use, so neither is ever extracted twice.
+  check('a skimmed moment becomes a source frame', skimFrame(1, 30), 30)
+  check('two moments a hair apart share one frame', skimFrame(1.01, 30) === skimFrame(0.99, 30), true)
+  check('and a later moment is a later frame', skimFrame(1.5, 30) > skimFrame(1, 30), true)
+  check('a nonsense moment is the first frame', skimFrame(Number.NaN, 30), 0)
+  check('a clip with no rate still gives a frame', skimFrame(1, 0), 30)
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

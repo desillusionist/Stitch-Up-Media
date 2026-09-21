@@ -10,10 +10,8 @@ export interface IElectronAPI {
   listSiblingFiles: (filePath: string) => Promise<string[]>
   getPathsTotalSize: (filePaths: string[]) => Promise<number>
   pathExists: (filePath: string) => Promise<boolean>
-  /** Evenly-spaced frames spanning a clip's used range, with the tiles' own pixel size. */
-  filmstripStrip: (filePath: string, options?: { start?: number; end?: number; windowWidth?: number; clipHeight?: number }) => Promise<{ frames: string[]; thumbWidth: number; thumbHeight: number } | null>
-  /** A single frame at one moment, for skimming across a strip. */
-  frameAt: (filePath: string, options?: { bucket?: number; at?: number; aspect?: number }) => Promise<string | null>
+  /** Frames of a clip by absolute source frame index, for the timeline filmstrip and skimming. */
+  framesAt: (filePath: string, options?: { frames?: number[] }) => Promise<string[]>
   selectOutputDir: () => Promise<string | null>
   startTask: (task: QueueTask) => Promise<{ success: boolean; error?: string }>
   startSelectedTasks: (tasks: QueueTask[]) => Promise<{ success: boolean; error?: string }>
@@ -60,8 +58,7 @@ const api: IElectronAPI = {
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
-  filmstripStrip: (filePath: string, options?: { start?: number; end?: number; windowWidth?: number; clipHeight?: number }) => ipcRenderer.invoke('filmstrip-strip', filePath, options),
-  frameAt: (filePath: string, options?: { bucket?: number; at?: number; aspect?: number }) => ipcRenderer.invoke('frame-at', filePath, options),
+  framesAt: (filePath: string, options?: { frames?: number[] }) => ipcRenderer.invoke('frames-at', filePath, options),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),
   startSelectedTasks: (tasks: QueueTask[]) => ipcRenderer.invoke('start-selected-tasks', tasks),

@@ -324,15 +324,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-playhead::after { content: ''; position: absolute; left: -5px; top: 0; bottom: 0; width: 11px; }
 .timeline-clip-name { display: block; padding: 7px 6px 0; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
 
-/* Filmstrip view: one image per tile at the source's own shape, so the tiles abut with nothing
-   between them. The clip's own label is hidden so the frames are what is read. */
+/* Filmstrip view: the cells share the lane exactly, each showing the frame the playhead would
+   show there. The clip's own label is hidden so the frames are what is read. */
 .timeline-lane .timeline-clip-film { position: absolute; inset: 0; z-index: 0; display: flex; overflow: hidden; }
-.timeline-clip-tile { position: relative; flex: 0 0 auto; display: block; height: 100%; }
-.timeline-clip-tile > img { display: block; height: 100%; width: auto; }
-/* The live frame fills its own tile without moving it: absolute, so the row cannot reflow when
-   the picture above it changes, and cover, so a rounding's worth of shape difference is cropped
-   rather than stretched. */
-.timeline-clip-skim { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.timeline-clip-tile { position: relative; flex: 0 0 auto; display: block; height: 100%; overflow: hidden; }
+.timeline-clip-tile > img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .timeline-lane .timeline-clip.is-film .timeline-clip-name,
 .timeline-lane .timeline-clip.is-film small { display: none; }
 /* The strip's own marking, drawn OVER the frames rather than as an outline underneath them,
