@@ -43,6 +43,13 @@ export interface EncodingPreset {
    * applied to the output canvas, so a multi-clip job loses the same edges from every clip.
    */
   crop?: { left: number; top: number; right: number; bottom: number }
+  /**
+   * Whether crop editing is held to the output frame's aspect ratio.
+   *
+   * An editing constraint rather than part of the crop itself: what it produces is captured by the
+   * region it leaves behind, so turning it off again does not change any crop already shaped by it.
+   */
+  cropLockToOutput?: boolean
   aspectRatio?: 'source' | '1:1' | '4:3' | '16:9' | '9:16' | 'custom'
   audioEnabled?: boolean
   frameRate?: number

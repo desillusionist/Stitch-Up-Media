@@ -241,6 +241,59 @@ export const cropForProportion = (pictureAspect: number, ratio: number): CropFra
 }
 
 /**
+ * A crop of the same shape, inset by a share of its own size about its own centre.
+ *
+ * Scaling both axes by the same factor preserves the region's shape, so this is how a crop of a
+ * given shape is made visibly smaller without ceasing to be that shape: a tenth off each axis of a
+ * 16:9 region leaves a 16:9 region. It is what the crop switch turns on — an inset the user can see
+ * and grab — and it is also how the lock's own shape is seeded.
+ */
+export const insetCrop = (crop: CropFractions, scale: number): CropFractions => {
+  const safe = clampCrop(crop)
+  const keptWidth = 1 - safe.left - safe.right
+  const keptHeight = 1 - safe.top - safe.bottom
+  if (!(keptWidth > 0) || !(keptHeight > 0) || !(scale > 0)) return safe
+  const width = keptWidth * scale
+  const height = keptHeight * scale
+  const centreX = (safe.left + (1 - safe.right)) / 2
+  const centreY = (safe.top + (1 - safe.bottom)) / 2
+  return clampCrop({
+    left: centreX - width / 2,
+    top: centreY - height / 2,
+    right: 1 - (centreX + width / 2),
+    bottom: 1 - (centreY + height / 2),
+  })
+}
+
+/**
+ * Re-holds a crop's shape at one axis's extent, about the region's own centre.
+ *
+ * Dragging an edge changes the extent of one axis, which is what would break a shape that is
+ * being held; this puts the shape back by moving only the OTHER axis, symmetrically about the
+ * centre, so the edited edge stays where the pointer put it. `fixed` names the axis the edit set.
+ *
+ * The shape is in pixels while the crop is in fractions, so the picture's own shape relates the
+ * two: a kept width of `kw` needs a kept height of `pictureAspect * kw / ratio` to keep `ratio`.
+ */
+export const holdCropShape = (crop: CropFractions, ratio: number, pictureAspect: number, fixed: 'width' | 'height'): CropFractions => {
+  const safe = clampCrop(crop)
+  if (!(ratio > 0) || !(pictureAspect > 0)) return safe
+  const keptWidth = 1 - safe.left - safe.right
+  const keptHeight = 1 - safe.top - safe.bottom
+  if (!(keptWidth > 0) || !(keptHeight > 0)) return safe
+  const width = fixed === 'width' ? keptWidth : (ratio * keptHeight) / pictureAspect
+  const height = fixed === 'width' ? (pictureAspect * keptWidth) / ratio : keptHeight
+  const centreX = (safe.left + (1 - safe.right)) / 2
+  const centreY = (safe.top + (1 - safe.bottom)) / 2
+  return clampCrop({
+    left: centreX - width / 2,
+    top: centreY - height / 2,
+    right: 1 - (centreX + width / 2),
+    bottom: 1 - (centreY + height / 2),
+  })
+}
+
+/**
  * Slides a crop across the picture without changing its size.
  *
  * Both edges of an axis move together, which is what keeps the region the same shape. The

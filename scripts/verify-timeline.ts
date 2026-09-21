@@ -3,7 +3,7 @@ import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
-import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
+import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
 import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSize, fitFilters, fitPlacement, fitSignature, fittedSize, sourceCropOf } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
@@ -555,6 +555,34 @@ console.log('\n== moving and resizing the crop ==')
   const pushed = resizeCorner({ crop: from, picture, corner: 'bottomRight', point: { x: 0.5, y: 0.5 }, free: true })
   near('and a freeform drag is still capped across', pushed.right, MAX_CROP, 1e-9)
   near('and down', pushed.bottom, MAX_CROP, 1e-9)
+}
+
+console.log('\n== the crop lock ==')
+{
+  // The switch's own default: a tenth off each axis. Both axes scale together, which is what keeps
+  // the shape, so this is the same inset whatever shape it is applied to.
+  near('the switch turns on an inset of a tenth a side', insetCrop({ left: 0, top: 0, right: 0, bottom: 0 }, 0.8).left, 0.1, 1e-9)
+  near('and the same on the other side', insetCrop({ left: 0, top: 0, right: 0, bottom: 0 }, 0.8).right, 0.1, 1e-9)
+  near('and inset a shaped region keeps its shape', keptAspect(insetCrop(cropForProportion(16 / 9, 1), 0.8), 16 / 9)!, 1, 1e-9)
+  near('inset keeps the region centred', insetCrop({ left: 0.2, top: 0.1, right: 0.4, bottom: 0.3 }, 0.5).left, 0.3, 1e-9)
+  // An extreme region still leaves a picture behind, because the result is clamped like any crop.
+  check('an inset extreme region is still a crop of something', hasCrop(insetCrop(cropForProportion(16 / 9, 9 / 16), 0.5)), true)
+
+  // Holding a shape at a fixed extent: the axis the user set stays put and the other follows, so an
+  // edge drag under the lock keeps the output's proportions without moving the edge under the pointer.
+  const pictureAspect = 16 / 9
+  const box = { left: 0.3, top: 0.3, right: 0.3, bottom: 0.3 }
+  const heldWidth = holdCropShape(box, 1, pictureAspect, 'width')
+  near('holding a shape off the width keeps 1:1', keptAspect(heldWidth, pictureAspect)!, 1, 1e-9)
+  near('and leaves the width alone', heldWidth.left, box.left, 1e-9)
+  near('with the region still centred', heldWidth.top, heldWidth.bottom, 1e-9)
+  const heldHeight = holdCropShape(box, 1, pictureAspect, 'height')
+  near('holding it off the height keeps 1:1 too', keptAspect(heldHeight, pictureAspect)!, 1, 1e-9)
+  near('and leaves the height alone', heldHeight.top, box.top, 1e-9)
+  // The cap still wins: a shape that cannot fit is clamped rather than allowed to empty the picture.
+  const extreme = holdCropShape({ left: 0, top: 0, right: 0, bottom: 0 }, 9 / 16, pictureAspect, 'width')
+  check('and an impossible shape is capped, not emptied', 1 - extreme.left - extreme.right >= 0.1 - 1e-9, true)
+  check('a draw with no shape to hold is left alone', holdCropShape(box, 0, pictureAspect, 'width'), box)
 }
 
 console.log('\n== the exact-size fields ==')

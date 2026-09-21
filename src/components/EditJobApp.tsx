@@ -10,7 +10,7 @@ import { buildTimeline, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFo
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
-import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
+import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
 import { ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
 
@@ -1215,11 +1215,23 @@ export const EditJobApp: React.FC = () => {
   const cropProportion = !crop || !hasCrop(crop) ? 'NONE' : matchedProportion ?? 'CUSTOM'
   /** The shape a corner drag holds: the chosen proportion, or nothing to hold the region's own. */
   const cropProportionRatio = ASPECTS.find((candidate) => candidate.label === cropProportion)?.ratio
-  // The crop object existing IS the enabled state, and it is deliberately not `hasCrop`:
-  // a crop with all four edges at zero removes nothing, so a data test reported the control
-  // as off the moment the last field was zeroed, and every attempt to switch it back on set
-  // the same all-zero crop again. Whether it removes anything is the encoder's question.
-  const cropEnabled = Boolean(crop)
+  // Whether the crop removes anything at all, which is what the switch reports. A crop of nothing
+  // is a crop switched off, so zeroing the last figure unchecks the control; the record itself may
+  // still exist, because for a clip in a job that has a crop of its own an entry is how a clip says
+  // "none for me" (see setCrop) rather than "let the job's stand".
+  const cropEnabled = hasCrop(crop)
+  /** The output frame's shape, which is what the lock holds the crop to. Absent until it is known. */
+  const lockRatio = draft.preset.cropLockToOutput && outputFrame ? outputFrame.width / outputFrame.height : undefined
+  /** Writes a crop through to whichever record the controls are editing, with no reshaping. */
+  const writeCrop = (next: CropFractions) => {
+    if (perClipFraming && activeClipKey) {
+      // Written even when it keeps the whole clip, because that is how a clip says "no crop" where
+      // the job has one: an absent entry means *the job's crop stands*, not *nothing is cropped*.
+      updateDraft({ sourceCrop: { ...(latest().sourceCrop ?? {}), [activeClipKey]: sourceCropOf(next) } })
+      return
+    }
+    updatePreset({ crop: next })
+  }
   /**
    * Sets the crop the controls are editing.
    *
@@ -1227,29 +1239,36 @@ export const EditJobApp: React.FC = () => {
    * follows the clip through a reorder; everywhere else it is the job's, which is the only crop a
    * single-visual job has. The two are the same controls and the same numbers, so the monitor's crop
    * box, the fields and the handles cannot disagree about which one is being edited.
+   *
+   * Every control that can change the region's SHAPE holds the output's shape itself while the lock
+   * is on; this is the plain writer for the ones that cannot break it (a move) and the ones that are
+   * handed a shape already (the lock's own click).
    */
-  const setCrop = (next: CropFractions) => {
-    const clamped = clampCrop(next)
-    if (perClipFraming && activeClipKey) {
-      const region = sourceCropOf(clamped)
-      const map = { ...(latest().sourceCrop ?? {}) }
-      // A crop of the whole clip is no crop at all, so it leaves nothing behind to read as a choice.
-      if (region.x <= 0 && region.y <= 0 && region.w >= 1 && region.h >= 1) delete map[activeClipKey]
-      else map[activeClipKey] = region
-      updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
-      return
-    }
-    updatePreset({ crop: clamped })
-  }
-  /** Takes the crop away, from whichever record the controls are editing. */
+  const setCrop = (next: CropFractions) => writeCrop(clampCrop(next))
+  /**
+   * The crop the switch turns on: a tenth off each axis, so it is there to be seen and dragged.
+   * While the lock is on it is that same inset of the output's own shape, so switching the crop on
+   * with the lock already set cannot produce a region the lock would immediately contradict.
+   */
+  const enableCrop = () => writeCrop(insetCrop(lockRatio && naturalAspect ? cropForProportion(naturalAspect, lockRatio) : { left: 0, top: 0, right: 0, bottom: 0 }, 0.8))
+  /** Takes the crop away: nothing of the job's is left to stand in for this clip's. */
   const clearCrop = () => {
     if (perClipFraming && activeClipKey) {
-      const map = { ...(latest().sourceCrop ?? {}) }
-      delete map[activeClipKey]
-      updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
+      updateDraft({ sourceCrop: { ...(latest().sourceCrop ?? {}), [activeClipKey]: { x: 0, y: 0, w: 1, h: 1 } } })
       return
     }
     updatePreset({ crop: undefined })
+  }
+  /**
+   * The lock's own click, which brings the clip being looked at into line at once: the preview then
+   * shows what the lock is for, and every other clip conforms when it is next edited rather than
+   * being rewritten behind the user's back.
+   */
+  const setCropLock = (locked: boolean) => {
+    updatePreset({ cropLockToOutput: locked || undefined })
+    if (!locked) return
+    const ratio = outputFrame ? outputFrame.width / outputFrame.height : undefined
+    if (ratio && naturalAspect) writeCrop(cropForProportion(naturalAspect, ratio))
   }
   /** Puts the crop being edited on every clip, which is what a job cropped as a whole wants. */
   const applyCropToAll = () => {
@@ -1260,11 +1279,22 @@ export const EditJobApp: React.FC = () => {
     })
     updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
   }
+  /**
+   * Sets one crop edge from its field, in whichever unit the fields are currently showing.
+   *
+   * One edge moves at a time: the other three are already settled, so only the edited one changes
+   * and the rest survive the trip through the unit's inverse. While the lock is on the axis that was
+   * NOT typed follows from the one that was, so the figure in the field stays the one the user set
+   * and the region is nonetheless the output's shape.
+   */
   const setCropEdge = (edge: keyof CropFractions, raw: number) => {
-    if (!crop || !cropPx || !picture) return
-    // One edge moves at a time: the other three are already whole pixels of the source, so
-    // only the edited one changes and the rest survive the trip through the inverse.
-    setCrop(cropFractions({ ...cropPx, [edge]: Math.max(0, Math.round(raw)) }, picture))
+    if (!crop) return
+    const next = cropUnit === 'px'
+      ? (cropPx && picture ? cropFractions({ ...cropPx, [edge]: Math.max(0, Math.round(raw)) }, picture) : null)
+      : { ...crop, [edge]: Math.max(0, Math.min(1, raw / 100)) }
+    if (!next) return
+    if (lockRatio && naturalAspect) { writeCrop(holdCropShape(next, lockRatio, naturalAspect, edge === 'left' || edge === 'right' ? 'width' : 'height')); return }
+    setCrop(next)
   }
   /** Sets the proportion list: NONE clears the crop, a shape centres the crop on it. */
   const applyCropProportion = (label: string) => {
@@ -1298,7 +1328,11 @@ export const EditJobApp: React.FC = () => {
     const move = (moveEvent: PointerEvent) => {
       const position = (coordinate(moveEvent) - origin) / Math.max(1, size)
       const value = Math.max(0, Math.min(1, trailing ? 1 - position : position))
-      setCrop({ ...crop, [edge]: value })
+      const next = { ...crop, [edge]: value }
+      // An edge drag is the one gesture that changes a single axis by nature, so under the lock the
+      // other axis is what follows: the edge stays under the pointer and the shape is still kept.
+      if (lockRatio && naturalAspect) { writeCrop(holdCropShape(next, lockRatio, naturalAspect, horizontal ? 'width' : 'height')); return }
+      setCrop(next)
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
@@ -1319,11 +1353,13 @@ export const EditJobApp: React.FC = () => {
     const start = { x: event.clientX, y: event.clientY }
     const from = crop
     const move = (moveEvent: PointerEvent) => {
-      setCrop(shiftCrop(
+      // A move changes no edge's size, so a shape being held is not at stake here: it goes through
+      // the plain writer rather than the one that would re-shape it.
+      writeCrop(clampCrop(shiftCrop(
         from,
         (moveEvent.clientX - start.x) / Math.max(1, cropRect.box.width),
         (moveEvent.clientY - start.y) / Math.max(1, cropRect.box.height),
-      ))
+      )))
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
@@ -1343,11 +1379,14 @@ export const EditJobApp: React.FC = () => {
     const stage = stageRef.current?.getBoundingClientRect()
     if (!stage) return
     const from = crop
-    const ratio = cropProportionRatio
-    // NONE in the list means no shape is being held at all, so the corner is free.
-    const free = cropProportion === 'NONE'
+    // The lock's own shape takes precedence over the list's, since it is the constraint the user
+    // asked for explicitly; without it the list's chosen shape is held.
+    const ratio = lockRatio ?? cropProportionRatio
+    // NONE in the list means no shape is being held at all, so the corner is free. A locked crop is
+    // never free: the whole point of the lock is that the corner keeps the output's proportions.
+    const free = !lockRatio && cropProportion === 'NONE'
     const move = (moveEvent: PointerEvent) => {
-      setCrop(resizeCorner({
+      writeCrop(clampCrop(resizeCorner({
         crop: from,
         picture,
         corner,
@@ -1357,7 +1396,7 @@ export const EditJobApp: React.FC = () => {
           x: (moveEvent.clientX - stage.left - cropRect.originX - panRef.current.x) / Math.max(1, cropRect.box.width),
           y: (moveEvent.clientY - stage.top - cropRect.originY - panRef.current.y) / Math.max(1, cropRect.box.height),
         },
-      }))
+      })))
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
@@ -1962,11 +2001,11 @@ export const EditJobApp: React.FC = () => {
                 label="CROP SOURCE VIDEO"
                 checked={cropEnabled}
                 reason={videoReason}
-                onChange={(checked) => checked ? setCrop(crop ?? { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }) : clearCrop()}
+                onChange={(checked) => checked ? enableCrop() : clearCrop()}
               />
-              {crop && <>
+              {cropEnabled && crop && <>
                 <div className="crop-head">
-                  <select value={cropProportion} disabled={!naturalAspect} onChange={(event) => applyCropProportion(event.target.value)} title={naturalAspect ? 'Crop the picture to a shape' : 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.'}>
+                  <select value={cropProportion} disabled={!naturalAspect || Boolean(lockRatio)} onChange={(event) => applyCropProportion(event.target.value)} title={lockRatio ? 'THE CROP IS LOCKED TO THE OUTPUT SHAPE, SO THIS LIST IS NOT IN PLAY.' : naturalAspect ? 'Crop the picture to a shape' : 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.'}>
                     <option value="NONE">NONE</option>
                     {ASPECTS.map((candidate) => <option key={candidate.label} value={candidate.label}>{candidate.label}</option>)}
                     <option value="CUSTOM" disabled>CUSTOM</option>
@@ -1987,19 +2026,23 @@ export const EditJobApp: React.FC = () => {
                         step="1"
                         className="editor-input"
                         value={cropUnit === 'px' && cropPx ? cropPx[edge] : Math.round(crop[edge] * 100)}
-                        onChange={(event) => cropUnit === 'px' ? setCropEdge(edge, Number(event.target.value) || 0) : setCrop({ ...crop, [edge]: (Number(event.target.value) || 0) / 100 })}
+                        onChange={(event) => setCropEdge(edge, Number(event.target.value) || 0)}
                         title={`${edge} edge, ${cropUnit === 'px' ? 'pixels' : 'per cent'} of the source`}
                       />
                     </label>
                   ))}
                 </div>
+                <label className="crop-lock" title={lockRatio ? 'The crop is held to the output frame\u2019s shape' : 'THE OUTPUT FRAME\u2019S SHAPE IS NOT KNOWN YET.'}>
+                  <input type="checkbox" checked={Boolean(draft.preset.cropLockToOutput)} disabled={!naturalAspect || !outputFrame} onChange={(event) => setCropLock(event.target.checked)} />
+                  <span>LOCK CROP TO OUTPUT AR</span>
+                </label>
                 {perClipFraming && (
                   <div className="crop-actions">
-                    <span>THIS CLIP{activeSourceCrop ? '' : ' — UNCROPPED'}</span>
+                    <span>THIS CLIP{cropEnabled ? '' : ' — UNCROPPED'}</span>
                     <button onClick={applyCropToAll} title="Put this crop on every clip in the job">APPLY TO ALL CLIPS</button>
                   </div>
                 )}
-                <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON THE PICTURE; NONE CLEARS IT. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.</div>
+                <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON THE PICTURE; NONE CLEARS IT. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.{lockRatio ? ' WITH THE LOCK ON, EVERY EDIT HOLDS THE OUTPUT\u2019S SHAPE.' : ''}</div>
               </>}
             </div>
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><input type="number" min="1" className="editor-input" value={draft.preset.fps ?? ''} placeholder={String(defaultFps)} disabled={audioOnly} onChange={(event) => changeFps(event.target.value)} /></EditorField>

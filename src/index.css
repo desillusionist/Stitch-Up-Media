@@ -298,6 +298,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
 .crop-actions button { padding: 6px 8px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
 .crop-actions button:hover { border-color: var(--ui-accent); }
+/* The lock: one switch, on its own line under the four figures, because it constrains all of them. */
+.crop-lock { display: flex; align-items: center; gap: 7px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; cursor: pointer; }
+.crop-lock input { accent-color: var(--ui-accent); }
+.crop-lock:has(input:disabled) { opacity: .45; cursor: not-allowed; }
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
 /* The shape list and the unit switch, above the crop's four figures. The switch's glyph buttons
    match the select's height so the row reads as one control rather than two. */
