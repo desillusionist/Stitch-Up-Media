@@ -409,6 +409,8 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-menu button { padding: 7px 8px; text-align: left; color: var(--ui-muted); background: transparent; border: 0; font-size: 9px; letter-spacing: .06em; }
 .timeline-menu button:hover { color: var(--ui-accent); background: rgba(159, 191, 154, .08); }
 .timeline-menu button.is-on { color: var(--ui-accent); }
+.timeline-menu button:disabled { opacity: .45; cursor: not-allowed; }
+.timeline-menu button:disabled:hover { color: var(--ui-muted); background: transparent; }
 /* Separates the clip's own commands from the two that place it in the frame. */
 .timeline-menu-divider { display: block; height: 1px; margin: 4px 0; background: var(--ui-border-dim); }
 .timeline-menu button.is-on::before { content: '> '; }

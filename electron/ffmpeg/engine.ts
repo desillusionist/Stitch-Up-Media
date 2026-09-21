@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
+import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { clipFilters } from '../../src/lib/sourceFit'
@@ -190,12 +190,21 @@ export class FFmpegEngine {
     // The length the finished file will have, for the progress readout: the same rule the
     // timeline uses, backed by a probe of the one source.
     let expectedSeconds = 0
+    // The source's own pixel size, from the probe this path already makes: a fit is worked out from
+    // the clip's shape and the frame rather than by ffmpeg from the stream, so it needs the shape.
+    let sourceSize: { width: number; height: number } | null = sequence?.width && sequence?.height
+      ? { width: sequence.width, height: sequence.height }
+      : null
     try {
       const probe = await probeFile(source)
       expectedSeconds = segmentTiming(
         sourceDuration(task, source, sequence, () => ({ duration: Number(probe.duration || 0) })),
         trim,
       ).duration
+      const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
+      if (!sourceSize && resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
+        sourceSize = { width: resolution[0], height: resolution[1] }
+      }
     } catch { /* the bar falls back to whatever ffmpeg reports */ }
     let cmd = sequence ? this.sequenceCommand(sequence, trim) : ffmpeg(source)
     if (isStillImage && task.preset.outputMode !== 'audio' && !task.preset.imageOutputMode) {
@@ -206,7 +215,12 @@ export class FFmpegEngine {
     }
     if (!isSequence) this.applyTrimInput(cmd, trim)
 
-    this.applyPresetToCommand(cmd, task.preset, [], { cropsPerClip: clipsConcatenate(task) })
+    // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
+    // the picture is not normalized first: a single visual has no other clip to be joined to, so
+    // there is nothing to normalize it against. The chain STANDS IN for the job's own crop, scale
+    // and pad rather than being added after them, so the clip is not framed twice.
+    const clipChain = this.clipFraming(task, source, sourceSize)
+    this.applyPresetToCommand(cmd, task.preset, [], clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) })
     // A muted lane is one the export does not carry, so its audio is dropped outright rather than
     // encoded and left silent: a file with no audio stream says so without being listened to.
     if (laneIsMuted(task, MAIN_LANE_ID)) cmd.outputOptions(['-an'])
@@ -465,9 +479,19 @@ export class FFmpegEngine {
     const isStillCover = !videoOverride && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(videoSource)
     let videoDuration = 0
     let longestAudioDuration = 0
+    // The visual's own pixel size, from the probe this path already makes, for the same reason the
+    // transcode path reads it: a fit is worked out from the clip's shape and the frame.
+    let videoSize: { width: number; height: number } | null = null
     try {
       const videoProbe = await probeFile(videoSource)
       videoDuration = Number(videoProbe.duration || 0)
+      const resolution = videoProbe.videoStreams[0]?.resolution?.split('x').map(Number)
+      if (resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
+        videoSize = { width: resolution[0], height: resolution[1] }
+      } else {
+        const sequence = videoOverride ? undefined : this.sequenceFor(task, videoSource)
+        if (sequence?.width && sequence?.height) videoSize = { width: sequence.width, height: sequence.height }
+      }
       const audioProbes = await Promise.all(extraAudios.map((track) => probeFile(track.path)))
       longestAudioDuration = audioProbes.reduce((max, probe, index) => {
         const point = this.trimPoint(task, extraAudios[index].path, 0)
@@ -521,9 +545,15 @@ export class FFmpegEngine {
       }
     })
 
-    this.applyPresetToCommand(cmd, task.preset, tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
+    // A fit on the single visual is that clip's own framing, exactly as it is on the transcode path:
+    // the chain stands in for the job's crop, scale and pad. A combo's visual is already a rendered
+    // file whose framing was decided clip by clip before it was joined, so there is nothing here for
+    // a fit to apply to and the override suppresses it.
+    const clipChain = videoOverride ? null : this.clipFraming(task, videoSource, videoSize)
+    const tailFilter = tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
       ? [`tpad=stop_mode=add:stop_duration=${tailDuration.toFixed(3)}`]
-      : [])
+      : []
+    this.applyPresetToCommand(cmd, task.preset, tailFilter, clipChain ? { clipChain } : {})
     if (isStillCover && extraAudios.length > 0) {
       cmd.outputOptions(['-r 2', '-tune stillimage', '-pix_fmt yuv420p', '-shortest'])
     }
@@ -590,8 +620,33 @@ export class FFmpegEngine {
     if (inputOptions.length) cmd.inputOptions(inputOptions)
   }
 
+  /**
+   * A clip's own crop and fit, as a filter chain, for a job whose clips are NOT joined.
+   *
+   * A job that concatenates normalizes every clip through its own chain, so a fit is a fit there by
+   * construction. This is for the other shape of job — one visual, however many tracks sit beside it
+   * — where the picture used to be left entirely to the job's resolution and crop, and a fit chosen
+   * in the editor reached the timeline and stopped there. The frame is the job's own, so the fit
+   * places the clip in exactly the frame the export writes; with no named frame or exact size the
+   * output is the source's own size, which is therefore the frame the fit is worked out against.
+   *
+   * Nothing is returned when there is no fit to apply, which is what keeps this off the common path:
+   * a job without one is handed to the encoder exactly as it always was.
+   */
+  private clipFraming(task: QueueTask, source: string, sourceSize: { width: number; height: number } | null): string[] | null {
+    if (!usesClipFraming(task, source, 0)) return null
+    if (!sourceSize || !(sourceSize.width > 0) || !(sourceSize.height > 0)) {
+      logEvent('ffmpeg', 'the clip fit could not be applied: the source size is unknown', { taskId: task.id, source })
+      return null
+    }
+    const frame = task.preset.width && task.preset.height
+      ? { width: task.preset.width, height: task.preset.height }
+      : resolutionBox(task.preset.resolution) ?? sourceSize
+    return clipFilters({ source: sourceSize, frame, crop: effectiveCropFor(task, source, 0), fit: sourceFitFor(task, source, 0) })
+  }
+
   // Helper to configure video/audio encoders with macOS VideoToolbox optimizations
-  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = [], options: { cropsPerClip?: boolean } = {}) {
+  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = [], options: { cropsPerClip?: boolean; clipChain?: string[] } = {}) {
     // 1. Video Codec
     if (preset.videoCodec === 'copy') {
       cmd.videoCodec('copy')
@@ -647,22 +702,29 @@ export class FFmpegEngine {
     // A crop goes first: everything downstream then works on what was kept, which is what
     // makes cropping to an output shape a crop followed by a fit rather than two unrelated
     // operations. Its smallest side is floored, since an encoder rejects an empty frame.
-    if (wantsVideo && preset.crop && hasCrop(preset.crop) && !options.cropsPerClip) videoFilters.push(cropFilter(preset.crop))
+    // A clip's own chain, where one was handed in, IS the framing: it already carries that crop, so
+    // the job's own would be a crop of the crop, taken at fractions of a picture that no longer is
+    // the source. That is why the chain suppresses it rather than following it.
+    const usesClipChain = Boolean(options.clipChain && wantsVideo && preset.videoCodec !== 'copy')
+    if (wantsVideo && preset.crop && hasCrop(preset.crop) && !options.cropsPerClip && !usesClipChain) videoFilters.push(cropFilter(preset.crop))
     // 2. Resolution Scaling
     if (wantsVideo && preset.videoCodec !== 'copy') {
-      const exact = preset.width && preset.height ? { width: preset.width, height: preset.height } : undefined
-      const box = exact ?? resolutionBox(preset.resolution)
-      if (box) {
-        // A cropped picture is fitted into the output frame keeping its proportions and then
-        // padded out, because stretching a crop to the frame would undo the shape the crop was
-        // made to have. A named resolution is the frame itself and is fitted the same way, so
-        // asking for 4K really produces 4K. An exact size with no crop is still applied as it
-        // stands, which is what lets the aspect buttons shape the picture.
-        // The crop being per clip does not change that: the frame is still not to be stretched, so a
-        // job whose clips are cropped one by one is fitted exactly as a job-wide crop was.
-        const keepShape = Boolean(preset.crop && hasCrop(preset.crop)) || !exact
-        videoFilters.push(`scale=${box.width}:${box.height}${keepShape ? ':force_original_aspect_ratio=decrease' : ''}`)
-        if (keepShape) videoFilters.push(`pad=${box.width}:${box.height}:(ow-iw)/2:(oh-ih)/2:color=black`)
+      if (usesClipChain) videoFilters.push(...(options.clipChain as string[]))
+      else {
+        const exact = preset.width && preset.height ? { width: preset.width, height: preset.height } : undefined
+        const box = exact ?? resolutionBox(preset.resolution)
+        if (box) {
+          // A cropped picture is fitted into the output frame keeping its proportions and then
+          // padded out, because stretching a crop to the frame would undo the shape the crop was
+          // made to have. A named resolution is the frame itself and is fitted the same way, so
+          // asking for 4K really produces 4K. An exact size with no crop is still applied as it
+          // stands, which is what lets the aspect buttons shape the picture.
+          // The crop being per clip does not change that: the frame is still not to be stretched, so a
+          // job whose clips are cropped one by one is fitted exactly as a job-wide crop was.
+          const keepShape = Boolean(preset.crop && hasCrop(preset.crop)) || !exact
+          videoFilters.push(`scale=${box.width}:${box.height}${keepShape ? ':force_original_aspect_ratio=decrease' : ''}`)
+          if (keepShape) videoFilters.push(`pad=${box.width}:${box.height}:(ow-iw)/2:(oh-ih)/2:color=black`)
+        }
       }
       // A still image can be any size at all, and 4:2:0 and 4:2:2 encoders refuse an odd
       // one outright: a 1195x896 source failed the whole job with "width not divisible by

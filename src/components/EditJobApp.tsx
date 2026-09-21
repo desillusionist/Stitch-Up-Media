@@ -6,7 +6,7 @@ import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
@@ -77,7 +77,7 @@ const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft)
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
-  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; label: string; fitKey: string; visual: boolean }
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; label: string; fitKey: string; visual: boolean; fitReason?: string }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
@@ -1024,11 +1024,13 @@ export const EditJobApp: React.FC = () => {
       mainIndex,
       label: segmentLabel(segment),
       fitKey: `${segment.sourcePath}#${clipIndex}`,
-      // A fit places a picture in the frame, and the encoder applies one only where clips are
-      // concatenated: a stitch, or a combo with more than one visual. Where the encoder would
-      // ignore it the item is not offered at all, rather than shown doing nothing.
-      visual: model.lanes.find((lane) => lane.id === laneId)?.kind !== 'audio'
-        && (draft.type === 'stitch' || (draft.type === 'combo' && draft.sourcePaths.filter((source) => mediaKind(source) !== 'audio').length > 1)),
+      // A fit places a picture in the frame. Every job with a picture offers it now, not only the ones
+      // that concatenate: a single visual's fit is folded into that job's own command, so the choice
+      // reaches the export wherever there is an export for it to reach. The jobs that do not encode a
+      // picture at all keep the items, disabled and saying why, rather than hiding them — a missing
+      // item is indistinguishable from an item the editor forgot.
+      visual: model.lanes.find((lane) => lane.id === laneId)?.kind !== 'audio',
+      fitReason: canApplyClipFit(draft.preset) ? undefined : 'THIS JOB ENCODES NO PICTURE, SO THERE IS NOTHING TO FIT.',
     })
   }
   const openLaneMenu = (event: React.MouseEvent, laneId: string, label: string) => {
@@ -2133,21 +2135,24 @@ export const EditJobApp: React.FC = () => {
         <button role="menuitem" onClick={() => { const index = timelineMenu.mainIndex ?? timelineMenu.sourceIndex; setTimelineMenu(null); setInspectedIndex(index) }}>MEDIA INFO</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
+          const blocked = timelineMenu.fitReason
           return <>
             <span className="timeline-menu-divider" aria-hidden="true" />
             <button
               role="menuitemcheckbox"
               aria-checked={fit?.mode === 'width'}
               className={fit?.mode === 'width' ? 'is-on' : ''}
+              disabled={Boolean(blocked)}
               onClick={() => { const key = timelineMenu.fitKey; setTimelineMenu(null); setSourceFit(key, fit?.mode === 'width' ? null : 'width') }}
-              title="Fill the output frame's width and crop what the height overflows by. The export follows this."
+              title={blocked ?? "Fill the output frame's width and crop what the height overflows by. The export follows this."}
             >FIT TO WIDTH</button>
             <button
               role="menuitemcheckbox"
               aria-checked={fit?.mode === 'height'}
               className={fit?.mode === 'height' ? 'is-on' : ''}
+              disabled={Boolean(blocked)}
               onClick={() => { const key = timelineMenu.fitKey; setTimelineMenu(null); setSourceFit(key, fit?.mode === 'height' ? null : 'height') }}
-              title="Fill the output frame's height and crop what the width overflows by. The export follows this."
+              title={blocked ?? "Fill the output frame's height and crop what the width overflows by. The export follows this."}
             >FIT TO HEIGHT</button>
           </>
         })()}

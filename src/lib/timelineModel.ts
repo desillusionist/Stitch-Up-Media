@@ -1,4 +1,4 @@
-import { ClipTransition, QueueTask, SequenceInput } from '../types'
+import { ClipTransition, EncodingPreset, QueueTask, SequenceInput } from '../types'
 import { CropFractions } from './outputFrame'
 import { mediaKind } from './mediaKind'
 
@@ -196,6 +196,29 @@ export const laneIsMuted = (task: QueueTask, laneId: string): boolean => Boolean
  */
 export const clipsConcatenate = (task: Pick<QueueTask, 'type' | 'sourcePaths'>): boolean =>
   task.type === 'stitch' || (task.type === 'combo' && task.sourcePaths.filter((source) => mediaKind(source) !== 'audio').length > 1)
+/**
+ * Whether a fit chosen for a clip can be applied at all, which is a question about the COMMAND.
+ *
+ * An audio-only export has no picture; a stream copy re-muxes what is already there rather than
+ * decoding it; and a GIF is built by `filter_complex` with a mapping of its own. Offering the item
+ * where none of those holds is the honest thing for the editor to do — the alternative is an item
+ * that can be clicked and does nothing, which reads as the editor having lost the choice.
+ */
+export const canApplyClipFit = (preset: EncodingPreset): boolean =>
+  preset.outputMode !== 'audio' && preset.videoCodec !== 'copy' && preset.container !== 'gif'
+
+/**
+ * Whether a clip's own framing is what the encoder must run, on a job whose clips are NOT joined.
+ *
+ * Where clips are concatenated every clip is normalized through its own chain, so a fit is a fit
+ * there whether this says so or not. Where they are not — one visual, however many audio tracks sit
+ * beside it — the picture used to be left entirely to the job's own resolution and crop, so a fit
+ * chosen for that clip reached the editor and stopped there. It reaches the encoder now, and this is
+ * the rule that decides when: a fit was chosen, and the command it will be folded into can carry a
+ * filter chain at all.
+ */
+export const usesClipFraming = (task: QueueTask, sourcePath: string | undefined, index: number): boolean =>
+  Boolean(sourceFitFor(task, sourcePath, index)) && canApplyClipFit(task.preset)
 
 /**
  * The crop that applies to one clip, in the left/top/right/bottom form the controls and the filter

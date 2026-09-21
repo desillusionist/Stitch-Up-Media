@@ -10,8 +10,8 @@ import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZo
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
-import { QueueTask } from '../src/types'
+import { buildTimeline, canApplyClipFit, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
+import { EncodingPreset, QueueTask } from '../src/types'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -805,6 +805,26 @@ console.log('\n== the per-clip output fit ==')
   check('a clip with no fit has none', sourceFitFor(fitted, 'c.mp4', 0), undefined)
   check('and a reorder carries each fit with its clip', rekeyClipMap({ 'a.mp4#0': { mode: 'width' as const, offset: 0.25 }, 'b.mp4#1': { mode: 'height' as const, offset: 0.5 } }, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': { mode: 'width', offset: 0.25 }, 'b.mp4#2': { mode: 'height', offset: 0.5 } })
   check('a fit set by path alone lands on that clip wherever it moves', rekeyClipMap(fitted.sourceFit, ['a.mp4', 'b.mp4'], ['b.mp4', 'a.mp4']), { 'b.mp4#0': { mode: 'height', offset: 0.5 }, 'a.mp4#1': { mode: 'width', offset: 0.25 } })
+}
+
+console.log('\n== a fit on a job whose clips are not joined ==')
+{
+  // Where clips are concatenated every one is normalized through its own chain, so a fit is a fit
+  // there by construction. Where they are not — one visual with its tracks beside it — the fit is
+  // folded into the job's own command instead, and this is the rule that says whether there is a
+  // command for it to be folded into. The editor asks the same question when it offers the item.
+  const job = (preset: Partial<EncodingPreset>) => ({
+    type: 'transcode',
+    sourcePaths: ['a.mp4'],
+    sourceFit: { 'a.mp4#0': { mode: 'width', offset: 0.5 } },
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p', ...preset },
+  }) as unknown as QueueTask
+  check('a fit on a muxed visual is the encoder business', usesClipFraming(job({}), 'a.mp4', 0), true)
+  check('but not on an audio-only job, which has no picture', usesClipFraming(job({ outputMode: 'audio' }), 'a.mp4', 0), false)
+  check('nor on a stream copy, which has nothing to scale', usesClipFraming(job({ videoCodec: 'copy' }), 'a.mp4', 0), false)
+  check('nor on a GIF, whose chain is built by filter_complex', usesClipFraming(job({ container: 'gif' }), 'a.mp4', 0), false)
+  check('and a clip with no fit has nothing to fold in', usesClipFraming(job({}), 'b.mp4', 0), false)
+  check('the editor asks the same question of the preset alone', [canApplyClipFit(job({}).preset), canApplyClipFit(job({ outputMode: 'audio' }).preset), canApplyClipFit(job({ videoCodec: 'copy' }).preset), canApplyClipFit(job({ container: 'gif' }).preset)], [true, false, false, false])
 }
 
 console.log('\n== the timeline metric ==')
