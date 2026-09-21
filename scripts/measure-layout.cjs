@@ -217,6 +217,23 @@ const measure = `(() => {
   const glyph = (id) => { const style = getComputedStyle(document.getElementById(id), '::before'); return { inset: style.inset, margin: style.margin, width: style.width } }
   const track = rect('track-A')
   const clip0 = rect('a0')
+  // The compact clip's own two lines. What the clip is (its name) and what it is doing (its length,
+  // whether it is trimmed, its rate) are both text inside one row of a fixed height, so whether the
+  // second line is inside the clip's box at all is a question only a measurement can answer.
+  const textLine = (clipId, selector) => {
+    const clip = document.getElementById(clipId)
+    const line = clip.querySelector(selector)
+    if (!line) return null
+    const clipBox = clip.getBoundingClientRect()
+    const lineBox = line.getBoundingClientRect()
+    const style = getComputedStyle(line)
+    const laneBottom = clip.closest('.timeline-lane').getBoundingClientRect().bottom
+    return {
+      size: style.fontSize, lineHeight: style.lineHeight,
+      top: +(lineBox.top - clipBox.top).toFixed(2), bottom: +(lineBox.bottom - clipBox.top).toFixed(2),
+      insideClip: lineBox.bottom <= clipBox.bottom + 0.5, insideLane: lineBox.bottom <= laneBottom + 0.5,
+    }
+  }
   const marker = rect('am0')
   const playhead = rect('aph')
   const bTrack = rect('track-B')
@@ -236,6 +253,8 @@ const measure = `(() => {
   const content = document.getElementById('fcontent')
   const fside = rect('fside')
   const scrollerB = document.getElementById('scroll-lanesB')
+  /** The compact clip's two lines, measured once and read by the case and by the checks below. */
+  const lineA = { name: textLine('a0', '.timeline-clip-name'), detail: textLine('a0', 'small') }
   // The pan moves the drawing and nothing else, and it moves all of it: the frame and the crop
   // band must travel together, by exactly the offset, or the crop would come off the picture.
   const pan = document.getElementById('cpan')
@@ -244,7 +263,8 @@ const measure = `(() => {
   pan.style.transform = ''
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
-      cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0') },
+      cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0'),
+      clipHeight: clip0.height, name: lineA.name, detail: lineA.detail },
     caseB: { trackWidth: +(bTrack.right - bTrack.left).toFixed(2), clip0Right: bClip0.right, markerCenter: bMarker.center, playheadLeft: bPlayhead.left, audioRight: bAudio.right,
       cutVsMarker: +(bClip0.right - bMarker.center).toFixed(2), cutVsPlayhead: +(bClip0.right - bPlayhead.left).toFixed(2),
       laneOverflow: +(bAudio.right - bTrack.right).toFixed(2) },
@@ -313,6 +333,14 @@ const measure = `(() => {
         detail,
       }
     })(),
+    // What has to hold, said outright. Everything here is a property a reader cannot judge from the
+    // stylesheet and would otherwise have to notice in a wall of numbers: a regression turns into a
+    // line of output and a non-zero exit rather than into a screenshot nobody took.
+    problems: [
+      ...(lineA.name && lineA.name.insideLane ? [] : ['the compact clip name is outside its lane']),
+      ...(lineA.detail && lineA.detail.insideLane ? [] : ['the compact clip detail line is outside its lane, at ' + (lineA.detail && lineA.detail.bottom) + ' of ' + clip0.height]),
+      ...(lineA.detail && lineA.name && lineA.name.bottom <= lineA.detail.top + 0.5 ? [] : ['the compact clip two lines overlap']),
+    ],
   }
 })()`
 
@@ -388,6 +416,12 @@ app.whenReady().then(async () => {
     }
   }
   console.log(JSON.stringify({ ...laid, caseH, caseI, caseG }, null, 2))
+  // The harness has grown past "print it and read it": the checks the numbers are for are stated, and
+  // one that fails is a line of output and a non-zero exit rather than something to be spotted.
+  const problems = Array.isArray(laid.problems) ? laid.problems : []
+  if (problems.length) {
+    console.error(`\n${problems.length} LAYOUT PROBLEM(S)\n${problems.map((problem) => `  - ${problem}`).join('\n')}\n`)
+  }
   fs.unlinkSync(htmlPath)
-  app.quit()
+  app.exit(problems.length ? 1 : 0)
 }).catch((error) => { console.error('HARNESS FAILED', error); app.exit(1) })
