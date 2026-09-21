@@ -360,6 +360,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-lane .timeline-clip-film { position: absolute; top: 0; left: 0; right: 0; height: var(--filmstrip-tile, 32px); z-index: 0; display: flex; overflow: hidden; pointer-events: none; }
 .timeline-clip-tile { position: relative; flex: 0 0 auto; display: block; height: var(--filmstrip-tile, 32px); overflow: hidden; }
 .timeline-clip-tile > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* A still's picture is placed in its tile rather than filling it, so the tile is the shape of the
+   output frame and the picture sits in it as the export will. Black behind it, because that is
+   what the encoder puts there when a clip does not cover the frame. */
+.timeline-clip-tile.is-placed { background: #000; }
+.timeline-clip-tile > img[style] { position: absolute; }
 .timeline-lane .timeline-clip.is-film .timeline-clip-name,
 .timeline-lane .timeline-clip.is-film small { display: none; }
 /* The strip's own marking, drawn OVER the frames rather than as an outline underneath them,

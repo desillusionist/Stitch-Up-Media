@@ -289,7 +289,7 @@ app.whenReady().then(async () => {
     win.setContentSize(width, height)
     await new Promise((resolve) => setTimeout(resolve, 250))
     const clipWidth = await win.webContents.executeJavaScript(filmClipWidth)
-    const plan = computeFilmstrip({ laneWidth: clipWidth, thumbHeight: FILMSTRIP_CLIP_HEIGHT, srcAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 })
+    const plan = computeFilmstrip({ laneWidth: clipWidth, thumbHeight: FILMSTRIP_CLIP_HEIGHT, outAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 })
     await win.webContents.executeJavaScript(paintFilm(plan))
     await new Promise((resolve) => setTimeout(resolve, 80))
     caseG[label] = {

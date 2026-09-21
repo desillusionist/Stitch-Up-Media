@@ -6,9 +6,9 @@ import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, clipIndexOf, edgeFade, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, clipIndexOf, edgeFade, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey } from '../lib/filmstrip'
+import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
 
@@ -139,6 +139,8 @@ export const EditJobApp: React.FC = () => {
   const framesPendingRef = useRef<Record<string, true>>({})
   /** Each source's own shape and rate, which is what the strip's geometry is worked out from. */
   const [sourceShape, setSourceShape] = useState<Record<string, { width: number; height: number; fps: number }>>({})
+  /** The media's own pixel size, as the element reports it once it has loaded. */
+  const [naturalSize, setNaturalSize] = useState<{ key: string | undefined; width: number; height: number } | null>(null)
   /** Where a right-click on the timeline opened its menu, and what it was on. */
   const [timelineMenu, setTimelineMenu] = useState<TimelineMenu | null>(null)
   /** Whether the crop fields read as per cent of the source or as pixels of it. */
@@ -258,6 +260,17 @@ export const EditJobApp: React.FC = () => {
   )
 
   const focusedSourceIndex = playback.segmentIndex
+  // The frame the encoder will produce, worked out before the strip's own layout and fetching
+  // rather than beside the monitor, because a tile is the shape of the frame: a frame the strips
+  // saw late would be a strip laid out for a shape that is no longer the output's. It needs nothing
+  // but the task and the media's own size, and both are known by this point in the render.
+  const outputFrame = draft ? outputFrameSize({
+    natural: naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined,
+    exact: draft.preset.width && draft.preset.height ? { width: draft.preset.width, height: draft.preset.height } : undefined,
+    box: resolutionBox(draft.preset.resolution),
+  }) : undefined
+  /** The shape a thumbnail is drawn in, which is the output frame's rather than the clip's. */
+  const frameAspect = outputFrame ? outputFrame.width / outputFrame.height : 16 / 9
   const focusedSource = draft ? (draft.sourcePaths[focusedSourceIndex] || draft.sourcePaths[0]) : undefined
   // A sequence is named after its whole range rather than the one frame that stands in
   // for it, the same way the queue's cards name it.
@@ -365,12 +378,13 @@ export const EditJobApp: React.FC = () => {
   }, [filmstripLanes, timelineSignature, shapeSignature])
 
   /**
-   * The strip's layout for a clip, from the source and the lane as they are right now.
+   * The strip's layout for a clip, from the lane as it is right now.
    *
-   * The tile's width comes from the CLIP's own picture — the QUICK LOOK helper's rule — so a
-   * tile is already the shape of what it shows and filling its cell crops a sliver. Everything
-   * comes from the CURRENT lane width, so a zoom or a resize re-lays the strip out rather than
-   * serving one laid out for a width that no longer exists.
+   * A tile is the shape of the OUTPUT frame, so every strip in a job has the same tile shape
+   * whatever its clips are: the frames line up across clips, and a clip that will be letterboxed
+   * shows the letterbox it will get. Everything comes from the CURRENT lane width, so a zoom or a
+   * resize re-lays the strip out rather than serving one laid out for a width that no longer
+   * exists.
    */
   const planFor = (segment: TimelineSegment, total: number) => {
     const shape = sourceShape[segment.sourcePath]
@@ -379,16 +393,57 @@ export const EditJobApp: React.FC = () => {
     return computeFilmstrip({
       laneWidth,
       thumbHeight: FILMSTRIP_CLIP_HEIGHT,
-      srcAspect: shape.width / shape.height,
+      outAspect: frameAspect,
       fps: shape.fps,
       inSec: segment.sourceIn,
       outSec: segment.sourceIn + segment.duration,
     })
   }
-  /** The key a thumbnail's picture is held under: the frame, drawn at this clip's own shape. */
-  const keyFor = (segment: TimelineSegment, frame: number) => {
+  /**
+   * The key a thumbnail is held under: the source frame, and everything that decides its picture.
+   *
+   * Built from the same names the main process builds it from, so a picture asked for under one
+   * placement is never served for another — which is what toggling a fit or dragging the offset
+   * would otherwise do, leaving a clip's tiles showing a frame that its export no longer matches.
+   */
+  const signatureFor = (segment: TimelineSegment) => {
     const shape = sourceShape[segment.sourcePath]
-    return frameKey(frame, shape ? shape.width / shape.height : 16 / 9)
+    return thumbnailSignature({
+      source: { width: shape?.width ?? 16, height: shape?.height ?? 9 },
+      frame: outputFrame ?? { width: 1920, height: 1080 },
+      fit: draft ? sourceFitFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined,
+      crop: draft?.preset.crop,
+    })
+  }
+  const keyFor = (segment: TimelineSegment, frame: number) => frameKey(frame, signatureFor(segment))
+  /**
+   * Where a still's one picture sits inside a tile.
+   *
+   * A still has no frames to extract — seeking into a single-frame file yields nothing — so its
+   * strip is drawn from the file itself. The tile is the shape of the output frame, so the picture
+   * is placed in it by the same fit arithmetic as everything else and clipped by the tile, which
+   * is what makes a still's tiles agree with the still's own export.
+   */
+  const stillTileStyle = (segment: TimelineSegment, plan: { thumbWidth: number; thumbHeight?: number }) => {
+    const shape = sourceShape[segment.sourcePath]
+    if (!shape || !outputFrame) return undefined
+    const placement = fitPlacement({
+      source: { width: shape.width, height: shape.height },
+      frame: outputFrame,
+      fit: draft ? sourceFitFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined,
+    })
+    if (!placement) return undefined
+    const scale = plan.thumbWidth / outputFrame.width
+    const anchor = placement.pad ?? { x: -placement.kept.x, y: -placement.kept.y }
+    return {
+      position: 'absolute' as const,
+      left: anchor.x * scale,
+      top: anchor.y * scale,
+      width: placement.size.width * scale,
+      height: placement.size.height * scale,
+      maxWidth: 'none' as const,
+      maxHeight: 'none' as const,
+    }
   }
   /** A frame already fetched. */
   const frameImageFor = (segment: TimelineSegment, frame: number) => {
@@ -413,8 +468,10 @@ export const EditJobApp: React.FC = () => {
   const laneZoom = zoom
   useEffect(() => {
     const bridge = window.electronAPI
-    if (!bridge?.framesAt || !model) return
-    const wanted = new Map<string, { jobs: Array<{ time: number; key: string }>; fps: number; aspect: number }>()
+    if (!bridge?.framesAt || !model || !outputFrame) return
+    // Grouped by the source AND the signature, not by the source alone: the same file can appear
+    // twice in a job with a different fit on each, and those are different pictures.
+    const wanted = new Map<string, { target: string; signature: string; jobs: Array<{ time: number; key: string }>; fps: number; source: { width: number; height: number }; fit?: SourceFit }>()
     model.lanes.forEach((lane) => {
       if (!filmstripLanes[lane.id]) return
       lane.segments.forEach((segment) => {
@@ -424,23 +481,35 @@ export const EditJobApp: React.FC = () => {
         // A still has no frames to sample: its one picture repeated is its strip, and it is drawn
         // straight from the file rather than extracted.
         if (!plan || !shape || !target || segment.still) return
-        const entry = wanted.get(target) ?? { jobs: [], fps: shape.fps, aspect: shape.width / shape.height }
+        const signature = signatureFor(segment)
+        const fit = draft ? sourceFitFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined
+        const source = { width: shape.width, height: shape.height }
+        const id = `${target}#${signature}`
+        const entry = wanted.get(id) ?? { target, signature, jobs: [], fps: shape.fps, source, fit }
         plan.times.forEach((time, cell) => {
           const key = keyFor(segment, plan.frames[cell])
           if (frameImages[target]?.[key]) return
           if (framesPendingRef.current[`${target}#${key}`]) return
           entry.jobs.push({ time, key })
         })
-        if (entry.jobs.length) wanted.set(target, entry)
+        if (entry.jobs.length) wanted.set(id, entry)
       })
     })
     if (!wanted.size) return
     // Everything asked for, so that the marks can be released when the answer comes back.
-    const asked = [...wanted].flatMap(([target, { jobs }]) => jobs.map(({ key }) => `${target}#${key}`))
+    const asked = [...wanted].flatMap(([, { target, jobs }]) => jobs.map(({ key }) => `${target}#${key}`))
     const timer = window.setTimeout(() => {
       asked.forEach((key) => { framesPendingRef.current[key] = true })
-      void Promise.all([...wanted].map(async ([target, { jobs, fps, aspect }]) => {
-        const images = await bridge.framesAt(target, { times: jobs.map((job) => job.time), fps, srcAspect: aspect, crop: draft?.preset.crop })
+      void Promise.all([...wanted].map(async ([, { target, signature, jobs, fps, source, fit }]) => {
+        const images = await bridge.framesAt(target, {
+          times: jobs.map((job) => job.time),
+          fps,
+          signature,
+          frame: outputFrame,
+          source,
+          fit,
+          crop: draft?.preset.crop,
+        })
         return [target, jobs, images] as const
       })).then((entries) => {
         // Released whether or not a later layout has moved on: a mark left behind is a frame that
@@ -464,7 +533,7 @@ export const EditJobApp: React.FC = () => {
       })
     }, FILMSTRIP_SETTLE_MS)
     return () => { window.clearTimeout(timer) }
-  }, [filmstripLanes, laneZoom, laneArea, mediaTargets, sourceShape, timelineSignature, frameImages, draft?.preset.crop])
+  }, [filmstripLanes, laneZoom, laneArea, mediaTargets, sourceShape, timelineSignature, frameImages, draft?.preset.crop, outputFrame, draft?.sourceFit])
 
   // A context menu closes on the next press anywhere, or on Escape.
   useEffect(() => {
@@ -502,7 +571,6 @@ export const EditJobApp: React.FC = () => {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const stageObserverRef = useRef<ResizeObserver | null>(null)
   const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
-  const [naturalSize, setNaturalSize] = useState<{ key: string | undefined; width: number; height: number } | null>(null)
 
   const measureNatural = (event: React.SyntheticEvent<HTMLImageElement | HTMLVideoElement>) => {
     const element = event.currentTarget
@@ -1075,15 +1143,7 @@ export const EditJobApp: React.FC = () => {
   const naturalAspect = picture ? picture.width / picture.height : null
   /** The clip being shown, and the fit it carries, which is what places it in the frame. */
   const activeFitKey = playback.segment ? `${playback.segment.sourcePath}#${clipIndexOf(playback.segment)}` : null
-  const activeFit = activeFitKey ? draft.sourceFit?.[activeFitKey] : undefined
-  // The frame the encoder will produce, and the box to outline it in. It is worked out here
-  // because the picture's own placement inside it needs it; the fields that edit the frame's size
-  // are further down, and read the same figure.
-  const outputFrame = outputFrameSize({
-    natural: naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined,
-    exact: draft.preset.width && draft.preset.height ? { width: draft.preset.width, height: draft.preset.height } : undefined,
-    box: resolutionBox(draft.preset.resolution),
-  })
+  const activeFit = activeFitKey && draft ? draft.sourceFit?.[activeFitKey] : undefined
   /** The crop the preset applies. Its edges are fractions of the picture, which is what makes them
    *  survive a resize; the pixel figures the fields show are read off `picture` just above. */
   const crop = draft.preset.crop
@@ -1208,7 +1268,8 @@ export const EditJobApp: React.FC = () => {
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
   }
-  /** The output frame's own box on screen, which is centred in the stage by the stylesheet too. */
+  // The frame the encoder will produce was worked out above, where the hooks that lay the strips
+  // out could see it; this is the box to outline it in, centred in the stage by the stylesheet too.
   const frameRect = outputFrame && stageSize ? zoomedRaster(outputFrame, previewZoom, stageSize) : null
   const frameOrigin = frameRect && stageSize
     ? { x: (stageSize.width - frameRect.width) / 2, y: (stageSize.height - frameRect.height) / 2 }
@@ -1637,8 +1698,11 @@ export const EditJobApp: React.FC = () => {
                           const plan = planFor(segment, duration)
                           if (!plan) return null
                           // A still has one picture and no frames to sample, so every cell shows it:
-                          // the same rule as any other clip, with the frame never changing.
+                          // the same rule as any other clip, with the frame never changing. It is
+                          // placed in the tile by the fit arithmetic rather than extracted, since a
+                          // single-frame file has no frame at a time to seek to.
                           const stillUrl = segment.still ? mediaUrl(segment.sourcePath) : null
+                          const stillStyle = stillUrl ? stillTileStyle(segment, plan) : undefined
                           return <div className="timeline-clip-film" aria-hidden="true">
                             {plan.frames.map((frame, cell) => {
                               const shown = stillUrl ?? frameImageFor(segment, frame)
@@ -1646,8 +1710,8 @@ export const EditJobApp: React.FC = () => {
                               // of the clip looks the same until the clip's width changes before the
                               // count catches up — which is every frame of a window resize — and then
                               // the frames stretch instead of the strip growing denser.
-                              return <span className="timeline-clip-tile" key={cell} style={{ width: `${plan.cellWidth}px` }}>
-                                {shown ? <img src={shown} alt="" draggable={false} /> : null}
+                              return <span className={`timeline-clip-tile${stillStyle ? ' is-placed' : ''}`} key={cell} style={{ width: `${plan.cellWidth}px` }}>
+                                {shown ? <img src={shown} alt="" draggable={false} style={stillStyle} /> : null}
                               </span>
                             })}
                           </div>

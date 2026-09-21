@@ -1,9 +1,19 @@
+import { CropFractions, FrameSize } from './outputFrame'
+import { SourceFit } from '../types'
+import { fitSignature } from './sourceFit'
+
 /**
  * Filmstrip rules for the EDIT JOB timeline.
  *
  * The lane width is DYNAMIC — `trimmedSeconds x pixelsPerSecond(zoom)` — so every figure below
  * is recomputed from the current one. That is the point: the strip must span exactly the lane
  * whatever its width is, and a wider lane must buy density rather than less of the range.
+ *
+ * A tile is the shape of the OUTPUT frame, not of the clip it came from, because a tile is a
+ * small picture of the output: the frame the encoder will write, with the clip placed in it by
+ * whatever fit it carries. That is what makes the strips read as one job rather than several:
+ * every clip's tiles are the same shape, whatever the shapes of the files behind them, and a
+ * clip that will be letterboxed shows the letterbox it will get.
  *
  * The two things that must never happen are partial coverage and sampling outside the trim.
  * Coverage comes from the step being derived from the tile count, and the samples are offset
@@ -33,7 +43,7 @@ export const FILMSTRIP_SCALE = 2
 export const FILMSTRIP_SETTLE_MS = 180
 
 export interface FilmstripPlan {
-  /** A tile's width, from the source's own picture. */
+  /** A tile's width, from the shape of the output frame. */
   thumbWidth: number
   /** How many tiles fit across the lane as it is right now. */
   thumbCount: number
@@ -56,30 +66,23 @@ export interface FilmstripPlan {
 /**
  * Lay a clip's strip out across the lane as it is now.
  *
- * This is the QUICK LOOK helper's own arithmetic, moved to the timeline: the tile is as wide as
- * its own picture, the count is how many of those fit across the lane, and the cells are equal
- * shares of the lane. Every cell is then filled with its picture — `resizeAspectFill`, which is
- * `object-fit: cover` on the web side — so a cell is never letterboxed and the strip reads as
- * one row of frames rather than a row of frames in assorted frames.
- *
- * The tile's width coming from the SOURCE is what makes that filling harmless: a tile is already
- * the shape of its own picture, so covering its cell crops a sliver rather than a third of the
- * frame. Shaping the cells after the OUTPUT instead meant a portrait clip's thumbnails were
- * cropped down to a landscape slice, and padding them to fit meant bars of a different thickness
- * on every clip.
+ * The tile is the shape of the output frame — so every strip in a job has the same tile shape
+ * whatever its clips are — and the count is how many of those fit across the lane, the cells
+ * being equal shares of it. A tile therefore holds a small picture of the output: the clip placed
+ * in the frame by its own fit, the same placement the encoder is handed.
  */
 export const computeFilmstrip = (o: {
   laneWidth: number
   thumbHeight: number
-  /** The source's own width over its height. */
-  srcAspect: number
+  /** The OUTPUT frame's width over its height, which is what a tile is shaped like. */
+  outAspect: number
   fps: number
   inSec: number
   outSec: number
 }): FilmstripPlan => {
-  const srcAspect = Number.isFinite(o.srcAspect) && o.srcAspect > 0 ? o.srcAspect : 16 / 9
+  const outAspect = Number.isFinite(o.outAspect) && o.outAspect > 0 ? o.outAspect : 16 / 9
   const thumbHeight = o.thumbHeight > 0 ? o.thumbHeight : FILMSTRIP_CLIP_HEIGHT
-  const thumbWidth = Math.max(1, Math.round(thumbHeight * srcAspect))
+  const thumbWidth = Math.max(1, Math.round(thumbHeight * outAspect))
   const laneWidth = Number.isFinite(o.laneWidth) ? Math.max(0, o.laneWidth) : 0
   const fps = o.fps > 0 ? o.fps : 30
   const inFrame = Math.max(0, Math.round(o.inSec * fps))
@@ -103,11 +106,23 @@ export const computeFilmstrip = (o: {
 }
 
 /**
- * The identity of a thumbnail: the frame, and the source shape it was drawn at.
+ * The identity of a thumbnail: the frame, and everything that decides what its picture looks like.
  *
- * The shape belongs in the key because a thumbnail is generated at its tile's width, which comes
- * from the source. Footage whose shape has changed must not be served the pictures drawn for the
- * old one.
+ * The source frame alone will not do, because the same frame is a different picture under a
+ * different placement: the frame it is being fitted into, the offset it is cropped at, and the
+ * crop the job applies are all part of it. Frames cached under one placement must never be served
+ * for another, which is what toggling a fit or dragging the offset would otherwise do.
  */
-export const frameKey = (index: number, srcAspect: number): string =>
-  `${index}|${(Number.isFinite(srcAspect) && srcAspect > 0 ? srcAspect : 16 / 9).toFixed(4)}`
+export const frameKey = (index: number, signature: string): string => `${index}|${signature}`
+
+/**
+ * Everything that changes a thumbnail's picture, as one key.
+ *
+ * Shared by the editor that asks for the pictures and the main process that extracts and caches
+ * them, so the two cannot disagree about which picture a key names.
+ */
+export const thumbnailSignature = (input: { source: FrameSize; frame: FrameSize; fit?: SourceFit; crop?: CropFractions }): string => {
+  const crop = input.crop
+  const cropKey = crop ? [crop.left, crop.top, crop.right, crop.bottom].map((edge) => (Number.isFinite(edge) ? edge.toFixed(4) : '0')).join(',') : 'none'
+  return `${fitSignature(input)}|${cropKey}`
+}

@@ -11,7 +11,17 @@ export interface IElectronAPI {
   getPathsTotalSize: (filePaths: string[]) => Promise<number>
   pathExists: (filePath: string) => Promise<boolean>
   /** Frames of a clip at given absolute source times, composited as the export will show them. */
-  framesAt: (filePath: string, options?: { times?: number[]; fps?: number; srcAspect?: number; crop?: { left: number; top: number; right: number; bottom: number } }) => Promise<string[]>
+  framesAt: (filePath: string, options?: {
+    times?: number[]
+    fps?: number
+    /** Everything that changes the picture, so a frame is never served for another placement. */
+    signature?: string
+    /** The output frame the clip is placed in, and the clip's own pixel size. */
+    frame?: { width: number; height: number }
+    source?: { width: number; height: number }
+    fit?: { mode: 'width' | 'height'; offset: number }
+    crop?: { left: number; top: number; right: number; bottom: number }
+  }) => Promise<string[]>
   selectOutputDir: () => Promise<string | null>
   startTask: (task: QueueTask) => Promise<{ success: boolean; error?: string }>
   startSelectedTasks: (tasks: QueueTask[]) => Promise<{ success: boolean; error?: string }>
@@ -58,7 +68,7 @@ const api: IElectronAPI = {
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
-  framesAt: (filePath: string, options?: { times?: number[]; fps?: number; srcAspect?: number; crop?: { left: number; top: number; right: number; bottom: number } }) => ipcRenderer.invoke('frames-at', filePath, options),
+  framesAt: (filePath: string, options?: { times?: number[]; fps?: number; signature?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: { mode: 'width' | 'height'; offset: number }; crop?: { left: number; top: number; right: number; bottom: number } }) => ipcRenderer.invoke('frames-at', filePath, options),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),
   startSelectedTasks: (tasks: QueueTask[]) => ipcRenderer.invoke('start-selected-tasks', tasks),

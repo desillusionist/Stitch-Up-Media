@@ -4,7 +4,7 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
-import { computeFilmstrip, frameKey } from '../src/lib/filmstrip'
+import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
 import { DEFAULT_FIT_OFFSET, clampFitOffset, fitFilters, fitPlacement, fitSignature, fittedSize } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
@@ -570,9 +570,12 @@ console.log('\n== the timeline filmstrip ==')
   // the whole point: the samples must span the clip's whole TRIM however many tiles fit, and a
   // wider lane must buy density rather than less of the range. That is what deriving the step
   // from the tile count does, and what a fixed step cannot do.
-  const base = { thumbHeight: 32, srcAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 }
+  const base = { thumbHeight: 32, outAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 }
   const wide = computeFilmstrip({ ...base, laneWidth: 640 })
-  check('a tile is as wide as its own picture', wide.thumbWidth, Math.round(32 * (16 / 9)))
+  // The QUICK LOOK helper's rule moved to the timeline, with one change: a tile is the shape of
+  // the OUTPUT frame, not of the clip it came from. That is what makes every strip in a job read as
+  // the same job — one tile shape, one density — whichever clips are behind it.
+  check('a tile is the shape of the output frame', wide.thumbWidth, Math.round(32 * (16 / 9)))
   check('the count is how many fit across the lane', wide.thumbCount, Math.round(640 / wide.thumbWidth))
   near('the cells share the lane exactly', wide.cellWidth * wide.thumbCount, 640, 1e-9)
   near('the step is the trimmed frames over the count', wide.step, Math.round(8 * 30) / wide.thumbCount, 1e-9)
@@ -601,12 +604,14 @@ console.log('\n== the timeline filmstrip ==')
   check('but still reaches the far end', narrow.frames[narrow.frames.length - 1] > Math.round(8 * 30) - 1 - narrow.step, true)
   check('and the wide lane samples more densely', wide.step < narrow.step, true)
 
-  // The QUICK LOOK helper's rule: the tile is the shape of its own picture, so filling a cell
-  // with it crops a sliver. A portrait source therefore makes narrow tiles and so more of them,
-  // which is the helper's behaviour too rather than a fault.
-  const portrait = computeFilmstrip({ ...base, laneWidth: 640, srcAspect: 9 / 16 })
-  check('a portrait picture makes narrow tiles', portrait.thumbWidth, Math.round(32 * (9 / 16)))
-  check('so more of them fit', portrait.thumbCount > wide.thumbCount, true)
+  // The QUICK LOOK helper's rule: the tile is the shape of the output frame, so a portrait clip's
+  // tiles are the same shape as a landscape clip's and the same number of them fit. What changes
+  // with the clip is the picture inside the tile, not the tile.
+  const portrait = computeFilmstrip({ ...base, laneWidth: 640, outAspect: 16 / 9 })
+  check('a portrait clip gets the same tiles as any other', [portrait.thumbWidth, portrait.thumbCount], [wide.thumbWidth, wide.thumbCount])
+  const tallFrame = computeFilmstrip({ ...base, laneWidth: 640, outAspect: 9 / 16 })
+  check('a portrait OUTPUT frame makes narrow tiles', tallFrame.thumbWidth, Math.round(32 * (9 / 16)))
+  check('so more of them fit', tallFrame.thumbCount > wide.thumbCount, true)
   const likely = [computeFilmstrip({ ...base, laneWidth: 400 }), computeFilmstrip({ ...base, laneWidth: 400 })]
   check('and two clips of the same picture and lane lay out identically', likely[0].thumbWidth === likely[1].thumbWidth && likely[0].thumbCount === likely[1].thumbCount, true)
 
@@ -616,7 +621,7 @@ console.log('\n== the timeline filmstrip ==')
   check('a three-frame trim cannot fill more than three tiles', sparse.thumbCount, 3)
   check('and each tile still gets its own frame', sparse.frames.length, 3)
 
-  check('a nonsense picture shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, srcAspect: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
+  check('a nonsense picture shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, outAspect: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
 
   // The lane's width is the only thing that decides the count, and a tile's own width never
   // follows it. There used to be a fixed ceiling on the count, and past it every tile grew
@@ -632,7 +637,7 @@ console.log('\n== the timeline filmstrip ==')
   check('a lane narrower than a tile still shows one', computeFilmstrip({ ...base, laneWidth: 8 }).thumbCount, 1)
   near('and that one tile is the middle of the trim', computeFilmstrip({ ...base, laneWidth: 8 }).frames[0], Math.round(0.5 * 240), 1e-9)
   check('an enormous lane still samples inside the clip', computeFilmstrip({ ...base, laneWidth: 100000 }).frames.every((frame) => frame >= 0 && frame <= 239), true)
-  check('a nonsense picture shape still lays out', computeFilmstrip({ ...base, laneWidth: 640, srcAspect: Number.NaN }).thumbCount > 0, true)
+  check('a nonsense picture shape still lays out', computeFilmstrip({ ...base, laneWidth: 640, outAspect: Number.NaN }).thumbCount > 0, true)
   check('a zero-width lane still yields one cell', computeFilmstrip({ ...base, laneWidth: 0 }).thumbCount, 1)
   check('and a clip with no frames still samples inside itself', computeFilmstrip({ ...base, laneWidth: 640, inSec: 4, outSec: 4 }).frames.every((frame) => frame === 120), true)
 
@@ -640,13 +645,17 @@ console.log('\n== the timeline filmstrip ==')
   // that kept a skim from flickering. Both went with the hover-skim itself: the strip is read, not
   // scrubbed, so nothing needs to know which tile a pointer is over.
 
-  // A thumbnail's key carries the frame and the source shape it was drawn at, because a tile is
-  // generated at its own picture's width and footage whose shape changed must not be served the
-  // pictures drawn for the old one.
-  check('a key names its frame and its shape', frameKey(120, 16 / 9), '120|1.7778')
-  check('the same frame at another shape is another picture', frameKey(120, 16 / 9) === frameKey(120, 4 / 3), false)
-  check('while the same frame at the same shape is the same picture', frameKey(120, 16 / 9) === frameKey(120, 16 / 9), true)
-  check('a nonsense shape falls back rather than colliding', frameKey(1, 0), '1|1.7778')
+  // A thumbnail's key carries the frame and a signature of everything that decides its picture: the
+  // placement, the offset it is cropped at, the crop the job applies and the two boxes. A frame
+  // cached under one placement must never be served for another, which is exactly what toggling a
+  // fit or dragging the offset would otherwise do.
+  const signature = (over: Partial<Parameters<typeof thumbnailSignature>[0]> = {}) => thumbnailSignature({ source: { width: 720, height: 1280 }, frame: { width: 1920, height: 1080 }, ...over })
+  check('a key names its frame and its signature', frameKey(120, 'width@0.50@720x1280>1920x1080|none'), '120|width@0.50@720x1280>1920x1080|none')
+  check('the same frame under another placement is another picture', frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })) === frameKey(120, signature({ fit: { mode: 'height', offset: 0.5 } })), false)
+  check('and so is the same placement moved', frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })) === frameKey(120, signature({ fit: { mode: 'width', offset: 0.2 } })), false)
+  check('while the same placement is the same picture', frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })) === frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })), true)
+  check('a job crop is part of it too', signature({ crop: { left: 0.1, top: 0, right: 0.1, bottom: 0 } }) === signature(), false)
+  check('and no fit at all is its own signature', signature(), 'contain@1920x1080|none')
 }
 
 console.log('\n== the monitor zoom ==')

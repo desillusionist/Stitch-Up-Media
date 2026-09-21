@@ -4,11 +4,12 @@ import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
 import { probeFile } from './ffmpeg/probe'
 import { QueueManager } from './queue/manager'
-import { QueueTask, AppSettings, EditJobPatch } from '../src/types'
+import { QueueTask, AppSettings, EditJobPatch, SourceFit } from '../src/types'
 import { logEvent, getLogFile } from './logger'
 import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
+import { fitFilters } from '../src/lib/sourceFit'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -198,23 +199,30 @@ app.whenReady().then(() => {
     if (frameCache.size > 40) frameCache.delete(frameCache.keys().next().value as string)
     return created
   }
-  // The tile's pixel width, from the source's own shape, so a tile is already the shape of its
-  // picture and covering its cell crops a sliver rather than a third of the frame.
-  const thumbWidthFor = (srcAspect: number) => {
+  // The tile's pixel size, from the shape of the OUTPUT frame: every tile in a job is the same
+  // shape, so a strip of a portrait clip and a strip of a landscape one read as one row of the
+  // same thing — small pictures of the frame the encoder will write.
+  const tileSizeFor = (outAspect: number) => {
     const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
-    return even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE * srcAspect)
+    const height = even(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE)
+    return { width: even(height * outAspect), height }
   }
-  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number; srcAspect?: number; crop?: CropFractions }) => {
+  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number; signature?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: SourceFit; crop?: CropFractions }) => {
     const times = (options?.times ?? []).filter((time) => Number.isFinite(time) && time >= 0)
     const fps = options?.fps && options.fps > 0 ? options.fps : 30
-    const srcAspect = options?.srcAspect && options.srcAspect > 0 ? options.srcAspect : 16 / 9
+    const frame = options?.frame
+    const source = options?.source
+    const fit = options?.fit
     const crop = options?.crop
+    // The key the editor is asking under, so a picture is never served for a placement it was not
+    // drawn for. It names the frame, of which the tile's own size is the scaled copy.
+    const signature = options?.signature ?? ''
     if (!filePath || !times.length) return []
     try { if (!fs.statSync(filePath).isFile()) return [] } catch { return [] }
     const have = framesFor(filePath)
-    const keyOf = (time: number) => frameKey(Math.max(0, Math.round(time * fps)), srcAspect)
-    const width = thumbWidthFor(srcAspect)
-    const height = Math.max(2, Math.round(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE / 2) * 2)
+    const keyOf = (time: number) => `${frameKey(Math.max(0, Math.round(time * fps)), signature)}`
+    const outAspect = frame && frame.width > 0 && frame.height > 0 ? frame.width / frame.height : 16 / 9
+    const { width, height } = tileSizeFor(outAspect)
     // One extraction per frame, each seeking straight to the moment it wants. Seeking the INPUT
     // is a fast keyframe seek, and it works on any source however its frames are numbered: the
     // alternative, selecting frame numbers out of the whole file, only lines up when they are
@@ -231,12 +239,26 @@ app.whenReady().then(() => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-frame-'))
       const framePath = path.join(dir, 'frame.jpg')
       try {
-        // The clip's own source crop first, if it has one, then the frame scaled to the tile. No
-        // fitting and no padding: the QUICK LOOK helper draws its thumbnails by filling each cell
-        // with the frame, which is what keeps every cell full and nothing letterboxed.
+        // The clip placed in the output frame by its own fit — the same chain the encoder is handed
+        // — then the job's own crop of that frame, then the frame scaled down to the tile. So a
+        // thumbnail is what the output will contain, and a fitted clip's tiles show the crop or the
+        // bars it is going to get rather than a picture the export will never contain.
         const chain: string[] = []
-        if (crop && hasCrop(crop)) chain.push(cropFilter(crop))
-        chain.push(`scale=${width}:${height}`)
+        const placement = frame && source ? fitFilters({ source, frame, fit }) : null
+        if (placement) {
+          chain.push(...placement)
+          if (crop && hasCrop(crop)) chain.push(cropFilter(crop))
+          // Down to the tile, and into it: the frame is already the output's own shape, so this is
+          // a plain scaling of it unless the job crops it to another shape, in which case the crop
+          // is fitted into the tile and the letters left beside it are black, as in the export.
+          chain.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`)
+          chain.push(`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`, 'setsar=1')
+        } else {
+          // Nothing to place the clip in — a source whose size could not be read — so the frame is
+          // treated as it was before there was a fit, and the crop is of the source itself.
+          if (crop && hasCrop(crop)) chain.push(cropFilter(crop))
+          chain.push(`scale=${width}:${height}`)
+        }
         execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', time.toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', chain.join(','), '-q:v', '4', framePath], { timeout: 30000 })
         have.set(key, `data:image/jpeg;base64,${fs.readFileSync(framePath).toString('base64')}`)
       } catch (error) {
