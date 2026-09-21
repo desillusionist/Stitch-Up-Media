@@ -8,7 +8,7 @@ import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, edgeFade, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
-import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, filmstripCell, frameKey, skimFrame } from '../lib/filmstrip'
+import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, filmstripCell, frameKey, skimFrame } from '../lib/filmstrip'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions, FitMode } from '../lib/outputFrame'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
@@ -301,18 +301,27 @@ export const EditJobApp: React.FC = () => {
    * QUEUE ITEM, found no element, and never ran again. The lane width stayed zero and every strip
    * was laid out from nothing, which is why the strip came out empty however right the arithmetic
    * was. Re-measuring on a resize is what keeps a re-laid-out lane from going unnoticed.
+   *
+   * Every width is taken, as soon as it is there, with nothing to settle first. The count comes
+   * from it, so a width that lags the box is a count that lags the box — and while it lagged, the
+   * tiles stretched to fill the clip, which is a resize that magnified the strip instead of
+   * packing more frames into it. Laying the strips out is cheap; the frames themselves are
+   * fetched on a settle, further down.
    */
   const attachLanes = useCallback((element: HTMLDivElement | null) => {
     lanesObserverRef.current?.disconnect()
     lanesObserverRef.current = null
     timelineScrollRef.current = element
     if (!element) return
-    let timer: number | null = null
+    let frame: number | null = null
     const measure = () => {
-      if (timer != null) window.clearTimeout(timer)
-      // Debounced: a drag of the window edge fires continuously, and each turn of it would
-      // otherwise re-request the whole visible set of strips.
-      timer = window.setTimeout(() => setLaneArea(Math.max(0, element.clientWidth)), 120)
+      if (frame != null) return
+      // One measurement per animation frame at most, so a drag of the window edge is followed
+      // frame by frame rather than once it stops.
+      frame = window.requestAnimationFrame(() => {
+        frame = null
+        setLaneArea(Math.max(0, element.clientWidth))
+      })
     }
     measure()
     const observer = new ResizeObserver(measure)
@@ -388,6 +397,12 @@ export const EditJobApp: React.FC = () => {
    * and only the in-between ones are extracted. Nothing is cleared while that happens: a tile
    * whose frame has not arrived yet simply draws nothing until it does, and the tiles around it
    * keep theirs, so the strip fills in rather than flashing empty.
+   *
+   * The fetching waits for the layout to settle, and only the fetching. A drag of the window edge
+   * re-lays the strips out on every frame, and each of those layouts names slightly different
+   * frames; extracting for all of them would put an ffmpeg behind each frame of the drag. So the
+   * request goes out once the width has stopped moving, while the strip itself keeps up with the
+   * drag the whole time.
    */
   const laneZoom = zoom
   useEffect(() => {
@@ -414,31 +429,35 @@ export const EditJobApp: React.FC = () => {
       })
     })
     if (!wanted.size) return
-    let cancelled = false
-    void Promise.all([...wanted].map(async ([target, { jobs, fps, aspect }]) => {
-      jobs.forEach(({ key }) => { framesPendingRef.current[`${target}#${key}`] = true })
-      const images = await bridge.framesAt(target, { times: jobs.map((job) => job.time), fps, srcAspect: aspect, crop: draft?.preset.crop })
-      return [target, jobs, images] as const
-    })).then((entries) => {
-      if (cancelled) return
-      setFrameImages((current) => {
-        const next = { ...current }
-        let arrived = false
-        entries.forEach(([target, jobs, images]) => {
-          const store = { ...(next[target] ?? {}) }
-          jobs.forEach(({ key }, position) => {
-            // A frame that could not be extracted is forgotten rather than left pending, so a
-            // later layout can try it again instead of that tile being blank forever.
-            delete framesPendingRef.current[`${target}#${key}`]
-            const image = images[position]
-            if (image) { store[key] = image; arrived = true }
+    // Everything asked for, so that the marks can be released when the answer comes back.
+    const asked = [...wanted].flatMap(([target, { jobs }]) => jobs.map(({ key }) => `${target}#${key}`))
+    const timer = window.setTimeout(() => {
+      asked.forEach((key) => { framesPendingRef.current[key] = true })
+      void Promise.all([...wanted].map(async ([target, { jobs, fps, aspect }]) => {
+        const images = await bridge.framesAt(target, { times: jobs.map((job) => job.time), fps, srcAspect: aspect, crop: draft?.preset.crop })
+        return [target, jobs, images] as const
+      })).then((entries) => {
+        // Released whether or not a later layout has moved on: a mark left behind is a frame that
+        // is never asked for again, so those tiles would stay blank for good. The pictures are
+        // stored on the same terms — a key names a source frame and the shape it was drawn at,
+        // neither of which a resize changes — so work already done is never thrown away.
+        asked.forEach((key) => { delete framesPendingRef.current[key] })
+        setFrameImages((current) => {
+          const next = { ...current }
+          let arrived = false
+          entries.forEach(([target, jobs, images]) => {
+            const store = { ...(next[target] ?? {}) }
+            jobs.forEach(({ key }, position) => {
+              const image = images[position]
+              if (image) { store[key] = image; arrived = true }
+            })
+            next[target] = store
           })
-          next[target] = store
+          return arrived ? next : current
         })
-        return arrived ? next : current
       })
-    })
-    return () => { cancelled = true }
+    }, FILMSTRIP_SETTLE_MS)
+    return () => { window.clearTimeout(timer) }
   }, [filmstripLanes, laneZoom, laneArea, mediaTargets, sourceShape, timelineSignature, frameImages, draft?.preset.crop])
 
   // A context menu closes on the next press anywhere, or on Escape.
@@ -1369,7 +1388,7 @@ export const EditJobApp: React.FC = () => {
             </div>
           </div>
           <div className="timeline-lanes" ref={attachLanes} onWheel={scrubByWheel}>
-            <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${zoom * 100}%` }}>
+            <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${zoom * 100}%`, '--filmstrip-tile': `${FILMSTRIP_CLIP_HEIGHT}px` } as React.CSSProperties}>
               <div className="timeline-ruler">
                 {Array.from({ length: 5 }, (_, index) => index / 4).map((fraction) => (
                   <span key={fraction} style={{ left: `${fraction * 100}%`, transform: fraction === 0 ? 'none' : fraction === 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
@@ -1416,7 +1435,11 @@ export const EditJobApp: React.FC = () => {
                           return <div className="timeline-clip-film" aria-hidden="true">
                             {plan.frames.map((frame, cell) => {
                               const shown = stillUrl ?? (live && live.cell === cell ? (frameImageFor(segment, live.index) ?? frameImageFor(segment, frame)) : frameImageFor(segment, frame))
-                              return <span className="timeline-clip-tile" key={cell} style={{ width: `${100 / plan.thumbCount}%` }}>
+                              // Painted at the width the arithmetic gave the cell, in pixels. A share
+                              // of the clip looks the same until the clip's width changes before the
+                              // count catches up — which is every frame of a window resize — and then
+                              // the frames stretch instead of the strip growing denser.
+                              return <span className="timeline-clip-tile" key={cell} style={{ width: `${plan.cellWidth}px` }}>
                                 {shown ? <img src={shown} alt="" draggable={false} /> : null}
                               </span>
                             })}

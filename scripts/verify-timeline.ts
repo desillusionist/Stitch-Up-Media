@@ -4,7 +4,7 @@ import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming
 import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
-import { computeFilmstrip, FILMSTRIP_MAX_TILES, filmstripCell, frameKey, skimFrame } from '../src/lib/filmstrip'
+import { computeFilmstrip, filmstripCell, frameKey, skimFrame } from '../src/lib/filmstrip'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { buildTimeline, edgeFade, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFps, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -612,10 +612,20 @@ console.log('\n== the timeline filmstrip ==')
 
   check('a nonsense picture shape falls back to 16:9', computeFilmstrip({ ...base, laneWidth: 640, srcAspect: 0 }).thumbWidth, Math.round(32 * (16 / 9)))
 
+  // The lane's width is the only thing that decides the count, and a tile's own width never
+  // follows it. There used to be a fixed ceiling on the count, and past it every tile grew
+  // instead of more of them appearing, so a wider window or a deeper zoom magnified the strip
+  // rather than packing more frames in. 1518 pixels across one clip was the measured case.
+  check('a wider lane keeps buying density', computeFilmstrip({ ...base, laneWidth: 1518 }).thumbCount, Math.round(1518 / wide.thumbWidth))
+  check('well past the count that used to be a ceiling', computeFilmstrip({ ...base, laneWidth: 1518 }).thumbCount > 24, true)
+  check('four times the lane is about four times the tiles', computeFilmstrip({ ...base, laneWidth: 4000 }).thumbCount, Math.round(4000 / wide.thumbWidth))
+  check('the only bound left is the frames the clip has', computeFilmstrip({ ...base, laneWidth: 100000 }).thumbCount, Math.round(8 * 30))
+  check('while a tile keeps its own width whatever the lane', [400, 800, 1200, 1600, 2400].every((laneWidth) => computeFilmstrip({ ...base, laneWidth }).thumbWidth === wide.thumbWidth), true)
+
   // Degenerate inputs still describe a whole clip rather than nothing.
   check('a lane narrower than a tile still shows one', computeFilmstrip({ ...base, laneWidth: 8 }).thumbCount, 1)
   near('and that one tile is the middle of the trim', computeFilmstrip({ ...base, laneWidth: 8 }).frames[0], Math.round(0.5 * 240), 1e-9)
-  check('an enormous lane is capped', computeFilmstrip({ ...base, laneWidth: 100000 }).thumbCount, FILMSTRIP_MAX_TILES)
+  check('an enormous lane still samples inside the clip', computeFilmstrip({ ...base, laneWidth: 100000 }).frames.every((frame) => frame >= 0 && frame <= 239), true)
   check('a nonsense picture shape still lays out', computeFilmstrip({ ...base, laneWidth: 640, srcAspect: Number.NaN }).thumbCount > 0, true)
   check('a zero-width lane still yields one cell', computeFilmstrip({ ...base, laneWidth: 0 }).thumbCount, 1)
   check('and a clip with no frames still samples inside itself', computeFilmstrip({ ...base, laneWidth: 640, inSec: 4, outSec: 4 }).frames.every((frame) => frame === 120), true)

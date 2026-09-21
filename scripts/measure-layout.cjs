@@ -14,6 +14,12 @@ const root = path.join(__dirname, '..')
 const assets = path.join(root, 'dist', 'assets')
 const css = fs.readdirSync(assets).find((file) => file.startsWith('index-') && file.endsWith('.css'))
 const cssPath = path.join(assets, css)
+// The REAL strip arithmetic, compiled from src/lib/filmstrip.ts by `npm run measure`. The case
+// below lays a strip out from it and measures what the browser painted, so "the tile is the size
+// the arithmetic said, whatever the window is doing" is a measurement rather than a reading.
+const { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT } = require('./.filmstrip.cjs')
+
+const GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
 // Mirrors the JSX: each clip carries an explicit share of the output, and the main
 // lane's last-but-one clip carries the marker on its trailing edge.
@@ -79,6 +85,37 @@ const caseD = `
 
 const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></div>'
 
+// Case G: a lane drawn as a filmstrip. The clip is the whole lane, so its width is the lane's, and
+// the tiles are painted exactly as the JSX paints them: the cell's own width in pixels, from the
+// plan, inside a row whose height comes from the one constant. The strips are painted by the
+// harness after the page's own layout has been measured, because the count comes from the width
+// the browser actually gave the clip.
+const filmLane = `
+<div class="timeline-lane" id="flane">
+  <div class="timeline-lane-head"><button class="lane-mute">M</button><span>VIDEO 1</span></div>
+  <div class="timeline-lane-track"><div class="timeline-clip is-film" id="fclip" style="flex-basis:100%"><div class="timeline-clip-film" id="ffilm"></div></div></div>
+</div>`
+
+const filmClipWidth = `+document.getElementById('fclip').getBoundingClientRect().width.toFixed(2)`
+
+const paintFilm = (plan) => `document.getElementById('ffilm').innerHTML = ${JSON.stringify(
+  plan.frames.map(() => `<span class="timeline-clip-tile" style="width:${plan.cellWidth}px"><img src="${GIF}"></span>`).join(''),
+)}`
+
+const readFilm = `(() => {
+  const box = (el) => { const r = el.getBoundingClientRect(); return { w: +r.width.toFixed(2), h: +r.height.toFixed(2) } }
+  const clip = document.getElementById('fclip')
+  const tiles = [...document.querySelectorAll('#ffilm .timeline-clip-tile')]
+  const first = tiles[0]; const last = tiles[tiles.length - 1]
+  const clipBox = clip.getBoundingClientRect()
+  return {
+    lane: box(document.getElementById('flane')), clip: box(clip), film: box(document.getElementById('ffilm')),
+    tiles: tiles.length, tile: box(first), image: box(first.querySelector('img')),
+    stripLeftVsClip: +(first.getBoundingClientRect().left - clipBox.left).toFixed(2),
+    stripRightVsClip: +(last.getBoundingClientRect().right - clipBox.right).toFixed(2),
+  }
+})()`
+
 // Case F: a whole sidebar. The title and tab strip are its head and the buttons its foot, so
 // they must stay put while the settings between them scroll. The fillers make the settings
 // taller than the window, which is the only way the behaviour shows at all.
@@ -96,6 +133,9 @@ ${caseA}
 </div></div></section>
 <section class="timeline-panel"><div class="timeline-lanes"><div class="timeline-lanes-inner" style="width:100%">
 ${caseB}
+</div></div></section>
+<section class="timeline-panel"><div class="timeline-lanes"><div class="timeline-lanes-inner" id="flanes" style="width:100%;--filmstrip-tile:${FILMSTRIP_CLIP_HEIGHT}px">
+${filmLane}
 </div></div></section>
 <section class="editor-preview"><div class="editor-screen">${caseC}</div></section>
 </main><aside class="export-sidebar" id="fside">${caseF}</aside></div></div></body></html>`
@@ -157,7 +197,24 @@ app.disableHardwareAcceleration()
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ width: 1400, height: 900, show: false })
   await win.loadFile(htmlPath)
-  console.log(JSON.stringify(await win.webContents.executeJavaScript(measure), null, 2))
+  const laid = await win.webContents.executeJavaScript(measure)
+  // The strip is laid out from the width the browser gave the clip, then measured, at several
+  // window sizes. What must hold: the tile is the constant tall in every one of them, the count
+  // follows the width, and the cells still land exactly on the clip's far edge.
+  const caseG = {}
+  for (const [label, width, height] of [['1400x900', 1400, 900], ['1400x1300', 1400, 1300], ['2000x900', 2000, 900], ['900x900', 900, 900]]) {
+    win.setContentSize(width, height)
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    const clipWidth = await win.webContents.executeJavaScript(filmClipWidth)
+    const plan = computeFilmstrip({ laneWidth: clipWidth, thumbHeight: FILMSTRIP_CLIP_HEIGHT, srcAspect: 16 / 9, fps: 30, inSec: 0, outSec: 8 })
+    await win.webContents.executeJavaScript(paintFilm(plan))
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    caseG[label] = {
+      clipWidth, thumbWidth: plan.thumbWidth, thumbCount: plan.thumbCount, cellWidth: +plan.cellWidth.toFixed(3),
+      ...(await win.webContents.executeJavaScript(readFilm)),
+    }
+  }
+  console.log(JSON.stringify({ ...laid, caseG }, null, 2))
   fs.unlinkSync(htmlPath)
   app.quit()
 }).catch((error) => { console.error('HARNESS FAILED', error); app.exit(1) })

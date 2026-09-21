@@ -6,12 +6,15 @@ dist/
 dist-electron/
 release/
 *.tsbuildinfo
-# Compiled verification harness (see `npm run verify`)
+# Compiled verification harness (see `npm run verify` and `npm run measure`)
 scripts/.verify-timeline.cjs
+scripts/.filmstrip.cjs
 scripts/.measure.html
 
 # Logs
 *.log
+# Commit message scratch file (see the repo's commit convention)
+.commitmsg
 npm-debug.log*
 yarn-error.log*
 

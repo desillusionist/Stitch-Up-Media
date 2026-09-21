@@ -290,7 +290,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .exact-icon.is-on { color: var(--ui-accent); border-color: var(--ui-accent); }
 .exact-icon:disabled { opacity: .4; }
 .timeline-lanes-inner { position: relative; min-width: 100%; }
-.timeline-lane { display: flex; align-items: stretch; min-height: 42px; border-bottom: 1px dotted var(--ui-border); }
+/* The lane's row height is the tile height plus the clip's own inset. It is derived from the one
+   constant the strip's arithmetic uses, so the lanes and the tiles cannot disagree: with a border
+   and the clip's ten pixels of margin, a forty-two pixel lane painted a THIRTY-ONE pixel tile
+   while the thumbnails were extracted at thirty-two, and every frame was three per cent squashed.
+   `min-height` rather than `height`, because a compact lane's two lines of text must never clip. */
+.timeline-lane { display: flex; align-items: stretch; min-height: calc(var(--filmstrip-tile, 32px) + 11px); border-bottom: 1px dotted var(--ui-border); }
 /* Lane label column. Kept equal to LANE_LABEL_WIDTH in EditJobApp, because the
    playhead and the ruler are offset by that figure and a mismatch pushed every
    clip, and every cut marker, sideways out from under the playhead. */
@@ -325,9 +330,13 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-clip-name { display: block; padding: 7px 6px 0; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
 
 /* Filmstrip view: the cells share the lane exactly, each showing the frame the playhead would
-   show there. The clip's own label is hidden so the frames are what is read. */
-.timeline-lane .timeline-clip-film { position: absolute; inset: 0; z-index: 0; display: flex; overflow: hidden; }
-.timeline-clip-tile { position: relative; flex: 0 0 auto; display: block; height: 100%; overflow: hidden; }
+   show there. The clip's own label is hidden so the frames are what is read.
+   Every figure here is a LENGTH, not a share of a container: the strip is the tile height tall
+   and the tiles are as wide as the arithmetic said. Nothing in the strip follows the clip's box,
+   so a lane that is mid-resize can no longer stretch the frames it already has. */
+.timeline-lane .timeline-clip.is-film { height: var(--filmstrip-tile, 32px); }
+.timeline-lane .timeline-clip-film { position: absolute; top: 0; left: 0; right: 0; height: var(--filmstrip-tile, 32px); z-index: 0; display: flex; overflow: hidden; }
+.timeline-clip-tile { position: relative; flex: 0 0 auto; display: block; height: var(--filmstrip-tile, 32px); overflow: hidden; }
 .timeline-clip-tile > img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .timeline-lane .timeline-clip.is-film .timeline-clip-name,
 .timeline-lane .timeline-clip.is-film small { display: none; }

@@ -11,21 +11,39 @@
  * the playhead would show at that place on the lane.
  */
 
-/** How tall a tile is drawn. The lane sets it, and the tile count is worked out from it. */
+/**
+ * How tall a tile is drawn. This is the lane's row height, and it is the one number the whole
+ * strip hangs off: the tile count is worked out from it, and the stylesheet draws the tile at
+ * it too (by way of the `--filmstrip-tile` property the timeline sets from this figure), so the
+ * picture that is extracted and the picture that is painted are the same size.
+ */
 export const FILMSTRIP_CLIP_HEIGHT = 32
 
 /** The multiple the tiles are generated at, so they stay crisp on a retina panel. */
 export const FILMSTRIP_SCALE = 2
 
-/** No strip needs more tiles than this, whatever the lane width. */
-export const FILMSTRIP_MAX_TILES = 24
+/**
+ * How long the lane's width has to hold still before frames are extracted for it.
+ *
+ * The strip's LAYOUT follows the width as it changes, one animation frame behind at most, but the
+ * frames themselves are not asked for until the width settles: a drag of the window edge names a
+ * slightly different set of frames on every frame of it, and extracting for each of those would
+ * put an ffmpeg behind the whole drag.
+ */
+export const FILMSTRIP_SETTLE_MS = 180
 
 export interface FilmstripPlan {
   /** A tile's width, from the source's own picture. */
   thumbWidth: number
   /** How many tiles fit across the lane as it is right now. */
   thumbCount: number
-  /** Each cell's share of the lane. The cells share the lane exactly, so there is no end gap. */
+  /**
+   * Each cell's share of the lane. The cells share the lane exactly, so there is no end gap. This
+   * is the width the tile is PAINTED at, in pixels — not a percentage of the clip — so the strip
+   * on screen is this arithmetic's and cannot be stretched by whatever the clip's box turns out
+   * to be. A percent width was the bug: while a resize was in progress the count was a layout
+   * behind, and the tiles stretched to fill the clip instead of the strip growing denser.
+   */
   cellWidth: number
   /** Source frames between one tile and the next. Fractional on purpose — never floor it. */
   step: number
@@ -66,9 +84,13 @@ export const computeFilmstrip = (o: {
   const fps = o.fps > 0 ? o.fps : 30
   const inFrame = Math.max(0, Math.round(o.inSec * fps))
   const trimmed = Math.max(1, Math.round((o.outSec - o.inSec) * fps))
-  // Never more tiles than there are frames to fill them with: past that the same frame would be
-  // asked for twice over, which is work for nothing.
-  const thumbCount = Math.max(1, Math.min(FILMSTRIP_MAX_TILES, Math.round(laneWidth / thumbWidth), trimmed))
+  // How many whole tiles fit across the lane as it is now, and never more than there are frames to
+  // fill them with: past that the same frame would be asked for twice over, which is work for
+  // nothing. There is deliberately no other ceiling on this. There used to be a fixed one, and
+  // past it the count stopped rising with the lane and every tile simply grew, so a wider window
+  // or a deeper zoom magnified the strip instead of packing more frames into it. The lane's own
+  // width is the bound, and a tile's own width is what decides the count.
+  const thumbCount = Math.max(1, Math.min(Math.round(laneWidth / thumbWidth), trimmed))
   const cellWidth = laneWidth / thumbCount
   const step = trimmed / thumbCount
   // A time and the frame it falls on, derived together so the picture a tile shows and the key
