@@ -317,6 +317,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-confirm-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .crop-confirm-actions button { padding: 6px 9px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
 .crop-confirm-actions button.is-danger { color: var(--ui-error); border-color: var(--ui-error); }
+/* The fit's offset figure. One axis, so one slider and one field reading the same percentage. */
+.offset-row { display: grid; grid-template-columns: minmax(0, 1fr) 54px auto; align-items: center; gap: 6px; }
+.offset-row input[type="range"] { width: 100%; accent-color: var(--ui-accent); }
+.offset-row input[type="range"]:disabled { opacity: .4; }
+.offset-row input.editor-input { padding: 5px 4px; text-align: center; }
+.offset-unit { color: var(--ui-muted); font-size: 9px; }
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
 /* The shape list and the unit switch, above the crop's four figures. The switch's glyph buttons
    match the select's height so the row reads as one control rather than two. */

@@ -5,7 +5,7 @@ import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
-import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSize, fitFilters, fitPlacement, fitSignature, fittedSize, placedSource, sourceCropOf } from '../src/lib/sourceFit'
+import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSize, fitFilters, fitPlacement, fitSignature, fittedSize, offsetAxisLabel, placedSource, sourceCropOf } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
@@ -829,6 +829,26 @@ console.log('\n== the per-clip output fit ==')
   check('a clip with no fit has none', sourceFitFor(fitted, 'c.mp4', 0), undefined)
   check('and a reorder carries each fit with its clip', rekeyClipMap({ 'a.mp4#0': { mode: 'width' as const, offset: 0.25 }, 'b.mp4#1': { mode: 'height' as const, offset: 0.5 } }, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': { mode: 'width', offset: 0.25 }, 'b.mp4#2': { mode: 'height', offset: 0.5 } })
   check('a fit set by path alone lands on that clip wherever it moves', rekeyClipMap(fitted.sourceFit, ['a.mp4', 'b.mp4'], ['b.mp4', 'a.mp4']), { 'b.mp4#0': { mode: 'height', offset: 0.5 }, 'a.mp4#1': { mode: 'width', offset: 0.25 } })
+
+  // The offset the dragger and the OFFSET sub-section both write moves the clip along the axis the
+  // fit leaves OVER, which is the opposite of the axis the fit is named after. A tall clip fitted to
+  // the width overflows height, so it is offset VERTICALLY; the same clip fitted to the height fits
+  // inside the frame, has nothing over, and has nothing to offset at all.
+  const tall = { width: 720, height: 1280 }
+  const wide = { width: 1920, height: 1080 }
+  const sized = { width: 1920, height: 1080 }
+  const portraitFrame = { width: 1080, height: 1920 }
+  const over = (source: { width: number; height: number }, frame: { width: number; height: number }, mode?: 'width' | 'height') =>
+    fitPlacement({ source, frame, fit: mode ? { mode, offset: 0.5 } : undefined })!.overflow
+  check('a width fit on a tall clip has the height over', over(tall, sized, 'width'), 'height')
+  check('so that is the vertical one', offsetAxisLabel(over(tall, sized, 'width')), 'VERTICAL')
+  check('and a height fit on a wide clip has the width over', over(wide, portraitFrame, 'height'), 'width')
+  check('so that is the horizontal one', offsetAxisLabel(over(wide, portraitFrame, 'height')), 'HORIZONTAL')
+  // The subtle half, and the one that decides whether the sub-section is offered at all: a fit that
+  // leaves its other axis SHORT rather than over has nothing to pan — the gap is filled in and
+  // centred, and there is no choice to make about which part of the clip stays in the frame.
+  check('a height fit on a tall clip leaves the width short, not over', over(tall, sized, 'height'), null)
+  check('and a clip with no fit has nothing over either', [over(tall, sized, undefined), offsetAxisLabel(over(tall, sized, undefined))], [null, null])
 }
 
 console.log('\n== a fit on a job whose clips are not joined ==')

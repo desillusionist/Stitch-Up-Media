@@ -36,7 +36,7 @@ const ASPECT_TOLERANCE = 0.01
  */
 const FREEFORM = 'FREEFORM'
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
-import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, placedSource, sourceCropOf } from '../lib/sourceFit'
+import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, offsetAxisLabel, placedSource, sourceCropOf } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 import { placeMenu } from '../lib/menuPlacement'
@@ -1017,6 +1017,22 @@ export const EditJobApp: React.FC = () => {
     }
     updateDraft({ sourceFit: Object.keys(next).length ? next : undefined })
   }
+  /**
+   * Moves the clip along the axis its fit leaves spare, by the figure in the OFFSET sub-section.
+   *
+   * The same write the monitor's dragger makes, against the same key, so the two are one value seen
+   * twice rather than two values that have to be kept in step. It is per clip because a fit is, and
+   * it changes nothing about the export's geometry beyond where that one clip sits.
+   */
+  const setFitOffset = (percent: number) => {
+    if (!activeFitKey || !activeFit) return
+    updateDraft({
+      sourceFit: {
+        ...(latest().sourceFit ?? {}),
+        [activeFitKey]: { mode: activeFit.mode, offset: clampFitOffset(percent / 100) },
+      },
+    })
+  }
   const setBoundaryTransition = (index: number, type: TransitionType, duration = 0.5) => {
     const cut = cuts.find((candidate) => candidate.index === index)
     if (!cut) return
@@ -1614,6 +1630,16 @@ export const EditJobApp: React.FC = () => {
     : []
   /** The axis a chosen fit leaves something to spare on, which is the one the dragger moves along. */
   const fitAxis = activeFit && placement ? placement.overflow : null
+  /**
+   * The OFFSET sub-section's axis and figure.
+   *
+   * The same axis the dragger is allowed on rather than the fit's own name for it: a fit that leaves
+   * nothing over has nothing to offset, so the sub-section goes quiet with the dragger instead of
+   * offering a control that moves nothing. `null` on that axis is what "no fit to pan" means, and the
+   * figure is the fit's own 0..1 read as a percentage, so the field and the dragger cannot disagree.
+   */
+  const offsetAxis = fitAxis
+  const offsetPercent = Math.round(clampFitOffset(activeFit?.offset ?? DEFAULT_FIT_OFFSET) * 100)
   /** What the window says when there is nothing to draw in it yet. */
   const screenMessage = duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'
 
@@ -2217,6 +2243,33 @@ export const EditJobApp: React.FC = () => {
                 <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON A SHAPE; FREEFORM HOLDS NO SHAPE AT ALL, SO A CORNER FOLLOWS THE POINTER ON BOTH AXES AND THE REGION KEEPS ITS OWN. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.{lockRatio ? ' WITH THE LOCK ON, EVERY EDIT HOLDS THE OUTPUT\u2019S SHAPE.' : ''}</div>
               </>}
             </div>
+            {/* The offset the fit's own dragger writes, as a figure. It is one axis and not a pair,
+                because the model moves the clip along the axis its fit leaves spare and no other; and
+                it belongs to the CLIP, so it is the selected one's own offset being edited — the same
+                value the monitor writes when the clip is dragged, and the dragger moves when this is. */}
+            <EditorField
+              label={offsetAxis ? `OFFSET \u00b7 ${offsetAxisLabel(offsetAxis)}` : 'OFFSET'}
+              hint={offsetAxis ? 'THE FIT\u2019S PAN' : 'NO FIT TO PAN'}
+              reason={offsetAxis
+                ? 'How far along the axis its fit leaves spare the clip is placed. The monitor\u2019s dragger writes this same figure.'
+                : 'SET FIT TO WIDTH OR HEIGHT ON THIS CLIP, ON SOMETHING IT OVERFLOWS, AND THE OFFSET IS WHAT MOVES IT.'}
+            >
+              <div className="offset-row">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={offsetPercent}
+                  disabled={!offsetAxis}
+                  aria-label="Offset of the clip inside the output frame"
+                  onChange={(event) => setFitOffset(Number(event.target.value))}
+                />
+                <NumberField min={0} max={100} step={1} className="editor-input" value={offsetPercent} disabled={!offsetAxis} onValue={setFitOffset} />
+                <span className="offset-unit">%</span>
+              </div>
+            </EditorField>
+            <div className="editor-note">&gt; 50% SITS THE CLIP CENTRED ALONG THE AXIS ITS FIT MOVES IT, 0% AND 100% PUT IT HARD AGAINST ONE END OF ITS OWN RANGE, AND THE FRAME IS COVERED AT EVERY ONE OF THEM. ONE AXIS ONLY: THE OTHER IS THE FIT\u2019S BUSINESS.</div>
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={String(defaultFps)} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
             <EditorField label="QUALITY" hint="BITRATE, E.G. 8M" reason={videoReason}><input type="text" className="editor-input" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} /></EditorField>
             <div className="editor-note">&gt; BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.</div>

@@ -143,6 +143,17 @@ export const fitSignature = (input: { source?: FrameSize; frame?: FrameSize; fit
 }
 
 /**
+ * The word for the axis a fit's overflow moves the clip ALONG.
+ *
+ * A fit pins one axis to the frame's and leaves the other over, and it is the over one the clip is
+ * moved along: FIT TO WIDTH on a tall clip leaves the height over, so the clip is offset vertically.
+ * The naming is worth a function because it is the opposite of what the fit is called, which is
+ * exactly the sort of thing to get backwards once and then trust.
+ */
+export const offsetAxisLabel = (overflow: FitPlacement['overflow']): 'VERTICAL' | 'HORIZONTAL' | null =>
+  overflow === 'height' ? 'VERTICAL' : overflow === 'width' ? 'HORIZONTAL' : null
+
+/**
  * The region a clip's crop keeps, in whole pixels of the source.
  *
  * Both stages of a clip are worked out from this: the crop is taken at exactly these pixels, and the
