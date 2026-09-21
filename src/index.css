@@ -311,6 +311,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-lock { display: flex; align-items: center; gap: 7px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; cursor: pointer; }
 .crop-lock input { accent-color: var(--ui-accent); }
 .crop-lock:has(input:disabled) { opacity: .45; cursor: not-allowed; }
+/* The clear-crop question, asked where the switch that raised it is rather than in a modal. */
+.crop-confirm { display: grid; gap: 6px; padding: 8px; background: var(--ui-panel-inset); border: 1px solid var(--ui-encoding); }
+.crop-confirm > span { color: var(--ui-encoding); font-size: 9px; letter-spacing: .06em; }
+.crop-confirm-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.crop-confirm-actions button { padding: 6px 9px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
+.crop-confirm-actions button.is-danger { color: var(--ui-error); border-color: var(--ui-error); }
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
 /* The shape list and the unit switch, above the crop's four figures. The switch's glyph buttons
    match the select's height so the row reads as one control rather than two. */

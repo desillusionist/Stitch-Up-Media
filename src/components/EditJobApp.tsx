@@ -26,6 +26,15 @@ const ASPECTS: Array<{ label: string; ratio: number }> = [
   { label: '9:16', ratio: 9 / 16 },
 ]
 const ASPECT_TOLERANCE = 0.01
+/**
+ * The shape list's entry for a crop that is holding no shape at all.
+ *
+ * It replaced an entry called NONE, which cleared the crop outright and so read as the crop being
+ * switched off — but switching the crop off is the switch's own job, and a user who wants their own
+ * freeform region had no way to say so. FREEFORM says exactly that and changes nothing about the
+ * region: it is the entry that lets a corner drag follow the pointer on both axes at once.
+ */
+const FREEFORM = 'FREEFORM'
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
 import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, placedSource, sourceCropOf } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
@@ -1302,14 +1311,28 @@ export const EditJobApp: React.FC = () => {
    *  survive a resize; the pixel figures the fields show are read off `picture` just above. */
   const crop = perClipFraming && activeSourceCrop ? cropFractionsOf(activeSourceCrop) : draft.preset.crop
   const cropPx = crop && picture ? cropPixels(crop, picture) : null
-  /** The proportion list's value: no crop at all, a shape the crop keeps, or the user's own. */
+  /** The proportion list's value: no shape held, a shape the crop keeps, or the user's own. */
   const keptProportion = crop && naturalAspect ? keptAspect(crop, naturalAspect) : undefined
   const matchedProportion = keptProportion != null
     ? ASPECTS.find((candidate) => Math.abs(candidate.ratio - keptProportion) < ASPECT_TOLERANCE)?.label
     : undefined
-  const cropProportion = !crop || !hasCrop(crop) ? 'NONE' : matchedProportion ?? 'CUSTOM'
+  /**
+   * Which entry the shape list is showing.
+   *
+   * A CHOICE rather than a reading of the region: FREEFORM says "no shape is being held", and that is
+   * something the user says, not something the numbers can be interrogated for — a region that
+   * happens to keep 16:9 looks exactly like one that was shaped to 16:9. The choice is held against
+   * the clip being edited, so it starts from that clip's own region and does not follow the user from
+   * one clip to the next.
+   */
+  const [cropShapeChoice, setCropShapeChoice] = useState<{ key: string; value: string } | null>(null)
+  /** The clear-crop question, and whether the answer is "every clip". */
+  const [confirmingClearCrop, setConfirmingClearCrop] = useState(false)
+  const [clearCropAll, setClearCropAll] = useState(false)
+  const shapeKey = activeClipKey ?? ''
+  const cropShape = cropShapeChoice?.key === shapeKey ? cropShapeChoice.value : matchedProportion ?? FREEFORM
   /** The shape a corner drag holds: the chosen proportion, or nothing to hold the region's own. */
-  const cropProportionRatio = ASPECTS.find((candidate) => candidate.label === cropProportion)?.ratio
+  const cropProportionRatio = ASPECTS.find((candidate) => candidate.label === cropShape)?.ratio
   // Whether the crop removes anything at all, which is what the switch reports. A crop of nothing
   // is a crop switched off, so zeroing the last figure unchecks the control; the record itself may
   // still exist, because for a clip in a job that has a crop of its own an entry is how a clip says
@@ -1355,6 +1378,26 @@ export const EditJobApp: React.FC = () => {
     updatePreset({ crop: undefined })
   }
   /**
+   * Takes the crop away once the user has confirmed it, on this clip or on every clip.
+   *
+   * EVERY clip means the job's own crop goes too, and in one step with them: a clip with no region of
+   * its own falls back to the job's crop, so a job whose clips have all been told they are uncropped
+   * would still crop anything added to it later. One draft write rather than two, so one undo takes
+   * the whole decision back.
+   */
+  const clearCropConfirmed = (all: boolean) => {
+    setConfirmingClearCrop(false)
+    if (!all || !perClipFraming) { clearCrop(); return }
+    const map: Record<string, SourceCrop> = {}
+    draft.sourcePaths.forEach((sourcePath, index) => {
+      if (mediaKind(sourcePath) !== 'audio') map[`${sourcePath}#${index}`] = { x: 0, y: 0, w: 1, h: 1 }
+    })
+    updateDraft({
+      sourceCrop: Object.keys(map).length ? map : undefined,
+      preset: { ...latest().preset, crop: undefined },
+    })
+  }
+  /**
    * The lock's own click, which brings the clip being looked at into line at once: the preview then
    * shows what the lock is for, and every other clip conforms when it is next edited rather than
    * being rewritten behind the user's back.
@@ -1391,10 +1434,14 @@ export const EditJobApp: React.FC = () => {
     if (lockRatio && naturalAspect) { writeCrop(holdCropShape(next, lockRatio, naturalAspect, edge === 'left' || edge === 'right' ? 'width' : 'height')); return }
     setCrop(next)
   }
-  /** Sets the proportion list: NONE clears the crop, a shape centres the crop on it. */
+  /**
+   * Sets the shape list: FREEFORM holds no shape at all and leaves the region where it is, and a
+   * named shape centres the crop on it. Clearing the crop is the switch's business, not the list's.
+   */
   const applyCropProportion = (label: string) => {
+    setCropShapeChoice({ key: shapeKey, value: label })
     const option = ASPECTS.find((candidate) => candidate.label === label)
-    if (!option || !naturalAspect) { setCrop({ left: 0, top: 0, right: 0, bottom: 0 }); return }
+    if (!option || !naturalAspect) return
     setCrop(cropForProportion(naturalAspect, option.ratio))
   }
   /**
@@ -1465,7 +1512,7 @@ export const EditJobApp: React.FC = () => {
   }
   /**
    * Resizes from a corner, holding the shape chosen in the proportion list, or the region's own
-   * shape when the list is on NONE or CUSTOM. The corner opposite the one dragged stays put.
+   * shape when the list is on FREEFORM. The corner opposite the one dragged stays put.
    */
   const beginCropCorner = (corner: CropCorner, event: React.PointerEvent) => {
     if (!crop || !picture || !cropRect) return
@@ -1477,9 +1524,9 @@ export const EditJobApp: React.FC = () => {
     // The lock's own shape takes precedence over the list's, since it is the constraint the user
     // asked for explicitly; without it the list's chosen shape is held.
     const ratio = lockRatio ?? cropProportionRatio
-    // NONE in the list means no shape is being held at all, so the corner is free. A locked crop is
+    // FREEFORM in the list means no shape is being held at all, so the corner is free. A locked crop is
     // never free: the whole point of the lock is that the corner keeps the output's proportions.
-    const free = !lockRatio && cropProportion === 'NONE'
+    const free = !lockRatio && cropShape === FREEFORM
     const move = (moveEvent: PointerEvent) => {
       writeCrop(clampCrop(resizeCorner({
         crop: from,
@@ -2108,14 +2155,31 @@ export const EditJobApp: React.FC = () => {
                 label="CROP SOURCE VIDEO"
                 checked={cropEnabled}
                 reason={videoReason}
-                onChange={(checked) => checked ? enableCrop() : clearCrop()}
+                onChange={(checked) => {
+                  if (checked) { enableCrop(); return }
+                  // Unchecking throws the crop away, and a crop is a hand-made region that took several
+                  // drags to place; so it is asked about rather than done. The switch stays as it is
+                  // until the question is answered, which is what makes CANCEL a real way out.
+                  setClearCropAll(false)
+                  setConfirmingClearCrop(true)
+                }}
               />
+              {confirmingClearCrop && <div className="crop-confirm">
+                <span>TAKE THE CROP AWAY?</span>
+                {perClipFraming && <label className="crop-lock">
+                  <input type="checkbox" checked={clearCropAll} onChange={(event) => setClearCropAll(event.target.checked)} />
+                  <span>APPLY TO ALL CLIPS</span>
+                </label>}
+                <div className="crop-confirm-actions">
+                  <button onClick={() => setConfirmingClearCrop(false)}>CANCEL</button>
+                  <button className="is-danger" onClick={() => clearCropConfirmed(clearCropAll)}>OK</button>
+                </div>
+              </div>}
               {cropEnabled && crop && <>
                 <div className="crop-head">
-                  <select value={cropProportion} disabled={!naturalAspect || Boolean(lockRatio)} onChange={(event) => applyCropProportion(event.target.value)} title={lockRatio ? 'THE CROP IS LOCKED TO THE OUTPUT SHAPE, SO THIS LIST IS NOT IN PLAY.' : naturalAspect ? 'Crop the picture to a shape' : 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.'}>
-                    <option value="NONE">NONE</option>
+                  <select value={cropShape} disabled={!naturalAspect || Boolean(lockRatio)} onChange={(event) => applyCropProportion(event.target.value)} title={lockRatio ? 'THE CROP IS LOCKED TO THE OUTPUT SHAPE, SO THIS LIST IS NOT IN PLAY.' : naturalAspect ? 'FREEFORM holds no shape at all; a named shape centres the crop on it' : 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.'}>
+                    <option value={FREEFORM}>{FREEFORM}</option>
                     {ASPECTS.map((candidate) => <option key={candidate.label} value={candidate.label}>{candidate.label}</option>)}
-                    <option value="CUSTOM" disabled>CUSTOM</option>
                   </select>
                   <div className="unit-toggle">
                     <button className={cropUnit === '%' ? 'is-on' : ''} onClick={() => setCropUnit('%')} title="Per cent of the source">%</button>
@@ -2150,7 +2214,7 @@ export const EditJobApp: React.FC = () => {
                     <button onClick={applyCropToAll} title="Put this crop on every clip in the job">APPLY TO ALL CLIPS</button>
                   </div>
                 )}
-                <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON THE PICTURE; NONE CLEARS IT. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.{lockRatio ? ' WITH THE LOCK ON, EVERY EDIT HOLDS THE OUTPUT\u2019S SHAPE.' : ''}</div>
+                <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON A SHAPE; FREEFORM HOLDS NO SHAPE AT ALL, SO A CORNER FOLLOWS THE POINTER ON BOTH AXES AND THE REGION KEEPS ITS OWN. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.{lockRatio ? ' WITH THE LOCK ON, EVERY EDIT HOLDS THE OUTPUT\u2019S SHAPE.' : ''}</div>
               </>}
             </div>
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={String(defaultFps)} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
