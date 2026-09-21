@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, RotateCcw, Unlink, ZoomIn, ZoomOut } from 'lucide-react'
 import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
@@ -27,6 +27,7 @@ import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '.
 import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, placedSource, sourceCropOf } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
+import { placeMenu } from '../lib/menuPlacement'
 import { emptyHistory, DraftHistory, recordChange, stepHistory as stepBack } from '../lib/draftHistory'
 import { NumberField } from './NumberField'
 
@@ -1059,11 +1060,28 @@ export const EditJobApp: React.FC = () => {
       : segment.still ? 'still image' : 'media'
     return `${segmentLabel(segment)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
   }
-  /** Keeps a right-click menu on screen when the click landed near an edge. */
-  const menuPoint = (event: React.MouseEvent) => ({
-    x: Math.max(8, Math.min(event.clientX, window.innerWidth - 200)),
-    y: Math.max(8, Math.min(event.clientY, window.innerHeight - 160)),
-  })
+  /**
+   * Where the right-click menu was asked for, and where it ended up.
+   *
+   * The asked-for point is what the handler knows; the menu's own height is only known once it has
+   * been drawn, and it varies with the state it is in, so the placement is worked out in a layout
+   * effect from the measured element. Before that the menu is drawn at the pointer, which is where it
+   * would be anyway in the common case, so there is nothing to see of the adjustment.
+   */
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const [menuAt, setMenuAt] = useState({ x: 0, y: 0 })
+  useLayoutEffect(() => {
+    const element = menuRef.current
+    if (!timelineMenu || !element) return
+    const rect = element.getBoundingClientRect()
+    const placed = placeMenu({
+      point: { x: timelineMenu.x, y: timelineMenu.y },
+      size: { width: rect.width, height: rect.height },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    })
+    setMenuAt(placed)
+  }, [timelineMenu])
+  const menuPoint = (event: React.MouseEvent) => ({ x: event.clientX, y: event.clientY })
   const openClipMenu = (event: React.MouseEvent, segment: TimelineSegment, laneId: string, index: number) => {
     event.preventDefault()
     event.stopPropagation()
@@ -2184,7 +2202,7 @@ export const EditJobApp: React.FC = () => {
 
     {/* Fixed rather than positioned inside the timeline, so it is never clipped by the scroll
         area it was opened from. */}
-    {timelineMenu && <div className="timeline-menu" style={{ left: timelineMenu.x, top: timelineMenu.y }} role="menu">
+    {timelineMenu && <div className="timeline-menu" ref={menuRef} style={{ left: menuAt.x, top: menuAt.y }} role="menu">
       <span className="timeline-menu-head">{timelineMenu.label}</span>
       {timelineMenu.kind === 'clip' ? (timelineMenu.confirming ? <>
         {/* The removal is the one thing in here that cannot be taken back by the window, so it asks

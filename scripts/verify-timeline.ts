@@ -10,6 +10,7 @@ import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZo
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
 import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
+import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, QueueTask } from '../src/types'
@@ -954,6 +955,28 @@ console.log('\n== taking a source out of a job ==')
   check('two pictures and a track is a combo', inferredMode(['a.mp4', 'b.mp4'], [{ path: 's.wav' }]), 'combo')
   check('tracks alone are joined if there are two of them', [inferredMode(['s.wav']), inferredMode(['s.wav', 't.wav'])], ['transcode', 'stitch'])
 }
+console.log('\n== where a right-click menu goes ==')
+{
+  const viewport = { width: 1000, height: 700 }
+  const size = { width: 200, height: 240 }
+  const at = (x: number, y: number) => placeMenu({ point: { x, y }, size, viewport })
+  // The pointer's own point is the preference, and it is kept whenever the menu fits there.
+  check('a menu that fits opens where it was asked for', at(300, 100), { x: 300, y: 100 })
+  check('and one that just fits at the bottom does too', at(300, 700 - 240 - 8), { x: 300, y: 452 })
+  // Past that it flips above the pointer, so the menu is read and the clip under it stays visible.
+  check('past the bottom edge it opens upward instead', at(300, 600), { x: 300, y: 360 })
+  // The threshold itself: one pixel more room and it stays below, one less and it flips.
+  check('the last point with room below keeps the pointer', at(300, 452), { x: 300, y: 452 })
+  check('and the next one flips', at(300, 453), { x: 300, y: 213 })
+  // A menu taller than the window can fit neither way, and the top of it is the part worth having.
+  const tall = placeMenu({ point: { x: 300, y: 600 }, size: { width: 200, height: 900 }, viewport })
+  check('a menu taller than the window is pinned to its top margin', tall.y, 8)
+  check('a menu wider than the window likewise', placeMenu({ point: { x: 900, y: 100 }, size: { width: 1200, height: 100 }, viewport }).x, 8)
+  // Sideways: the same flip, so a click near the right edge does not push the menu off it.
+  check('a menu that would overhang the right edge opens leftward', at(950, 100), { x: 750, y: 100 })
+  check('and one near the left edge stays put', at(8, 100), { x: 8, y: 100 })
+}
+
 console.log('\n== undo and redo ==')
 {
   // A draft and the changes a control makes to it. The records are the interesting part: every caller
