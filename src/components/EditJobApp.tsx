@@ -51,6 +51,13 @@ const editableSlice = (task: QueueTask) => ({
   outputFilename: task.outputFilename,
   outputFilenameManuallySet: task.outputFilenameManuallySet ?? false,
   transitions: task.transitions,
+  // The framing the window owns, exactly as it owns the transitions: a crop, a fit or a mute set on
+  // its own is a change like any other, and leaving these out of the slice made the window call
+  // itself clean the moment one of them was the first thing touched — so APPLY and OK stayed
+  // disabled and the change could not be committed at all.
+  sourceFit: task.sourceFit,
+  sourceCrop: task.sourceCrop,
+  mutedLanes: task.mutedLanes,
   // Per-source timing is editable from MEDIA INFO, so the window owns it too.
   sourceMetadata: task.sourceMetadata,
   sequenceInput: task.sequenceInput,
@@ -2086,7 +2093,7 @@ export const EditJobApp: React.FC = () => {
         <div className="editor-actions">
           {confirmingDiscard
             ? <><span className="editor-confirm">DISCARD UNSAVED CHANGES?</span><button onClick={() => setConfirmingDiscard(false)}>KEEP EDITING</button><button className="editor-danger" onClick={() => void window.electronAPI?.cancelEditJob()}>DISCARD</button></>
-            : <><button onClick={() => (dirty ? setConfirmingDiscard(true) : void window.electronAPI?.cancelEditJob())}>CANCEL</button><button onClick={() => applyEdits(false)} disabled={!dirty} title={dirty ? 'Apply without closing' : 'NO CHANGES TO APPLY.'}>APPLY</button><button className="primary-retro" onClick={() => applyEdits(true)} disabled={!dirty} title={dirty ? 'Apply and close' : 'NO CHANGES TO APPLY.'}>OK</button></>}
+            : <><button onClick={() => (dirty ? setConfirmingDiscard(true) : void window.electronAPI?.cancelEditJob())}>CANCEL</button><button onClick={() => applyEdits(false)} disabled={!dirty} title={dirty ? 'Apply without closing' : 'NO CHANGES TO APPLY.'}>APPLY</button><button className="primary-retro" onClick={() => applyEdits(true)} title="Apply and close">OK</button></>}
         </div>
       </aside>
     </div>
