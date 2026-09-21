@@ -9,6 +9,7 @@ release/
 # Compiled verification harness (see `npm run verify` and `npm run measure`)
 scripts/.verify-timeline.cjs
 scripts/.filmstrip.cjs
+scripts/.sourceFit.cjs
 scripts/.measure.html
 
 # Logs

@@ -4,9 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, edgeFade, resolveFades, segmentTiming, sourceDuration, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
+import { ClipFade, edgeFade, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
+import { fitFilters } from '../../src/lib/sourceFit'
 import { probeFile } from './probe'
 
 export interface ProgressData {
@@ -72,7 +73,7 @@ export class FFmpegEngine {
     }
     return { video, audio }
   }
-  private normalizeStitchSource(task: QueueTask, source: string, output: string, point?: { in: number; out: number }, stitchCanvas?: [number, number], targetFps = 30, clipDuration = 0, fade?: ClipFade): Promise<void> {
+  private normalizeStitchSource(task: QueueTask, source: string, output: string, point: { in: number; out: number } | undefined, stitchCanvas: [number, number] | undefined, targetFps = 30, clipDuration = 0, fade?: ClipFade, clipIndex = 0, sourceSize?: { width: number; height: number }): Promise<void> {
     return new Promise((resolve, reject) => {
       const sequence = this.sequenceFor(task, source)
       const isSequence = Boolean(sequence)
@@ -85,10 +86,24 @@ export class FFmpegEngine {
       if (!isSequence) this.applyTrimInput(command, point)
       const fades = this.fadeFilters(fade, clipDuration)
       const outputRate = isSequence || isStill ? rate : (targetFps || 30)
+      const fit = sourceFitFor(task, source, clipIndex)
+      // One chain per clip, built from the clip's own placement in the frame. The arithmetic is
+      // shared with the editor's own drawing of it, so what is encoded here is what was shown.
+      // It needs the clip's pixel size, which the caller has already probed; without one (or with
+      // no fit asked for and no size known) the default fit is said the way ffmpeg can work it out
+      // for itself, and the result is the same picture either way.
+      const placement = fit && sourceSize && sourceSize.width > 0 && sourceSize.height > 0
+        ? fitFilters({ source: sourceSize, frame: { width: W, height: H }, fit })
+        : null
+      if (fit && !placement) {
+        logEvent('ffmpeg', 'clip fit could not be applied; using the default fit', { taskId: task.id, source, clipIndex })
+      }
       const videoFilters = [
-        `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
-        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black`,
-        'setsar=1',
+        ...(placement ?? [
+          `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
+          `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black`,
+          'setsar=1',
+        ]),
         `fps=${outputRate}`,
         ...fades.video,
       ]
@@ -236,6 +251,9 @@ export class FFmpegEngine {
     // Normalize every source before concat so mono/stereo transitions cannot corrupt timestamps or channel mapping.
     const normalizedSources: string[] = []
     let stitchCanvas: [number, number] | undefined
+    // Each clip's own pixel size, from the probes this path already makes, because a per-clip fit
+    // is worked out from the clip's shape and the frame rather than by ffmpeg from the streams.
+    const sourceSizes = new Map<string, { width: number; height: number }>()
     let targetFps = task.preset.fps || 0
     let clipDurations: number[] = []
     try {
@@ -257,6 +275,7 @@ export class FFmpegEngine {
         const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
         if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) {
           maxW = Math.max(maxW, resolution[0]); maxH = Math.max(maxH, resolution[1])
+          sourceSizes.set(source, { width: resolution[0], height: resolution[1] })
         }
         const sequence = this.sequenceFor(task, source)
         maxFps = Math.max(maxFps, sequence?.fps || parseFps(probe.videoStreams[0]?.fps))
@@ -282,8 +301,9 @@ export class FFmpegEngine {
     const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)), { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })
     try {
       for (let index = 0; index < task.sourcePaths.length; index++) {
+        const source = task.sourcePaths[index]
         const normalized = path.join(os.tmpdir(), `stitch_${task.id}_${index}.mkv`)
-        await this.normalizeStitchSource(task, task.sourcePaths[index], normalized, this.trimPoint(task, task.sourcePaths[index], index), stitchCanvas, targetFps, clipDurations[index] || 0, clipFades[index])
+        await this.normalizeStitchSource(task, source, normalized, this.trimPoint(task, source, index), stitchCanvas, targetFps, clipDurations[index] || 0, clipFades[index], index, sourceSizes.get(source))
         normalizedSources.push(normalized)
       }
     } catch (error) {
@@ -352,20 +372,28 @@ export class FFmpegEngine {
     // a cut is rendered here too: the muxing step downstream only ever sees the single
     // concatenated video, and could never place one itself.
     const clipDurations: number[] = []
+    const sourceSizes: Array<{ width: number; height: number } | undefined> = []
     for (let index = 0; index < task.sourcePaths.length; index++) {
       const source = task.sourcePaths[index]
       let probeDuration = 0
-      try { probeDuration = Number((await probeFile(source)).duration || 0) } catch { /* fall back to configured timing */ }
+      let sourceSize: { width: number; height: number } | undefined
+      try {
+        const probe = await probeFile(source)
+        probeDuration = Number(probe.duration || 0)
+        const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
+        if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) sourceSize = { width: resolution[0], height: resolution[1] }
+      } catch { /* fall back to configured timing */ }
       clipDurations.push(segmentTiming(
         sourceDuration(task, source, this.sequenceFor(task, source), () => ({ duration: probeDuration })),
         this.trimPoint(task, source, index),
       ).duration)
+      sourceSizes.push(sourceSize)
     }
     const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)), { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })
     try {
       for (let index = 0; index < task.sourcePaths.length; index++) {
         const output = path.join(os.tmpdir(), `combo_${task.id}_${index}.mkv`)
-        await this.normalizeStitchSource(task, task.sourcePaths[index], output, this.trimPoint(task, task.sourcePaths[index], index), canvas, targetFps, clipDurations[index] || 0, clipFades[index])
+        await this.normalizeStitchSource(task, task.sourcePaths[index], output, this.trimPoint(task, task.sourcePaths[index], index), canvas, targetFps, clipDurations[index] || 0, clipFades[index], index, sourceSizes[index])
         normalized.push(output)
       }
     } catch (error) {

@@ -898,8 +898,11 @@ export const EditJobApp: React.FC = () => {
       mainIndex,
       label: segmentLabel(segment),
       fitKey: `${segment.sourcePath}#${clipIndex}`,
-      // A fit places a picture in the frame, so it is only offered where there is a picture.
-      visual: model.lanes.find((lane) => lane.id === laneId)?.kind !== 'audio',
+      // A fit places a picture in the frame, and the encoder applies one only where clips are
+      // concatenated: a stitch, or a combo with more than one visual. Where the encoder would
+      // ignore it the item is not offered at all, rather than shown doing nothing.
+      visual: model.lanes.find((lane) => lane.id === laneId)?.kind !== 'audio'
+        && (draft.type === 'stitch' || (draft.type === 'combo' && draft.sourcePaths.filter((source) => mediaKind(source) !== 'audio').length > 1)),
     })
   }
   const openLaneMenu = (event: React.MouseEvent, laneId: string, label: string) => {
