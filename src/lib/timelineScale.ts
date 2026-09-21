@@ -12,8 +12,10 @@
  * change how much of it is on screen.
  *
  * FIT is the one place the viewport is consulted, and only at the moment it is pressed: it sets the
- * zoom that makes the whole output exactly as wide as the lane area visible then. Afterwards the
- * timeline is that wide until the zoom changes again.
+ * zoom that makes the whole output as wide as the lane area visible then, less the room the marker on
+ * the last cut needs — the marker straddles the edge it hangs on, so a lane area filled to its last
+ * pixel would clip it and give the timeline a scrollbar. Afterwards the timeline is that wide until
+ * the zoom changes again.
  */
 
 /** The rate a lane is drawn at, in pixels per second of output, at 1x. */
@@ -40,14 +42,25 @@ export const secondsAt = (pixelsIntoLane: number, zoom: number): number =>
   (Number.isFinite(pixelsIntoLane) ? pixelsIntoLane : 0) / pxPerSec(zoom)
 
 /**
- * The zoom that makes the whole output exactly as wide as the lane area it is given.
+ * The room FIT leaves past the end of the output, in pixels, for the marker on the last cut.
+ *
+ * The `[+]` that adds a trailing fade is centred on its clip's trailing edge, so it hangs half of its
+ * own 17px width — and its border with it — past the end of the drawing. A fit that made the output
+ * exactly as wide as the lane area would therefore put that marker outside the lane area: the button
+ * would be clipped at its outer edge and the timeline would carry a horizontal scrollbar for the sake
+ * of the last nine pixels of it.
+ */
+export const FIT_TRAILING_MARKER = 9
+
+/**
+ * The zoom that makes the whole output as wide as the lane area it is given, less that marker's room.
  *
  * Taken from the viewport only when it is asked for — pressing FIT — which is what keeps a fit
  * decision from being remade by every resize.
  */
 export const fitZoom = (seconds: number, availableWidth: number): number => {
   const span = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
-  const available = Number.isFinite(availableWidth) ? availableWidth : 0
+  const available = Number.isFinite(availableWidth) ? availableWidth - FIT_TRAILING_MARKER : 0
   if (span <= 0 || available <= 0) return 1
   return clampZoom(available / (span * BASE_PX_PER_SECOND))
 }

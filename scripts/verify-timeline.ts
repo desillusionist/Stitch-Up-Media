@@ -8,7 +8,7 @@ import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/films
 import { DEFAULT_FIT_OFFSET, clipFilters, cropRegion, croppedSize, fitFilters, fitOffsetFor, fitPlacement, fitSignature, fittedSize, placedSource, sourceCropOf, storedFitOffset } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
-import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
+import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
 import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
@@ -902,9 +902,11 @@ console.log('\n== the timeline metric ==')
   // FIT is the one place the viewport is consulted, and it is a decision rather than a state: the
   // zoom it sets is a zoom like any other, so the next resize reveals more of the timeline instead
   // of re-deciding what the zoom should be.
-  check('fit makes the whole output exactly as wide as the lane area', laneWidthFor(30, fitZoom(30, 900)), 900)
+  // The headroom is the marker's own: without it the fit filled the lane area to its last pixel and
+  // the trailing [+] hung outside it, clipped, with a scrollbar to reach it.
+  near('fit fills the lane area less the room the last cut\u2019s marker needs', laneWidthFor(30, fitZoom(30, 900)), 900 - FIT_TRAILING_MARKER)
   check('a longer output fits the same area at a smaller zoom', fitZoom(60, 900) < fitZoom(30, 900), true)
-  check('a fit is held inside the zoom range', [clampZoom(fitZoom(1, 100000)), clampZoom(fitZoom(100000, 1))], [ZOOM_MAX, ZOOM_MIN])
+  check('a fit is held inside the zoom range', [clampZoom(fitZoom(1, 100000)), clampZoom(fitZoom(100000, 100))], [ZOOM_MAX, ZOOM_MIN])
   check('and a fit of nothing is 1x', [fitZoom(0, 900), fitZoom(30, 0), clampZoom(Number.NaN)], [1, 1, 1])
 }
 
