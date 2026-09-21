@@ -33,3 +33,7 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+
+# The editor mount harness (see `npm run check-mount`)
+scripts/.editor-mount.js
+scripts/.editor-mount.html

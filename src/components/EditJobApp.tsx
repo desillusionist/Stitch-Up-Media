@@ -165,6 +165,21 @@ export const EditJobApp: React.FC = () => {
   /** Whether the crop fields read as per cent of the source or as pixels of it. */
   const [cropUnit, setCropUnit] = useState<'%' | 'px'>('%')
   /**
+   * The crop's own controls: which entry the shape list is showing, and the clear-crop question.
+   *
+   * The shape list's entry is a CHOICE rather than a reading of the region — FREEFORM says "no shape
+   * is being held", and that is something the user says, not something the numbers can be interrogated
+   * for, since a region that happens to keep 16:9 looks exactly like one that was shaped to 16:9. It is
+   * held against the clip being edited, so it starts from that clip's own region.
+   */
+  const [cropShapeChoice, setCropShapeChoice] = useState<{ key: string; value: string } | null>(null)
+  /** The clear-crop question, and whether the answer is "every clip". */
+  const [confirmingClearCrop, setConfirmingClearCrop] = useState(false)
+  const [clearCropAll, setClearCropAll] = useState(false)
+  /** The right-click menu, and where on screen it ended up once its own height was known. */
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const [menuAt, setMenuAt] = useState({ x: 0, y: 0 })
+  /**
    * How the monitor sizes the output frame and the picture.
    *
    * A viewer setting and nothing more: it is not the clip's own fit into the output, which is a
@@ -209,6 +224,24 @@ export const EditJobApp: React.FC = () => {
   const waveformsAskedRef = useRef<Set<string>>(new Set())
   const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const timelineInnerRef = useRef<HTMLDivElement>(null)
+
+  /**
+   * Places the menu once it has been drawn, because its own height is what decides whether it fits.
+   *
+   * Above the early return with the state it reads, and that is not a nicety: a hook called after a
+   * return that some renders take and others do not is a hook called a different number of times on
+   * different renders, which React throws on and the window comes up blank.
+   */
+  useLayoutEffect(() => {
+    const element = menuRef.current
+    if (!timelineMenu || !element) return
+    const rect = element.getBoundingClientRect()
+    setMenuAt(placeMenu({
+      point: { x: timelineMenu.x, y: timelineMenu.y },
+      size: { width: rect.width, height: rect.height },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+    }))
+  }, [timelineMenu])
 
   const commit = (nextBaseline: QueueTask | null, nextDraft: QueueTask | null) => {
     baselineRef.current = nextBaseline
@@ -1126,19 +1159,6 @@ export const EditJobApp: React.FC = () => {
    * effect from the measured element. Before that the menu is drawn at the pointer, which is where it
    * would be anyway in the common case, so there is nothing to see of the adjustment.
    */
-  const menuRef = useRef<HTMLDivElement | null>(null)
-  const [menuAt, setMenuAt] = useState({ x: 0, y: 0 })
-  useLayoutEffect(() => {
-    const element = menuRef.current
-    if (!timelineMenu || !element) return
-    const rect = element.getBoundingClientRect()
-    const placed = placeMenu({
-      point: { x: timelineMenu.x, y: timelineMenu.y },
-      size: { width: rect.width, height: rect.height },
-      viewport: { width: window.innerWidth, height: window.innerHeight },
-    })
-    setMenuAt(placed)
-  }, [timelineMenu])
   const menuPoint = (event: React.MouseEvent) => ({ x: event.clientX, y: event.clientY })
   const openClipMenu = (event: React.MouseEvent, segment: TimelineSegment, laneId: string, index: number) => {
     event.preventDefault()
@@ -1365,10 +1385,6 @@ export const EditJobApp: React.FC = () => {
    * the clip being edited, so it starts from that clip's own region and does not follow the user from
    * one clip to the next.
    */
-  const [cropShapeChoice, setCropShapeChoice] = useState<{ key: string; value: string } | null>(null)
-  /** The clear-crop question, and whether the answer is "every clip". */
-  const [confirmingClearCrop, setConfirmingClearCrop] = useState(false)
-  const [clearCropAll, setClearCropAll] = useState(false)
   const shapeKey = activeClipKey ?? ''
   const cropShape = cropShapeChoice?.key === shapeKey ? cropShapeChoice.value : matchedProportion ?? FREEFORM
   /** The shape a corner drag holds: the chosen proportion, or nothing to hold the region's own. */
