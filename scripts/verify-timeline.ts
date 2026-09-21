@@ -13,6 +13,7 @@ import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } fro
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, QueueTask } from '../src/types'
+import { inferredMode, removeSourceFromTask } from '../src/lib/sourceRemoval'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -906,6 +907,53 @@ console.log('\n== the per-clip crop ==')
   }
 }
 
+console.log('\n== taking a source out of a job ==')
+{
+  // Everything keyed by a clip's PLACE has to move with the clips that survive, so the records are
+  // rebuilt from the surviving entries rather than filtered: a filter would leave "a.mp4#2" naming
+  // the clip that is now the third one's predecessor.
+  const job = (over: Partial<QueueTask> = {}) => ({
+    id: 'j', type: 'stitch', sourcePaths: ['a.mp4', 'b.mp4', 'c.mp4'], outputDirectory: '/o', outputFilename: 'o.mp4',
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    status: 'pending', progress: 0,
+    trimPoints: { 'a.mp4#0': { in: 1, out: 2 }, 'c.mp4#2': { in: 3, out: 4 } },
+    transitions: { 'a.mp4#0': { type: 'fade', duration: 0.5 } },
+    sourceFit: { 'c.mp4#2': { mode: 'width', offset: 0.5 } },
+    sourceCrop: { 'b.mp4#1': { x: 0, y: 0, w: 1, h: 1 } },
+    ...over,
+  }) as QueueTask
+
+  const droppedFirst = removeSourceFromTask(job(), 'a.mp4', 0)
+  check('the trim on a surviving clip is re-keyed to its new place', droppedFirst?.trimPoints, { 'c.mp4#1': { in: 3, out: 4 } })
+  check('and so is its fit', droppedFirst?.sourceFit, { 'c.mp4#1': { mode: 'width', offset: 0.5 } })
+  check('and its crop', droppedFirst?.sourceCrop, { 'b.mp4#0': { x: 0, y: 0, w: 1, h: 1 } })
+  // The clip that went takes its own records with it — there is nothing left for them to be about.
+  check('the records of the clip that went go with it', droppedFirst?.transitions, undefined)
+  const droppedLast = removeSourceFromTask(job(), 'c.mp4', 2)
+  check('a transition survives on the clip it was made at', droppedLast?.transitions, { 'a.mp4#0': { type: 'fade', duration: 0.5 } })
+  check('while the last clip\u2019s fit goes with the last clip', droppedLast?.sourceFit, undefined)
+
+  // Two entries for the same file: an index names the one, a path alone would take both.
+  const twice = job({ sourcePaths: ['a.mp4', 'a.mp4'] })
+  check('an index takes out that occurrence only', removeSourceFromTask(twice, 'a.mp4', 1)?.sourcePaths, ['a.mp4'])
+  check('a path alone takes out every occurrence', removeSourceFromTask(twice, 'a.mp4')?.sourcePaths, undefined)
+
+  // A job left with tracks but no picture plays those tracks rather than carrying them beside nothing.
+  const withTracks = job({ sourcePaths: ['a.mp4'], additionalAudioTracks: [{ id: 't', path: 'score.wav', language: 'und' }] })
+  const promoted = removeSourceFromTask(withTracks, 'a.mp4', 0)
+  check('tracks become the sources when the last picture goes', [promoted?.sourcePaths, promoted?.additionalAudioTracks], [['score.wav'], undefined])
+  check('and the job reads as what is left', promoted?.type, 'transcode')
+  check('a track going leaves the picture where it was', removeSourceFromTask(withTracks, 'score.wav', 0)?.additionalAudioTracks, undefined)
+
+  // Removing what the job has nothing else of cannot happen, and must not look as though it had.
+  check('the last source of a job takes the job with it', removeSourceFromTask(job({ sourcePaths: ['a.mp4'] }), 'a.mp4', 0), null)
+  check('but not when there is a track to carry on with', removeSourceFromTask(withTracks, 'a.mp4', 0)! !== null, true)
+
+  // The mode is a consequence of what is left, not a field that is carried over.
+  check('one picture and one track is a multi-track job', inferredMode(['a.mp4'], [{ path: 's.wav' }]), 'multitrack')
+  check('two pictures and a track is a combo', inferredMode(['a.mp4', 'b.mp4'], [{ path: 's.wav' }]), 'combo')
+  check('tracks alone are joined if there are two of them', [inferredMode(['s.wav']), inferredMode(['s.wav', 't.wav'])], ['transcode', 'stitch'])
+}
 console.log('\n== undo and redo ==')
 {
   // A draft and the changes a control makes to it. The records are the interesting part: every caller

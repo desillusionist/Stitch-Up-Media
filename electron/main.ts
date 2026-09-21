@@ -167,6 +167,14 @@ app.whenReady().then(() => {
     if (!taskId || !sourceKey || !override) return
     mainWindow?.webContents.send('source-timing', { taskId, sourceKey, override })
   })
+  // The editor can take a source out of the job it is editing, and the queue is the only thing that
+  // owns the job, so the window reports the removal rather than doing it. The INDEX is carried as
+  // well as the path, because the same file can appear twice in one job and taking out "the file"
+  // would take out the wrong one of them.
+  ipcMain.handle('remove-edit-job-source', async (_, taskId: string, sourcePath: string, sourceIndex: number) => {
+    if (!taskId || !sourcePath || !Number.isInteger(sourceIndex)) return
+    mainWindow?.webContents.send('edit-job-remove-source', { taskId, sourcePath, sourceIndex })
+  })
   ipcMain.handle('probe-media', async (_, filePath: string) => {
     logEvent('ipc', 'probe-media request', { filePath })
     try {

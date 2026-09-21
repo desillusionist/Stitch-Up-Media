@@ -78,7 +78,7 @@ const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft)
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
-  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; label: string; fitKey: string; visual: boolean; fitReason?: string }
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
@@ -226,7 +226,19 @@ export const EditJobApp: React.FC = () => {
       if (userDirty && JSON.stringify(editableSlice(incoming)) !== JSON.stringify(editableSlice(currentBaseline))) {
         setIncomingConflict(incoming)
       }
-      const merged = userDirty ? { ...incoming, ...editableSlice(currentDraft) } : incoming
+      // A change to the SOURCE LIST moves every clip's place in the job, and a transition, a fit and
+      // a crop are all keyed by that place. The queue re-keys them as it takes a source out, and the
+      // queue's version is the right one: the window's copy was filed against the places the clips
+      // had a moment ago, so keeping it would leave a record sitting on whatever moved into an index
+      // and would leave the removed clip's record behind with nothing to be about.
+      const clipsMoved = JSON.stringify(incoming.sourcePaths) !== JSON.stringify(currentBaseline.sourcePaths)
+        || JSON.stringify(incoming.additionalAudioTracks ?? []) !== JSON.stringify(currentBaseline.additionalAudioTracks ?? [])
+      const kept = editableSlice(currentDraft)
+      const merged = userDirty
+        ? { ...incoming, ...(clipsMoved
+          ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop }
+          : kept) }
+        : incoming
       baselineRef.current = incoming
       draftRef.current = merged
       setBaseline(incoming)
@@ -1065,6 +1077,7 @@ export const EditJobApp: React.FC = () => {
       y: point.y,
       sourceIndex: Math.max(0, draft.sourcePaths.indexOf(segment.sourcePath)),
       mainIndex,
+      sourcePath: segment.sourcePath,
       label: segmentLabel(segment),
       fitKey: `${segment.sourcePath}#${clipIndex}`,
       // A fit places a picture in the frame. Every job with a picture offers it now, not only the ones
@@ -2173,7 +2186,26 @@ export const EditJobApp: React.FC = () => {
         area it was opened from. */}
     {timelineMenu && <div className="timeline-menu" style={{ left: timelineMenu.x, top: timelineMenu.y }} role="menu">
       <span className="timeline-menu-head">{timelineMenu.label}</span>
-      {timelineMenu.kind === 'clip' ? <>
+      {timelineMenu.kind === 'clip' ? (timelineMenu.confirming ? <>
+        {/* The removal is the one thing in here that cannot be taken back by the window, so it asks
+            first. A source that is the job's last takes the job with it, and says so outright. */}
+        <span className="timeline-menu-head">REMOVE {sourceName(timelineMenu.sourcePath)}?</span>
+        <p className="timeline-menu-note">{draft.sourcePaths.length <= 1 && !draft.additionalAudioTracks?.length
+          ? 'THIS IS THE JOB\u2019S LAST SOURCE, SO REMOVING IT REMOVES THE JOB.'
+          : 'THE CLIP GOES FROM THE TIMELINE AND FROM THE JOB\u2019S SOURCE LIST.'}</p>
+        <div className="timeline-menu-actions">
+          <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: undefined })}>KEEP IT</button>
+          <button
+            role="menuitem"
+            className="is-danger"
+            onClick={() => {
+              const { sourcePath, sourceIndex } = timelineMenu
+              setTimelineMenu(null)
+              void window.electronAPI?.removeEditJobSource(draft.id, sourcePath, sourceIndex)
+            }}
+          >REMOVE</button>
+        </div>
+      </> : <>
         <button role="menuitem" onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void openNativePreview(index) }}>QUICK LOOK...</button>
         <button role="menuitem" onClick={() => { const index = timelineMenu.mainIndex ?? timelineMenu.sourceIndex; setTimelineMenu(null); setInspectedIndex(index) }}>MEDIA INFO</button>
         {timelineMenu.visual && (() => {
@@ -2199,7 +2231,9 @@ export const EditJobApp: React.FC = () => {
             >FIT TO HEIGHT</button>
           </>
         })()}
-      </> : <>
+        <span className="timeline-menu-divider" aria-hidden="true" />
+        <button role="menuitem" className="is-danger" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: true })}>REMOVE SOURCE</button>
+      </>) : <>
         <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? '' : 'is-on'} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: false })) }}>COMPACT VIEW</button>
         <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? 'is-on' : ''} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: true })) }}>{model.lanes.find((lane) => lane.id === timelineMenu.laneId)?.kind === 'audio' ? 'WAVEFORM' : 'FILMSTRIP'}</button>
       </>}

@@ -12,6 +12,7 @@ import { DEFAULT_PRESETS } from './constants/presets'
 import { detectSequences, isImagePath } from './lib/detectSequences'
 import { deriveOutputFilename } from './lib/outputNaming'
 import { mediaKind } from './lib/mediaKind'
+import { removeSourceFromTask } from './lib/sourceRemoval'
 import { resolveQuickLookRequest, dropPreviewsFor, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
 import { rekeyClipMap } from './lib/timelineModel'
 
@@ -126,6 +127,9 @@ export const App: React.FC = () => {
   const taskHistoryPastRef = useRef<QueueTask[][]>([])
   const taskHistoryFutureRef = useRef<QueueTask[][]>([])
   const previousTasksRef = useRef<QueueTask[] | null>(null)
+  /** The queue as it stands, for the listeners that are bound once and cannot close over it. */
+  const tasksRef = useRef<QueueTask[]>([])
+  tasksRef.current = tasks
   const selectionAnchorRef = useRef<string | undefined>(undefined)
   const applyingHistoryRef = useRef(false)
   const missingSourcesRef = useRef<Set<string>>(new Set())
@@ -299,6 +303,13 @@ export const App: React.FC = () => {
           return wasDone && next !== task ? { ...next, progress: 0 } : next
         }))
       })
+      // The EDIT JOB window asked for one of the sources to be taken out of the job. The queue owns
+      // the job, so the removal happens here and the job is sent back to the window, which is the
+      // same route every other change to a job's sources takes.
+      const unsubscribeRemoveSource = window.electronAPI.onEditJobRemoveSource(({ taskId, sourcePath, sourceIndex }) => {
+        const task = tasksRef.current.find((candidate) => candidate.id === taskId)
+        if (task) handleRemoveSource(task, sourcePath, sourceIndex)
+      })
       const unsubscribeError = window.electronAPI.onTaskError((taskId, error) => {
         setTasks((prev) =>
           prev.map((t) => (t.id === taskId ? { ...t, status: 'error', errorMessage: error } : t))
@@ -314,6 +325,7 @@ export const App: React.FC = () => {
         unsubscribePoints()
         unsubscribePreview()
         unsubscribeTiming()
+        unsubscribeRemoveSource()
       }
     }
   }, [])
@@ -775,45 +787,21 @@ export const App: React.FC = () => {
     setTasks((prev) => prev.map((item) => item.id === task.id ? { ...item, additionalAudioTracks: tracks, status: item.status === 'done' ? 'pending' as const : item.status } : item))
   }
   const handleReorderTasks = (nextTasks: QueueTask[]) => setTasks(nextTasks)
-  const inferredMode = (sourcePaths: string[], tracks: { path: string }[] = []): QueueTask['type'] => {
-    const hasVideo = sourcePaths.some((path) => mediaKind(path) !== 'audio')
-    const hasAudio = tracks.length > 0 || sourcePaths.some((path) => mediaKind(path) === 'audio')
-    if (hasVideo && hasAudio) return sourcePaths.filter((path) => mediaKind(path) !== 'audio').length > 1 ? 'combo' : 'multitrack'
-    if (hasAudio && !hasVideo) return sourcePaths.length > 1 ? 'stitch' : 'transcode'
-    if (sourcePaths.length > 1) return 'stitch'
-    return 'transcode'
-  }
+  /**
+   * Takes a source out of a job, from the queue's card or from the editor's timeline.
+   *
+   * A removal that would leave the job with nothing to encode takes the JOB out instead, and the
+   * editor window is closed with it: leaving a window open on a job that no longer exists is worse
+   * than the removal looking drastic.
+   */
   const handleRemoveSource = (task: QueueTask, sourcePath: string, sourceIndex?: number) => {
-    setTasks((prev) => prev.map((item) => {
-      if (item.id !== task.id) return item
-      const remainingEntries = item.sourcePaths.map((path, index) => ({ path, index })).filter(({ path, index }) => sourceIndex == null ? path !== sourcePath : index !== sourceIndex)
-      let sourcePaths = remainingEntries.map(({ path }) => path)
-      let additionalAudioTracks = (item.additionalAudioTracks || []).filter((track) => track.path !== sourcePath)
-      const sequenceStillPresent = sourcePaths.includes(sourcePath)
-      const removedSequence = item.sequenceInput?.firstFrame === sourcePath && !sequenceStillPresent
-      const sequenceInputs = item.sequenceInputs
-        ? Object.fromEntries(Object.entries(item.sequenceInputs).filter(([key]) => key !== sourcePath || sequenceStillPresent))
-        : item.sequenceInputs
-      const remainingPreviews = item.imageSequencePreviews
-        ? Object.fromEntries(Object.entries(item.imageSequencePreviews).filter(([key]) => key !== sourcePath || sequenceStillPresent))
-        : item.imageSequencePreviews
-      const nextTrimPoints = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
-        return [`${path}#${newIndex}`, item.trimPoints?.[`${path}#${oldIndex}`] || item.trimPoints?.[path]]
-      }).filter(([, point]) => Boolean(point)))
-      const nextFits = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
-        return [`${path}#${newIndex}`, item.sourceFit?.[`${path}#${oldIndex}`] || item.sourceFit?.[path]]
-      }).filter(([, fit]) => Boolean(fit)))
-      const nextCrops = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
-        return [`${path}#${newIndex}`, item.sourceCrop?.[`${path}#${oldIndex}`] || item.sourceCrop?.[path]]
-      }).filter(([, region]) => Boolean(region)))
-      const hasVisual = sourcePaths.some((path) => mediaKind(path) !== 'audio')
-      if (!hasVisual && additionalAudioTracks.length) {
-        sourcePaths = [...sourcePaths, ...additionalAudioTracks.map((track) => track.path)]
-        additionalAudioTracks = []
-      }
-      const nextSourcePaths = sourcePaths.length ? sourcePaths : item.sourcePaths
-      return { ...item, sourcePaths: nextSourcePaths, additionalAudioTracks: additionalAudioTracks.length ? additionalAudioTracks : undefined, trimPoints: nextTrimPoints, transitions: rekeyClipMap(item.transitions, item.sourcePaths, remainingEntries.map(({ path }) => path)), sourceFit: Object.keys(nextFits).length ? nextFits : undefined, sourceCrop: Object.keys(nextCrops).length ? nextCrops : undefined, imageSequencePreviews: removedSequence ? undefined : remainingPreviews, sequenceInput: removedSequence ? undefined : item.sequenceInput, sequenceInputs, type: inferredMode(nextSourcePaths, additionalAudioTracks), status: item.status === 'done' ? 'pending' : item.status }
-    }))
+    const changed = removeSourceFromTask(task, sourcePath, sourceIndex)
+    if (!changed) {
+      setTasks((prev) => prev.filter((item) => item.id !== task.id))
+      if (editJobTaskIdRef.current === task.id) void window.electronAPI?.cancelEditJob()
+      return
+    }
+    setTasks((prev) => prev.map((item) => item.id === task.id ? changed : item))
   }
   const handleApplyPreset = (newPreset: EncodingPreset) => {
     if (!activeTaskForPreset) return

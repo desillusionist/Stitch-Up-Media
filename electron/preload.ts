@@ -58,6 +58,16 @@ export interface IElectronAPI {
   applyEditJob: (patch: EditJobPatch, close?: boolean) => Promise<void>
   onEditJobApplied: (callback: (patch: EditJobPatch) => void) => () => void
   cancelEditJob: () => Promise<void>
+  /**
+   * Takes a source out of the job the editor is editing, by its path and its place in the job.
+   *
+   * The queue owns the job, so this asks rather than does: the main process hands the request to the
+   * queue window, which removes the source and sends the job back. The index is carried as well as
+   * the path because the same file can appear twice in one job, and taking out "the file" would take
+   * out the wrong one of them.
+   */
+  removeEditJobSource: (taskId: string, sourcePath: string, sourceIndex: number) => Promise<void>
+  onEditJobRemoveSource: (callback: (payload: { taskId: string; sourcePath: string; sourceIndex: number }) => void) => () => void
   onQueueFinished: (callback: () => void) => () => void
 }
 
@@ -135,6 +145,12 @@ const api: IElectronAPI = {
   applyEditJob: (patch: EditJobPatch, close?: boolean) => ipcRenderer.invoke('apply-edit-job', patch, close),
   syncEditJobTask: (task: QueueTask) => ipcRenderer.invoke('sync-edit-job-task', task),
   cancelEditJob: () => ipcRenderer.invoke('cancel-edit-job'),
+  removeEditJobSource: (taskId: string, sourcePath: string, sourceIndex: number) => ipcRenderer.invoke('remove-edit-job-source', taskId, sourcePath, sourceIndex),
+  onEditJobRemoveSource: (callback) => {
+    const handler = (_: any, payload: { taskId: string; sourcePath: string; sourceIndex: number }) => callback(payload)
+    ipcRenderer.on('edit-job-remove-source', handler)
+    return () => ipcRenderer.removeListener('edit-job-remove-source', handler)
+  },
   onEditJobApplied: (callback) => {
     const handler = (_: any, patch: EditJobPatch) => callback(patch)
     ipcRenderer.on('edit-job-applied', handler)
