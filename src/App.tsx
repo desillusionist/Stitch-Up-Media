@@ -78,6 +78,7 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     // Whole, like the transitions: the window owns every clip's fit and every lane's mute, so an
     // emptied map is a decision about the job rather than a field left out of the patch.
     sourceFit: patch.sourceFit,
+    sourceCrop: patch.sourceCrop,
     mutedLanes: patch.mutedLanes,
     status: task.status === 'done' ? 'pending' : task.status,
   }
@@ -100,7 +101,7 @@ const editJobSignature = (task: QueueTask) => JSON.stringify([
   task.outputFilename, task.outputFilenameManuallySet, task.sourceBaseName, task.outputDirectory,
   task.trimPoints, task.sourceMetadata, task.sourceInfo, task.sequenceInput, task.sequenceInputs,
   task.imageSequencePreviews, task.quickLookSourceIndex, task.stillImageDuration, task.transitions,
-  task.sourceFit, task.mutedLanes,
+  task.sourceFit, task.sourceCrop, task.mutedLanes,
 ])
 
 export const App: React.FC = () => {
@@ -766,6 +767,7 @@ export const App: React.FC = () => {
       trimPoints: rekeyClipMap(item.trimPoints, item.sourcePaths, sourcePaths),
       transitions: rekeyClipMap(item.transitions, item.sourcePaths, sourcePaths),
       sourceFit: rekeyClipMap(item.sourceFit, item.sourcePaths, sourcePaths),
+      sourceCrop: rekeyClipMap(item.sourceCrop, item.sourcePaths, sourcePaths),
       status: item.status === 'done' ? 'pending' as const : item.status,
     } : item))
   }
@@ -801,13 +803,16 @@ export const App: React.FC = () => {
       const nextFits = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
         return [`${path}#${newIndex}`, item.sourceFit?.[`${path}#${oldIndex}`] || item.sourceFit?.[path]]
       }).filter(([, fit]) => Boolean(fit)))
+      const nextCrops = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
+        return [`${path}#${newIndex}`, item.sourceCrop?.[`${path}#${oldIndex}`] || item.sourceCrop?.[path]]
+      }).filter(([, region]) => Boolean(region)))
       const hasVisual = sourcePaths.some((path) => mediaKind(path) !== 'audio')
       if (!hasVisual && additionalAudioTracks.length) {
         sourcePaths = [...sourcePaths, ...additionalAudioTracks.map((track) => track.path)]
         additionalAudioTracks = []
       }
       const nextSourcePaths = sourcePaths.length ? sourcePaths : item.sourcePaths
-      return { ...item, sourcePaths: nextSourcePaths, additionalAudioTracks: additionalAudioTracks.length ? additionalAudioTracks : undefined, trimPoints: nextTrimPoints, transitions: rekeyClipMap(item.transitions, item.sourcePaths, remainingEntries.map(({ path }) => path)), sourceFit: Object.keys(nextFits).length ? nextFits : undefined, imageSequencePreviews: removedSequence ? undefined : remainingPreviews, sequenceInput: removedSequence ? undefined : item.sequenceInput, sequenceInputs, type: inferredMode(nextSourcePaths, additionalAudioTracks), status: item.status === 'done' ? 'pending' : item.status }
+      return { ...item, sourcePaths: nextSourcePaths, additionalAudioTracks: additionalAudioTracks.length ? additionalAudioTracks : undefined, trimPoints: nextTrimPoints, transitions: rekeyClipMap(item.transitions, item.sourcePaths, remainingEntries.map(({ path }) => path)), sourceFit: Object.keys(nextFits).length ? nextFits : undefined, sourceCrop: Object.keys(nextCrops).length ? nextCrops : undefined, imageSequencePreviews: removedSequence ? undefined : remainingPreviews, sequenceInput: removedSequence ? undefined : item.sequenceInput, sequenceInputs, type: inferredMode(nextSourcePaths, additionalAudioTracks), status: item.status === 'done' ? 'pending' : item.status }
     }))
   }
   const handleApplyPreset = (newPreset: EncodingPreset) => {
