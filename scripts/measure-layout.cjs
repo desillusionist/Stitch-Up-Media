@@ -20,23 +20,36 @@ const cssPath = path.join(assets, css)
 const { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT } = require('./.filmstrip.cjs')
 // The real placement arithmetic, so the monitor's composite is measured against the figures the
 // encoder is handed rather than against a layout that merely looks plausible.
-const { fitPlacement } = require('./.sourceFit.cjs')
+const { fitPlacement, placedSource } = require('./.sourceFit.cjs')
 // The real timeline metric, so the widths measured here are the ones the timeline draws with — and
 // so a case can show that resizing the window does not change a single one of them.
-const { contentWidthFor, laneWidthFor, pxPerSec } = require('./.timelineScale.cjs')
+const { laneWidthFor, pxPerSec } = require('./.timelineScale.cjs')
 
-/** The zoom the harness lays the timeline out at, and the label column both sides agree on. */
+/** The zoom the harness lays the timeline out at. */
 const ZOOM = 1
-const LANE_LABEL_WIDTH = 102
 
 const GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
-// Mirrors the JSX: each clip is as wide as its own length at the timeline's rate, and the main
-// lane's last-but-one clip carries the marker on its trailing edge. The widths are the rate's
-// alone — the window is not consulted anywhere here, which is the property being measured.
-const lane = (id, clips, gapSeconds, marker) => `
-<div class="timeline-lane" id="${id}">
-  <div class="timeline-lane-head"><button class="lane-mute">M</button><span>VIDEO 1</span></div>
+// Mirrors the JSX: the timeline is a fixed gutter of lane labels beside a scroller, each lane's
+// clip is as wide as its own length at the timeline's rate, and the main lane's last-but-one clip
+// carries the marker on its trailing edge. The widths are the rate's alone — the window is not
+// consulted anywhere here, which is the property being measured.
+const lanes = (outerId, seconds, heads, inners) => `
+<div class="timeline-lanes" id="${outerId}">
+  <div class="timeline-gutter" id="gutter-${outerId}">
+    <div class="timeline-gutter-ruler"></div>
+    ${heads}
+  </div>
+  <div class="timeline-scroll" id="scroll-${outerId}">
+    <div class="timeline-lanes-inner" style="width:${laneWidthFor(seconds, ZOOM)}px">
+      <div class="timeline-ruler"></div>
+      ${inners}
+    </div>
+  </div>
+</div>`
+
+const lane = (id, label, clips, gapSeconds, marker) => `
+<div class="timeline-lane" id="${id}" title="${label}">
   <div class="timeline-lane-track" id="track-${id}">
     ${clips.map(([name, id2, seconds, withMarker]) => `<div class="timeline-clip" id="${id2}" style="width:${laneWidthFor(seconds, ZOOM)}px">
       <span class="timeline-clip-name">${name}</span><small>d</small>
@@ -46,18 +59,23 @@ const lane = (id, clips, gapSeconds, marker) => `
   </div>
 </div>`
 
+const head = (title) => `<div class="timeline-lane-head" id="head-${title.replace(/\W+/g, '')}"><button class="lane-mute">M</button><span>${title}</span></div>`
+
 // Case A: a plain stitch. Two clips of 4s and 6s out of a 10s output, playhead on the cut.
-const caseA = `
-${lane('A', [['a', 'a0', 4, true], ['b', 'a1', 6, false]], 0, 'am0')}
-<div class="timeline-playhead" id="aph" style="left:${LANE_LABEL_WIDTH + 4 * pxPerSec(ZOOM)}px"></div>`
+const caseA = lanes('lanesA', 10,
+  head('VIDEO 1'),
+  `${lane('A', 'VIDEO 1', [['a', 'a0', 4, true], ['b', 'a1', 6, false]], 0, 'am0')}
+<div class="timeline-playhead" id="aph" style="left:${4 * pxPerSec(ZOOM)}px"></div>`)
 
 // Case B: a combo whose 4s + 6s of video is followed by 590s of nothing, and a 600s audio lane.
 // The video clips are a fraction of a per cent of the timeline, which is the case that used to put
-// the marker hundreds of pixels from its cut. It is also the case with something to scroll.
-const caseB = `
-${lane('B', [['a', 'b0', 4, true], ['b', 'b1', 6, false]], 590, 'bm0')}
-${lane('B2', [['long.wav', 'b2', 600, false]], 0, '')}
-<div class="timeline-playhead" id="bph" style="left:${LANE_LABEL_WIDTH + 4 * pxPerSec(ZOOM)}px"></div>`
+// the marker hundreds of pixels from its cut. It is the case with something to scroll, and so the
+// one where the scrollbar's start and the gutter's own solidity can be measured.
+const caseB = lanes('lanesB', 600,
+  `${head('VIDEO 1')}${head('AUDIO 1')}`,
+  `${lane('B', 'VIDEO 1', [['a', 'b0', 4, true], ['b', 'b1', 6, false]], 590, 'bm0')}
+${lane('B2', 'AUDIO 1', [['long.wav', 'b2', 600, false]], 0, '')}
+<div class="timeline-playhead" id="bph" style="left:${4 * pxPerSec(ZOOM)}px"></div>`)
 
 // Case C: the preview overlay. A square output frame centred in a wide stage, its label
 // anchored to the frame's top-left, and one crop band down the left edge. This checks the
@@ -145,11 +163,11 @@ const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></
 // the browser actually gave the clip.
 /** The clip the strip case is drawn for, in seconds, so every figure below has one source. */
 const FILM_SECONDS = 8
-const filmLane = `
-<div class="timeline-lane" id="flane">
-  <div class="timeline-lane-head"><button class="lane-mute">M</button><span>VIDEO 1</span></div>
+const filmLane = lanes('lanesF', FILM_SECONDS,
+  head('VIDEO 1'),
+  `<div class="timeline-lane" id="flane">
   <div class="timeline-lane-track"><div class="timeline-clip is-film" id="fclip" style="width:${laneWidthFor(FILM_SECONDS, ZOOM)}px"><div class="timeline-clip-film" id="ffilm"></div></div></div>
-</div>`
+</div>`)
 
 
 const filmClipWidth = `+document.getElementById('fclip').getBoundingClientRect().width.toFixed(2)`
@@ -184,15 +202,9 @@ const caseF = `
 const page = `<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="${cssPath}">
 </head><body><div class="edit-job-shell"><div class="editor-body"><main class="editor-main">
-<section class="timeline-panel"><div class="timeline-lanes" id="lanesA"><div class="timeline-lanes-inner" style="width:${contentWidthFor(10, ZOOM, LANE_LABEL_WIDTH)}px">
-${caseA}
-</div></div></section>
-<section class="timeline-panel"><div class="timeline-lanes" id="lanesB"><div class="timeline-lanes-inner" style="width:${contentWidthFor(600, ZOOM, LANE_LABEL_WIDTH)}px">
-${caseB}
-</div></div></section>
-<section class="timeline-panel"><div class="timeline-lanes"><div class="timeline-lanes-inner" id="flanes" style="width:100%;--filmstrip-tile:${FILMSTRIP_CLIP_HEIGHT}px">
-${filmLane}
-</div></div></section>
+<section class="timeline-panel">${caseA}</section>
+<section class="timeline-panel">${caseB}</section>
+<section class="timeline-panel"><div style="--filmstrip-tile:${FILMSTRIP_CLIP_HEIGHT}px">${filmLane}</div></section>
 <section class="editor-preview"><div class="editor-screen">${caseC}</div></section>
 <section class="editor-preview">${monitorStage}</section>
 </main><aside class="export-sidebar" id="fside">${caseF}</aside></div></div></body></html>`
@@ -223,7 +235,7 @@ const measure = `(() => {
   const dreset = rect('dreset')
   const content = document.getElementById('fcontent')
   const fside = rect('fside')
-  const scrollerB = document.getElementById('lanesB')
+  const scrollerB = document.getElementById('scroll-lanesB')
   // The pan moves the drawing and nothing else, and it moves all of it: the frame and the crop
   // band must travel together, by exactly the offset, or the crop would come off the picture.
   const pan = document.getElementById('cpan')
@@ -259,6 +271,48 @@ const measure = `(() => {
     // The width a lane is drawn at, and how much of it the panel can show. One of these must move
     // when the window does and the other must not: that separation is the whole of this model.
     widths: { clip: rect('b0').width, lanes: rect('b2').width, viewport: scrollerB ? scrollerB.clientWidth : 0, content: scrollerB ? scrollerB.scrollWidth : 0 },
+    // The timeline's own chrome. The label column is a column of the timeline's grid rather than a
+    // sticky element inside the scroller: the scrollbar's own start and the column's solidity are
+    // the two things that could not be had that way, and the rows of the two columns must still
+    // line up across the gap.
+    caseT: (() => {
+      const outerB = rect('lanesB')
+      const gutter = rect('gutter-lanesB')
+      const scroll = rect('scroll-lanesB')
+      const scroller = document.getElementById('scroll-lanesB')
+      const lanesIn = [...document.querySelectorAll('#scroll-lanesB .timeline-lane')]
+      const headsIn = [...document.querySelectorAll('#gutter-lanesB .timeline-lane-head')]
+      const innerEl = document.querySelector('#scroll-lanesB .timeline-lanes-inner')
+      const rulerIn = document.querySelector('#scroll-lanesB .timeline-ruler')
+      const spacerIn = document.querySelector('#gutter-lanesB .timeline-gutter-ruler')
+      const shapeOf = (el) => { const r = el.getBoundingClientRect(); return { top: +r.top.toFixed(2), height: +r.height.toFixed(2), left: +r.left.toFixed(2) } }
+      // The two columns start together and their rows step together; the ruler and the gutter's own
+      // spacer are what set the first step, so they are reported rather than assumed equal.
+      const detail = {
+        columnTops: [gutter.top, scroll.top],
+        inner: innerEl ? shapeOf(innerEl) : null,
+        ruler: rulerIn ? shapeOf(rulerIn) : null,
+        spacer: spacerIn ? shapeOf(spacerIn) : null,
+      }
+      return {
+        gutterWidth: gutter.width,
+        gutterAtOuterLeft: +(gutter.left - outerB.left).toFixed(2),
+        scrollerStartsPastGutter: +(scroll.left - gutter.right).toFixed(2),
+        scrollbarHeight: +(scroller.offsetHeight - scroller.clientHeight).toFixed(2),
+        scrollbarStartsPastGutter: +(scroll.left - gutter.right).toFixed(2),
+        laneTops: lanesIn.map((el) => +el.getBoundingClientRect().top.toFixed(2)),
+        headTops: headsIn.map((el) => +el.getBoundingClientRect().top.toFixed(2)),
+        rowsAligned: lanesIn.length === headsIn.length && lanesIn.every((el, index) => Math.abs(el.getBoundingClientRect().top - headsIn[index].getBoundingClientRect().top) < 0.6),
+        rows: [lanesIn.length, headsIn.length],
+        laneHeight: lanesIn.length ? +lanesIn[0].getBoundingClientRect().height.toFixed(2) : 0,
+        headHeight: headsIn.length ? +headsIn[0].getBoundingClientRect().height.toFixed(2) : 0,
+        laneStartsAtScroller: +(lanesIn[0].getBoundingClientRect().left - scroll.left).toFixed(2),
+        gutterCoversScroller: gutter.bottom >= scroll.bottom - 0.6,
+        gutterCoversScrollbar: gutter.bottom >= scroller.getBoundingClientRect().bottom - 0.6,
+        scrolls: scroller.scrollWidth > scroller.clientWidth + 1,
+        detail,
+      }
+    })(),
   }
 })()`
 
@@ -266,12 +320,21 @@ app.disableHardwareAcceleration()
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ width: 1400, height: 900, show: false })
   await win.loadFile(htmlPath)
-  const laid = await win.webContents.executeJavaScript(measure)
+  /**
+   * Runs a snippet in the page and reports what went wrong if it throws.
+   *
+   * `executeJavaScript` rejects with one generic sentence — "script failed to execute" — whether the
+   * script threw a TypeError in the first line or never parsed, and the page's console is not shown
+   * here either. A harness that cannot say what broke is a harness that has to be debugged by
+   * guessing, so the snippet is wrapped and the error is what comes back.
+   */
+  const run = (script) => win.webContents.executeJavaScript(`(() => { try { return ${script} } catch (error) { return { HARNESS_ERROR: String((error && error.stack) || error) } } })()`)
+  const laid = await run(measure)
   // Case H, once: the monitor's composite for a tall clip in a landscape frame, at the positions
   // that matter — centred, either end, the other axis, and with no fit at all. The stage's own box
   // is MEASURED rather than assumed, because the app reads it from an observer and centres the
   // outline by stylesheet: those two agreeing is one of the things being checked here.
-  const measured = await win.webContents.executeJavaScript(`(() => { const r = document.getElementById('hstage').getBoundingClientRect(); return { width: +r.width.toFixed(2), height: +r.height.toFixed(2) } })()`)
+  const measured = await run(`(() => { const r = document.getElementById('hstage').getBoundingClientRect(); return { width: +r.width.toFixed(2), height: +r.height.toFixed(2) } })()`)
   const stage = { width: measured.width, height: measured.height }
   const output = { width: 1920, height: 1080 }
   const source = { width: 720, height: 1280 }
@@ -285,17 +348,17 @@ app.whenReady().then(async () => {
     ['width@1', { mode: 'width', offset: 1 }], ['height@0.5', { mode: 'height', offset: 0.5 }],
   ]) {
     const placement = fitPlacement({ source, frame: output, fit })
+    const place = placedSource({ source, frame: output, fit })
     const scale = frameBox.width / output.width
-    const anchor = placement.pad ?? { x: -placement.kept.x, y: -placement.kept.y }
     const box = {
       frameLeft: round((stage.width - frameBox.width) / 2), frameTop: round((stage.height - frameBox.height) / 2),
       frameWidth: round(frameBox.width), frameHeight: round(frameBox.height),
-      pictureLeft: round(anchor.x * scale), pictureTop: round(anchor.y * scale),
-      pictureWidth: round(placement.size.width * scale), pictureHeight: round(placement.size.height * scale),
+      pictureLeft: round(place.source.x * scale), pictureTop: round(place.source.y * scale),
+      pictureWidth: round(place.source.width * scale), pictureHeight: round(place.source.height * scale),
     }
-    await win.webContents.executeJavaScript(paintMonitor(placement, box))
+    await run(paintMonitor(placement, box))
     await new Promise((resolve) => setTimeout(resolve, 60))
-    caseH[label] = { overflow: placement.overflow, kept: placement.kept, ...(await win.webContents.executeJavaScript(readMonitor)) }
+    caseH[label] = { overflow: placement.overflow, kept: placement.kept, ...(await run(readMonitor)) }
   }
   // The strip is laid out from the width the browser gave the clip, then measured, at several
   // window sizes. What must hold: the tile is the constant tall in every one of them, the count
@@ -304,23 +367,23 @@ app.whenReady().then(async () => {
   for (const [label, width, height] of [['1400x900', 1400, 900], ['1400x1300', 1400, 1300], ['2000x900', 2000, 900], ['900x900', 900, 900]]) {
     win.setContentSize(width, height)
     await new Promise((resolve) => setTimeout(resolve, 250))
-    const clipWidth = await win.webContents.executeJavaScript(filmClipWidth)
+    const clipWidth = await run(filmClipWidth)
     // Laid out from the timeline's rate and the clip's trim — the two inputs the app uses — rather
     // than from any measured box, so the plan is a figure of the zoom alone.
     const plan = computeFilmstrip({ laneWidth: laneWidthFor(FILM_SECONDS, ZOOM), thumbHeight: FILMSTRIP_CLIP_HEIGHT, outAspect: 16 / 9, fps: 30, inSec: 0, outSec: FILM_SECONDS })
-    await win.webContents.executeJavaScript(paintFilm(plan))
+    await run(paintFilm(plan))
     await new Promise((resolve) => setTimeout(resolve, 80))
     caseG[label] = {
       clipWidth, thumbWidth: plan.thumbWidth, thumbCount: plan.thumbCount, cellWidth: +plan.cellWidth.toFixed(3),
-      ...(await win.webContents.executeJavaScript(readFilm)),
+      ...(await run(readFilm)),
     }
     // The same strip, laid out from the timeline's rate as the strip's own figure, must not move
     // either: the plan comes from the zoom and the clip's trim, so a window is not an input to it.
     caseI[label] = {
-      clip: +(await win.webContents.executeJavaScript(`+document.getElementById('b0').getBoundingClientRect().width.toFixed(2)`)),
-      lane: +(await win.webContents.executeJavaScript(`+document.getElementById('b2').getBoundingClientRect().width.toFixed(2)`)),
-      viewport: await win.webContents.executeJavaScript(`document.getElementById('lanesB').clientWidth`),
-      content: await win.webContents.executeJavaScript(`document.getElementById('lanesB').scrollWidth`),
+      clip: +(await run(`+document.getElementById('b0').getBoundingClientRect().width.toFixed(2)`)),
+      lane: +(await run(`+document.getElementById('b2').getBoundingClientRect().width.toFixed(2)`)),
+      viewport: await run(`document.getElementById('scroll-lanesB').clientWidth`),
+      content: await run(`document.getElementById('scroll-lanesB').scrollWidth`),
       plan: plan.cellWidth,
     }
   }

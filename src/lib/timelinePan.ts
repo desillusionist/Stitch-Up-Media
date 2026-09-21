@@ -1,10 +1,9 @@
 /**
  * How a zoomed timeline follows the skimmer.
  *
- * The lane label column is not part of the scrollable span, so the skimmer's offset is
- * measured past it. The same figure is used by the ruler, the lane heads and the
- * playhead itself, and a mismatch between them once put every clip out from under the
- * playhead.
+ * The lane label column is not part of the scrollable drawing at all — it is a column of the
+ * timeline's own grid, beside the scroller rather than inside it — so the skimmer's offset is its
+ * share of the lane area and nothing else.
  */
 export interface SkimmerView {
   /** The skimmer's offset within the scrollable content, in pixels. */
@@ -17,8 +16,8 @@ export interface SkimmerView {
 }
 
 /** The skimmer's offset within the scrollable content, given its share of the timeline. */
-export const skimmerOffset = (fraction: number, contentWidth: number, labelWidth: number): number =>
-  labelWidth + fraction * Math.max(0, contentWidth - labelWidth)
+export const skimmerOffset = (fraction: number, contentWidth: number): number =>
+  fraction * Math.max(0, contentWidth)
 
 /**
  * The scroll position that keeps the skimmer in view, or null when it is already there.

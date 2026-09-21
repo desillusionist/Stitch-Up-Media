@@ -276,7 +276,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .preview-zoom-field { width: 72px; }
 .preview-zoom-field input { padding: 6px 4px; }
 .preview-divider { width: 1px; align-self: stretch; min-height: 18px; background: var(--ui-border-dim); }
-.timeline-ruler { position: relative; height: 20px; padding: 0; margin: 0 0 6px 102px; color: var(--ui-muted); font-size: 9px; border-bottom: 1px dotted var(--ui-border); }
+.timeline-ruler { position: relative; height: 20px; padding: 0; margin: 0 0 6px; color: var(--ui-muted); font-size: 9px; border-bottom: 1px dotted var(--ui-border); }
 .timeline-ruler span { position: absolute; top: 0; white-space: nowrap; }
 .timeline-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .timeline-zoom { display: flex; align-items: center; gap: 6px; }
@@ -284,7 +284,16 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-zoom button:hover:not(:disabled) { color: var(--ui-accent); border-color: var(--ui-accent); }
 .timeline-zoom button:disabled { opacity: .35; cursor: not-allowed; }
 .timeline-zoom-value { min-width: 32px; text-align: center; color: var(--ui-accent); font-size: 10px; }
-.timeline-lanes { overflow-x: auto; overflow-y: hidden; }
+/* The timeline is two columns: a fixed gutter of lane labels and a scroller beside it.
+   The labels used to be sticky INSIDE the scroller, which put the scrollbar's own start beneath the
+   column and let the ruler's ticks and the skimmer travel under it. Outside the scroller, nothing
+   the timeline draws can reach the column at all, and the scrollbar belongs to the lane area alone.
+   The two columns share their row heights, so a lane opposite a label cannot drift out of line. */
+.timeline-lanes { display: grid; grid-template-columns: 102px minmax(0, 1fr); align-items: stretch; }
+.timeline-gutter { display: flex; flex-direction: column; background: var(--ui-panel); border-right: 1px dotted var(--ui-border); }
+/* Exactly the ruler's own height and margin, so both columns' first lane starts on the same line. */
+.timeline-gutter-ruler { height: 20px; margin: 0 0 6px; border-bottom: 1px dotted var(--ui-border); }
+.timeline-scroll { overflow-x: auto; overflow-y: hidden; min-width: 0; }
 /* The output shape buttons, and the four crop figures. */
 .aspect-row { display: flex; flex-wrap: wrap; gap: 5px; }
 .aspect-row button { flex: 0 0 auto; min-width: 44px; padding: 5px 7px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
@@ -321,19 +330,19 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .exact-icon.is-on { color: var(--ui-accent); border-color: var(--ui-accent); }
 .exact-icon:disabled { opacity: .4; }
 .timeline-lanes-inner { position: relative; min-width: 100%; }
-/* The lane's row height is the tile height plus the clip's own inset. It is derived from the one
-   constant the strip's arithmetic uses, so the lanes and the tiles cannot disagree: with a border
-   and the clip's ten pixels of margin, a forty-two pixel lane painted a THIRTY-ONE pixel tile
-   while the thumbnails were extracted at thirty-two, and every frame was three per cent squashed.
-   `min-height` rather than `height`, because a compact lane's two lines of text must never clip. */
-.timeline-lane { display: flex; align-items: stretch; min-height: calc(var(--filmstrip-tile, 32px) + 11px); border-bottom: 1px dotted var(--ui-border); }
-/* Lane label column. Kept equal to LANE_LABEL_WIDTH in EditJobApp, because the
-   playhead and the ruler are offset by that figure and a mismatch pushed every
-   clip, and every cut marker, sideways out from under the playhead.
-   Frozen to the scroller's own left edge, with the panel behind it, so the lanes scroll under the
-   labels rather than through them; above the playhead, so a skimmer that scrolls past that edge is
-   hidden behind the column instead of drawn over a lane's name. */
-.timeline-lane-head { position: sticky; left: 0; z-index: 4; width: 102px; min-width: 102px; display: flex; align-items: center; gap: 6px; padding-top: 12px; color: var(--ui-muted); background: var(--ui-panel); border-right: 1px dotted var(--ui-border); font-size: 9px; }
+/* A lane's row height is the tile height plus the clip's own inset, and it is a HEIGHT rather than a
+   minimum because the label opposite it is a fixed row of the same figure: a lane that grew by
+   itself would leave the two columns out of step. It is derived from the one constant the strip's
+   arithmetic uses, so the lanes and the tiles cannot disagree: with a border and the clip's ten
+   pixels of margin, a forty-two pixel lane painted a THIRTY-ONE pixel tile while the thumbnails
+   were extracted at thirty-two, and every frame was three per cent squashed. Clip text is a single
+   ellipsised line so that a long name cannot make a row taller than its label. */
+.timeline-lane { display: flex; align-items: stretch; height: calc(var(--filmstrip-tile, 32px) + 11px); border-bottom: 1px dotted var(--ui-border); }
+/* Lane label column. Kept equal to LANE_LABEL_WIDTH in EditJobApp, because the playhead and the
+   timeline's own drawing are laid out against the lane area it leaves. It is a column of the
+   timeline's grid rather than a sticky element: nothing scrolls past it because nothing is beside
+   it to scroll, and its own background is what the lanes end against. */
+.timeline-lane-head { display: flex; align-items: center; gap: 6px; height: calc(var(--filmstrip-tile, 32px) + 11px); padding: 12px 8px 0 6px; color: var(--ui-muted); background: var(--ui-panel); border-bottom: 1px dotted var(--ui-border); font-size: 9px; overflow: hidden; }
 .timeline-lane-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lane-mute { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 9px; line-height: 1; }
 .lane-mute:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
@@ -348,7 +357,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    audio track beside it still clips in proportion. An outline also leaves the padding box equal to
    the element's box, which is what an absolutely positioned marker measures its offset against. */
 .timeline-lane .timeline-clip { flex: 0 0 auto; min-width: 0; margin: 5px 0; padding: 0; border: 0; outline: 1px solid var(--ui-accent); outline-offset: -1px; display: block; position: relative; overflow: visible; }
-.timeline-lane .timeline-clip small { display: block; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; }
+.timeline-lane .timeline-clip small { display: block; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .timeline-lane .timeline-clip:hover { background: rgba(159, 191, 154, .08); }
 .timeline-lane .timeline-clip.is-active { outline-color: var(--ui-foreground); background: rgba(159, 191, 154, .14); }
 .timeline-lane .timeline-clip.is-trimmed { outline-style: dashed; }
@@ -367,7 +376,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .media-inspector { position: relative; }
 .inspector-close { position: absolute; top: 4px; right: 5px; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 11px; line-height: 1; }
 .inspector-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
-.timeline-clip-name { display: block; padding: 7px 6px 0; color: var(--ui-foreground); overflow: hidden; text-overflow: ellipsis; }
+.timeline-clip-name { display: block; padding: 7px 6px 0; color: var(--ui-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Filmstrip view: the cells share the lane exactly, each showing the frame the playhead would
    show there. The clip's own label is hidden so the frames are what is read.

@@ -8,7 +8,7 @@ import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/films
 import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSize, fitFilters, fitPlacement, fitSignature, fittedSize, placedSource, sourceCropOf } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
-import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
+import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor } from '../src/lib/timelineModel'
 import { QueueTask } from '../src/types'
@@ -284,11 +284,13 @@ console.log('\n== changing a rate leaves nothing stale behind ==')
 
 console.log('\n== a zoomed timeline follows the skimmer ==')
 {
-  // The ruler, the lane heads and the playhead all start after this column.
-  const LABEL = 102
-  near('the skimmer sits past the label column', skimmerOffset(0, 918, LABEL), 102)
-  near('and at the far edge', skimmerOffset(1, 918, LABEL), 918)
-  near('half way across', skimmerOffset(0.5, 918, LABEL), 510)
+  // The skimmer's offset is its share of the lane area, and the lane area is the whole of the
+  // scrollable drawing: the label column is a column of the timeline's grid, beside the scroller
+  // rather than inside it, so no figure here has a column to be measured past.
+  near('the skimmer starts at the drawing own left edge', skimmerOffset(0, 918), 0)
+  near('and ends at its own right edge', skimmerOffset(1, 918), 918)
+  near('half way across', skimmerOffset(0.5, 918), 459)
+  near('a share of nothing is nothing', skimmerOffset(0.5, 0), 0)
 
   const view = { scrollLeft: 0, viewportWidth: 918, contentWidth: 918 }
   check('a timeline that fits its window never pans', scrollToKeepVisible({ ...view, offset: 900 }), null)
@@ -815,8 +817,7 @@ console.log('\n== the timeline metric ==')
   check('a lane is its own length at that rate', [laneWidthFor(4, 1), laneWidthFor(600, 1)], [96, 14400])
   check('a trim shortens it', laneWidthFor(3.5, 2) < laneWidthFor(4, 2), true)
   check('and a nonsense length is nothing', [laneWidthFor(Number.NaN, 1), laneWidthFor(-5, 1)], [0, 0])
-  check('the content is the lanes plus the label column', contentWidthFor(600, 1, 102), 14502)
-  check('doubling the zoom doubles the content', contentWidthFor(600, 2, 102), 102 + 28800)
+  check('doubling the zoom doubles the drawing', laneWidthFor(600, 2), 28800)
   check('a point in the lane area is read against the rate', [secondsAt(96, 1), secondsAt(48, 2)], [4, 1])
   check('and a point before the lanes is the start', secondsAt(-40, 1), -40 / BASE_PX_PER_SECOND)
 

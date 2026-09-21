@@ -12,7 +12,7 @@ import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey,
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MAX_CROP, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
-import { ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
+import { ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
 
 /** The output shapes offered as buttons. The frame is the encoder's canvas, not a hint. */
 const ASPECTS: Array<{ label: string; ratio: number }> = [
@@ -38,8 +38,6 @@ const AUDIO_CODECS: Array<EncodingPreset['audioCodec']> = ['copy', 'aac', 'mp3',
 const AUDIO_CONTAINERS: Array<EncodingPreset['container']> = ['mp3', 'wav', 'm4a', 'flac']
 const RESOLUTIONS: Array<EncodingPreset['resolution']> = ['source', '4k', '1080p', '720p']
 
-/** Lane label column width. Mirrored in CSS and in the playhead offset. */
-const LANE_LABEL_WIDTH = 102
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
 const TAP_THRESHOLD_MS = 250
 const SLOW_MOTION_RATE = 0.5
@@ -810,7 +808,7 @@ export const EditJobApp: React.FC = () => {
     const inner = timelineInnerRef.current
     if (!scroller || !inner) return
     const next = scrollToKeepVisible({
-      offset: skimmerOffset(playheadFraction, inner.clientWidth, LANE_LABEL_WIDTH),
+      offset: skimmerOffset(playheadFraction, inner.clientWidth),
       scrollLeft: scroller.scrollLeft,
       viewportWidth: scroller.clientWidth,
       contentWidth: scroller.scrollWidth,
@@ -1087,11 +1085,19 @@ export const EditJobApp: React.FC = () => {
   }
   const elementUrl = sourceUrlFor(playback.segment)
 
+  /**
+   * Jumps the playhead to the point that was clicked.
+   *
+   * Read against the timeline's own rate rather than as a share of the element's width, exactly as
+   * the skimmer's drag is. The two disagreed before: a lane stretched to fill a panel wider than the
+   * content — which is every timeline at a low zoom — made a share of the width a longer time than
+   * the pixel under the pointer stood for, so a click landed nowhere near the clip it was on.
+   */
   const seekFraction = (event: React.MouseEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
     if (rect.width <= 0 || duration <= 0) return
-    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    playback.seek(fraction * duration)
+    const seconds = secondsAt(event.clientX - rect.left, zoom)
+    playback.seek(Math.max(0, Math.min(1, seconds / duration)) * duration)
   }
 
   /**
@@ -1113,7 +1119,7 @@ export const EditJobApp: React.FC = () => {
       // Read off the timeline's rate rather than off the rendered width, so a point maps to its time
       // whatever the panel is doing — and a timeline shorter than the panel maps no further than
       // its own end rather than across the empty space beside it.
-      const seconds = secondsAt(clientX - rect.left - LANE_LABEL_WIDTH, zoom)
+      const seconds = secondsAt(clientX - rect.left, zoom)
       playback.seek(Math.max(0, Math.min(1, seconds / duration)) * duration)
     }
     const move = (moveEvent: PointerEvent) => scrubTo(moveEvent.clientX)
@@ -1807,37 +1813,50 @@ export const EditJobApp: React.FC = () => {
                   // re-deciding what the zoom should be.
                   const scroller = timelineScrollRef.current
                   if (!scroller) return
-                  setZoom(clampZoom(fitZoom(duration, scroller.clientWidth - LANE_LABEL_WIDTH)))
+                  setZoom(clampZoom(fitZoom(duration, scroller.clientWidth)))
                 }}
                 disabled={duration <= 0}
                 title="Fit the whole timeline into the panel"
               >FIT</button>
             </div>
           </div>
-          <div className="timeline-lanes" ref={attachLanes} onWheel={scrubByWheel}>
-            <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${contentWidthFor(duration, zoom, LANE_LABEL_WIDTH)}px`, '--filmstrip-tile': `${FILMSTRIP_CLIP_HEIGHT}px` } as React.CSSProperties}>
-              <div className="timeline-ruler">
-                {/* Placed by TIME rather than by a share of the row: when a short timeline is
-                    stretched to fill the panel, a percentage would put mid-way at the middle of the
-                    panel instead of at half the output. */}
-                {Array.from({ length: 5 }, (_, index) => index / 4).map((fraction) => (
-                  <span key={fraction} style={{ left: `${laneWidthFor(duration * fraction, zoom)}px`, transform: fraction === 0 ? 'none' : fraction === 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
-                    {duration > 0 ? stamp(duration * fraction) : '--:--:--.--'}
-                  </span>
-                ))}
-              </div>
+          <div className="timeline-lanes" style={{ '--filmstrip-tile': `${FILMSTRIP_CLIP_HEIGHT}px` } as React.CSSProperties} onWheel={scrubByWheel}>
+            {/* The gutter: the ruler's own line and every lane's label, outside the scroller, so
+                the scrollbar begins beside the labels rather than beneath them and neither the
+                ruler nor the skimmer can travel under the column. Its rows carry the same heights
+                as the lanes opposite, so the two columns cannot drift apart. */}
+            <div className="timeline-gutter">
+              <div className="timeline-gutter-ruler" aria-hidden="true" />
               {model.lanes.map((lane) => (
-                <div className="timeline-lane" key={lane.id}>
-                  <div className="timeline-lane-head" onContextMenu={(event) => openLaneMenu(event, lane.id, lane.label)} title="Right-click to choose how this lane's clips are drawn">
-                    <button
-                      className={`lane-mute${muted[lane.id] ? ' is-muted' : ''}`}
-                      onClick={() => setLaneMuted(lane.id, !muted[lane.id])}
-                      aria-pressed={Boolean(muted[lane.id])}
-                      title={lane.embedded ? 'Mute this stream. The export will not carry it.' : 'Mute this track. The export will not carry it.'}
-                    >M</button>
-                    <span>{lane.label}</span>
-                  </div>
-                  <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
+                <div className="timeline-lane-head" key={lane.id} onContextMenu={(event) => openLaneMenu(event, lane.id, lane.label)} title="Right-click to choose how this lane's clips are drawn">
+                  <button
+                    className={`lane-mute${muted[lane.id] ? ' is-muted' : ''}`}
+                    onClick={() => setLaneMuted(lane.id, !muted[lane.id])}
+                    aria-pressed={Boolean(muted[lane.id])}
+                    title={lane.embedded ? 'Mute this stream. The export will not carry it.' : 'Mute this track. The export will not carry it.'}
+                  >M</button>
+                  <span>{lane.label}</span>
+                </div>
+              ))}
+            </div>
+            <div className="timeline-scroll" ref={attachLanes}>
+              {/* The lane area's own width, with nothing in it but lane: the label column is not a
+                  part of this drawing at all, which is what makes a point in it map to a time with
+                  the timeline's rate and no other figure. */}
+              <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${laneWidthFor(duration, zoom)}px` }}>
+                <div className="timeline-ruler">
+                  {/* Placed by TIME rather than by a share of the row: when a short timeline is
+                      stretched to fill the panel, a percentage would put mid-way at the middle of the
+                      panel instead of at half the output. */}
+                  {Array.from({ length: 5 }, (_, index) => index / 4).map((fraction) => (
+                    <span key={fraction} style={{ left: `${laneWidthFor(duration * fraction, zoom)}px`, transform: fraction === 0 ? 'none' : fraction === 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
+                      {duration > 0 ? stamp(duration * fraction) : '--:--:--.--'}
+                    </span>
+                  ))}
+                </div>
+                {model.lanes.map((lane) => (
+                  <div className="timeline-lane" key={lane.id}>
+                    <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
                     {lane.segments.map((segment, index) => (
                       <div
                         key={segment.key}
@@ -1936,7 +1955,8 @@ export const EditJobApp: React.FC = () => {
                   </div>
                 </div>
               ))}
-              <div className="timeline-playhead" style={{ left: `${LANE_LABEL_WIDTH + playheadFraction * laneWidthFor(duration, zoom)}px` }} onPointerDown={beginSkimmerDrag} title="Drag to move the skimmer" role="presentation" />
+              <div className="timeline-playhead" style={{ left: `${playheadFraction * laneWidthFor(duration, zoom)}px` }} onPointerDown={beginSkimmerDrag} title="Drag to move the skimmer" role="presentation" />
+              </div>
             </div>
           </div>
           {selectedBoundary && (() => {

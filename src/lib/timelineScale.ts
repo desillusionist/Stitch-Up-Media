@@ -35,11 +35,7 @@ export const clampZoom = (zoom: number): number =>
 export const laneWidthFor = (seconds: number, zoom: number): number =>
   Math.max(0, Number.isFinite(seconds) ? seconds : 0) * pxPerSec(zoom)
 
-/** How wide the whole timeline is drawn, its label column included. */
-export const contentWidthFor = (seconds: number, zoom: number, labelWidth: number): number =>
-  labelWidth + laneWidthFor(seconds, zoom)
-
-/** The time a point in the lane area stands for, from the label column's edge. */
+/** The time a point in the lane area stands for, from the lane area's own left edge. */
 export const secondsAt = (pixelsIntoLane: number, zoom: number): number =>
   (Number.isFinite(pixelsIntoLane) ? pixelsIntoLane : 0) / pxPerSec(zoom)
 
