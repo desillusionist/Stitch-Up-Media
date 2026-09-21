@@ -581,6 +581,12 @@ console.log('\n== the timeline filmstrip ==')
   check('nothing is sampled from outside the trim', trimmed.frames.every((frame) => frame >= first && frame <= last), true)
   check('the last sample reaches the far end of the trim', trimmed.frames[trimmed.frames.length - 1] > last - trimmed.step, true)
   check('with one sample per tile', trimmed.frames.length, trimmed.thumbCount)
+  check('with one sample time per tile', trimmed.times.length, trimmed.thumbCount)
+  check('the sample times run forward', trimmed.times.every((time, index) => index === 0 || time > trimmed.times[index - 1]), true)
+  check('and every one is inside the trim', trimmed.times.every((time) => time >= 2 && time <= 6), true)
+  // A time and the frame it falls on are derived together, so the picture a tile asks for and
+  // the key it is cached under cannot drift apart.
+  check('each time names the frame it falls on', trimmed.frames.every((frame, index) => frame === Math.max(first, Math.min(last, Math.round(trimmed.times[index] * 30)))), true)
 
   // Density, not coverage: a wider lane fits more tiles AND samples more densely across the
   // same span, and a narrower one still reaches the end.

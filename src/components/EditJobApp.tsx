@@ -125,18 +125,14 @@ export const EditJobApp: React.FC = () => {
   /** Lanes drawn as strips of frames rather than as a plain clip panel, by lane id. */
   const [filmstripLanes, setFilmstripLanes] = useState<Record<string, boolean>>({})
   /**
-   * The lane area's width in pixels, kept as it is now.
-   *
-   * Read rather than assumed, and re-read when it changes: the strip is laid out from this, so
-   * a window resize must move it exactly as a zoom does. A value read at render time would go
-   * stale the moment the window changed and the strip would silently be laid out for a lane
-   * width that no longer exists.
+   * The lane area's observer, bound by the callback ref below. The lane's width is read rather
+   * than assumed: the strip is laid out from it, so a window resize must move it exactly as a
+   * zoom does, and a width read only once would go stale the moment the window changed.
    */
+  const lanesObserverRef = useRef<ResizeObserver | null>(null)
   const [laneArea, setLaneArea] = useState(0)
   /** Every fetched frame, by source and ABSOLUTE FRAME INDEX, so zooming reuses them. */
-  const frameImagesRef = useRef<Record<string, Record<number, string>>>({})
-  /** Bumped when frames arrive, since a ref alone does not redraw. */
-  const [frameTick, setFrameTick] = useState(0)
+  const [frameImages, setFrameImages] = useState<Record<string, Record<number, string>>>({})
   /** Frames already asked for and not yet answered, so none is asked for twice. */
   const framesPendingRef = useRef<Record<string, true>>({})
   /** Each source's own shape and rate, which is what the strip's geometry is worked out from. */
@@ -162,7 +158,7 @@ export const EditJobApp: React.FC = () => {
   // Monitoring state only. Never written to the task, so muting can never be
   // mistaken for a mix-down decision.
   const [muted, setMuted] = useState<Record<string, boolean>>({})
-  const timelineScrollRef = useRef<HTMLDivElement>(null)
+  const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const timelineInnerRef = useRef<HTMLDivElement>(null)
 
   const commit = (nextBaseline: QueueTask | null, nextDraft: QueueTask | null) => {
@@ -297,8 +293,19 @@ export const EditJobApp: React.FC = () => {
 
   // The lane area's width, watched rather than assumed. A ResizeObserver rather than a window
   // resize listener, because the lane also changes when the window is merely re-laid out.
-  useEffect(() => {
-    const element = timelineScrollRef.current
+  /**
+   * Binds the lane-width observer when the timeline mounts, and measures it.
+   *
+   * A callback ref rather than an effect, because the timeline does not exist until a queue item
+   * has arrived: an effect with no dependencies ran while the window was still saying WAITING FOR
+   * QUEUE ITEM, found no element, and never ran again. The lane width stayed zero and every strip
+   * was laid out from nothing, which is why the strip came out empty however right the arithmetic
+   * was. Re-measuring on a resize is what keeps a re-laid-out lane from going unnoticed.
+   */
+  const attachLanes = useCallback((element: HTMLDivElement | null) => {
+    lanesObserverRef.current?.disconnect()
+    lanesObserverRef.current = null
+    timelineScrollRef.current = element
     if (!element) return
     let timer: number | null = null
     const measure = () => {
@@ -310,7 +317,7 @@ export const EditJobApp: React.FC = () => {
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(element)
-    return () => { if (timer != null) window.clearTimeout(timer); observer.disconnect() }
+    lanesObserverRef.current = observer
   }, [])
 
   // Each strip source's own shape and rate, once. These are facts about the file, so they are
@@ -354,48 +361,51 @@ export const EditJobApp: React.FC = () => {
   useEffect(() => {
     const bridge = window.electronAPI
     if (!bridge?.framesAt || !model) return
-    const wanted = new Map<string, Set<number>>()
+    const wanted = new Map<string, { jobs: Array<{ time: number; index: number }>; fps: number }>()
     model.lanes.forEach((lane) => {
       if (!filmstripLanes[lane.id]) return
       lane.segments.forEach((segment) => {
         const plan = planFor(segment)
-        if (!plan) return
+        const shape = sourceShape[segment.sourcePath]
         const target = mediaTargets[segment.sourcePath]?.path
-        if (!target) return
-        const set = wanted.get(target) ?? new Set<number>()
-        plan.frames.forEach((frame) => {
-          if (frameImagesRef.current[target]?.[frame]) return
-          if (framesPendingRef.current[`${target}#${frame}`]) return
-          set.add(frame)
+        if (!plan || !shape || !target) return
+        const entry = wanted.get(target) ?? { jobs: [], fps: shape.fps }
+        plan.times.forEach((time, cell) => {
+          const index = plan.frames[cell]
+          if (frameImages[target]?.[index]) return
+          if (framesPendingRef.current[`${target}#${index}`]) return
+          entry.jobs.push({ time, index })
         })
-        if (set.size) wanted.set(target, set)
+        if (entry.jobs.length) wanted.set(target, entry)
       })
     })
     if (!wanted.size) return
     let cancelled = false
-    void Promise.all([...wanted].map(async ([target, frames]) => {
-      const list = [...frames].sort((a, b) => a - b)
-      list.forEach((frame) => { framesPendingRef.current[`${target}#${frame}`] = true })
-      const images = await bridge.framesAt(target, { frames: list })
-      return [target, list, images] as const
+    void Promise.all([...wanted].map(async ([target, { jobs, fps }]) => {
+      jobs.forEach(({ index }) => { framesPendingRef.current[`${target}#${index}`] = true })
+      const images = await bridge.framesAt(target, { times: jobs.map((job) => job.time), fps })
+      return [target, jobs, images] as const
     })).then((entries) => {
       if (cancelled) return
-      let arrived = false
-      entries.forEach(([target, list, images]) => {
-        const store = frameImagesRef.current[target] ?? {}
-        frameImagesRef.current[target] = store
-        list.forEach((frame, position) => {
-          // A frame that could not be extracted is forgotten rather than left pending, so a
-          // later layout can try it again instead of that tile being blank forever.
-          delete framesPendingRef.current[`${target}#${frame}`]
-          const image = images[position]
-          if (image) { store[frame] = image; arrived = true }
+      setFrameImages((current) => {
+        const next = { ...current }
+        let arrived = false
+        entries.forEach(([target, jobs, images]) => {
+          const store = { ...(next[target] ?? {}) }
+          jobs.forEach(({ index }, position) => {
+            // A frame that could not be extracted is forgotten rather than left pending, so a
+            // later layout can try it again instead of that tile being blank forever.
+            delete framesPendingRef.current[`${target}#${index}`]
+            const image = images[position]
+            if (image) { store[index] = image; arrived = true }
+          })
+          next[target] = store
         })
+        return arrived ? next : current
       })
-      if (arrived) setFrameTick((tick) => tick + 1)
     })
     return () => { cancelled = true }
-  }, [filmstripLanes, laneZoom, laneArea, mediaTargets, sourceShape, timelineSignature, frameTick])
+  }, [filmstripLanes, laneZoom, laneArea, mediaTargets, sourceShape, timelineSignature, frameImages])
 
   // A context menu closes on the next press anywhere, or on Escape.
   useEffect(() => {
@@ -813,7 +823,7 @@ export const EditJobApp: React.FC = () => {
   /** A frame already fetched, by absolute source frame index. */
   const frameImageFor = (segment: TimelineSegment, frame: number) => {
     const target = mediaTargets[segment.sourcePath]?.path
-    return target ? frameImagesRef.current[target]?.[frame] : undefined
+    return target ? frameImages[target]?.[frame] : undefined
   }
   /**
    * Skims across a clip's strip.
@@ -844,14 +854,13 @@ export const EditJobApp: React.FC = () => {
     skimTokenRef.current = token
     setSkim({ sourcePath: target, cell, index })
     const pending = `${target}#${index}`
-    if (frameImagesRef.current[target]?.[index] || framesPendingRef.current[pending]) return
+    if (frameImages[target]?.[index] || framesPendingRef.current[pending]) return
     framesPendingRef.current[pending] = true
-    void bridge.framesAt(target, { frames: [index] }).then((images) => {
+    void bridge.framesAt(target, { times: [segment.sourceIn + fraction * segment.duration], fps: shape.fps }).then((images) => {
       delete framesPendingRef.current[pending]
       const image = images[0]
       if (!image || skimTokenRef.current !== token) return
-      frameImagesRef.current[target] = { ...(frameImagesRef.current[target] ?? {}), [index]: image }
-      setFrameTick((tick) => tick + 1)
+      setFrameImages((current) => ({ ...current, [target]: { ...(current[target] ?? {}), [index]: image } }))
     })
   }
   const endSkim = () => {
@@ -1351,7 +1360,7 @@ export const EditJobApp: React.FC = () => {
               <button onClick={() => setZoom(1)} disabled={zoom === 1} title="Fit the whole timeline">FIT</button>
             </div>
           </div>
-          <div className="timeline-lanes" ref={timelineScrollRef} onWheel={scrubByWheel}>
+          <div className="timeline-lanes" ref={attachLanes} onWheel={scrubByWheel}>
             <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${zoom * 100}%` }}>
               <div className="timeline-ruler">
                 {Array.from({ length: 5 }, (_, index) => index / 4).map((fraction) => (

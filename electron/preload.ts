@@ -10,8 +10,8 @@ export interface IElectronAPI {
   listSiblingFiles: (filePath: string) => Promise<string[]>
   getPathsTotalSize: (filePaths: string[]) => Promise<number>
   pathExists: (filePath: string) => Promise<boolean>
-  /** Frames of a clip by absolute source frame index, for the timeline filmstrip and skimming. */
-  framesAt: (filePath: string, options?: { frames?: number[] }) => Promise<string[]>
+  /** Frames of a clip at given absolute source times, cached by the frame each falls on. */
+  framesAt: (filePath: string, options?: { times?: number[]; fps?: number }) => Promise<string[]>
   selectOutputDir: () => Promise<string | null>
   startTask: (task: QueueTask) => Promise<{ success: boolean; error?: string }>
   startSelectedTasks: (tasks: QueueTask[]) => Promise<{ success: boolean; error?: string }>
@@ -58,7 +58,7 @@ const api: IElectronAPI = {
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
-  framesAt: (filePath: string, options?: { frames?: number[] }) => ipcRenderer.invoke('frames-at', filePath, options),
+  framesAt: (filePath: string, options?: { times?: number[]; fps?: number }) => ipcRenderer.invoke('frames-at', filePath, options),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),
   startSelectedTasks: (tasks: QueueTask[]) => ipcRenderer.invoke('start-selected-tasks', tasks),

@@ -214,35 +214,51 @@ app.whenReady().then(() => {
     if (frameWidthCache.size < 80) frameWidthCache.set(filePath, width)
     return width
   }
-  ipcMain.handle('frames-at', async (_, filePath: string, options?: { frames?: number[] }) => {
-    const wanted = [...new Set((options?.frames ?? []).filter((frame) => Number.isFinite(frame) && frame >= 0).map((frame) => Math.round(frame)))].sort((a, b) => a - b)
-    if (!filePath || !wanted.length) return []
+  ipcMain.handle('frames-at', async (_, filePath: string, options?: { times?: number[]; fps?: number }) => {
+    const times = (options?.times ?? []).filter((time) => Number.isFinite(time) && time >= 0)
+    const fps = options?.fps && options.fps > 0 ? options.fps : 30
+    if (!filePath || !times.length) return []
     try { if (!fs.statSync(filePath).isFile()) return [] } catch { return [] }
     const have = framesFor(filePath)
-    const missing = wanted.filter((frame) => !have.has(frame))
-    if (missing.length) {
-      const height = Math.max(2, Math.round(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE / 2) * 2)
-      const width = await thumbWidthFor(filePath)
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-frames-'))
+    const keyOf = (time: number) => Math.max(0, Math.round(time * fps))
+    const width = await thumbWidthFor(filePath)
+    const height = Math.max(2, Math.round(FILMSTRIP_CLIP_HEIGHT * FILMSTRIP_SCALE / 2) * 2)
+    // One extraction per frame, each seeking straight to the moment it wants. Seeking the INPUT
+    // is a fast keyframe seek, and it works on any source however its frames are numbered: the
+    // alternative, selecting frame numbers out of the whole file, only lines up when they are
+    // counted from the source's own start, and decodes everything up to the furthest one.
+    const jobs: Array<{ index: number; time: number }> = []
+    const queued = new Set<number>()
+    times.forEach((time) => {
+      const index = keyOf(time)
+      if (have.has(index) || queued.has(index)) return
+      queued.add(index)
+      jobs.push({ index, time })
+    })
+    const extract = async ({ index, time }: { index: number; time: number }) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-frame-'))
+      const framePath = path.join(dir, 'frame.jpg')
       try {
-        // The commas inside each eq() are escaped: an unescaped one separates filters and would
-        // split the select in half.
-        const selector = missing.map((frame) => `eq(n\\,${frame})`).join('+')
-        const filters = `select=${selector},scale=${width}:${height}:force_original_aspect_ratio=decrease`
-        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', filePath, '-vf', filters, '-vsync', '0', path.join(dir, 'f%05d.jpg')], { timeout: 120000 })
-        const files = fs.readdirSync(dir).filter((name) => name.endsWith('.jpg')).sort()
-        // The frames come back in ascending index order, which is the order they were asked for.
-        files.forEach((name, position) => {
-          if (position >= missing.length) return
-          have.set(missing[position], `data:image/jpeg;base64,${fs.readFileSync(path.join(dir, name)).toString('base64')}`)
-        })
+        const scale = `scale=${width}:${height}:force_original_aspect_ratio=decrease`
+        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', time.toFixed(3), '-i', filePath, '-frames:v', '1', '-vf', scale, '-q:v', '4', framePath], { timeout: 30000 })
+        have.set(index, `data:image/jpeg;base64,${fs.readFileSync(framePath).toString('base64')}`)
       } catch (error) {
-        logEvent('ipc', 'frames-at failed', { filePath, count: missing.length, error: String(error) })
+        logEvent('ipc', 'frame extraction failed', { filePath, time, index, error: String(error) })
       } finally {
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
       }
     }
-    return wanted.map((frame) => have.get(frame) ?? '')
+    // A few at a time: a whole strip at once would be one process per tile, and one at a time
+    // would take as long as they add up to.
+    const lanes = 4
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(lanes, jobs.length) }, async () => {
+      while (next < jobs.length) {
+        const job = jobs[next++]
+        await extract(job)
+      }
+    }))
+    return times.map((time) => have.get(keyOf(time)) ?? '')
   })
 
   ipcMain.handle('get-paths-total-size', async (_, filePaths: string[]) => {

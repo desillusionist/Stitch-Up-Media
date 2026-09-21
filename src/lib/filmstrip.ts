@@ -29,7 +29,9 @@ export interface FilmstripPlan {
   cellWidth: number
   /** Source frames between one tile and the next. Fractional on purpose — never floor it. */
   step: number
-  /** Absolute source frame each tile shows: the middle of its own cell, inside the trim. */
+  /** Absolute SOURCE TIME each tile samples, at its own cell's midpoint. */
+  times: number[]
+  /** The absolute source frame each time falls on, which is the key its picture is cached under. */
   frames: number[]
 }
 
@@ -64,9 +66,13 @@ export const computeFilmstrip = (o: {
   const inFrame = Math.max(0, Math.round(o.inSec * fps))
   const trimmed = Math.max(1, Math.round((o.outSec - o.inSec) * fps))
   const step = trimmed / thumbCount
-  const frames = Array.from({ length: thumbCount }, (_, index) =>
-    inFrame + Math.min(trimmed - 1, Math.round((index + 0.5) * step)))
-  return { thumbWidth, thumbCount, cellWidth, step, frames }
+  // A time and the frame it falls on, derived together so the picture a tile shows and the key
+  // it is cached under cannot drift apart. The time is what is asked for, because seeking to a
+  // time works on any source however its frames are numbered; the frame index is what is cached,
+  // because that is what stays stable when the lane is re-laid out and the times shift a little.
+  const times = Array.from({ length: thumbCount }, (_, index) => o.inSec + ((index + 0.5) * step) / fps)
+  const frames = times.map((time) => Math.max(inFrame, Math.min(inFrame + trimmed - 1, Math.round(time * fps))))
+  return { thumbWidth, thumbCount, cellWidth, step, times, frames }
 }
 
 /**
