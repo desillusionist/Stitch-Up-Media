@@ -1,7 +1,7 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
-import { dropPreviewsFor, previewKey, rememberedPreviewFor, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
+import { dropPreviewsFor, previewKey, rememberedPreviewFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
@@ -258,7 +258,7 @@ console.log('\n== changing a rate leaves nothing stale behind ==')
     preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
     sequenceInput: { dir: '/seq', pattern: 'f_%04d.png', globPattern: '*', startNumber: 1, frameCount: 240, hasGaps: false, missing: [], fps: 24, firstFrame: '/seq/f_0001.png' },
     sequenceInputs: { '/seq/f_0001.png': { dir: '/seq', pattern: 'f_%04d.png', globPattern: '*', startNumber: 1, frameCount: 240, hasGaps: false, missing: [], fps: 24, firstFrame: '/seq/f_0001.png' } },
-    imageSequencePreviews: { '/seq/f_0001.png': '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' },
+    imageSequencePreviews: { [sequencePreviewKey('/seq/f_0001.png', 24, 240)]: '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' },
   }) as unknown as QueueTask
 
   const changed = withSourceTiming(sequence(), '/seq/f_0001.png', { fps: 48 })
@@ -268,11 +268,11 @@ console.log('\n== changing a rate leaves nothing stale behind ==')
   near('the sequence length follows the rate', changed.sequenceInput!.duration!, 5)
   near('and its rate is the new one', changed.sequenceInput!.fps, 48)
   check('a finished job goes back to pending', changed.status, 'pending')
-  check('a rate of zero changes nothing', withSourceTiming(sequence(), '/seq/f_0001.png', { fps: 0 }).imageSequencePreviews, { '/seq/f_0001.png': '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' })
+  check('a rate of zero changes nothing', withSourceTiming(sequence(), '/seq/f_0001.png', { fps: 0 }).imageSequencePreviews, { [sequencePreviewKey('/seq/f_0001.png', 24, 240)]: '/tmp/seq-24fps.mp4', '/other.mp4': '/tmp/other.mp4' })
 
   // Deleting the last preview entry must leave the field absent rather than empty, which
   // is how the rest of the app tests for it.
-  const lone = { ...sequence(), imageSequencePreviews: { '/seq/f_0001.png': '/tmp/seq-24fps.mp4' } } as unknown as QueueTask
+  const lone = { ...sequence(), imageSequencePreviews: { [sequencePreviewKey('/seq/f_0001.png', 24, 240)]: '/tmp/seq-24fps.mp4' } } as unknown as QueueTask
   check('the last preview leaving empties the field', withSourceTiming(lone, '/seq/f_0001.png', { fps: 30 }).imageSequencePreviews, undefined)
 
   // One rule for the rate, whichever window asked: the timeline model's own.
@@ -1031,6 +1031,18 @@ console.log('\n== where a sequence picture is without asking ==')
   check('a rate with no clip built at it has none', rememberedPreviewFor(task, frame, 25), undefined)
   check('a source that is not a sequence has no generated clip', rememberedPreviewFor(task, '/other.mp4', 24), undefined)
   check('and neither has nothing at all', rememberedPreviewFor(task, undefined, 24), undefined)
+  // The key the queue writes one under is the key the editor looks one up by. They were spelled
+  // separately and disagreed, which was invisible: the clip was on disk and the editor simply never
+  // found it, so it rebuilt the whole sequence on every open.
+  check('the queue and the editor spell a sequence key the same way', sequencePreviewKey(frame, 24, 240), spec(24))
+  const filed = {
+    id: 'q', type: 'stitch', status: 'pending', progress: 0, sourcePaths: [frame],
+    outputDirectory: '/out', outputFilename: 'o.mov',
+    preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    sequenceInputs: { [frame]: { dir: '/seq', pattern: 'f_%04d.png', globPattern: '*', startNumber: 1, frameCount: 240, hasGaps: false, missing: [], fps: 24, firstFrame: frame } },
+    imageSequencePreviews: { [sequencePreviewKey(frame, 24, 240)]: '/tmp/seq-24fps.mp4' },
+  } as unknown as QueueTask
+  check('so a clip the queue filed is the one the editor finds', rememberedPreviewFor(filed, frame, 24), '/tmp/seq-24fps.mp4')
 }
 console.log('\n== where a right-click menu goes ==')
 {

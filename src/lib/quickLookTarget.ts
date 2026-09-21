@@ -42,6 +42,28 @@ const PREVIEW_SPEC = '\u0000'
 export const previewKey = (sourcePath: string, spec?: string): string =>
   spec ? `${sourcePath}${PREVIEW_SPEC}${spec}` : sourcePath
 
+/**
+ * What identifies an image sequence's generated clip, at the rate it was built at.
+ *
+ * The frame count belongs in it as well as the rate, because the clip's LENGTH comes from the two
+ * together: a clip built from a shorter sequence is a different length at the same rate, and playing
+ * it would drift from the timeline rather than merely look stale.
+ */
+const sequenceSpec = (rate: number, frameCount: number): string => `seq:${rate}:${frameCount}`
+
+/**
+ * The key an image sequence's generated clip is held under.
+ *
+ * The one place the sequence spec is spelled out. The queue files a clip when a sequence is imported
+ * and the editor looks one up when it draws that clip, and while the two spelled the key separately
+ * they disagreed: the queue wrote the bare source path while every reader asked for the rate and the
+ * frame count along with it, so the lookup always missed. Nothing looked broken — the clip was on
+ * disk and correct — but the editor fell back to building it, frame by frame, on every open, which is
+ * what made opening a job with a long sequence in it as slow as importing it had been.
+ */
+export const sequencePreviewKey = (sourcePath: string, rate: number, frameCount: number): string =>
+  previewKey(sourcePath, sequenceSpec(rate, frameCount))
+
 /** The logical source a cache key belongs to. */
 export const sourceOfPreviewKey = (key: string): string => key.split(PREVIEW_SPEC)[0]
 
@@ -82,7 +104,7 @@ export const rememberedPreviewFor = (task: QueueTask, sourcePath: string | undef
   if (!sourcePath) return undefined
   const sequence = sequenceFor(task, sourcePath)
   if (!sequence) return undefined
-  return task.imageSequencePreviews?.[previewKey(sourcePath, `seq:${rate}:${sequence.frameCount}`)]
+  return task.imageSequencePreviews?.[sequencePreviewKey(sourcePath, rate, sequence.frameCount)]
 }
 
 /**
@@ -129,7 +151,7 @@ export const resolveQuickLookRequest = async (
   // rate and length, since those are choices. Before this, a sequence imported when the
   // settings said 25 kept playing at 25 after the rate was changed to 30.
   const spec = sequence
-    ? `seq:${rate}:${sequence.frameCount}`
+    ? sequenceSpec(rate, sequence.frameCount)
     : timedStill ? `still:${rate}:${stillSeconds}` : undefined
   const cacheKey = sourceTarget ? previewKey(sourceTarget, spec) : undefined
   let existingPreview = cacheKey ? task.imageSequencePreviews?.[cacheKey] : undefined

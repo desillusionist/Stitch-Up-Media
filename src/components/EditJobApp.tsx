@@ -436,6 +436,13 @@ export const EditJobApp: React.FC = () => {
       const resolved: Record<string, { path: string; previewUnavailable?: boolean }> = {}
       entries.forEach(([key, sourcePath, request]) => {
         if (!request) return
+        // A clip this call had to build is reported back like the helper's own, so a rebuild forced by
+        // a clip that had genuinely gone missing is paid once rather than again on every open — and so
+        // the next open finds it without asking, which is the whole point of remembering it at all.
+        if (request.regeneratedPreview) {
+          const { sourceTarget, path: previewPath } = request.regeneratedPreview
+          void window.electronAPI?.rememberPreview(task.id, sourceTarget, previewPath)
+        }
         // Only a success is remembered, so a target that could not be built is tried
         // again the next time the task changes rather than being given up on.
         resolvedTargetsRef.current[key] = true

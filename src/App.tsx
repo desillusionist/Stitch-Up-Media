@@ -13,7 +13,7 @@ import { detectSequences, isImagePath } from './lib/detectSequences'
 import { deriveOutputFilename } from './lib/outputNaming'
 import { mediaKind } from './lib/mediaKind'
 import { removeSourceFromTask } from './lib/sourceRemoval'
-import { resolveQuickLookRequest, dropPreviewsFor, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
+import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
 import { rekeyClipMap } from './lib/timelineModel'
 
 /**
@@ -398,7 +398,12 @@ export const App: React.FC = () => {
       outputDirectory: settings.defaultOutputDir || dir, outputFilename: `${baseName}${effectiveType === 'stitch' ? '_stitched' : effectiveType === 'combo' ? '_combo' : suffix}.${preset.container}`,
       preset, status: 'pending', progress: 0, sourceBaseName: baseName, stillImageDuration: mediaKind(first) === 'image' ? Math.max(0.1, settings.defaultImageDuration || 10) : undefined,
       additionalAudioTracks: (effectiveType === 'multitrack' || effectiveType === 'combo') ? filePaths.filter((path) => mediaKind(path) === 'audio').map((path, index) => ({ id: `${Date.now()}-${index}`, path, language: 'und' })) : undefined,
-      imageSequencePreviews: imageSequencePreview ? { [detectedSequence?.firstFrame || first]: imageSequencePreview } : undefined,
+      imageSequencePreviews: imageSequencePreview && detectedSequence && sequenceFps
+        // Filed under the key the editor will look it up by, which carries the rate and the frame
+        // count the clip was built at. Written under the bare path instead, it was never found, and
+        // every open rebuilt the whole sequence.
+        ? { [sequencePreviewKey(detectedSequence.firstFrame, sequenceFps, detectedSequence.frameCount)]: imageSequencePreview }
+        : undefined,
       sourceMetadata: stillFpsMetadata(filePaths, detectedSequence?.firstFrame, settings),
       sequenceInput: detectedSequence && sequenceFps ? { ...detectedSequence, fps: sequenceFps, duration: detectedSequence.frameCount / sequenceFps, totalSize: sequenceTotalSize } : undefined,
       sequenceInputs: detectedSequence && sequenceFps ? { [detectedSequence.firstFrame]: { ...detectedSequence, fps: sequenceFps, duration: detectedSequence.frameCount / sequenceFps } } : undefined,
@@ -757,7 +762,7 @@ export const App: React.FC = () => {
       const incomingStillFps = stillFpsMetadata(incomingVideos, sequenceKey, settings)
       const sourceMetadata = incomingStillFps ? { ...(item.sourceMetadata || {}), ...incomingStillFps } : item.sourceMetadata
       const resetCompleted = item.status === 'done' || item.skipped
-      return { ...item, type: stableNextType, comboMode: stableNextType === 'combo' ? (item.comboMode || 'multitrack') : undefined, sourcePaths: videoSources.length ? videoSources : allAudioSources, additionalAudioTracks: videoSources.length && tracks.length ? tracks : undefined, imageSequencePreviews: incomingSequencePreview && sequenceKey ? { ...(item.imageSequencePreviews || {}), [sequenceKey]: incomingSequencePreview } : item.imageSequencePreviews, sequenceInput: item.sequenceInput || incomingSequenceInput, sequenceInputs: incomingSequenceInput && sequenceKey ? { ...(item.sequenceInputs || {}), [sequenceKey]: incomingSequenceInput } : item.sequenceInputs, sourceMetadata, status: resetCompleted ? 'pending' : item.status, skipped: resetCompleted ? false : item.skipped, progress: 0 }
+      return { ...item, type: stableNextType, comboMode: stableNextType === 'combo' ? (item.comboMode || 'multitrack') : undefined, sourcePaths: videoSources.length ? videoSources : allAudioSources, additionalAudioTracks: videoSources.length && tracks.length ? tracks : undefined, imageSequencePreviews: incomingSequencePreview && sequenceKey && incomingSequenceInput ? { ...(item.imageSequencePreviews || {}), [sequencePreviewKey(sequenceKey, incomingSequenceInput.fps, incomingSequenceInput.frameCount)]: incomingSequencePreview } : item.imageSequencePreviews, sequenceInput: item.sequenceInput || incomingSequenceInput, sequenceInputs: incomingSequenceInput && sequenceKey ? { ...(item.sequenceInputs || {}), [sequenceKey]: incomingSequenceInput } : item.sequenceInputs, sourceMetadata, status: resetCompleted ? 'pending' : item.status, skipped: resetCompleted ? false : item.skipped, progress: 0 }
     }))
   }
   const handleAddSource = async (task: QueueTask) => {
