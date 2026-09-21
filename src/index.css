@@ -293,6 +293,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-subsection { display: grid; gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
 .crop-row, .exact-row { display: grid; align-items: center; gap: 5px; }
 .crop-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+/* The per-clip crop's own line: which clip the figures belong to, and the one action that puts them
+   on every clip at once. */
+.crop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
+.crop-actions button { padding: 6px 8px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
+.crop-actions button:hover { border-color: var(--ui-accent); }
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
 /* The shape list and the unit switch, above the crop's four figures. The switch's glyph buttons
    match the select's height so the row reads as one control rather than two. */

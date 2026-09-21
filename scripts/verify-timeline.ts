@@ -5,7 +5,7 @@ import { dropPreviewsFor, previewKey, sourceOfPreview, sourceOfPreviewKey } from
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
-import { DEFAULT_FIT_OFFSET, clampFitOffset, fitFilters, fitPlacement, fitSignature, fittedSize } from '../src/lib/sourceFit'
+import { DEFAULT_FIT_OFFSET, clampFitOffset, clipFilters, cropRegion, croppedSize, fitFilters, fitPlacement, fitSignature, fittedSize, sourceCropOf } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, ZOOM_MAX, ZOOM_MIN, clampZoom, contentWidthFor, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
@@ -668,7 +668,7 @@ console.log('\n== the timeline filmstrip ==')
   check('and so is the same placement moved', frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })) === frameKey(120, signature({ fit: { mode: 'width', offset: 0.2 } })), false)
   check('while the same placement is the same picture', frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })) === frameKey(120, signature({ fit: { mode: 'width', offset: 0.5 } })), true)
   check('a job crop is part of it too', signature({ crop: { left: 0.1, top: 0, right: 0.1, bottom: 0 } }) === signature(), false)
-  check('and no fit at all is its own signature', signature(), 'contain@1920x1080|none')
+  check('and no fit at all is its own signature', signature(), 'contain@1920x1080|full|none')
 }
 
 console.log('\n== the monitor zoom ==')
@@ -760,11 +760,11 @@ console.log('\n== the per-clip output fit ==')
   // The cache key: everything that changes the picture, with the offset quantised so a dragger
   // still moving does not ask for a new set of thumbnails at every pixel of the drag.
   const sig = (mode: 'width' | 'height', offset: number) => fitSignature({ source, frame, fit: { mode, offset } })
-  check('a signature names the fit, the position and both boxes', sig('width', 0.5), 'width@0.50@720x1280>1920x1080')
+  check('a signature names the fit, the position, both boxes and the crop', sig('width', 0.5), 'width@0.50@720x1280>1920x1080|full')
   check('a hair of movement is not a different picture', sig('width', 0.501) === sig('width', 0.5), true)
   check('a real move is', sig('width', 0.6) === sig('width', 0.5), false)
   check('the other axis is a different picture at the same position', sig('height', 0.5) === sig('width', 0.5), false)
-  check('and the default says so rather than naming a fit', fitSignature({ source, frame }), 'contain@1920x1080')
+  check('and the default says so rather than naming a fit', fitSignature({ source, frame }), 'contain@1920x1080|full')
   check('a nonsense offset is signalled as centred', clampFitOffset(Number.NaN), DEFAULT_FIT_OFFSET)
 
   // A fit is carried by the clip that owns it, exactly as a trim is.
@@ -799,6 +799,40 @@ console.log('\n== the timeline metric ==')
   check('a longer output fits the same area at a smaller zoom', fitZoom(60, 900) < fitZoom(30, 900), true)
   check('a fit is held inside the zoom range', [clampZoom(fitZoom(1, 100000)), clampZoom(fitZoom(100000, 1))], [ZOOM_MAX, ZOOM_MIN])
   check('and a fit of nothing is 1x', [fitZoom(0, 900), fitZoom(30, 0), clampZoom(Number.NaN)], [1, 1, 1])
+}
+
+console.log('\n== the per-clip crop ==')
+{
+  // The crop and the fit are two stages, and the order between them is the whole design: the crop
+  // picks WHAT of the clip is kept, in the source's own space, and the fit decides HOW that sits in
+  // the frame. A crop stored against the source is also what makes it survive a change of output
+  // size or shape, since nothing in it refers to the frame at all.
+  const source = { width: 720, height: 1280 }
+  const frame = { width: 1920, height: 1080 }
+  const middleBand = { left: 0, top: 426 / 1280, right: 0, bottom: 426 / 1280 }
+  const round6 = (value: number) => Math.round(value * 1e6) / 1e6
+  const region = cropRegion(middleBand)
+  check('a crop is a region of the source', [region.x, region.y, region.w, round6(region.h)], [0, 0.3328125, 1, 0.334375])
+  check('no crop is the whole source', cropRegion(undefined), { x: 0, y: 0, w: 1, h: 1 })
+  check('and a region goes back to the four edges the controls show', sourceCropOf(middleBand), { x: 0, y: 0.332813, w: 1, h: 0.334375 })
+  check('the kept region is whole pixels of the source', croppedSize(source, middleBand), { width: 720, height: 428 })
+  check('an uncropped clip is the source', croppedSize(source, undefined), source)
+  check('a nonsense source is nothing rather than a guess', croppedSize({ width: 0, height: 0 }, middleBand), { width: 0, height: 0 })
+
+  // The chain: the crop first, at the pixels the region stands for, and then the fit worked out from
+  // what was kept rather than from the source it came out of.
+  const chain = clipFilters({ source, frame, crop: middleBand, fit: { mode: 'width', offset: 0.5 } })
+  check('the crop comes first in the chain', chain?.slice(0, 2), ['crop=720:428:0:426', 'scale=1920:1142'])
+  check('an uncropped clip is only placed', clipFilters({ source: { width: 1920, height: 1080 }, frame, fit: { mode: 'width', offset: 0.5 } }), ['scale=1920:1080', 'setsar=1'])
+  check('a crop with no fit is placed the default way', clipFilters({ source, frame, crop: middleBand }), ['crop=720:428:0:426', 'scale=1816:1080', 'pad=1920:1080:52:0:color=black', 'setsar=1'])
+  check('and a clip with neither is the whole picture in the frame', clipFilters({ source: { width: 608, height: 1080 }, frame }), ['scale=608:1080', 'pad=1920:1080:656:0:color=black', 'setsar=1'])
+
+  // The signature carries the crop, quantised, because it is part of what a thumbnail looks like: a
+  // crop dragged a tenth of a per cent does not need the strip again, a real one does.
+  const sig = (crop: Parameters<typeof fitSignature>[0]['crop']) => fitSignature({ source, frame, crop })
+  check('a signature carries the crop', sig(middleBand).endsWith('|0.000,0.333,0.000,0.333'), true)
+  check('a different crop is a different picture', sig(middleBand) === sig({ left: 0.1, top: 0, right: 0, bottom: 0 }), false)
+  check('and no crop says so', sig(undefined).endsWith('|full'), true)
 }
 
 console.log('\n== the waveform ==')

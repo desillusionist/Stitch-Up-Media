@@ -12,7 +12,7 @@ const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { fitFilters } = require('./.sourceFit.cjs')
+const { clipFilters, croppedSize, fitFilters, fitPlacement } = require('./.sourceFit.cjs')
 
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-chain-'))
 const frame = { width: 1920, height: 1080 }
@@ -44,8 +44,8 @@ const name = (rgb) => Object.entries(NAMES)
   .sort((left, right) => left.distance - right.distance)[0].label
 
 /** One frame of a clip through one chain, as the size and the colours that came out of it. */
-const through = (clip, fit, points = [[960, 10], [960, 540], [960, 1070], [120, 540]]) => {
-  const filters = fitFilters({ source: clip.size, frame, fit })
+const through = (clip, fit, crop, points = [[960, 10], [960, 540], [960, 1070], [120, 540]]) => {
+  const filters = clipFilters({ source: clip.size, frame, fit, crop })
   if (!filters) throw new Error('the arithmetic produced no chain')
   const shot = path.join(work, `shot-${filters.join('|').replace(/[^a-z0-9]/gi, '_')}.png`)
   run(['-i', clip.file, '-frames:v', '1', '-vf', filters.join(','), shot])
@@ -88,6 +88,22 @@ check('and the default fit gives the same picture', through(tall, undefined).col
 const same = through(wide, { mode: 'height', offset: 0.5 })
 check('a clip the shape of the frame is only scaled', [same.width, same.height], [1920, 1080])
 check('and keeps every part of itself', same.colours, ['red', 'red', 'red', 'red'])
+
+// Crop then fit: the crop picks which band of the source is kept, in the source's own space, and the
+// fit places what is left. A crop keeping only the middle band is green however it is then fitted,
+// and the frame is covered either way — which is the whole claim of the two stages composing.
+const middleBand = { left: 0, top: 426 / 1280, right: 0, bottom: 426 / 1280 }
+const cropped = through(tall, { mode: 'width', offset: 0.5 }, middleBand)
+check('a crop is taken before the fit', [cropped.width, cropped.height], [1920, 1080])
+check('and only what it kept survives', cropped.colours, ['green', 'green', 'green', 'green'])
+// The bars a cropped clip leaves are much narrower than an uncropped clip's, so the sample that
+// looks for one is taken at the very edge rather than where the old ones used to be.
+const barPoints = [[960, 10], [960, 540], [960, 1070], [20, 540]]
+check('the fitted crop covers the frame too', through(tall, { mode: 'height', offset: 0.5 }, middleBand, barPoints).colours, ['green', 'green', 'green', 'black'])
+check('a crop with no fit is fitted the default way', through(tall, undefined, middleBand, barPoints).colours, ['green', 'green', 'green', 'black'])
+// The crop decides WHAT is kept, so an offset with nothing over to move along has nothing to do.
+check('and the extent of the kept region is what the fit is worked out from', cropped.colours.length, 4)
+check('a cropped region of the source is smaller than the source', croppedSize(tall.size, middleBand), { width: 720, height: 428 })
 
 console.log(failures === 0 ? '\nALL CHAINS PASSED\n' : `\n${failures} CHAIN(S) FAILED\n`)
 fs.rmSync(work, { recursive: true, force: true })

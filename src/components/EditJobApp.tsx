@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, RotateCcw, Unlink, ZoomIn, ZoomOut } from 'lucide-react'
-import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SourceFit, TransitionType } from '../types'
+import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, clipIndexOf, edgeFade, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
@@ -24,7 +24,7 @@ const ASPECTS: Array<{ label: string; ratio: number }> = [
 ]
 const ASPECT_TOLERANCE = 0.01
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
-import { clampFitOffset, DEFAULT_FIT_OFFSET, fitPlacement } from '../lib/sourceFit'
+import { clampFitOffset, cropFractionsOf, DEFAULT_FIT_OFFSET, fitPlacement, sourceCropOf } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 
@@ -445,7 +445,9 @@ export const EditJobApp: React.FC = () => {
       source: { width: shape?.width ?? 16, height: shape?.height ?? 9 },
       frame: outputFrame ?? { width: 1920, height: 1080 },
       fit: draft ? sourceFitFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined,
-      crop: draft?.preset.crop,
+      // The crop of THAT clip, not the job's: the signature has to change when the clip's own crop
+      // does, which is what regenerates its strip and nothing else's.
+      crop: draft ? effectiveCropFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined,
     })
   }
   const keyFor = (segment: TimelineSegment, frame: number) => frameKey(frame, signatureFor(segment))
@@ -504,7 +506,7 @@ export const EditJobApp: React.FC = () => {
     if (!bridge?.framesAt || !model || !outputFrame) return
     // Grouped by the source AND the signature, not by the source alone: the same file can appear
     // twice in a job with a different fit on each, and those are different pictures.
-    const wanted = new Map<string, { target: string; signature: string; jobs: Array<{ time: number; key: string }>; fps: number; source: { width: number; height: number }; fit?: SourceFit }>()
+    const wanted = new Map<string, { target: string; signature: string; jobs: Array<{ time: number; key: string }>; fps: number; source: { width: number; height: number }; fit?: SourceFit; crop?: CropFractions }>()
     model.lanes.forEach((lane) => {
       if (!filmstripLanes[lane.id]) return
       lane.segments.forEach((segment) => {
@@ -516,9 +518,12 @@ export const EditJobApp: React.FC = () => {
         if (!plan || !shape || !target || segment.still) return
         const signature = signatureFor(segment)
         const fit = draft ? sourceFitFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined
+        // The clip's own crop, which the chain crops with before it fits: a strip is a picture of the
+        // output, and the output is cropped.
+        const crop = draft ? effectiveCropFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined
         const source = { width: shape.width, height: shape.height }
         const id = `${target}#${signature}`
-        const entry = wanted.get(id) ?? { target, signature, jobs: [], fps: shape.fps, source, fit }
+        const entry = wanted.get(id) ?? { target, signature, jobs: [], fps: shape.fps, source, fit, crop }
         plan.times.forEach((time, cell) => {
           const key = keyFor(segment, plan.frames[cell])
           if (frameImages[target]?.[key]) return
@@ -533,7 +538,7 @@ export const EditJobApp: React.FC = () => {
     const asked = [...wanted].flatMap(([, { target, jobs }]) => jobs.map(({ key }) => `${target}#${key}`))
     const timer = window.setTimeout(() => {
       asked.forEach((key) => { framesPendingRef.current[key] = true })
-      void Promise.all([...wanted].map(async ([, { target, signature, jobs, fps, source, fit }]) => {
+      void Promise.all([...wanted].map(async ([, { target, signature, jobs, fps, source, fit, crop }]) => {
         const images = await bridge.framesAt(target, {
           times: jobs.map((job) => job.time),
           fps,
@@ -541,7 +546,7 @@ export const EditJobApp: React.FC = () => {
           frame: outputFrame,
           source,
           fit,
-          crop: draft?.preset.crop,
+          crop,
         })
         return [target, jobs, images] as const
       })).then((entries) => {
@@ -1168,6 +1173,7 @@ export const EditJobApp: React.FC = () => {
     outputFilenameManuallySet: latest().outputFilenameManuallySet,
     transitions: latest().transitions,
     sourceFit: latest().sourceFit,
+    sourceCrop: latest().sourceCrop,
     mutedLanes: latest().mutedLanes,
     sourceTiming: sourceTimingOverrides(latest()),
   })
@@ -1192,10 +1198,14 @@ export const EditJobApp: React.FC = () => {
   const naturalAspect = picture ? picture.width / picture.height : null
   /** The clip being shown, and the fit it carries, which is what places it in the frame. */
   const activeFitKey = playback.segment ? `${playback.segment.sourcePath}#${clipIndexOf(playback.segment)}` : null
+  const activeClipKey = activeFitKey
+  /** Whether framing is per clip in this job, which is where a job's visuals are concatenated. */
+  const perClipFraming = clipsConcatenate(draft)
+  const activeSourceCrop = activeClipKey ? draft.sourceCrop?.[activeClipKey] : undefined
   const activeFit = activeFitKey && draft ? draft.sourceFit?.[activeFitKey] : undefined
   /** The crop the preset applies. Its edges are fractions of the picture, which is what makes them
    *  survive a resize; the pixel figures the fields show are read off `picture` just above. */
-  const crop = draft.preset.crop
+  const crop = perClipFraming && activeSourceCrop ? cropFractionsOf(activeSourceCrop) : draft.preset.crop
   const cropPx = crop && picture ? cropPixels(crop, picture) : null
   /** The proportion list's value: no crop at all, a shape the crop keeps, or the user's own. */
   const keptProportion = crop && naturalAspect ? keptAspect(crop, naturalAspect) : undefined
@@ -1210,7 +1220,46 @@ export const EditJobApp: React.FC = () => {
   // as off the moment the last field was zeroed, and every attempt to switch it back on set
   // the same all-zero crop again. Whether it removes anything is the encoder's question.
   const cropEnabled = Boolean(crop)
-  const setCrop = (next: CropFractions) => updatePreset({ crop: clampCrop(next) })
+  /**
+   * Sets the crop the controls are editing.
+   *
+   * Where a job's visuals are concatenated that is the CLIP's own crop, stored against it so it
+   * follows the clip through a reorder; everywhere else it is the job's, which is the only crop a
+   * single-visual job has. The two are the same controls and the same numbers, so the monitor's crop
+   * box, the fields and the handles cannot disagree about which one is being edited.
+   */
+  const setCrop = (next: CropFractions) => {
+    const clamped = clampCrop(next)
+    if (perClipFraming && activeClipKey) {
+      const region = sourceCropOf(clamped)
+      const map = { ...(latest().sourceCrop ?? {}) }
+      // A crop of the whole clip is no crop at all, so it leaves nothing behind to read as a choice.
+      if (region.x <= 0 && region.y <= 0 && region.w >= 1 && region.h >= 1) delete map[activeClipKey]
+      else map[activeClipKey] = region
+      updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
+      return
+    }
+    updatePreset({ crop: clamped })
+  }
+  /** Takes the crop away, from whichever record the controls are editing. */
+  const clearCrop = () => {
+    if (perClipFraming && activeClipKey) {
+      const map = { ...(latest().sourceCrop ?? {}) }
+      delete map[activeClipKey]
+      updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
+      return
+    }
+    updatePreset({ crop: undefined })
+  }
+  /** Puts the crop being edited on every clip, which is what a job cropped as a whole wants. */
+  const applyCropToAll = () => {
+    const region = sourceCropOf(crop ?? { left: 0, top: 0, right: 0, bottom: 0 })
+    const map: Record<string, SourceCrop> = {}
+    draft.sourcePaths.forEach((sourcePath, index) => {
+      if (mediaKind(sourcePath) !== 'audio') map[`${sourcePath}#${index}`] = region
+    })
+    updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
+  }
   const setCropEdge = (edge: keyof CropFractions, raw: number) => {
     if (!crop || !cropPx || !picture) return
     // One edge moves at a time: the other three are already whole pixels of the source, so
@@ -1910,10 +1959,10 @@ export const EditJobApp: React.FC = () => {
             </div>
             <div className="editor-subsection">
               <EditorToggle
-                label="CROP VIDEO"
+                label="CROP SOURCE VIDEO"
                 checked={cropEnabled}
                 reason={videoReason}
-                onChange={(checked) => updatePreset({ crop: checked ? (crop ?? { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }) : undefined })}
+                onChange={(checked) => checked ? setCrop(crop ?? { left: 0.1, top: 0.1, right: 0.1, bottom: 0.1 }) : clearCrop()}
               />
               {crop && <>
                 <div className="crop-head">
@@ -1944,7 +1993,13 @@ export const EditJobApp: React.FC = () => {
                     </label>
                   ))}
                 </div>
-                <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON THE PICTURE; NONE CLEARS IT. A CROP IS APPLIED BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.</div>
+                {perClipFraming && (
+                  <div className="crop-actions">
+                    <span>THIS CLIP{activeSourceCrop ? '' : ' — UNCROPPED'}</span>
+                    <button onClick={applyCropToAll} title="Put this crop on every clip in the job">APPLY TO ALL CLIPS</button>
+                  </div>
+                )}
+                <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON THE PICTURE; NONE CLEARS IT. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.</div>
               </>}
             </div>
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><input type="number" min="1" className="editor-input" value={draft.preset.fps ?? ''} placeholder={String(defaultFps)} disabled={audioOnly} onChange={(event) => changeFps(event.target.value)} /></EditorField>

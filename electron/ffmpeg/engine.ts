@@ -4,10 +4,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, MAIN_LANE_ID, edgeFade, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
+import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration } from '../../src/lib/timelineModel'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
-import { fitFilters } from '../../src/lib/sourceFit'
+import { clipFilters } from '../../src/lib/sourceFit'
 import { probeFile } from './probe'
 
 export interface ProgressData {
@@ -87,19 +87,23 @@ export class FFmpegEngine {
       const fades = this.fadeFilters(fade, clipDuration)
       const outputRate = isSequence || isStill ? rate : (targetFps || 30)
       const fit = sourceFitFor(task, source, clipIndex)
-      // One chain per clip, built from the clip's own placement in the frame. The arithmetic is
-      // shared with the editor's own drawing of it, so what is encoded here is what was shown.
-      // It needs the clip's pixel size, which the caller has already probed; without one (or with
-      // no fit asked for and no size known) the default fit is said the way ffmpeg can work it out
-      // for itself, and the result is the same picture either way.
-      const placement = fit && sourceSize && sourceSize.width > 0 && sourceSize.height > 0
-        ? fitFilters({ source: sourceSize, frame: { width: W, height: H }, fit })
+      // Crop first, in the source's own space, then place what is left in the frame: the crop decides
+      // WHAT of the clip is kept, and the fit decides HOW it sits. Both come from the clip's own
+      // record and fall back to the job-wide crop, so a job that was cropped before clips could be
+      // cropped one by one keeps the crop it had, and a clip with neither is the whole clip fitted
+      // as it always was.
+      const crop = effectiveCropFor(task, source, clipIndex)
+      const placement = sourceSize && sourceSize.width > 0 && sourceSize.height > 0
+        ? clipFilters({ source: sourceSize, frame: { width: W, height: H }, crop, fit })
         : null
-      if (fit && !placement) {
-        logEvent('ffmpeg', 'clip fit could not be applied; using the default fit', { taskId: task.id, source, clipIndex })
+      if ((fit || crop) && !placement) {
+        logEvent('ffmpeg', 'clip crop or fit could not be applied; using the default fit', { taskId: task.id, source, clipIndex })
       }
       const videoFilters = [
         ...(placement ?? [
+          // No size to work the crop out against, so it is asked for in the source's own terms — the
+          // same region either way — and the fit is left to ffmpeg's own aspect handling.
+          ...(crop && hasCrop(crop) ? [cropFilter(crop)] : []),
           `scale=${W}:${H}:force_original_aspect_ratio=decrease`,
           `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black`,
           'setsar=1',
@@ -202,7 +206,7 @@ export class FFmpegEngine {
     }
     if (!isSequence) this.applyTrimInput(cmd, trim)
 
-    this.applyPresetToCommand(cmd, task.preset)
+    this.applyPresetToCommand(cmd, task.preset, [], { cropsPerClip: clipsConcatenate(task) })
     // A muted lane is one the export does not carry, so its audio is dropped outright rather than
     // encoded and left silent: a file with no audio stream says so without being listened to.
     if (laneIsMuted(task, MAIN_LANE_ID)) cmd.outputOptions(['-an'])
@@ -322,7 +326,7 @@ export class FFmpegEngine {
       .input(tmpConcatFile)
       .inputOptions(['-f', 'concat', '-safe', '0'])
 
-    this.applyPresetToCommand(cmd, task.preset)
+    this.applyPresetToCommand(cmd, task.preset, [], { cropsPerClip: clipsConcatenate(task) })
     if (targetBitrate > 0 && task.preset.audioCodec === 'copy') cmd.audioCodec('aac')
     // The clips' own audio is what arrives through the concat, so muting the main lane means the
     // joined output carries none of it — and there is then nothing for the audio options below to
@@ -587,7 +591,7 @@ export class FFmpegEngine {
   }
 
   // Helper to configure video/audio encoders with macOS VideoToolbox optimizations
-  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = []) {
+  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = [], options: { cropsPerClip?: boolean } = {}) {
     // 1. Video Codec
     if (preset.videoCodec === 'copy') {
       cmd.videoCodec('copy')
@@ -643,7 +647,7 @@ export class FFmpegEngine {
     // A crop goes first: everything downstream then works on what was kept, which is what
     // makes cropping to an output shape a crop followed by a fit rather than two unrelated
     // operations. Its smallest side is floored, since an encoder rejects an empty frame.
-    if (wantsVideo && preset.crop && hasCrop(preset.crop)) videoFilters.push(cropFilter(preset.crop))
+    if (wantsVideo && preset.crop && hasCrop(preset.crop) && !options.cropsPerClip) videoFilters.push(cropFilter(preset.crop))
     // 2. Resolution Scaling
     if (wantsVideo && preset.videoCodec !== 'copy') {
       const exact = preset.width && preset.height ? { width: preset.width, height: preset.height } : undefined
@@ -654,6 +658,8 @@ export class FFmpegEngine {
         // made to have. A named resolution is the frame itself and is fitted the same way, so
         // asking for 4K really produces 4K. An exact size with no crop is still applied as it
         // stands, which is what lets the aspect buttons shape the picture.
+        // The crop being per clip does not change that: the frame is still not to be stretched, so a
+        // job whose clips are cropped one by one is fitted exactly as a job-wide crop was.
         const keepShape = Boolean(preset.crop && hasCrop(preset.crop)) || !exact
         videoFilters.push(`scale=${box.width}:${box.height}${keepShape ? ':force_original_aspect_ratio=decrease' : ''}`)
         if (keepShape) videoFilters.push(`pad=${box.width}:${box.height}:(ow-iw)/2:(oh-ih)/2:color=black`)

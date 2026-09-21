@@ -64,6 +64,27 @@ export interface AudioTrackItem {
 export type TransitionType = 'none' | 'fade'
 
 /**
+ * The region of a clip's SOURCE that the job keeps, normalised to the source's own size.
+ *
+ * Keyed like trimPoints and sourceFit, by the clip that owns it, so it follows a clip through a
+ * reorder and goes with it when it is removed. An absent entry is the whole clip.
+ *
+ * Normalised to the SOURCE rather than to the output, which is what makes it survive a change of
+ * output resolution or aspect ratio: the crop decides what part of the clip is kept, and the output
+ * only ever affects where that part is placed afterwards.
+ */
+export interface SourceCrop {
+  /** Left edge, as a fraction of the source's width. */
+  x: number
+  /** Top edge, as a fraction of the source's height. */
+  y: number
+  /** Kept width, as a fraction of the source's width. */
+  w: number
+  /** Kept height, as a fraction of the source's height. */
+  h: number
+}
+
+/**
  * How one clip is placed in the output frame, when it is not left to fit itself.
  *
  * Keyed like trimPoints, by the clip that owns it (`"path#index"`), so it follows the clip
@@ -151,6 +172,11 @@ export interface QueueTask {
    */
   sourceFit?: Record<string, SourceFit>
   /**
+   * The region of each clip's source the job keeps, keyed by the clip that owns it, mirroring how
+   * trimPoints are keyed. Absent means the whole clip.
+   */
+  sourceCrop?: Record<string, SourceCrop>
+  /**
    * Lanes whose audio the export does NOT carry, by lane id.
    *
    * The same toggle that silences a lane while monitoring decides whether it reaches the output, so
@@ -177,6 +203,8 @@ export interface EditJobPatch {
   transitions?: Record<string, ClipTransition>
   /** Per-clip output fit, keyed like the transitions and carried whole rather than interpreted. */
   sourceFit?: Record<string, SourceFit>
+  /** Per-clip source crop, keyed like the fit and carried whole rather than interpreted. */
+  sourceCrop?: Record<string, SourceCrop>
   /** Lanes whose audio the export does not carry, carried whole like the fit. */
   mutedLanes?: Record<string, boolean>
   /**

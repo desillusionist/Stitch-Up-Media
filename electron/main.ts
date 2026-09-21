@@ -9,7 +9,7 @@ import { logEvent, getLogFile } from './logger'
 import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
-import { fitFilters } from '../src/lib/sourceFit'
+import { clipFilters } from '../src/lib/sourceFit'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { spawn, execFileSync } from 'node:child_process'
 import os from 'node:os'
@@ -245,15 +245,14 @@ app.whenReady().then(() => {
         // thumbnail is what the output will contain, and a fitted clip's tiles show the crop or the
         // bars it is going to get rather than a picture the export will never contain.
         const chain: string[] = []
-        const placement = frame && source ? fitFilters({ source, frame, fit }) : null
+        // Crop then fit, from the same module and in the same order the encoder uses, so a thumbnail
+        // is a small copy of the frame the export will write rather than a picture of the source.
+        const placement = frame && source ? clipFilters({ source, frame, fit, crop }) : null
         if (placement) {
           chain.push(...placement)
-          if (crop && hasCrop(crop)) chain.push(cropFilter(crop))
-          // Down to the tile, and into it: the frame is already the output's own shape, so this is
-          // a plain scaling of it unless the job crops it to another shape, in which case the crop
-          // is fitted into the tile and the letters left beside it are black, as in the export.
-          chain.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`)
-          chain.push(`pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`, 'setsar=1')
+          // Down to the tile, and into it: what the placement left is already the frame's shape, so
+          // this is a plain scaling of it.
+          chain.push(`scale=${width}:${height}`)
         } else {
           // Nothing to place the clip in — a source whose size could not be read — so the frame is
           // treated as it was before there was a fit, and the crop is of the source itself.

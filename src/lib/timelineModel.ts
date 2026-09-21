@@ -1,4 +1,5 @@
 import { ClipTransition, QueueTask, SequenceInput } from '../types'
+import { CropFractions } from './outputFrame'
 import { mediaKind } from './mediaKind'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
@@ -187,7 +188,32 @@ export const MAIN_LANE_ID = 'main'
 export const laneIsMuted = (task: QueueTask, laneId: string): boolean => Boolean(task.mutedLanes?.[laneId])
 
 /**
- * The clip's own place in the job, which is what a trim or a fit is keyed by.
+ * Whether a job's visuals are concatenated, which is where crops and fits are per clip.
+ *
+ * A stitch always joins clips; a combo joins them only when it has more than one visual, since a
+ * combo with a single one is a multi-track job with a track beside it. Everywhere else there is one
+ * picture and the job-wide crop and resolution own its framing.
+ */
+export const clipsConcatenate = (task: Pick<QueueTask, 'type' | 'sourcePaths'>): boolean =>
+  task.type === 'stitch' || (task.type === 'combo' && task.sourcePaths.filter((source) => mediaKind(source) !== 'audio').length > 1)
+
+/**
+ * The crop that applies to one clip, in the left/top/right/bottom form the controls and the filter
+ * both work in: the clip's own if it has one, and the job's if it has not.
+ */
+export const effectiveCropFor = (task: QueueTask, sourcePath: string | undefined, index: number): CropFractions | undefined => {
+  const region = sourceCropFor(task, sourcePath, index)
+  if (!region) return task.preset.crop
+  return {
+    left: region.x,
+    top: region.y,
+    right: Math.max(0, 1 - region.x - region.w),
+    bottom: Math.max(0, 1 - region.y - region.h),
+  }
+}
+
+/**
+ * The clip's own place in the job, which is what a trim, a fit or a crop is keyed by.
  *
  * A segment knows its place by the key it was built with, and nothing else carries it, so it is
  * read back from there rather than re-derived by looking the path up: the same file can appear
@@ -206,6 +232,14 @@ export const clipIndexOf = (segment: Pick<TimelineSegment, 'key'>): number => {
  */
 export const sourceFitFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
   task.sourceFit?.[`${sourcePath}#${index}`] || (sourcePath ? task.sourceFit?.[sourcePath] : undefined)
+
+/**
+ * The crop a clip carries, by the same keying again. An absent one is the whole clip — not an empty
+ * crop: a clip with no entry at all has never been cropped, and the job-wide crop stands in for it
+ * so that a job cropped before clips could be cropped one by one keeps the crop it had.
+ */
+export const sourceCropFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
+  task.sourceCrop?.[`${sourcePath}#${index}`] || (sourcePath ? task.sourceCrop?.[sourcePath] : undefined)
 
 /**
  * Interpreter rate for a source. An image sequence's own fps wins, matching the

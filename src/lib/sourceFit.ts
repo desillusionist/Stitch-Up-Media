@@ -1,5 +1,5 @@
-import { FitMode, FrameSize } from './outputFrame'
-import { SourceFit } from '../types'
+import { CropFractions, FitMode, FrameSize } from './outputFrame'
+import { SourceCrop, SourceFit } from '../types'
 
 /**
  * Per-clip output fit: how one clip is placed in the output frame when it does not simply fit.
@@ -130,9 +130,85 @@ export const fitFilters = (input: { source: FrameSize; frame: FrameSize; fit?: S
  * that is still moving does not ask for a new set of thumbnails at every pixel — and the two
  * boxes. Frames cached under one placement must never be served for another.
  */
-export const fitSignature = (input: { source?: FrameSize; frame?: FrameSize; fit?: SourceFit }): string => {
+export const fitSignature = (input: { source?: FrameSize; frame?: FrameSize; fit?: SourceFit; crop?: CropFractions }): string => {
   const box = (size?: FrameSize) => (size && size.width > 0 && size.height > 0 ? `${size.width}x${size.height}` : '-')
-  if (!input.fit) return `contain@${box(input.frame)}`
+  // Quantised to a tenth of a per cent, so a crop box being dragged does not ask for a new strip at
+  // every pixel of the drag — the same reason the fit's offset is quantised.
+  const region = input.crop
+    ? [input.crop.left, input.crop.top, input.crop.right, input.crop.bottom].map((edge) => (Number.isFinite(edge) ? edge.toFixed(3) : '0')).join(',')
+    : 'full'
+  if (!input.fit) return `contain@${box(input.frame)}|${region}`
   const offset = Math.round(clampFitOffset(input.fit.offset) * 100) / 100
-  return `${input.fit.mode}@${offset.toFixed(2)}@${box(input.source)}>${box(input.frame)}`
+  return `${input.fit.mode}@${offset.toFixed(2)}@${box(input.source)}>${box(input.frame)}|${region}`
+}
+
+/**
+ * The region a clip's crop keeps, in whole pixels of the source.
+ *
+ * Both stages of a clip are worked out from this: the crop is taken at exactly these pixels, and the
+ * fit is then worked out from exactly this size, so the crop and the fit cannot disagree about what
+ * the clip is by a pixel — which they would if one used the probe's dimensions and the other the
+ * cropped ones.
+ */
+export const croppedSize = (source: FrameSize, crop?: CropFractions): FrameSize => {
+  if (!(source.width > 0) || !(source.height > 0)) return { width: 0, height: 0 }
+  const region = cropRegion(crop)
+  return { width: Math.max(2, Math.round(source.width * region.w)), height: Math.max(2, Math.round(source.height * region.h)) }
+}
+
+/** A crop as a region of the source in fractions: where it starts, and how much it keeps. */
+export const cropRegion = (crop?: CropFractions): { x: number; y: number; w: number; h: number } => {
+  if (!crop) return { x: 0, y: 0, w: 1, h: 1 }
+  const left = clampFraction(crop.left)
+  const top = clampFraction(crop.top)
+  const right = clampFraction(crop.right)
+  const bottom = clampFraction(crop.bottom)
+  return {
+    x: left,
+    y: top,
+    w: Math.max(0.001, 1 - left - right),
+    h: Math.max(0.001, 1 - top - bottom),
+  }
+}
+
+const clampFraction = (value: number): number => (Number.isFinite(value) ? Math.max(0, Math.min(0.999, value)) : 0)
+
+/** The region a crop control's four edges stand for, which is what the task stores. */
+export const sourceCropOf = (crop: CropFractions): SourceCrop => {
+  const region = cropRegion(crop)
+  return { x: round6(region.x), y: round6(region.y), w: round6(region.w), h: round6(region.h) }
+}
+
+/** The same region in the left/top/right/bottom form the editor's crop controls work in. */
+export const cropFractionsOf = (region: SourceCrop): CropFractions => ({
+  left: Math.max(0, region.x),
+  top: Math.max(0, region.y),
+  right: Math.max(0, 1 - region.x - region.w),
+  bottom: Math.max(0, 1 - region.y - region.h),
+})
+
+const round6 = (value: number) => Math.round(value * 1e6) / 1e6
+
+/**
+ * The whole chain for one clip, as the encoder, the thumbnails and the monitor all read it.
+ *
+ * Crop first, in the source's own space: it decides WHAT of the clip is kept, and it is stored
+ * normalised to the source, so a change of resolution or aspect ratio never invalidates it. Then the
+ * fit, in the frame's space: it decides HOW the kept region sits in the output. The two cannot fight,
+ * because the second only ever sees what the first kept.
+ */
+export const clipFilters = (input: { source: FrameSize; frame: FrameSize; crop?: CropFractions; fit?: SourceFit }): string[] | null => {
+  const filters: string[] = []
+  const region = cropRegion(input.crop)
+  const kept = croppedSize(input.source, input.crop)
+  if (input.source.width > 0 && input.source.height > 0 && (region.x > 0 || region.y > 0 || region.w < 1 || region.h < 1)) {
+    // Pixel figures rather than expressions, so the crop lands where the arithmetic above says and
+    // the fit is handed the size that was really kept.
+    const x = Math.max(0, Math.round(input.source.width * region.x))
+    const y = Math.max(0, Math.round(input.source.height * region.y))
+    filters.push(`crop=${kept.width}:${kept.height}:${x}:${y}`)
+  }
+  const placement = fitFilters({ source: kept, frame: input.frame, fit: input.fit })
+  if (!placement) return filters.length ? filters : null
+  return [...filters, ...placement]
 }
