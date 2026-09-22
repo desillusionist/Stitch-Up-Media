@@ -64,6 +64,22 @@ export const useConsolidatedPlayback = (
   const { playable, fps } = options
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const detachRef = useRef<(() => void) | null>(null)
+  /**
+   * The element the load handlers are bound to, so being handed it again is answered with nothing.
+   *
+   * A ref written as an arrow is a new function on every render, and React answers a changed ref by
+   * detaching the old one and attaching the new — on every render. Attaching means binding the load
+   * handlers and moving the element to the playhead, which is a MOUNT's work: run sixty times a second
+   * it seeks the element sixty times a second, and the picture crawls and the element's own audio
+   * breaks up. The monitor re-renders on every animation frame while it plays, so that is exactly what
+   * it was doing. Remembering the element is what makes a re-attach of the same one a no-op.
+   */
+  const boundRef = useRef<HTMLVideoElement | null>(null)
+  /**
+   * A departure that has been asked for but has not gone through yet, so that the next thing to
+   * arrive can cancel it. See `attachVideo`, which is the whole of why this exists.
+   */
+  const pendingDetachRef = useRef<number | null>(null)
   const [position, setPosition] = useState(0)
   const [segmentIndex, setSegmentIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -188,26 +204,57 @@ export const useConsolidatedPlayback = (
     setPlaying(false)
   }, [])
 
+  /** Lets go of the element the handlers are bound to, if any. */
+  const unbindVideo = useCallback(() => {
+    detachRef.current?.()
+    detachRef.current = null
+    boundRef.current = null
+  }, [])
+
   /**
    * The element unmounts while a still frame is showing, so handlers are bound
    * from a callback ref rather than a mount-once effect.
+   *
+   * Handed the element it is already bound to, it does nothing: see `boundRef`. That is the whole
+   * difference between a callback ref and a mount handler, and it is what a ref that changes identity
+   * every render needs of one.
+   *
+   * A bare `null` is not taken as a departure until the commit is over, and that delay is the point.
+   * React answers a changed ref by calling the old one with null and the new one with the element
+   * again — in the SAME commit, back to back — so a null followed by the same element is not a change
+   * at all, and treating it as one is exactly how this element came to be unbound and rebound sixty
+   * times a second. What comes next cancels the departure; only a null that nothing follows takes the
+   * binding away, one turn later.
    */
   const attachVideo = useCallback((element: HTMLVideoElement | null) => {
-    detachRef.current?.()
-    detachRef.current = null
-    videoRef.current = element
-    if (!element) { loadedSourceRef.current = null; return }
-    element.addEventListener('loadedmetadata', onLoaded)
-    element.addEventListener('error', onMediaError)
-    detachRef.current = () => {
-      element.removeEventListener('loadedmetadata', onLoaded)
-      element.removeEventListener('error', onMediaError)
+    if (pendingDetachRef.current !== null) {
+      window.clearTimeout(pendingDetachRef.current)
+      pendingDetachRef.current = null
     }
-    applyRate()
-    if (element.readyState >= 1) onLoaded()
-  }, [onLoaded, onMediaError, applyRate])
+    videoRef.current = element
+    if (element) {
+      if (boundRef.current === element) return
+      unbindVideo()
+      boundRef.current = element
+      element.addEventListener('loadedmetadata', onLoaded)
+      element.addEventListener('error', onMediaError)
+      detachRef.current = () => {
+        element.removeEventListener('loadedmetadata', onLoaded)
+        element.removeEventListener('error', onMediaError)
+      }
+      applyRate()
+      if (element.readyState >= 1) onLoaded()
+      return
+    }
+    if (!boundRef.current) return
+    pendingDetachRef.current = window.setTimeout(() => {
+      pendingDetachRef.current = null
+      unbindVideo()
+      loadedSourceRef.current = null
+    }, 0)
+  }, [onLoaded, onMediaError, applyRate, unbindVideo])
 
-  useEffect(() => () => { detachRef.current?.() }, [])
+  useEffect(() => () => { unbindVideo() }, [unbindVideo])
 
   /** The clock that owns the playhead whenever no element is entitled to. */
   const readPosition = useCallback(() => {

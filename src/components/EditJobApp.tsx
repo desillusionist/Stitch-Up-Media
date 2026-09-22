@@ -249,6 +249,13 @@ export const EditJobApp: React.FC = () => {
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
   const audioElementsRef = useRef<Record<string, HTMLAudioElement | null>>({})
+  /**
+   * The still frame the monitor is showing, when it is showing one.
+   *
+   * A ref OBJECT rather than a callback, because there is nothing to do when it is handed over: the
+   * frame is logged from an effect, and an object ref can never be reattached or re-run.
+   */
+  const stillFrameRef = useRef<HTMLImageElement | null>(null)
   const [probedTiming, setProbedTiming] = useState<Record<string, SourceTiming>>({})
   /** Sources whose target has been resolved, keyed by source and rate. A generated
    *  clip belongs to a rate, so a rate change is a different target entirely. */
@@ -1004,6 +1011,46 @@ export const EditJobApp: React.FC = () => {
   const timelineDuration = model?.duration ?? 0
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
   const audioLaneIds = (model?.lanes ?? []).filter((lane) => !lane.embedded).map((lane) => lane.id).join('|')
+  /** Read by the lane refs below, which are made once and so must not close over a value that changes. */
+  const mutedRef = useRef(muted)
+  mutedRef.current = muted
+  /**
+   * The ref each audio lane's element is given: one per lane, created once and never changed.
+   *
+   * Stable for the reason the monitor's video ref had to be. A ref written during render is a new
+   * function every time, so React detaches and reattaches it on every render — and the monitor
+   * re-renders on every animation frame while it plays. These handlers do no mount work, so the churn
+   * itself cost little; what it cost was the assumption that a ref runs once. It does not, and a
+   * handler that may be run sixty times a second must not assume it is.
+   *
+   * A lane's callback is kept once it is made, so adding a lane to a job does not hand a new function
+   * to the lanes that were already there. The guard inside is the second layer: an element that is
+   * already held is not a change, and being handed it again is answered with nothing.
+   */
+  const audioLaneCallbacksRef = useRef<Record<string, (element: HTMLAudioElement | null) => void>>({})
+  const audioLaneRefs = audioLaneCallbacksRef.current
+  audioLaneIds.split('|').filter(Boolean).forEach((laneId) => {
+    if (audioLaneRefs[laneId]) return
+    audioLaneRefs[laneId] = (element) => {
+      if (audioElementsRef.current[laneId] === element) return
+      audioElementsRef.current[laneId] = element
+      if (element) element.muted = Boolean(mutedRef.current[laneId])
+    }
+  })
+  /**
+   * The media elements the monitor is showing, named in the app's log with whatever the decoder says
+   * about them.
+   *
+   * In an effect rather than in a ref, and that is the whole of it: a ref written during render is a
+   * new function every render, so a ref that logs is a logger that runs on every render — and one that,
+   * on the monitor's video, also sought the element on every render. A logger that runs once per
+   * element was the same hazard wearing a hat, so it moved here, where React runs it after the commit
+   * that mounted whatever the playhead is on.
+   */
+  useEffect(() => {
+    logMediaElement(playback.videoRef.current, 'monitor-video')
+    logMediaElement(stillFrameRef.current, 'monitor-still')
+  }, [playback.segment?.key, playback.videoRef])
   const fps = draft ? sourceFps(draft, playback.segment?.sourcePath ?? draft.sourcePaths[0], undefined, resolveTiming) : 25
   // A lone image that is not an interpreted sequence, which is what a container
   // change can turn into a single frame or into a timed clip.
@@ -2336,12 +2383,12 @@ export const EditJobApp: React.FC = () => {
                   {playback.error
                     ? <span className="editor-screen-message">{playback.error}</span>
                     : stillFrameJob
-                      ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} ref={(element) => logMediaElement(element, 'monitor-still')} />
+                      ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} ref={stillFrameRef} />
                       // A picture file is drawn as a picture, whichever branch the timeline took to get
                       // here — the segment's own flag is not consulted, because the target is what would
                       // be decoded and it is the target that decides how to decode it.
                       : monitorShowsImage
-                        ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={elementUrl ?? mediaUrl(playback.segment?.sourcePath ?? '')} alt={sourceName(playback.segment?.sourcePath ?? '')} onLoad={measureNatural} ref={(element) => logMediaElement(element, 'monitor-still')} />
+                        ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={elementUrl ?? mediaUrl(playback.segment?.sourcePath ?? '')} alt={sourceName(playback.segment?.sourcePath ?? '')} onLoad={measureNatural} ref={stillFrameRef} />
                         // Sound with no picture: a waveform, never a <video>. The element would be
                         // asked for a frame out of a file that has none.
                         : monitorIsAudio
@@ -2355,7 +2402,7 @@ export const EditJobApp: React.FC = () => {
                             : <span className="editor-screen-message">{screenMessage}</span>
                           : elementUrl
                             ? <video
-                              ref={(element) => { playback.attachVideo(element); logMediaElement(element, 'monitor-video') }}
+                              ref={playback.attachVideo}
                               className="editor-video"
                               src={elementUrl}
                               preload="metadata"
@@ -2888,7 +2935,7 @@ export const EditJobApp: React.FC = () => {
       const url = laneSegment ? sourceUrlFor(laneSegment) : null
       return url ? <audio
         key={lane.id}
-        ref={(element) => { audioElementsRef.current[lane.id] = element; if (element) element.muted = Boolean(muted[lane.id]); logMediaElement(element, `audio:${lane.id}`) }}
+        ref={audioLaneRefs[lane.id]}
         src={url}
         preload="auto"
       /> : null
