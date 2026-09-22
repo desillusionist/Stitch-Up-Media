@@ -476,21 +476,27 @@ export class FFmpegEngine {
     // otherwise be written out below and the stream would reach the output. It does not lengthen the
     // output either, which is the same decision seen from the other side.
     const extraAudios = (task.additionalAudioTracks || []).filter((track) => !laneIsMuted(task, track.id))
-    const isStillCover = !videoOverride && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(videoSource)
-    let videoDuration = 0
+    // What the visual IS, before anything asks how long it is. A sequence and a lone still image used to
+    // be one case here, because a sequence's first frame is a still — and they are not the same case: a
+    // still cover plays under its tracks for as long as they run, while a sequence is a piece of footage
+    // that finishes, and what comes after it is the tail this path exists to reconcile.
+    const videoSequence = videoOverride ? undefined : this.sequenceFor(task, videoSource)
+    const isSequenceVideo = Boolean(videoSequence)
+    const isStillCover = !videoOverride && !isSequenceVideo && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(videoSource)
+    const videoTrim = videoOverride ? undefined : this.trimPoint(task, videoSource, 0)
     let longestAudioDuration = 0
     // The visual's own pixel size, from the probe this path already makes, for the same reason the
     // transcode path reads it: a fit is worked out from the clip's shape and the frame.
     let videoSize: { width: number; height: number } | null = null
+    let probedDuration = 0
     try {
       const videoProbe = await probeFile(videoSource)
-      videoDuration = Number(videoProbe.duration || 0)
+      probedDuration = Number(videoProbe.duration || 0)
       const resolution = videoProbe.videoStreams[0]?.resolution?.split('x').map(Number)
       if (resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
         videoSize = { width: resolution[0], height: resolution[1] }
-      } else {
-        const sequence = videoOverride ? undefined : this.sequenceFor(task, videoSource)
-        if (sequence?.width && sequence?.height) videoSize = { width: sequence.width, height: sequence.height }
+      } else if (videoSequence?.width && videoSequence?.height) {
+        videoSize = { width: videoSequence.width, height: videoSequence.height }
       }
       const audioProbes = await Promise.all(extraAudios.map((track) => probeFile(track.path)))
       longestAudioDuration = audioProbes.reduce((max, probe, index) => {
@@ -501,18 +507,24 @@ export class FFmpegEngine {
     } catch (error) {
       logEvent('ffmpeg', 'duration reconciliation probe failed; using container durations', { taskId: task.id, error: String(error) })
     }
-    // A multi-track output runs to the longer of the video and its tracks, the video being
-    // padded with a freeze frame when a track outlasts it. A still cover is the exception:
-    // it is bounded by the tracks it plays under.
+    // How long the visual RUNS, which is the timeline's own rule rather than a fact about the file: a
+    // sequence's length is its frames at its rate, and a still's is a length the job chose. Asked of a
+    // probe instead, a sequence could only answer with the length of its first frame — which is nothing,
+    // because a still has no length in its container — and the tail below then quietly became nothing too.
+    const videoDuration = segmentTiming(
+      sourceDuration(task, videoSource, videoSequence, () => ({ duration: probedDuration })),
+      videoTrim,
+    ).duration
+    // A multi-track output runs to the longer of the visual and its tracks, the visual being padded when a
+    // track outlasts it. A still cover is the exception: it is bounded by the tracks it plays under, having
+    // no length of its own to run out of.
     const expectedSeconds = isStillCover && extraAudios.length > 0
       ? longestAudioDuration
       : Math.max(videoDuration, longestAudioDuration)
-    const videoSequence = videoOverride ? undefined : this.sequenceFor(task, videoSource)
-    const isSequenceVideo = Boolean(videoSequence)
-    const videoTrim = videoOverride ? undefined : this.trimPoint(task, videoSource, 0)
-    // A video shorter than its longest track is padded out with a freeze frame, and
-    // that filter joins the same chain as any scaling rather than replacing it.
-    const tailDuration = Math.max(0, longestAudioDuration - videoDuration)
+    // A visual shorter than its longest track is padded out, and that filter joins the same chain as any
+    // scaling rather than replacing it. The padding such a visual gets is BLACK — which is what the tail
+    // of a run-out picture should be, and what an added track plays under.
+    const tailDuration = isStillCover ? 0 : Math.max(0, longestAudioDuration - videoDuration)
     let cmd = videoOverride ? ffmpeg(videoOverride) : (videoSequence ? this.sequenceCommand(videoSequence, videoTrim) : ffmpeg(videoSource))
     if (isStillCover && extraAudios.length > 0) {
       cmd.inputOptions(['-loop 1', '-framerate 2'])

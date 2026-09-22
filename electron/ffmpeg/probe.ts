@@ -38,9 +38,13 @@ export function probeFile(filePath: string): Promise<MediaProbeInfo> {
       }
 
       const format = (data.format.format_name || 'unknown').split(',').map((item) => item.trim()).join(', ')
-      const duration = data.format.duration || 0
-      const size = data.format.size || 0
-      const bitrate = data.format.bit_rate || 0
+      // Read as NUMBERS. ffprobe answers "N/A" as a STRING when it cannot measure one — a single image
+      // has no length in its container at all — and `"N/A" || 0` is `"N/A"`, not zero. Every caller then
+      // turned it into NaN with `Number(...)`, and NaN is not a length and does not compare as one: the
+      // encoder's tail padding was switched off by it, because `NaN > 0` is false.
+      const duration = Number(data.format.duration) || 0
+      const size = Number(data.format.size) || 0
+      const bitrate = Number(data.format.bit_rate) || 0
 
       const videoStreams = (data.streams || [])
         .filter((s: ffmpeg.FfprobeStream) => s.codec_type === 'video')

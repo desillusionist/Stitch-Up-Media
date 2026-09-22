@@ -17,6 +17,7 @@ scripts/.measure.html
 scripts/.mediaRange.cjs
 scripts/.monitor-repro.js
 scripts/.monitor-repro.html
+scripts/.engine.cjs
 
 # Logs
 *.log
