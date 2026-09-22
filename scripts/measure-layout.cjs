@@ -88,7 +88,9 @@ const caseC = `
 <div class="editor-stage" id="stage" style="width:500px;height:300px">
   <div class="editor-stage-pan" id="cpan">
     <div class="editor-frame" id="cframe" style="width:200px;height:200px"><b id="clabel">OUTPUT 1080×1080</b></div>
-    <div class="editor-crop-shade" id="cshade" style="left:0;top:0;width:25px;height:300px"></div>
+    <div class="editor-frame-window" id="cwindow" style="left:150px;top:50px;width:200px;height:200px">
+      <div class="editor-crop-shade" id="cshade" style="left:0;top:0;width:25px;height:300px"></div>
+    </div>
     <div class="editor-tail" id="ctail"></div>
   </div>
 </div>`
@@ -365,6 +367,9 @@ const measure = `(() => {
     caseC: { stage: [stage.width, stage.height], frame: [cframe.width, cframe.height],
       shadeAtRest, shadeWhileCropping,
       frameZ: getComputedStyle(document.getElementById('cframe')).zIndex,
+      frameShadow: getComputedStyle(document.getElementById('cframe')).boxShadow,
+      shadeInsideFrame: Boolean(document.getElementById('cshade').closest('.editor-frame-window')),
+      windowClips: getComputedStyle(document.getElementById('cwindow')).overflow,
       tailZ: getComputedStyle(document.getElementById('ctail')).zIndex,
       centeredX: +(cframe.center - stage.center).toFixed(2), centeredY: +(cframe.centerY - stage.centerY).toFixed(2),
       labelVsFrameLeft: +(clabel.left - cframe.left).toFixed(2), labelVsFrameTop: +(clabel.top - cframe.top).toFixed(2),
@@ -610,7 +615,7 @@ app.whenReady().then(async () => {
     if (!(scale.majorMark && scale.minorMark)) problems.push('the scale has no marks to read')
     else {
       if (scale.minorMark.color === scale.majorMark.color) problems.push('the scale\u2019s subdivisions are as loud as its labelled marks')
-      if (Math.abs(scale.minorMark.height - scale.rulerHeight) > 0.5) problems.push(`a subdivision does not stand the height of the scale: ${scale.minorMark.height} of ${scale.rulerHeight}`)
+      if (Math.abs(scale.minorMark.height - scale.rulerHeight / 4) > 0.5) problems.push(`a subdivision is not a quarter the height of the scale: ${scale.minorMark.height} of ${scale.rulerHeight}`)
       if (Math.abs(scale.majorMark.height - scale.rulerHeight) > 0.5) problems.push(`a labelled mark does not stand the height of the scale: ${scale.majorMark.height} of ${scale.rulerHeight}`)
       if (!scale.majorMark.text) problems.push('a labelled mark carries no text')
       if (scale.minorMark.text) problems.push(`a subdivision carries text: ${JSON.stringify(scale.minorMark.text)}`)
@@ -632,6 +637,12 @@ app.whenReady().then(async () => {
     // drawn inside it: neither can cover it however much of the frame they fill.
     if (!(Number(shade.frameZ) > Number(shade.tailZ))) problems.push(`the frame outline does not stand above the black tail: ${shade.frameZ} of ${shade.tailZ}`)
     if (!(Number(shade.tailZ) > 0)) problems.push(`the black tail is not drawn above the picture: z-index ${shade.tailZ}`)
+    // The canvas is a panel and the frame is the picture: a veil that dimmed the panel towards the black
+    // inside the frame is what made the two read as one area.
+    if (/9999/.test(shade.frameShadow)) problems.push(`the frame still darkens the canvas around it: ${shade.frameShadow}`)
+    // And the letterbox is drawn inside the frame's own window, which is what clips it: a picture too big
+    // for the frame must not be able to paint black across the panel the frame sits on.
+    if (!shade.shadeInsideFrame) problems.push('the letterbox is not drawn inside the frame, so it can spill over the canvas')
   }
   // The live readout in the gutter, and an audio container in the selection's own outline.
   const scaleRow = laid.caseA

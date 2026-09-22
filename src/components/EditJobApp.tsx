@@ -6,7 +6,7 @@ import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, canApplyClipFit, clipIndexOf, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipIndexOf, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
@@ -1663,7 +1663,10 @@ export const EditJobApp: React.FC = () => {
   const timestampMode: 'framestamp' | 'timestamp' = settings?.timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp'
   const segmentDetail = (segment: TimelineSegment) => {
     const parts = [stamp(segment.duration)]
-    if (segment.trimmed) parts.push('TRIMMED')
+    // TRIMMED only when the trim takes something away: a clip that uses the whole of its source is the
+    // source, and the line inside a clip's box has the same rule as its tooltip does.
+    const total = sourceDuration(draft, segment.sourcePath, undefined, resolveTiming)
+    if (segment.trimmed && !usesAllSource(segment, total)) parts.push('TRIMMED')
     if (segment.sequence) parts.push(`SEQ ${segment.sequence.frames}F @ ${segment.sequence.fps}FPS`)
     // A still has no rate of its own, so the one it will be rendered at belongs in the
     // clip's own line rather than being left to the monitor to mention.
@@ -2528,6 +2531,14 @@ export const EditJobApp: React.FC = () => {
                     own proportions, and the outline, the fit and the crop box appear with the size. */}
                 <div className={`editor-frame-window${frameRect && frameOrigin ? '' : ' is-open'}`} style={frameRect && frameOrigin ? { left: frameOrigin.x, top: frameOrigin.y, width: frameRect.width, height: frameRect.height } : undefined}>
                   {inBlackTail && <div className="editor-tail" aria-hidden="true" />}
+                  {/* What the crop removes, drawn INSIDE the frame's window so that window's own edge clips
+                      it. A picture bigger than the frame is cropped by that edge, and the black standing for
+                      what the crop took away belongs on the picture's side of it rather than spilled across
+                      the panel the frame sits on. The figures are the pan layer's, so the frame's origin
+                      comes off them — the media beside this is placed the same way, for the same reason. */}
+                  {cropShade.map((band, index) => (
+                    <div key={index} className="editor-crop-shade" style={{ left: band.left - (frameOrigin?.x ?? 0), top: band.top - (frameOrigin?.y ?? 0), width: band.width, height: band.height }} aria-hidden="true" />
+                  ))}
                   {playback.error
                     ? <span className="editor-screen-message">{playback.error}</span>
                     : stillFrameJob
@@ -2568,9 +2579,6 @@ export const EditJobApp: React.FC = () => {
                     black — so this only says where the box IS: the picture is scaled into it and
                     centred in it, and the offset then slides it from there. */}
                 {insetBox && hasInsets(activeInsets) && <div className="editor-insets" style={{ left: insetBox.left, top: insetBox.top, width: insetBox.width, height: insetBox.height }} aria-hidden="true" />}
-                {cropShade.map((band, index) => (
-                  <div key={index} className="editor-crop-shade" style={{ left: band.left, top: band.top, width: band.width, height: band.height }} aria-hidden="true" />
-                ))}
                 {cropRect && <div className="editor-crop" style={{ left: cropRect.left, top: cropRect.top, width: cropRect.width, height: cropRect.height }} onPointerDown={beginCropMove}>
                   {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
                     <span key={edge} className={`crop-handle is-${edge}`} onPointerDown={(event) => beginCropDrag(edge, event)} role="presentation" />

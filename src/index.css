@@ -172,7 +172,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    shape: an exact size stretches to it, a named resolution fits inside it. The spread
    shadow dims everything the output does not cover, so the output area reads as a window
    even when its outline coincides with the picture's. It is clipped by the stage. */
-.editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85), 0 0 0 9999px rgba(3, 9, 16, .55); pointer-events: none; z-index: 4; }
+/* The output frame's own edge. The faint ring IS the edge, and nothing else: the huge dark veil that used
+   to sit around it dimmed the canvas towards the black INSIDE the frame, which is what made a letterbox
+   and the panel behind it read as one black area. The canvas is a panel and the frame is the picture, and
+   the two are told apart by being different values. */
+.editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85); pointer-events: none; z-index: 4; }
 /* The black the export writes where the picture has run out. It is drawn over the media rather than
    instead of it, so the monitor shows what the output contains rather than holding the last frame the
    element happens to have decoded — and UNDER the frame's outline, which is the edge of the export and
@@ -334,8 +338,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    placed by TIME, so a mark stands where the time it names stands however wide the lane is drawn. The
    subdivisions are a fainter line and no text, which is what makes them read as the divisions of the
    labelled mark rather than as marks of their own. */
-.ruler-tick { bottom: 0; border-left: 1px solid var(--ui-border-dim); }
-.ruler-tick.is-major { border-left-color: var(--ui-border); padding-left: 4px; }
+.ruler-tick { bottom: 0; height: 25%; border-left: 1px solid var(--ui-border-dim); }
+/* A labelled mark stands the whole height of the scale and the divisions between them stand a quarter of
+   it, which is what a ruler does: the length of a mark is what says its rank, so the scale can be read by
+   shape rather than by counting labels. */
+.ruler-tick.is-major { top: 0; height: 100%; border-left-color: var(--ui-border); padding-left: 4px; }
 .timeline-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .timeline-zoom { display: flex; align-items: center; gap: 6px; }
 .timeline-zoom button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 6px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 10px; line-height: 1; }

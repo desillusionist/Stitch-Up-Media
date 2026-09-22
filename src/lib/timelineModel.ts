@@ -425,6 +425,17 @@ export const stampPair = (position: number, total: number, fps: number, mode: 'f
     : `${timecode(position, rate)} of ${timecode(total, rate)}`
 }
 
+/**
+ * Whether a clip uses the whole of its source, which is the same question as whether its trim takes
+ * anything away.
+ *
+ * A trim that spans the source IS the source, and a still's chosen length is the whole of it in the same
+ * way. Saying "trimmed" or drawing a range around all of it is saying something the numbers contradict —
+ * and it is said in two places: the clip's tooltip and the line inside the clip's own box.
+ */
+export const usesAllSource = (segment: Pick<TimelineSegment, 'duration' | 'sourceIn'>, totalSeconds: number): boolean =>
+  segment.sourceIn <= 1e-6 && segment.duration >= totalSeconds - 1e-6
+
 /** What a clip's tooltip needs to say, in the terms the window is showing lengths in. */
 export interface ClipSummaryInput {
   /** The whole source, which is what the clip is a piece of. */
@@ -459,7 +470,7 @@ export const clipSummary = ({ totalSeconds, fps, usedSeconds, sourceIn, trimmed,
   // A trim that takes NOTHING away is not a trim: a range that spans the whole source IS the source, and
   // "2160 trimmed frames [0000-2160]" about a clip that uses all of it is a range drawn around everything.
   // A still is the same case — its chosen length is the whole of it — so it says source too.
-  if (!trimmed || usedSeconds >= totalSeconds - 1e-6) return `${whole} at ${rate} fps \u2022 source`
+  if (!trimmed || usesAllSource({ duration: usedSeconds, sourceIn }, totalSeconds)) return `${whole} at ${rate} fps \u2022 source`
   const used = mode === 'framestamp' ? `${frames(usedSeconds)} trimmed frames` : `${timecode(usedSeconds, rate)} trimmed`
   // The range is padded to four digits in frames, because a range is read as a box of digits rather
   // than as two numbers, and a ragged box is read twice.
