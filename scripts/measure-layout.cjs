@@ -168,7 +168,8 @@ const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></
 const caseJ = `
 <section class="editor-group" id="gopen">
   <div class="editor-group-head" id="gopenhead">
-    <button class="editor-group-toggle" id="gopentoggle"><span>OUTPUT FRAME<em>SHAPE AND SIZE</em></span><span class="editor-group-mark">-</span></button>
+    <button class="editor-group-name" id="gopenname">OUTPUT FRAME<em> // SHAPE AND SIZE</em></button>
+    <button class="editor-group-mark" id="gopenmark">-</button>
   </div>
   <div class="editor-group-body" id="gopenbody">
     <label class="editor-field" id="gf1"><span>RESOLUTION</span><select id="gsel"><option>4K</option></select></label>
@@ -177,32 +178,33 @@ const caseJ = `
 </section>
 <section class="editor-group is-collapsed" id="gclosed">
   <div class="editor-group-head" id="gclosedhead">
-    <button class="editor-group-toggle" id="gclosedtoggle"><span>FRAMING<em>HOW EACH CLIP SITS</em></span><span class="editor-group-mark">+</span></button>
-    <div class="editor-group-actions" id="gactions"><div class="unit-toggle"><button class="is-on">%</button><button>px</button></div><button class="exact-icon">R</button></div>
+    <button class="editor-group-name" id="gclosedname">FRAMING<em> // PER CLIP</em></button>
+    <div class="editor-group-actions" id="gactions"><div class="unit-toggle"><button class="is-on">%</button><button>px</button></div></div>
+    <button class="editor-group-mark" id="gclosedmark">+</button>
   </div>
 </section>`
 
-// Case K: the FRAMING section's shape. Each figure must sit where the edge it moves is — T above, the
-// sides flanking, B below — or the arrangement says nothing and four boxes may as well be a row. And
-// the explanation grows LEFTWARDS from its mark: the sidebar clips anything past its right edge, so
-// whether the popover is readable inside it is a question only a measurement answers.
+// Case K: the FRAMING controls' shape. The figures are one row each — which figure is which is said by
+// its own letter, so the layout has nothing to arrange — with the row's reset at the end of the row it
+// belongs to. And the explanation grows inwards from its own row: the sidebar clips whatever passes its
+// right edge, so whether the popover is readable inside it is a question only a measurement answers.
 const caseK = `
 <div class="editor-field" id="kfield">
   <span><span class="editor-label" id="klabel">INSETS<span class="editor-info" id="kinfo"><button class="editor-info-mark" id="kmark">i</button><span class="editor-info-pop" id="kpop">The margin this clip leaves around itself, and where the picture sits inside it.</span></span></span></span>
-  <div class="inset-box" id="kbox">
-    <label class="mini-field is-t" id="kt"><span>T</span><input value="0"></label>
-    <label class="mini-field is-l" id="kl"><span>L</span><input value="0"></label>
-    <label class="mini-field is-r" id="kr"><span>R</span><input value="0"></label>
-    <label class="mini-field is-b" id="kb"><span>B</span><input value="0"></label>
-    <span class="inset-box-core"></span>
+  <div class="crop-row" id="krow">
+    <label class="mini-field" id="kl"><span>L</span><input id="klin" value="0"></label>
+    <label class="mini-field" id="kt"><span>T</span><input value="0"></label>
+    <label class="mini-field" id="kr"><span>R</span><input value="0"></label>
+    <label class="mini-field" id="kb"><span>B</span><input value="0"></label>
+    <button class="exact-icon" id="kreset">R</button>
   </div>
 </div>
 <div class="editor-field">
   <span><span class="editor-label">OFFSET</span></span>
-  <div class="offset-cross" id="kcross">
-    <label class="mini-field is-y" id="ky"><span>Y</span><input value="0"></label>
-    <label class="mini-field is-x" id="kx"><span>X</span><input value="0"></label>
-    <span class="offset-cross-core">+</span>
+  <div class="crop-row" id="krow2">
+    <label class="mini-field" id="kx"><span>X</span><input value="0"></label>
+    <label class="mini-field" id="ky"><span>Y</span><input value="0"></label>
+    <button class="exact-icon" id="kreset2">R</button>
   </div>
 </div>`
 
@@ -316,7 +318,7 @@ const measure = `(() => {
   const groupOpen = rect('gopen'); const groupClosed = rect('gclosed')
   const groupBody = rect('gopenbody'); const groupSelect = rect('gsel')
   // The framing controls, and the content box they have to stay inside.
-  const framing = { t: rect('kt'), l: rect('kl'), r: rect('kr'), b: rect('kb'), box: rect('kbox'), y: rect('ky'), x: rect('kx'), pop: rect('kpop'), mark: rect('kmark'), content: rect('fcontent') }
+  const framing = { t: rect('kt'), l: rect('kl'), r: rect('kr'), b: rect('kb'), reset: rect('kreset'), row: rect('krow'), y: rect('ky'), x: rect('kx'), input: rect('klin'), pop: rect('kpop'), mark: rect('kmark'), content: rect('fcontent') }
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0'),
@@ -347,16 +349,23 @@ const measure = `(() => {
       selectWidth: groupSelect ? groupSelect.width : 0, groupInnerWidth: groupOpen ? groupOpen.width : 0,
       closedStillShowsBody: Boolean(document.getElementById('gclosedbody')),
       // A heading that carries the group's own controls is still ONE line: a row that governs everything
-      // under it must not push what it governs any further down than the heading would have.
-      actionsRow: Math.abs(rect('gactions').top - rect('gclosedtoggle').top), actionsRightOfToggle: rect('gactions').left >= rect('gclosedtoggle').right },
-    // The framing controls, read as positions rather than as sizes: which figure is above, beside and
-    // below which is the whole of what a box layout says.
-    caseK: { boxCentre: framing.box.center, tCentre: framing.t.center, topVsSides: framing.t.bottom - framing.l.top,
-      sidesRow: +(framing.l.top - framing.r.top).toFixed(2), leftOfRight: framing.r.left > framing.l.right,
-      bottomVsSides: framing.b.top - framing.l.top, yVsX: +(framing.y.top - framing.x.top).toFixed(2),
+      // under it must not push what it governs any further down than the heading would have. Its rule is
+      // the tab strip's own, because a section's name is a heading and the line says how far it reaches.
+      actionsRow: Math.abs(rect('gactions').top - rect('gclosedname').top), actionsRightOfToggle: rect('gactions').left >= rect('gclosedname').right,
+      headingRule: [getComputedStyle(document.getElementById('gopenhead')).borderBottomWidth, getComputedStyle(document.getElementById('gopenhead')).borderBottomColor],
+      tabRule: [getComputedStyle(document.querySelector('#ftabs button.active')).borderBottomWidth, getComputedStyle(document.querySelector('#ftabs button.active')).borderBottomColor],
+      nameOneLine: rect('gopenname').height <= 20 },
+    // The framing controls, read as positions rather than as sizes: which figure follows which along
+    // the row IS the layout, since the letters carry the meaning rather than the arrangement.
+    caseK: { rowTops: [framing.l.top, framing.t.top, framing.r.top, framing.b.top],
+      lefts: [framing.l.left, framing.t.left, framing.r.left, framing.b.left],
+      widths: [framing.l.width, framing.t.width, framing.r.width, framing.b.width],
+      resetLeft: framing.reset ? framing.reset.left : 0, lastFieldRight: framing.b.right,
+      offsetLefts: [framing.x.left, framing.y.left], offsetResetLeft: rect('kreset2') ? rect('kreset2').left : 0, offsetLastRight: framing.y.right,
+      inputHeight: framing.input.height, rowHeight: framing.row.height,
       popRight: framing.pop.right, popTop: framing.pop.top, markBottom: framing.mark.bottom,
       contentRight: framing.content.right, contentLeft: framing.content.left,
-      popLeft: framing.pop.left, fieldCount: document.querySelectorAll('#kbox .mini-field').length },
+      popLeft: framing.pop.left, fieldCount: document.querySelectorAll('#krow .mini-field').length },
     // The head must sit at the sidebar's top, the foot at its bottom, and the settings between
     // them must be scrollable: a taller content than viewport with both neighbours still in view.
     caseF: { sidebarHeight: fside.height, titleVsTop: +(rect('ftitle').top - fside.top).toFixed(2), contentVsTabs: +(rect('fcontent').top - rect('ftabs').bottom).toFixed(2),
@@ -542,18 +551,19 @@ app.whenReady().then(async () => {
   // The folding groups, asserted here rather than in the page because these are questions about
   // DIFFERENCES between two elements — one folded, one not — rather than about either alone.
   const groups = laid.caseJ
-  // The FRAMING section's shape. T centred over the box with the sides on one row beneath it and B
-  // below them; Y above X in the cross; and the explanation landing inside the sidebar rather than
-  // being clipped by its right edge, which is what decides which way it has to grow.
+  // The framing controls. Which figure follows which along the row IS the layout, since the letters
+  // carry the meaning; what is left to check is that they ARE one row, in the right order, evenly
+  // sized, with the row's own reset at its end — and that the fields are as compact as they claim.
   const framing = laid.caseK
   if (framing) {
-    if (Math.abs(framing.tCentre - framing.boxCentre) > 0.6) problems.push(`the top margin is not centred over the box: ${framing.tCentre} of ${framing.boxCentre}`)
-    if (!(framing.topVsSides < 0)) problems.push('the top margin does not sit above the sides')
-    if (Math.abs(framing.sidesRow) > 0.6) problems.push(`the two side margins are not on one row: ${framing.sidesRow}px apart`)
-    if (!framing.leftOfRight) problems.push('the left margin is not left of the right one')
-    if (!(framing.bottomVsSides > 0)) problems.push('the bottom margin does not sit below the sides')
-    if (!(framing.yVsX < 0)) problems.push('the vertical offset does not sit above the horizontal one')
-    if (framing.fieldCount !== 4) problems.push(`the inset box holds ${framing.fieldCount} figures rather than four`)
+    if (!framing.rowTops.every((top) => Math.abs(top - framing.rowTops[0]) <= 0.6)) problems.push(`the inset figures are not on one row: ${JSON.stringify(framing.rowTops)}`)
+    if (!framing.lefts.every((left, index) => index === 0 || left > framing.lefts[index - 1])) problems.push(`the inset figures are not in L T R B order: ${JSON.stringify(framing.lefts)}`)
+    if (!framing.widths.every((width) => Math.abs(width - framing.widths[0]) <= 1)) problems.push(`the inset figures are not the same width: ${JSON.stringify(framing.widths)}`)
+    if (!(framing.resetLeft > framing.lastFieldRight - 0.5)) problems.push('the insets reset is not at the end of its own row')
+    if (!(framing.offsetLefts[1] > framing.offsetLefts[0])) problems.push('the offset figures are not in X Y order')
+    if (!(framing.offsetResetLeft > framing.offsetLastRight - 0.5)) problems.push('the offset reset is not at the end of its own row')
+    if (framing.fieldCount !== 4) problems.push(`the insets hold ${framing.fieldCount} figures rather than four`)
+    if (!(framing.inputHeight <= 21)) problems.push(`the fields are not compact: an input is ${framing.inputHeight}px tall`)
     if (!(framing.popRight <= framing.contentRight + 0.5)) problems.push(`the explanation runs past the sidebar's right edge: ${framing.popRight} of ${framing.contentRight}`)
     if (!(framing.popLeft >= framing.contentLeft - 0.5)) problems.push(`the explanation runs out of the sidebar on the left: ${framing.popLeft} of ${framing.contentLeft}`)
     if (!(framing.popTop >= framing.markBottom)) problems.push('the explanation is drawn over its own mark')
@@ -566,6 +576,8 @@ app.whenReady().then(async () => {
     if (!(groups.actionsRow < 0.6)) problems.push(`a heading's own controls are on a line of their own: ${groups.actionsRow}px out`)
     if (!groups.actionsRightOfToggle) problems.push('a heading puts its own controls before its name')
     if (!(groups.selectWidth > groups.groupInnerWidth * 0.8)) problems.push(`a control inside a group does not fill it: ${groups.selectWidth}px of ${groups.groupInnerWidth}px`)
+    if (!groups.nameOneLine) problems.push('a heading\u2019s name and sublabel do not fit on one line')
+    if (JSON.stringify(groups.headingRule) !== JSON.stringify(groups.tabRule)) problems.push(`a heading's rule is not the tab strip's: ${JSON.stringify(groups.headingRule)} of ${JSON.stringify(groups.tabRule)}`)
   }
   if (problems.length) {
     console.error(`\n${problems.length} LAYOUT PROBLEM(S)\n${problems.map((problem) => `  - ${problem}`).join('\n')}\n`)

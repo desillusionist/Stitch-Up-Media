@@ -255,25 +255,30 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 
 /* EDIT JOB window: editable controls, locked-state disclosure, conflict banner */
 .editor-field { display: grid; gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); color: var(--ui-muted); font-size: 10px; }
-/* A group of settings that folds away. The heading carries the same box as a field so folding one
-   changes nothing about where the settings sit, and the whole heading is the target rather than a
-   caret beside it. */
+/* A group of settings that folds away. The heading is ruled off from what it governs by the same
+   full-width accent the tab strip uses for the tab in play, so a section's name says how far it
+   reaches. The whole heading folds, and the mark at the far right is the same action for anyone who
+   reaches for a caret rather than for a name. */
 .editor-group { display: grid; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
-.editor-group-head { display: flex; align-items: center; gap: 8px; }
-.editor-group-toggle { flex: 1 1 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0; color: var(--ui-muted); background: transparent; border: 0; font-size: 10px; letter-spacing: .08em; text-align: left; cursor: pointer; }
-.editor-group-head:hover, .editor-group-head:hover em { color: var(--ui-accent); }
-/* The subtitle is a tail on the heading rather than a second heading: smaller, dimmer, untracked, and
-   never wrapped, so the row reads as one thing however long the name is. */
-.editor-group-head em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: 0; opacity: .72; margin-left: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.editor-group-mark { flex: 0 0 auto; color: var(--ui-border); font-size: 12px; line-height: 1; }
-/* The controls that belong to a whole group, in its heading rather than in a row of their own. */
+.editor-group-head { display: flex; align-items: center; gap: 8px; padding-bottom: 5px; border-bottom: 2px solid var(--ui-accent); }
+.editor-group-name { flex: 1 1 auto; display: flex; align-items: center; padding: 0; color: var(--ui-muted); background: transparent; border: 0; font-family: inherit; font-size: 10px; letter-spacing: .08em; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+/* The whole heading goes green together. A name that changed colour while its own sublabel stayed dim
+   would read as two things on one line, which is what a NAME // SUBLABEL pair is there not to be. */
+.editor-group-head:hover .editor-group-name,
+.editor-group-head:hover .editor-group-name em,
+.editor-group-head:hover .editor-group-mark { color: var(--ui-accent); }
+/* The sublabel is a tail on the heading: smaller, dimmer, untracked, and never wrapped. */
+.editor-group-name em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: 0; opacity: .85; }
+.editor-group-mark { flex: 0 0 auto; padding: 0 1px; color: var(--ui-border); background: transparent; border: 0; font-family: inherit; font-size: 12px; line-height: 1; cursor: pointer; }
+.editor-group-mark:hover { color: var(--ui-accent); }
 .editor-group-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
 /* Sized to the height of a heading's own line rather than to a comfortable button, so a heading that
    carries controls is not taller than one that does not: a row of headings is read as a list, and one
    of them being a line taller reads as a different kind of thing. */
 .editor-group-actions .unit-toggle button { height: 15px; min-width: 17px; padding: 0 3px; font-size: 7px; }
-.editor-group-actions .exact-icon { height: 15px; width: 17px; padding: 0; }
-.editor-group-body { display: grid; gap: 0; }
+/* Room between the last field's own rule and the group's, so the end of a section reads as an end
+   rather than as two lines doubled up by accident. */
+.editor-group-body { display: grid; gap: 0; padding-bottom: 7px; }
 /* The first field of a body carries no rule of its own: the heading is what separates it from what
    came before, so a second line under it would be one line too many. */
 .editor-group-body > .editor-field:first-child, .editor-group-body > .editor-subsection:first-child { border-top: 0; }
@@ -338,23 +343,18 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .aspect-row button:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .aspect-row button.is-selected { color: var(--ui-canvas); background: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-subsection { display: grid; gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
-.crop-row, .exact-row { display: grid; align-items: center; gap: 5px; }
-.crop-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-/* The per-clip crop's own line: which clip the figures belong to, and the one action that puts them
-   on every clip at once. */
-.crop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
-.crop-actions button { padding: 6px 8px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
+/* The four figures of a region, and the two of a position, as one row: which figure is which is said
+   by its own letter, so the row is the whole layout. The reset sits at the end of the row it belongs
+   to, which is what makes it plain what it puts back. */
+.crop-row { display: flex; align-items: center; gap: 5px; }
+.crop-row .mini-field { flex: 1 1 0; min-width: 0; }
+.crop-row .unit-toggle, .crop-row .exact-icon { flex: 0 0 auto; }
+.exact-row { display: grid; align-items: center; gap: 5px; }
+/* A sub-section's own line: which clip the figures belong to, and the one action that puts them on
+   every clip at once. Kept small: it is a remark about the figures above, not a control of its own. */
+.crop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-muted); font-size: 8px; letter-spacing: .06em; }
+.crop-actions button { padding: 2px 5px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-family: inherit; font-size: 8px; letter-spacing: .06em; }
 .crop-actions button:hover { border-color: var(--ui-accent); }
-/* The lock: one switch, on its own line under the four figures, because it constrains all of them. */
-.crop-lock { display: flex; align-items: center; gap: 7px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; cursor: pointer; }
-.crop-lock input { accent-color: var(--ui-accent); }
-.crop-lock:has(input:disabled) { opacity: .45; cursor: not-allowed; }
-/* The clear-crop question, asked where the switch that raised it is rather than in a modal. */
-.crop-confirm { display: grid; gap: 6px; padding: 8px; background: var(--ui-panel-inset); border: 1px solid var(--ui-encoding); }
-.crop-confirm > span { color: var(--ui-encoding); font-size: 9px; letter-spacing: .06em; }
-.crop-confirm-actions { display: flex; gap: 6px; justify-content: flex-end; }
-.crop-confirm-actions button { padding: 6px 9px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
-.crop-confirm-actions button.is-danger { color: var(--ui-error); border-color: var(--ui-error); }
 /* The picture's position, in the section's own unit. */
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
 /* A label and the mark that explains it, as one flex item so the row's own spacing leaves them
@@ -368,20 +368,6 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-info-mark { width: 12px; height: 12px; padding: 0; display: grid; place-items: center; color: var(--ui-border); background: transparent; border: 1px solid var(--ui-border); border-radius: 50%; font-family: inherit; font-size: 8px; line-height: 1; cursor: help; }
 .editor-info-mark:hover, .editor-info-mark:focus { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-info-pop { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 8; padding: 7px 8px; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-accent); font-size: 9px; letter-spacing: .04em; line-height: 1.55; text-align: left; }
-/* The INSETS as a box, each field where the edge it moves is: T above, the sides flanking, B below.
-   The same shape a dev-tools margin editor uses, and the shape of the thing being edited. */
-.inset-box { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; align-items: center; }
-.inset-box .is-t { grid-column: 2; grid-row: 1; }
-.inset-box .is-l { grid-column: 1; grid-row: 2; }
-.inset-box .is-r { grid-column: 3; grid-row: 2; }
-.inset-box .is-b { grid-column: 2; grid-row: 3; }
-.inset-box-core { grid-column: 2; grid-row: 2; justify-self: center; align-self: center; width: 9px; height: 9px; border: 1px dotted var(--ui-border); }
-/* The OFFSET as a cross: X reads across the row it sits on and Y up the column it sits in, so the pair
-   says which way each figure moves the picture without a word of explanation. */
-.offset-cross { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; align-items: center; }
-.offset-cross .is-y { grid-column: 2; grid-row: 1; }
-.offset-cross .is-x { grid-column: 1; grid-row: 2; }
-.offset-cross-core { grid-column: 2; grid-row: 2; justify-self: center; align-self: center; color: var(--ui-border); font-size: 10px; line-height: 1; }
 /* A rule between one group of settings and the next, for the groups that have to read as separate
    rather than as one long run of fields. */
 .editor-divider { border-top: 1px dotted var(--ui-border-dim); }
@@ -394,14 +380,14 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .unit-toggle button + button { border-left: 0; }
 .unit-toggle button.is-on { color: var(--ui-canvas); background: var(--ui-accent); border-color: var(--ui-accent); }
 .unit-toggle button:disabled { opacity: .4; }
-.mini-field { display: flex; align-items: center; gap: 4px; }
-.mini-field span { color: var(--ui-muted); font-size: 9px; }
-.mini-field input { width: 100%; min-width: 0; padding: 5px 4px; text-align: center; }
-/* The lock and reset glyphs beside the exact-size fields, sized to the fields they sit with. */
-.exact-icon { width: 27px; padding: 5px 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); }
+.mini-field { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 3px; }
+.mini-field span { color: var(--ui-muted); font-size: 8px; }
+.mini-field input { width: 100%; min-width: 0; padding: 2px 3px; font-size: 9px; line-height: 1.25; text-align: center; }
+/* The lock and reset glyphs beside the fields, sized to the fields they sit with. */
+.exact-icon { width: 19px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); }
 .exact-icon:hover:not(:disabled) { color: var(--ui-accent); border-color: var(--ui-accent); }
 .exact-icon.is-on { color: var(--ui-accent); border-color: var(--ui-accent); }
-.exact-icon:disabled { opacity: .4; }
+.exact-icon:disabled { opacity: .4; cursor: not-allowed; }
 .timeline-lanes-inner { position: relative; min-width: 100%; }
 /* A lane's row height is the tile height plus the clip's own inset, and it is a HEIGHT rather than a
    minimum because the label opposite it is a fixed row of the same figure: a lane that grew by

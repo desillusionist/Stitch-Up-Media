@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Link, RotateCcw, Unlink, ZoomIn, ZoomOut } from 'lucide-react'
+import { Link, Lock, RotateCcw, Unlink, Unlock, ZoomIn, ZoomOut } from 'lucide-react'
 import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
@@ -35,6 +35,14 @@ const ASPECT_TOLERANCE = 0.01
  * region: it is the entry that lets a corner drag follow the pointer on both axes at once.
  */
 const FREEFORM = 'FREEFORM'
+/**
+ * The shape list's entry that means no crop at all.
+ *
+ * The list is also the switch now. There used to be a checkbox to turn the crop on and a question to
+ * turn it off, and a question was right while the control that asked it could not say what the answer
+ * would be — but a list with NONE in it can: choosing NONE IS the decision, so it needs no confirming.
+ */
+const NO_CROP = 'NONE'
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
 import { DEFAULT_FIT_OFFSET, cropFractionsOf, fitOffsetWithin, hasInsets, innerBox, insetsOf, normaliseInsets, placedSource, sourceCropOf, storedFitOffset } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
@@ -113,6 +121,7 @@ const EditorField: React.FC<{ label: string; hint?: string; reason?: string; chi
 const INSETS_HELP = 'The margin this clip leaves around itself: the box its fit scales it into. The picture is centred in the box, and the OFFSET slides it from there. All four at 0 is the whole frame, which is what the clip is given until it is inset. The figures are per cent of the output frame, so they mean the same at any resolution.'
 const OFFSET_HELP = 'Where the picture sits on the output canvas. 0 and 0 is centred, which is where it sits until it is moved. The figures are the output frame\u2019s own, so they mean the same at any resolution, and they are not held in: a picture moved past an edge is clipped by the frame, and one that leaves a gap is filled with the background. The monitor\u2019s dragger writes the same two figures.'
 const QUALITY_HELP = 'BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.'
+const CROP_HELP = 'What part of the SOURCE this clip keeps, in the source\u2019s own terms, so a change of output size or shape never invalidates it. The shape list centres the region on a named shape; FREEFORM holds no shape at all, so a corner follows the pointer on both axes and the region keeps whatever shape it has. It is taken before any scaling, so cropping to a shape is a crop then a fit. Drag the edges on the preview, or set the four figures here.'
 
 /**
  * A group of settings that can be folded away, with its own heading acting as the disclosure.
@@ -128,14 +137,13 @@ const QUALITY_HELP = 'BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. A
 const EditorGroup: React.FC<{ id: string; label: string; hint?: string; reason?: string; collapsed: boolean; onToggle: (id: string) => void; actions?: React.ReactNode; children: React.ReactNode }> = ({ id, label, hint, reason, collapsed, onToggle, actions, children }) => (
   <section className={`editor-group${collapsed ? ' is-collapsed' : ''}`}>
     <div className="editor-group-head">
-      <button type="button" className="editor-group-toggle" onClick={() => onToggle(id)} title={reason} aria-expanded={!collapsed}>
-        <span>{label}{hint ? <em>{hint}</em> : null}</span>
-        <span className="editor-group-mark" aria-hidden="true">{collapsed ? '+' : '\u2212'}</span>
+      {/* The heading is NAME // SUBLABEL, and the whole of it folds: the mark at the far right is the
+          same action for anyone who reaches for a caret rather than for a name. */}
+      <button type="button" className="editor-group-name" onClick={() => onToggle(id)} title={reason} aria-expanded={!collapsed}>
+        {label}{hint ? <em>{' // '}{hint}</em> : null}
       </button>
-      {/* Controls that belong to the whole group rather than to one setting in it, so a reader does
-          not have to find the same switch twice. Kept in the heading rather than in a row of its own:
-          a row that governs everything under it should BE the heading of everything under it. */}
       {actions ? <div className="editor-group-actions">{actions}</div> : null}
+      <button type="button" className="editor-group-mark" onClick={() => onToggle(id)} aria-expanded={!collapsed} aria-label={collapsed ? 'Expand this section' : 'Collapse this section'}>{collapsed ? '+' : '\u2212'}</button>
     </div>
     {collapsed ? null : <div className="editor-group-body">{children}</div>}
   </section>
@@ -307,8 +315,6 @@ export const EditJobApp: React.FC = () => {
    */
   const [cropShapeChoice, setCropShapeChoice] = useState<{ key: string; value: string } | null>(null)
   /** The clear-crop question, and whether the answer is "every clip". */
-  const [confirmingClearCrop, setConfirmingClearCrop] = useState(false)
-  const [clearCropAll, setClearCropAll] = useState(false)
   /** The right-click menu, and where on screen it ended up once its own height was known. */
   const menuRef = useRef<HTMLDivElement | null>(null)
   const [menuAt, setMenuAt] = useState({ x: 0, y: 0 })
@@ -1407,22 +1413,6 @@ export const EditJobApp: React.FC = () => {
       },
     })
   }
-  /**
-   * Puts the margin and the position back together, in one write so one undo takes all of it.
-   *
-   * Both are framing decisions and the section gives them one reset: a margin and a position are the
-   * pair of things a reader means by "put this clip back where it started", and unpicking one of them
-   * while leaving the other moved is not a reset. A clip left carrying nothing is left with no record
-   * at all, which is the same terms the fit menu works on.
-   */
-  const resetFraming = () => {
-    if (!activeFitKey) return
-    const next = { ...(latest().sourceFit ?? {}) }
-    const mode = activeFit?.mode ?? 'contain'
-    if (mode === 'contain') delete next[activeFitKey]
-    else next[activeFitKey] = { mode, offset: { x: 0, y: 0 } }
-    updateDraft({ sourceFit: Object.keys(next).length ? next : undefined })
-  }
   const setBoundaryTransition = (index: number, type: TransitionType, duration = 0.5) => {
     const cut = cuts.find((candidate) => candidate.index === index)
     if (!cut) return
@@ -1747,7 +1737,7 @@ export const EditJobApp: React.FC = () => {
    * one clip to the next.
    */
   const shapeKey = activeClipKey ?? ''
-  const cropShape = cropShapeChoice?.key === shapeKey ? cropShapeChoice.value : matchedProportion ?? FREEFORM
+  const cropShape = !hasCrop(crop) ? NO_CROP : (cropShapeChoice?.key === shapeKey ? cropShapeChoice.value : matchedProportion ?? FREEFORM)
   /** The shape a corner drag holds: the chosen proportion, or nothing to hold the region's own. */
   const cropProportionRatio = ASPECTS.find((candidate) => candidate.label === cropShape)?.ratio
   // Whether the crop removes anything at all, which is what the switch reports. A crop of nothing
@@ -1795,26 +1785,6 @@ export const EditJobApp: React.FC = () => {
     updatePreset({ crop: undefined })
   }
   /**
-   * Takes the crop away once the user has confirmed it, on this clip or on every clip.
-   *
-   * EVERY clip means the job's own crop goes too, and in one step with them: a clip with no region of
-   * its own falls back to the job's crop, so a job whose clips have all been told they are uncropped
-   * would still crop anything added to it later. One draft write rather than two, so one undo takes
-   * the whole decision back.
-   */
-  const clearCropConfirmed = (all: boolean) => {
-    setConfirmingClearCrop(false)
-    if (!all || !perClipFraming) { clearCrop(); return }
-    const map: Record<string, SourceCrop> = {}
-    draft.sourcePaths.forEach((sourcePath, index) => {
-      if (mediaKind(sourcePath) !== 'audio') map[`${sourcePath}#${index}`] = { x: 0, y: 0, w: 1, h: 1 }
-    })
-    updateDraft({
-      sourceCrop: Object.keys(map).length ? map : undefined,
-      preset: { ...latest().preset, crop: undefined },
-    })
-  }
-  /**
    * The lock's own click, which brings the clip being looked at into line at once: the preview then
    * shows what the lock is for, and every other clip conforms when it is next edited rather than
    * being rewritten behind the user's back.
@@ -1856,6 +1826,20 @@ export const EditJobApp: React.FC = () => {
    * named shape centres the crop on it. Clearing the crop is the switch's business, not the list's.
    */
   const applyCropProportion = (label: string) => {
+    // NONE is the way the crop is switched off now: the switch that used to do it is gone, and the
+    // question it asked with it, because picking NONE is already the answer to that question.
+    if (label === NO_CROP) {
+      setCropShapeChoice(null)
+      clearCrop()
+      return
+    }
+    // FREEFORM on a clip with no crop has to MAKE one, or choosing it would do nothing at all: it is a
+    // shape, and the switch that used to create the region is gone.
+    if (label === FREEFORM && !hasCrop(crop)) {
+      setCropShapeChoice({ key: shapeKey, value: label })
+      enableCrop()
+      return
+    }
     setCropShapeChoice({ key: shapeKey, value: label })
     const option = ASPECTS.find((candidate) => candidate.label === label)
     if (!option || !naturalAspect) return
@@ -2045,8 +2029,6 @@ export const EditJobApp: React.FC = () => {
    * as a pair, which is how such a record turns into one of these.
    */
   const pictureOffset = placement && outputFrame ? fitOffsetWithin(activeFit, placement.size, outputFrame) : DEFAULT_FIT_OFFSET
-  /** Whether the section's one reset has anything to put back, across both of its controls. */
-  const framingMoved = hasInsets(activeInsets) || pictureOffset.x !== 0 || pictureOffset.y !== 0
   /**
    * The inner box the insets leave, in the monitor's own pixels.
    *
@@ -2664,52 +2646,39 @@ export const EditJobApp: React.FC = () => {
               </div>
             </div>
             </EditorGroup>
-            <EditorGroup id="framing" label="FRAMING" hint="HOW EACH CLIP SITS" reason="What each clip is framed with: what part of its source is kept, the margin it leaves, and where the picture is placed inside the frame. Starts folded because it is per clip rather than per job." collapsed={collapsedSections.includes('framing')} onToggle={toggleSection} actions={<>
-              {/* One unit switch and one reset for the section rather than one of each per control: the
-                  margins and the position are two halves of one answer, both read in the output frame's
-                  own terms, and asking a reader to set the same two switches twice was noise. */}
+            <EditorGroup id="framing" label="FRAMING" hint="PER CLIP" reason="What each clip is framed with: what part of its source is kept, the margin it leaves, and where the picture is placed inside the frame. Starts folded because it is per clip rather than per job." collapsed={collapsedSections.includes('framing')} onToggle={toggleSection} actions={<>
+              {/* ONE unit switch for the section, and no reset here: the reset belongs to the four
+                  figures it puts back, so it sits at the end of their own row rather than in a heading
+                  that would have to be read to work out what it resets. */}
               <div className="unit-toggle">
                 <button className={framingUnit === '%' ? 'is-on' : ''} onClick={() => setFramingUnit('%')} title="Per cent of the output frame">%</button>
                 <button className={framingUnit === 'px' ? 'is-on' : ''} disabled={!outputFrame} onClick={() => setFramingUnit('px')} title={outputFrame ? 'Pixels of the output frame' : 'THE OUTPUT FRAME IS NOT KNOWN YET.'}>px</button>
               </div>
-              <button className="exact-icon" disabled={!activeFitKey || !framingMoved} onClick={resetFraming} title="Take the margins away and centre the picture" aria-label="Take the margins away and centre the picture"><RotateCcw size={12} /></button>
             </>}>
             <div className="editor-subsection">
-              <EditorToggle
-                label="CROP SOURCE VIDEO"
-                checked={cropEnabled}
-                reason={videoReason}
-                onChange={(checked) => {
-                  if (checked) { enableCrop(); return }
-                  // Unchecking throws the crop away, and a crop is a hand-made region that took several
-                  // drags to place; so it is asked about rather than done. The switch stays as it is
-                  // until the question is answered, which is what makes CANCEL a real way out.
-                  setClearCropAll(false)
-                  setConfirmingClearCrop(true)
-                }}
-              />
-              {confirmingClearCrop && <div className="crop-confirm">
-                <span>TAKE THE CROP AWAY?</span>
-                {perClipFraming && <label className="crop-lock">
-                  <input type="checkbox" checked={clearCropAll} onChange={(event) => setClearCropAll(event.target.checked)} />
-                  <span>APPLY TO ALL CLIPS</span>
-                </label>}
-                <div className="crop-confirm-actions">
-                  <button onClick={() => setConfirmingClearCrop(false)}>CANCEL</button>
-                  <button className="is-danger" onClick={() => clearCropConfirmed(clearCropAll)}>OK</button>
-                </div>
-              </div>}
+              <div className="crop-head">
+                <span className="editor-label">CROP<EditorInfo text={CROP_HELP} /></span>
+                {/* The shape list is the switch as well: NONE is one of its entries, so choosing to
+                    have no crop is the same gesture as choosing its shape rather than a control of its
+                    own that had to ask before it could make its mind up. */}
+                <select value={cropShape} disabled={!naturalAspect && cropShape !== NO_CROP} onChange={(event) => applyCropProportion(event.target.value)} title={!naturalAspect ? 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.' : 'NONE leaves the source whole; FREEFORM holds no shape at all, so a corner follows the pointer on both axes; a named shape centres the region on it.'}>
+                  <option value={NO_CROP}>{NO_CROP}</option>
+                  <option value={FREEFORM}>{FREEFORM}</option>
+                  {ASPECTS.map((candidate) => <option key={candidate.label} value={candidate.label}>{candidate.label}</option>)}
+                </select>
+                {/* A padlock rather than a checkbox, and next to the list it holds: what it locks is the
+                    SHAPE being chosen, so it belongs where the shape is chosen rather than on a line of
+                    its own below the four figures. */}
+                <button
+                  className={`exact-icon${lockRatio ? ' is-on' : ''}`}
+                  aria-pressed={Boolean(lockRatio)}
+                  disabled={!naturalAspect || !outputFrame}
+                  onClick={() => setCropLock(!draft.preset.cropLockToOutput)}
+                  title="Lock Crop to Output AR"
+                  aria-label="Lock Crop to Output AR"
+                >{lockRatio ? <Lock size={11} /> : <Unlock size={11} />}</button>
+              </div>
               {cropEnabled && crop && <>
-                <div className="crop-head">
-                  <select value={cropShape} disabled={!naturalAspect || Boolean(lockRatio)} onChange={(event) => applyCropProportion(event.target.value)} title={lockRatio ? 'THE CROP IS LOCKED TO THE OUTPUT SHAPE, SO THIS LIST IS NOT IN PLAY.' : naturalAspect ? 'FREEFORM holds no shape at all; a named shape centres the crop on it' : 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.'}>
-                    <option value={FREEFORM}>{FREEFORM}</option>
-                    {ASPECTS.map((candidate) => <option key={candidate.label} value={candidate.label}>{candidate.label}</option>)}
-                  </select>
-                  <div className="unit-toggle">
-                    <button className={cropUnit === '%' ? 'is-on' : ''} onClick={() => setCropUnit('%')} title="Per cent of the source">%</button>
-                    <button className={cropUnit === 'px' ? 'is-on' : ''} disabled={!picture} onClick={() => setCropUnit('px')} title={picture ? 'Pixels of the source' : 'THE PICTURE HAS NOT LOADED, SO ITS PIXEL SIZE IS UNKNOWN.'}>px</button>
-                  </div>
-                </div>
                 <div className="crop-row">
                   {(['left', 'top', 'right', 'bottom'] as const).map((edge) => (
                     <label key={edge} className="mini-field">
@@ -2727,34 +2696,40 @@ export const EditJobApp: React.FC = () => {
                       />
                     </label>
                   ))}
+                  <div className="unit-toggle">
+                    <button className={cropUnit === '%' ? 'is-on' : ''} onClick={() => setCropUnit('%')} title="Per cent of the source">%</button>
+                    <button className={cropUnit === 'px' ? 'is-on' : ''} disabled={!picture} onClick={() => setCropUnit('px')} title={picture ? 'Pixels of the source' : 'THE PICTURE HAS NOT LOADED, SO ITS PIXEL SIZE IS UNKNOWN.'}>px</button>
+                  </div>
+                  <button className="exact-icon" onClick={() => applyCropProportion(NO_CROP)} title="Take the crop away" aria-label="Take the crop away"><RotateCcw size={11} /></button>
                 </div>
-                <label className="crop-lock" title={lockRatio ? 'The crop is held to the output frame\u2019s shape' : 'THE OUTPUT FRAME\u2019S SHAPE IS NOT KNOWN YET.'}>
-                  <input type="checkbox" checked={Boolean(draft.preset.cropLockToOutput)} disabled={!naturalAspect || !outputFrame} onChange={(event) => setCropLock(event.target.checked)} />
-                  <span>LOCK CROP TO OUTPUT AR</span>
-                </label>
                 {perClipFraming && (
                   <div className="crop-actions">
-                    <span>THIS CLIP{cropEnabled ? '' : ' — UNCROPPED'}</span>
-                    <button onClick={applyCropToAll} title="Put this crop on every clip in the job">APPLY TO ALL CLIPS</button>
+                    <span>THIS CLIP{cropEnabled ? '' : ' \u2014 UNCROPPED'}</span>
+                    <button className="crop-apply" onClick={applyCropToAll} title="Put this clip's crop on every clip in the job — or, with NONE chosen, leave every clip whole">APPLY TO ALL</button>
                   </div>
                 )}
-                <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON A SHAPE; FREEFORM HOLDS NO SHAPE AT ALL, SO A CORNER FOLLOWS THE POINTER ON BOTH AXES AND THE REGION KEEPS ITS OWN. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.{lockRatio ? ' WITH THE LOCK ON, EVERY EDIT HOLDS THE OUTPUT\u2019S SHAPE.' : ''}</div>
               </>}
+              {/* Outside the region's own block, because a crop of NOTHING is still a crop to hand on:
+                  with NONE chosen this is the one gesture that leaves every clip whole, which is what the
+                  question that used to ask about it did. */}
+              {!cropEnabled && perClipFraming && (
+                <div className="crop-actions">
+                  <span>THIS CLIP{' \u2014 UNCROPPED'}</span>
+                  <button className="crop-apply" onClick={applyCropToAll} title="Leave every clip whole">APPLY TO ALL</button>
+                </div>
+              )}
             </div>
             {/* The margins this clip leaves at the edges of the output, and where the picture sits inside
                 them. Two controls, one answer, so they share the section's unit switch and its one
                 reset rather than carrying a copy of each — see the FRAMING heading above. */}
             <div className="editor-field">
               <span><span className="editor-label">INSETS<EditorInfo text={INSETS_HELP} /></span></span>
-              {/* A box rather than a row: each field sits where the edge it moves is. T above, the two
-                  sides flanking, B below — the shape a dev-tools margin editor uses, and the shape of
-                  the thing being edited. */}
-              <div className="inset-box">
-                {(['t', 'l', 'r', 'b'] as const).map((edge) => {
+              <div className="crop-row">
+                {(['l', 't', 'r', 'b'] as const).map((edge) => {
                   const span = outputFrame ? (edge === 'l' || edge === 'r' ? outputFrame.width : outputFrame.height) : 0
                   const inPixels = framingUnit === 'px' && span > 0
                   return (
-                    <label key={edge} className={`mini-field is-${edge}`}><span>{edge.toUpperCase()}</span>
+                    <label key={edge} className="mini-field"><span>{edge.toUpperCase()}</span>
                       <NumberField
                         step={1}
                         className="editor-input"
@@ -2765,16 +2740,14 @@ export const EditJobApp: React.FC = () => {
                     </label>
                   )
                 })}
-                <span className="inset-box-core" aria-hidden="true" />
+                <button className="exact-icon" disabled={!activeFitKey || !hasInsets(activeInsets)} onClick={() => setInsets({ l: 0, t: 0, r: 0, b: 0 })} title="Take the margins away" aria-label="Take the margins away"><RotateCcw size={11} /></button>
               </div>
             </div>
             <div className="editor-divider" aria-hidden="true" />
             <div className="editor-field">
               <span><span className="editor-label">OFFSET<EditorInfo text={OFFSET_HELP} /></span></span>
-              {/* A cross rather than two boxes: X reads along the horizontal and Y up the vertical, so
-                  the pair says which way each figure moves the picture without a word of explanation. */}
-              <div className="offset-cross">
-                {(['y', 'x'] as const).map((axis) => {
+              <div className="crop-row is-two">
+                {(['x', 'y'] as const).map((axis) => {
                   const span = outputFrame ? (axis === 'x' ? outputFrame.width : outputFrame.height) : 0
                   const inPixels = framingUnit === 'px' && span > 0
                   const value = axis === 'x' ? pictureOffset.x : pictureOffset.y
@@ -2784,7 +2757,7 @@ export const EditJobApp: React.FC = () => {
                   const keep = Math.round((axis === 'x' ? pictureOffset.y : pictureOffset.x) * 100)
                   const next = (raw: number) => (inPixels ? (raw / span) * 100 : raw)
                   return (
-                    <label key={axis} className={`mini-field is-${axis}`}><span>{axis.toUpperCase()}</span>
+                    <label key={axis} className="mini-field"><span>{axis.toUpperCase()}</span>
                       <NumberField
                         step={1}
                         className="editor-input"
@@ -2795,7 +2768,7 @@ export const EditJobApp: React.FC = () => {
                     </label>
                   )
                 })}
-                <span className="offset-cross-core" aria-hidden="true">+</span>
+                <button className="exact-icon" disabled={!activeFitKey || (pictureOffset.x === 0 && pictureOffset.y === 0)} onClick={() => setFitOffset(0, 0)} title="Centre the picture" aria-label="Centre the picture"><RotateCcw size={11} /></button>
               </div>
             </div>
             </EditorGroup>
