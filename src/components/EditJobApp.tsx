@@ -411,61 +411,59 @@ export const EditJobApp: React.FC = () => {
     draft.preset.fps, draft.stillImageDuration, draft.transitions,
   ]) : ''
 
-  // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source
-  // without intrinsic timing (audio tracks especially) has to be probed before it
-  // can be drawn or played at its real length.
+  // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source without intrinsic
+  // timing — an audio track especially — has to be probed before it can be drawn or played at its real
+  // length. This is the list that gets probed and no more: a multi-track job maps one video stream, so
+  // only the first source is a candidate for it, and every added track is one.
   const candidateSources = draft ? Array.from(new Set([
     ...(draft.type === 'stitch' ? draft.sourcePaths : draft.sourcePaths.slice(0, 1)),
     ...(draft.additionalAudioTracks || []).map((track) => track.path),
   ])) : []
   const probeSignature = candidateSources.join('\u0000')
 
+  // What each source is: how long it is, what rate it carries, and whether it has audio or a picture.
+  //
+  // ONE probe per source. The questions used to be asked by two effects — a length for a source without
+  // intrinsic timing, then the streams for every source — so a track with neither recorded was read
+  // twice on the way into a window, and a probe is an ffprobe. One call answers all of it, which is why
+  // there is now one effect: the answers arrive together or not at all.
+  //
+  // Each half is still asked for on its own terms, though, and marked on its own terms: a source whose
+  // length is not known must not be left unprobed because its streams were, and one whose streams are
+  // known must not be re-read for a length somebody else already settled.
   useEffect(() => {
     const task = draftRef.current
     if (!task) return
-    const missing = candidateSources.filter((sourcePath) => !probedPathsRef.current.has(sourcePath) && sourceDuration(task, sourcePath) <= 0)
-    if (!missing.length) return
-    missing.forEach((sourcePath) => probedPathsRef.current.add(sourcePath))
+    const marked = probedPathsRef.current
+    const wantedTiming = candidateSources.filter((sourcePath) => !marked.has(`timing:${sourcePath}`) && sourceDuration(task, sourcePath) <= 0)
+    const wantedStreams = candidateSources.filter((sourcePath) => sourceAudio[sourcePath] === undefined && !marked.has(`streams:${sourcePath}`))
+    const wanted = [...new Set([...wantedTiming, ...wantedStreams])]
+    if (!wanted.length) return
+    wantedTiming.forEach((sourcePath) => marked.add(`timing:${sourcePath}`))
+    wantedStreams.forEach((sourcePath) => marked.add(`streams:${sourcePath}`))
+    const timing = new Set(wantedTiming)
     let cancelled = false
-    void Promise.all(missing.map(async (sourcePath) => {
+    void Promise.all(wanted.map(async (sourcePath) => {
       try {
-        const info = await window.electronAPI?.probeMedia(sourcePath)
-        return [sourcePath, { duration: info?.duration ?? 0, fps: info?.videoStreams?.[0]?.fps }] as const
+        return [sourcePath, await window.electronAPI?.probeMedia(sourcePath)] as const
       } catch {
-        return [sourcePath, { duration: 0 }] as const
+        return [sourcePath, undefined] as const
       }
     })).then((entries) => {
-      if (!cancelled) setProbedTiming((current) => ({ ...current, ...Object.fromEntries(entries) }))
+      if (cancelled) return
+      setProbedTiming((current) => ({
+        ...current,
+        // Only the sources that were being read FOR their length, so a probe made for something else
+        // does not become the timing of a source that already had one.
+        ...Object.fromEntries(entries.filter(([sourcePath]) => timing.has(sourcePath)).map(([sourcePath, info]) => [sourcePath, { duration: info?.duration ?? 0, fps: info?.videoStreams?.[0]?.fps }])),
+      }))
+      setSourceAudio((current) => ({ ...current, ...Object.fromEntries(entries.map(([sourcePath, info]) => [sourcePath, Boolean(info?.audioStreams?.length)])) }))
+      setSourceVideo((current) => ({ ...current, ...Object.fromEntries(entries.map(([sourcePath, info]) => [sourcePath, Boolean(info?.videoStreams?.length)])) }))
     })
     return () => { cancelled = true }
   }, [probeSignature])
 
   const resolveTiming = (sourcePath: string): SourceTiming | undefined => probedTiming[sourcePath]
-
-  // What each source is MADE of: whether it carries audio, and whether it has a picture at all. Probed
-  // once per source, from one call, because both answers come out of the same probe and both are facts
-  // about the file. The audio is what a clip's hairline reports; the picture is what decides whether a
-  // clip can be drawn as frames at all, which is what an audio track cannot be.
-  useEffect(() => {
-    if (!candidateSources.length) return
-    const missing = candidateSources.filter((sourcePath) => sourceAudio[sourcePath] === undefined && !probedPathsRef.current.has(`streams:${sourcePath}`))
-    if (!missing.length) return
-    missing.forEach((sourcePath) => probedPathsRef.current.add(`streams:${sourcePath}`))
-    let cancelled = false
-    void Promise.all(missing.map(async (sourcePath) => {
-      try {
-        const info = await window.electronAPI?.probeMedia(sourcePath)
-        return [sourcePath, { audio: Boolean(info?.audioStreams?.length), video: Boolean(info?.videoStreams?.length) }] as const
-      } catch {
-        return [sourcePath, { audio: false, video: false }] as const
-      }
-    })).then((entries) => {
-      if (cancelled) return
-      setSourceAudio((current) => ({ ...current, ...Object.fromEntries(entries.map(([path, kinds]) => [path, kinds.audio])) }))
-      setSourceVideo((current) => ({ ...current, ...Object.fromEntries(entries.map(([path, kinds]) => [path, kinds.video])) }))
-    })
-    return () => { cancelled = true }
-  }, [probeSignature])
   const model: TimelineModel | null = useMemo(
     () => (draft ? buildTimeline(draft, { resolveTiming }) : null),
     [timelineSignature, probedTiming],
@@ -1485,7 +1483,8 @@ export const EditJobApp: React.FC = () => {
     const target = pictureSourceFor(segment)
     return target ? mediaUrl(target) : null
   }
-  const elementUrl = sourceUrlFor(playback.segment)
+  const monitorTarget = pictureSourceFor(playback.segment)
+  const elementUrl = monitorTarget ? mediaUrl(monitorTarget) : null
   /**
    * Whether the clip the monitor is showing is sound with no picture.
    *
@@ -1496,7 +1495,18 @@ export const EditJobApp: React.FC = () => {
    * The extension answers immediately and the probe answers properly: a file named .wav has no picture
    * whatever it holds, and one named .mp4 might hold nothing but sound.
    */
-  const monitorIsAudio = Boolean(playback.segment && (mediaKind(playback.segment.sourcePath) === 'audio' || sourceVideo[playback.segment.sourcePath] === false))
+  const monitorSourcePath = playback.segment?.sourcePath
+  const monitorIsAudio = Boolean(monitorSourcePath && (mediaKind(monitorSourcePath) === 'audio' || sourceVideo[monitorSourcePath] === false))
+  /**
+   * Whether what the monitor has to DRAW is a picture file rather than footage.
+   *
+   * Read from the TARGET rather than from what the timeline calls the segment, because the target is
+   * what would be decoded and the two can disagree. A segment the timeline counts as footage whose
+   * generated clip has not been built resolves to the source itself — and for a still that source is a
+   * JPEG, so a <video> was handed an image and reported a pixel format it did not understand. Reading
+   * the target closes every such disagreement at once, whichever branch let it happen.
+   */
+  const monitorShowsImage = Boolean(monitorTarget && mediaKind(monitorTarget) === 'image')
 
   /**
    * Jumps the playhead to the point that was clicked.
@@ -2206,8 +2216,11 @@ export const EditJobApp: React.FC = () => {
                     ? <span className="editor-screen-message">{playback.error}</span>
                     : stillFrameJob
                       ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} ref={(element) => logMediaElement(element, 'monitor-still')} />
-                      : playback.segment?.still
-                        ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} ref={(element) => logMediaElement(element, 'monitor-still')} />
+                      // A picture file is drawn as a picture, whichever branch the timeline took to get
+                      // here — the segment's own flag is not consulted, because the target is what would
+                      // be decoded and it is the target that decides how to decode it.
+                      : monitorShowsImage
+                        ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={elementUrl ?? mediaUrl(playback.segment?.sourcePath ?? '')} alt={sourceName(playback.segment?.sourcePath ?? '')} onLoad={measureNatural} ref={(element) => logMediaElement(element, 'monitor-still')} />
                         // Sound with no picture: a waveform, never a <video>. The element would be
                         // asked for a frame out of a file that has none.
                         : monitorIsAudio
