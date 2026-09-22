@@ -6,7 +6,7 @@ import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
@@ -234,6 +234,14 @@ export const EditJobApp: React.FC = () => {
    * `undefined` means not known yet, which is treated as "assume a picture" so nothing flashes.
    */
   const [sourceVideo, setSourceVideo] = useState<Record<string, boolean>>({})
+  /**
+   * The size of the FIRST picture in the job, which is the one MATCH SOURCE follows.
+   *
+   * The output frame's own shape comes from this while that setting is on, and from the clip under the
+   * playhead while it is off. Which is to say: with it on the frame is a fact about the JOB, and with
+   * it off it is a fact about the clip — see where the frame is worked out.
+   */
+  const [firstSourceSize, setFirstSourceSize] = useState<{ width: number; height: number } | undefined>(undefined)
   /** The source the monitor is showing, so its audio can be drawn as a waveform when it has no picture. */
   const [monitorSource, setMonitorSource] = useState<string | null>(null)
   /** Each source's audio as peaks, read once per file, for a lane drawn as a waveform. */
@@ -423,8 +431,37 @@ export const EditJobApp: React.FC = () => {
   // rather than beside the monitor, because a tile is the shape of the frame: a frame the strips
   // saw late would be a strip laid out for a shape that is no longer the output's. It needs nothing
   // but the task and the media's own size, and both are known by this point in the render.
+  const playingNatural = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined
+  /**
+   * Whether the output frame follows the source, which is what MATCH SOURCE means.
+   *
+   * Read here rather than beside the buttons that set it, because the frame itself is worked out here:
+   * a frame that lagged the control which chose it would show the shape the user had just replaced.
+   */
+  const matchSource = Boolean(draft && !draft.preset.width && !draft.preset.height && draft.preset.resolution === 'source')
+  const matchSourceClip = draft ? firstVisualSource(draft) : undefined
+  // The first picture's own size, read once while the frame is following the source. It is a fact about
+  // the file, so it is asked for once rather than at every change of clip.
+  useEffect(() => {
+    if (!matchSource || !matchSourceClip) { setFirstSourceSize(undefined); return }
+    let cancelled = false
+    void (async () => {
+      try {
+        const info = await window.electronAPI?.probeMedia(matchSourceClip)
+        const resolution = info?.videoStreams?.[0]?.resolution?.split('x').map(Number)
+        if (!cancelled && resolution && resolution[0] > 0 && resolution[1] > 0) setFirstSourceSize({ width: resolution[0], height: resolution[1] })
+      } catch {
+        // The playing clip's own size stands in, which is what the frame used before this.
+      }
+    })()
+    return () => { cancelled = true }
+  }, [matchSource, matchSourceClip])
   const outputFrame = draft ? outputFrameSize({
-    natural: naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined,
+    // MATCH SOURCE follows the FIRST picture in the job, not the clip under the playhead. Following the
+    // playhead made the output's shape a question of where the playhead was: crossing a cut re-shaped
+    // the frame, re-laid every strip out and moved the monitor's outline. Until the first clip's size
+    // has been read the playing one stands in, so the frame is drawn rather than absent.
+    natural: matchSource ? firstSourceSize ?? playingNatural : playingNatural,
     exact: draft.preset.width && draft.preset.height ? { width: draft.preset.width, height: draft.preset.height } : undefined,
     box: resolutionBox(draft.preset.resolution),
   }) : undefined
@@ -1081,11 +1118,9 @@ export const EditJobApp: React.FC = () => {
   /** The ratio the current exact size stands for, if it is one of the offered shapes. */
   const exactAspect = draft.preset.width && draft.preset.height ? draft.preset.width / draft.preset.height : null
   const activeAspect = exactAspect ? ASPECTS.find((candidate) => Math.abs(candidate.ratio - exactAspect) < ASPECT_TOLERANCE)?.label : undefined
-  /**
-   * MATCH SOURCE: no exact size and no named resolution, so the frame is the source's own.
-   * It is the state the window starts in, and the way back to it once a shape has been chosen.
-   */
-  const matchSource = !draft.preset.width && !draft.preset.height && draft.preset.resolution === 'source'
+  // MATCH SOURCE is the state the window starts in, and the way back to it once a shape has been
+  // chosen. What it then MEANS — which clip the frame follows — is decided where the frame is worked
+  // out, well above this: the shape has to be known before these buttons can report it.
   /**
    * The rate the encoder will use when none is set: the source's own when there is one source,
    * and otherwise the default the output falls back to, since many sources have many rates and

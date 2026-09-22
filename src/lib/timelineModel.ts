@@ -167,6 +167,18 @@ export interface BuildTimelineOptions {
 /** `sourceInfo` describes the task's first source only, never its tracks. */
 const primarySource = (task: QueueTask) => task.sourcePaths[0]
 
+/**
+ * The first PICTURE in a job, which is the clip the output frame follows when it follows the source.
+ *
+ * The first one rather than any other, and a picture rather than a track: a job's own list is in the
+ * order it will be joined, so its first visual is where the output starts. An audio track is not a
+ * picture and cannot set the output's shape, and a job that is nothing but tracks has none at all —
+ * which is why this answers with nothing rather than with a track. Order is the whole of the rule, so
+ * a job whose first source is a track and whose second is a clip follows the clip.
+ */
+export const firstVisualSource = (task: Pick<QueueTask, 'sourcePaths'>): string | undefined =>
+  task.sourcePaths.find((sourcePath) => mediaKind(sourcePath) !== 'audio')
+
 export const sequenceFor = (task: QueueTask, sourcePath: string | undefined): SequenceInput | undefined => {
   if (!sourcePath) return undefined
   return task.sequenceInputs?.[sourcePath] || (task.sequenceInput?.firstFrame === sourcePath ? task.sequenceInput : undefined)

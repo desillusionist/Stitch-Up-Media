@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, ZOOM_MAX, ZOOM_MIN, clampZoom,
 import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, edgeFade, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, edgeFade, firstVisualSource, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask } from '../src/lib/sourceRemoval'
 
@@ -1183,6 +1183,21 @@ console.log('\n== the waveform ==')
   check('a clip with no width draws nothing', [waveformPath({ peaks: [1], width: 0, height: 32 }), waveformPath({ peaks: [], width: 40, height: 32 })], ['', ''])
   check('the reading is the helper own resolution', WAVEFORM_PEAKS, 2000)
   check('and no more bars than buckets', waveformPath({ peaks: Array.from({ length: 10 }, () => 1), width: 100000, height: 32 }).length < 600, true)
+}
+
+console.log('\n== which clip the output frame follows ==')
+{
+  // MATCH SOURCE follows the FIRST picture in a job. Order is the whole of the rule, because a job's
+  // sources are in the order they will be joined and the output starts at its first visual — and a
+  // track is not a picture, so it cannot set the shape of anything. Following the clip under the
+  // playhead instead made the output's own shape a question of where the playhead happened to be.
+  const first = (paths: string[]) => firstVisualSource({ sourcePaths: paths })
+  check('the first clip is the first picture', first(['/one.mp4', '/two.mp4']), '/one.mp4')
+  check('and the order decides it rather than the shape', first(['/tall.mp4', '/wide.mp4']), '/tall.mp4')
+  check('an audio track is not a picture', first(['/podcast.wav']), undefined)
+  check('so a job led by a track follows its first clip', first(['/podcast.wav', '/clip.mp4']), '/clip.mp4')
+  check('a track after a clip does not change it', first(['/clip.mp4', '/music.mp3']), '/clip.mp4')
+  check('and a job of nothing but tracks follows nothing', first(['/a.wav', '/b.wav']), undefined)
 }
 
 void (async () => {
