@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, ZOOM_MAX, ZOOM_MIN, clampZoom,
 import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, edgeFade, firstVisualSource, laneIsMuted, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, edgeFade, firstVisualSource, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask } from '../src/lib/sourceRemoval'
 
@@ -1202,6 +1202,20 @@ console.log('\n== which clip the output frame follows ==')
   check('so a job led by a track follows its first clip', first(['/podcast.wav', '/clip.mp4']), '/clip.mp4')
   check('a track after a clip does not change it', first(['/clip.mp4', '/music.mp3']), '/clip.mp4')
   check('and a job of nothing but tracks follows nothing', first(['/a.wav', '/b.wav']), undefined)
+}
+
+console.log('\n== what MATCH SOURCE takes its size from ==')
+{
+  // The button sets the frame to the picture IN HAND — the clip under the playhead — rather than the
+  // job's first, but falls back to the first when what is in hand is no picture at all. That fallback
+  // is what keeps a playhead resting on a track from leaving the button with no answer.
+  const match = (paths: string[], selected: string | undefined) => matchSourceSource({ sourcePaths: paths }, selected)
+  check('the picture in hand', match(['/one.mp4', '/two.mp4'], '/two.mp4'), '/two.mp4')
+  check('and the order does not decide it', match(['/one.mp4', '/two.mp4'], '/one.mp4'), '/one.mp4')
+  check('a still counts as a picture', match(['/one.mp4', '/still.png'], '/still.png'), '/still.png')
+  check('a track in hand is no picture, so the first stands', match(['/one.mp4', '/two.mp4'], '/music.mp3'), '/one.mp4')
+  check('with nothing in hand the first stands', match(['/one.mp4', '/two.mp4'], undefined), '/one.mp4')
+  check('and a job of nothing but tracks still has no answer', match(['/a.wav', '/b.wav'], '/a.wav'), undefined)
 }
 
 void (async () => {

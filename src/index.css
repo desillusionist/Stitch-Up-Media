@@ -261,16 +261,15 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    reaches for a caret rather than for a name. */
 .editor-group { display: grid; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
 .editor-group-head { display: flex; align-items: center; gap: 8px; padding-bottom: 5px; border-bottom: 2px solid var(--ui-accent); }
-.editor-group-name { flex: 1 1 auto; display: flex; align-items: center; padding: 0; color: var(--ui-muted); background: transparent; border: 0; font-family: inherit; font-size: 10px; letter-spacing: .08em; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
-/* The whole heading goes green together. A name that changed colour while its own sublabel stayed dim
-   would read as two things on one line, which is what a NAME // SUBLABEL pair is there not to be. */
-.editor-group-head:hover .editor-group-name,
-.editor-group-head:hover .editor-group-name em,
-.editor-group-head:hover .editor-group-mark { color: var(--ui-accent); }
-/* The sublabel is a tail on the heading: smaller, dimmer, untracked, and never wrapped. */
-.editor-group-name em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: 0; opacity: .85; }
-.editor-group-mark { flex: 0 0 auto; padding: 0 1px; color: var(--ui-border); background: transparent; border: 0; font-family: inherit; font-size: 12px; line-height: 1; cursor: pointer; }
+.editor-group-name { flex: 1 1 auto; display: flex; align-items: baseline; gap: 5px; padding: 0; color: var(--ui-muted); background: transparent; border: 0; font-family: inherit; font-size: 10px; letter-spacing: .08em; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+/* Only the NAME goes green. The sublabel is a fact ABOUT the name rather than a second control, so
+   lighting both would read as two things turning over at once; the gap on the name button is what
+   holds the separator clear of the name on its left, and the sublabel carries the space after it. */
+.editor-group-head:hover .editor-group-label { color: var(--ui-accent); }
 .editor-group-mark:hover { color: var(--ui-accent); }
+/* The sublabel is a tail on the heading: smaller, dimmer, untracked, and never wrapped. */
+.editor-group-hint { color: var(--ui-border); font-size: 8px; letter-spacing: 0; opacity: .85; }
+.editor-group-mark { flex: 0 0 auto; padding: 0 1px; color: var(--ui-border); background: transparent; border: 0; font-family: inherit; font-size: 12px; line-height: 1; cursor: pointer; }
 .editor-group-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
 /* Sized to the height of a heading's own line rather than to a comfortable button, so a heading that
    carries controls is not taller than one that does not: a row of headings is read as a list, and one
@@ -348,7 +347,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    to, which is what makes it plain what it puts back. */
 .crop-row { display: flex; align-items: center; gap: 5px; }
 .crop-row .mini-field { flex: 1 1 0; min-width: 0; }
-.crop-row .unit-toggle, .crop-row .exact-icon { flex: 0 0 auto; }
+.crop-row .exact-icon { flex: 0 0 auto; }
+/* The heading of a sub-section, on its own line above the controls it governs. It carries the position
+   context the explanation hangs from, so the paragraph opens under the whole row rather than off the
+   small mark that raised it. */
+.crop-title { position: relative; }
 .exact-row { display: grid; align-items: center; gap: 5px; }
 /* A sub-section's own line: which clip the figures belong to, and the one action that puts them on
    every clip at once. Kept small: it is a remark about the figures above, not a control of its own. */
@@ -365,7 +368,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    popover hung off the mark leaves the sidebar on one side or the other as soon as a label is long.
    Spanning the row it is drawn under cannot go wrong whichever label it belongs to. */
 .editor-info { display: inline-flex; }
-.editor-info-mark { width: 12px; height: 12px; padding: 0; display: grid; place-items: center; color: var(--ui-border); background: transparent; border: 1px solid var(--ui-border); border-radius: 50%; font-family: inherit; font-size: 8px; line-height: 1; cursor: help; }
+.editor-info-mark { width: 12px; height: 12px; padding: 0; display: grid; place-items: center; color: var(--ui-border); background: transparent; border: 1px solid var(--ui-border); border-radius: 50%; font-family: inherit; font-size: 8px; line-height: 1; text-transform: none; cursor: help; }
 .editor-info-mark:hover, .editor-info-mark:focus { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-info-pop { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 8; padding: 7px 8px; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-accent); font-size: 9px; letter-spacing: .04em; line-height: 1.55; text-align: left; }
 /* A rule between one group of settings and the next, for the groups that have to read as separate

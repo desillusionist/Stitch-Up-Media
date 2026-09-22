@@ -179,6 +179,19 @@ const primarySource = (task: QueueTask) => task.sourcePaths[0]
 export const firstVisualSource = (task: Pick<QueueTask, 'sourcePaths'>): string | undefined =>
   task.sourcePaths.find((sourcePath) => mediaKind(sourcePath) !== 'audio')
 
+/**
+ * The picture MATCH SOURCE takes its size from: the clip in hand, or — with no picture in hand — the
+ * first picture in the job.
+ *
+ * The clip in hand rather than the first because the button says what the frame BEING EDITED is, and
+ * a frame is a fact about a clip while a job has more than one. A track in hand is no picture, so a
+ * job whose playhead rests on a track still follows its first visual rather than having no answer.
+ * With nothing selected at all the answer is the same as the job's first, which is where an untouched
+ * frame already stands.
+ */
+export const matchSourceSource = (task: Pick<QueueTask, 'sourcePaths'>, selected: string | undefined): string | undefined =>
+  selected && mediaKind(selected) !== 'audio' ? selected : firstVisualSource(task)
+
 export const sequenceFor = (task: QueueTask, sourcePath: string | undefined): SequenceInput | undefined => {
   if (!sourcePath) return undefined
   return task.sequenceInputs?.[sourcePath] || (task.sequenceInput?.firstFrame === sourcePath ? task.sequenceInput : undefined)

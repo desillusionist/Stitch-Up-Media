@@ -6,11 +6,11 @@ import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameStamp, HEAD_FADE_KEY, isStillFrameJob, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
-import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MIN_KEPT, CropCorner, CropFractions } from '../lib/outputFrame'
+import { cropBands, cropForProportion, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MIN_KEPT, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
 import { ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
 
@@ -137,10 +137,13 @@ const CROP_HELP = 'What part of the SOURCE this clip keeps, in the source\u2019s
 const EditorGroup: React.FC<{ id: string; label: string; hint?: string; reason?: string; collapsed: boolean; onToggle: (id: string) => void; actions?: React.ReactNode; children: React.ReactNode }> = ({ id, label, hint, reason, collapsed, onToggle, actions, children }) => (
   <section className={`editor-group${collapsed ? ' is-collapsed' : ''}`}>
     <div className="editor-group-head">
-      {/* The heading is NAME // SUBLABEL, and the whole of it folds: the mark at the far right is the
-          same action for anyone who reaches for a caret rather than for a name. */}
+      {/* The heading is NAME // SUBLABEL. The name and the sublabel are separate spans so only the
+          name can answer a hover, and the separator's spacing comes from the name button's own gap
+          plus the space the sublabel starts with rather than from a space inside an inline run, which
+          a flex row trims away. */}
       <button type="button" className="editor-group-name" onClick={() => onToggle(id)} title={reason} aria-expanded={!collapsed}>
-        {label}{hint ? <em>{' // '}{hint}</em> : null}
+        <span className="editor-group-label">{label}</span>
+        {hint ? <span className="editor-group-hint">{'// '}{hint}</span> : null}
       </button>
       {actions ? <div className="editor-group-actions">{actions}</div> : null}
       <button type="button" className="editor-group-mark" onClick={() => onToggle(id)} aria-expanded={!collapsed} aria-label={collapsed ? 'Expand this section' : 'Collapse this section'}>{collapsed ? '+' : '\u2212'}</button>
@@ -275,8 +278,6 @@ export const EditJobApp: React.FC = () => {
   const [naturalSize, setNaturalSize] = useState<{ key: string | undefined; width: number; height: number } | null>(null)
   /** Where a right-click on the timeline opened its menu, and what it was on. */
   const [timelineMenu, setTimelineMenu] = useState<TimelineMenu | null>(null)
-  /** Whether the crop fields read as per cent of the source or as pixels of it. */
-  const [cropUnit, setCropUnit] = useState<'%' | 'px'>('%')
   /**
    * Whether the INSETS and OFFSET fields read as per cent of the output frame or as pixels of it.
    *
@@ -375,6 +376,15 @@ export const EditJobApp: React.FC = () => {
    * it off it is a fact about the clip — see where the frame is worked out.
    */
   const [firstSourceSize, setFirstSourceSize] = useState<{ width: number; height: number } | undefined>(undefined)
+  /**
+   * The pixel size of the picture MATCH SOURCE would take the frame from: the clip in hand, or the
+   * job's first with none in hand.
+   *
+   * It is a fact about a file, so it is read once per file and held, rather than asked for at the
+   * moment the button is pressed: a button that had to wait for an ffprobe before it could fill a
+   * field would fill it a moment after the click, which reads as the click having missed.
+   */
+  const [matchSourceSize, setMatchSourceSize] = useState<{ width: number; height: number } | undefined>(undefined)
   /** The source the monitor is showing, so its audio can be drawn as a waveform when it has no picture. */
   const [monitorSource, setMonitorSource] = useState<string | null>(null)
   /** Each source's audio as peaks, read once per file, for a lane drawn as a waveform. */
@@ -607,6 +617,23 @@ export const EditJobApp: React.FC = () => {
     })()
     return () => { cancelled = true }
   }, [matchSource, matchSourceClip])
+  /**
+   * The picture MATCH SOURCE would follow right now, which is the clip in hand rather than the job's
+   * first — see the helper, where that rule is stated.
+   */
+  const matchSourceTarget = draft ? matchSourceSource(draft, playback.segment?.sourcePath) : undefined
+  // Its own size, read once per source. This is what fills EXACT SIZE and what the button reports
+  // itself against, so it is held rather than asked for at the press.
+  useEffect(() => {
+    if (!matchSourceTarget) { setMatchSourceSize(undefined); return }
+    let cancelled = false
+    void probeSource(matchSourceTarget).then((info) => {
+      if (cancelled) return
+      const resolution = info?.videoStreams?.[0]?.resolution?.split('x').map(Number)
+      setMatchSourceSize(resolution && resolution[0] > 0 && resolution[1] > 0 ? { width: resolution[0], height: resolution[1] } : undefined)
+    })
+    return () => { cancelled = true }
+  }, [matchSourceTarget, probeSource])
   const outputFrame = draft ? outputFrameSize({
     // MATCH SOURCE follows the FIRST picture in the job, not the clip under the playhead. Following the
     // playhead made the output's shape a question of where the playhead was: crossing a cut re-shaped
@@ -1269,9 +1296,36 @@ export const EditJobApp: React.FC = () => {
   /** The ratio the current exact size stands for, if it is one of the offered shapes. */
   const exactAspect = draft.preset.width && draft.preset.height ? draft.preset.width / draft.preset.height : null
   const activeAspect = exactAspect ? ASPECTS.find((candidate) => Math.abs(candidate.ratio - exactAspect) < ASPECT_TOLERANCE)?.label : undefined
-  // MATCH SOURCE is the state the window starts in, and the way back to it once a shape has been
-  // chosen. What it then MEANS — which clip the frame follows — is decided where the frame is worked
-  // out, well above this: the shape has to be known before these buttons can report it.
+  /**
+   * Matches the output frame to the picture in hand.
+   *
+   * The frame takes that clip's SHAPE *and* its exact pixel size, so the two things the button does
+   * are one statement: what is exported is what the clip is, rather than merely the same shape as it.
+   * The shape follows from the size, which is why setting the size is the whole of the work — the
+   * ratio row reports it a moment later.
+   *
+   * The size is the one already read for the button, or the playing clip's own as the element
+   * reported it. With neither known yet the source is probed, which is why this can take a moment
+   * rather than being instant; a job with no picture in it has nothing to match and does nothing.
+   */
+  const applyMatchSource = () => {
+    const target = matchSourceSource(latest(), playback.segment?.sourcePath)
+    if (!target) return
+    const known = target === playback.segment?.sourcePath && picture ? picture : matchSourceSize
+    if (known) { updatePreset({ width: known.width, height: known.height, resolution: 'source' }); return }
+    void probeSource(target).then((info) => {
+      const resolution = info?.videoStreams?.[0]?.resolution?.split('x').map(Number)
+      if (resolution && resolution[0] > 0 && resolution[1] > 0) updatePreset({ width: resolution[0], height: resolution[1], resolution: 'source' })
+    })
+  }
+  /**
+   * Whether the frame already IS the picture in hand, which is what the button reports itself against.
+   *
+   * Read from the size rather than from the mode that set it: what the button promises is the frame,
+   * and a frame that happens to have been reached another way is still the frame it promises.
+   */
+  const matchSourceChosen = Boolean(draft.preset.width && draft.preset.height && matchSourceSize
+    && draft.preset.width === matchSourceSize.width && draft.preset.height === matchSourceSize.height)
   /**
    * The rate the encoder will use when none is set: the source's own when there is one source,
    * and otherwise the default the output falls back to, since many sources have many rates and
@@ -1721,7 +1775,6 @@ export const EditJobApp: React.FC = () => {
   /** The crop the preset applies. Its edges are fractions of the picture, which is what makes them
    *  survive a resize; the pixel figures the fields show are read off `picture` just above. */
   const crop = perClipFraming && activeSourceCrop ? cropFractionsOf(activeSourceCrop) : draft.preset.crop
-  const cropPx = crop && picture ? cropPixels(crop, picture) : null
   /** The proportion list's value: no shape held, a shape the crop keeps, or the user's own. */
   const keptProportion = crop && naturalAspect ? keptAspect(crop, naturalAspect) : undefined
   const matchedProportion = keptProportion != null
@@ -1805,19 +1858,18 @@ export const EditJobApp: React.FC = () => {
     updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
   }
   /**
-   * Sets one crop edge from its field, in whichever unit the fields are currently showing.
+   * Sets one crop edge from its field, as a share of the source.
    *
-   * One edge moves at a time: the other three are already settled, so only the edited one changes
-   * and the rest survive the trip through the unit's inverse. While the lock is on the axis that was
-   * NOT typed follows from the one that was, so the figure in the field stays the one the user set
+   * The crop is measured against the SOURCE, so its unit is the source's own and is not the section's:
+   * the framing switch reads insets and offsets as shares of the output frame, which is a different
+   * rectangle, so a single switch could not mean one thing for both. One edge moves at a time: the
+   * other three are already settled, so only the edited one changes. While the lock is on the axis that
+   * was NOT typed follows from the one that was, so the figure in the field stays the one the user set
    * and the region is nonetheless the output's shape.
    */
   const setCropEdge = (edge: keyof CropFractions, raw: number) => {
     if (!crop) return
-    const next = cropUnit === 'px'
-      ? (cropPx && picture ? cropFractions({ ...cropPx, [edge]: Math.max(0, Math.round(raw)) }, picture) : null)
-      : { ...crop, [edge]: Math.max(0, Math.min(1, raw / 100)) }
-    if (!next) return
+    const next = { ...crop, [edge]: Math.max(0, Math.min(1, raw / 100)) }
     if (lockRatio && naturalAspect) { writeCrop(holdCropShape(next, lockRatio, naturalAspect, edge === 'left' || edge === 'right' ? 'width' : 'height')); return }
     setCrop(next)
   }
@@ -2633,7 +2685,7 @@ export const EditJobApp: React.FC = () => {
                 {ASPECTS.map((candidate) => (
                   <button key={candidate.label} className={activeAspect === candidate.label ? 'is-selected' : ''} onClick={() => applyAspect(candidate.ratio)} title={`Output frame of ${candidate.label}`}>{candidate.label}</button>
                 ))}
-                <button className={matchSource ? 'is-selected' : ''} onClick={() => updatePreset({ width: undefined, height: undefined, resolution: 'source' })} title="Output frame follows the source">MS</button>
+                <button className={matchSource || matchSourceChosen ? 'is-selected' : ''} onClick={applyMatchSource} title="Match the frame to the picture in hand: its shape and its own pixel size">MS</button>
               </div>
             </div>
             <EditorField label="RESOLUTION" reason={videoReason}><select value={draft.preset.resolution} disabled={audioOnly || isGif} onChange={(event) => changeResolution(event.target.value as EncodingPreset['resolution'])}>{RESOLUTIONS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
@@ -2656,8 +2708,10 @@ export const EditJobApp: React.FC = () => {
               </div>
             </>}>
             <div className="editor-subsection">
-              <div className="crop-head">
+              <div className="crop-title">
                 <span className="editor-label">CROP<EditorInfo text={CROP_HELP} /></span>
+              </div>
+              <div className="crop-head">
                 {/* The shape list is the switch as well: NONE is one of its entries, so choosing to
                     have no crop is the same gesture as choosing its shape rather than a control of its
                     own that had to ask before it could make its mind up. */}
@@ -2685,26 +2739,20 @@ export const EditJobApp: React.FC = () => {
                       <span>{edge.slice(0, 1).toUpperCase()}</span>
                       <NumberField
                         min={0}
-                        max={cropUnit === 'px' && picture
-                          ? Math.round((1 - MIN_KEPT - crop[OPPOSITE_EDGE[edge]]) * (edge === 'left' || edge === 'right' ? picture.width : picture.height))
-                          : Math.round((1 - MIN_KEPT - crop[OPPOSITE_EDGE[edge]]) * 100)}
+                        max={Math.round((1 - MIN_KEPT - crop[OPPOSITE_EDGE[edge]]) * 100)}
                         step={1}
                         className="editor-input"
-                        value={cropUnit === 'px' && cropPx ? cropPx[edge] : Math.round(crop[edge] * 100)}
+                        value={Math.round(crop[edge] * 100)}
                         onValue={(raw) => setCropEdge(edge, raw)}
-                        title={`${edge} edge, ${cropUnit === 'px' ? 'pixels' : 'per cent'} of the source`}
+                        title={`${edge} edge, per cent of the source`}
                       />
                     </label>
                   ))}
-                  <div className="unit-toggle">
-                    <button className={cropUnit === '%' ? 'is-on' : ''} onClick={() => setCropUnit('%')} title="Per cent of the source">%</button>
-                    <button className={cropUnit === 'px' ? 'is-on' : ''} disabled={!picture} onClick={() => setCropUnit('px')} title={picture ? 'Pixels of the source' : 'THE PICTURE HAS NOT LOADED, SO ITS PIXEL SIZE IS UNKNOWN.'}>px</button>
-                  </div>
                   <button className="exact-icon" onClick={() => applyCropProportion(NO_CROP)} title="Take the crop away" aria-label="Take the crop away"><RotateCcw size={11} /></button>
                 </div>
                 {perClipFraming && (
                   <div className="crop-actions">
-                    <span>THIS CLIP{cropEnabled ? '' : ' \u2014 UNCROPPED'}</span>
+                    <span>THIS CLIP</span>
                     <button className="crop-apply" onClick={applyCropToAll} title="Put this clip's crop on every clip in the job — or, with NONE chosen, leave every clip whole">APPLY TO ALL</button>
                   </div>
                 )}

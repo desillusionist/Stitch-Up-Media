@@ -102,15 +102,17 @@ const caseD = `
     </div>
   </div>
   <div class="editor-subsection">
+    <div class="crop-title" id="ctitle"><span class="editor-label" id="clabel2">CROP<span class="editor-info" id="cinfo"><button class="editor-info-mark" id="cmark">i</button><span class="editor-info-pop" id="cpop">What part of the source this clip keeps.</span></span></span></div>
     <div class="crop-head" id="chead">
       <select id="csel"><option>NONE</option><option>16:9</option></select>
-      <div class="unit-toggle" id="cunit"><button id="cupct" class="is-on">%</button><button id="cupx">px</button></div>
+      <button class="exact-icon" id="clock">L</button>
     </div>
     <div class="crop-row" id="crow">
       <label class="mini-field"><span>L</span><input id="cl" type="number" value="10"></label>
-      <label class="mini-field"><span>T</span><input type="number" value="10"></label>
-      <label class="mini-field"><span>R</span><input type="number" value="10"></label>
-      <label class="mini-field"><span>B</span><input type="number" value="10"></label>
+      <label class="mini-field"><span>T</span><input id="ctop" type="number" value="10"></label>
+      <label class="mini-field"><span>R</span><input id="cr" type="number" value="10"></label>
+      <label class="mini-field"><span>B</span><input id="cb" type="number" value="10"></label>
+      <button class="exact-icon" id="creset">R</button>
     </div>
   </div>
 </div>`
@@ -168,7 +170,7 @@ const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></
 const caseJ = `
 <section class="editor-group" id="gopen">
   <div class="editor-group-head" id="gopenhead">
-    <button class="editor-group-name" id="gopenname">OUTPUT FRAME<em> // SHAPE AND SIZE</em></button>
+    <button class="editor-group-name" id="gopenname"><span class="editor-group-label" id="gopenlabel">OUTPUT FRAME</span><span class="editor-group-hint" id="gopenhint">// SHAPE AND SIZE</span></button>
     <button class="editor-group-mark" id="gopenmark">-</button>
   </div>
   <div class="editor-group-body" id="gopenbody">
@@ -178,7 +180,7 @@ const caseJ = `
 </section>
 <section class="editor-group is-collapsed" id="gclosed">
   <div class="editor-group-head" id="gclosedhead">
-    <button class="editor-group-name" id="gclosedname">FRAMING<em> // PER CLIP</em></button>
+    <button class="editor-group-name" id="gclosedname"><span class="editor-group-label">FRAMING</span><span class="editor-group-hint">// PER CLIP</span></button>
     <div class="editor-group-actions" id="gactions"><div class="unit-toggle"><button class="is-on">%</button><button>px</button></div></div>
     <button class="editor-group-mark" id="gclosedmark">+</button>
   </div>
@@ -336,10 +338,15 @@ const measure = `(() => {
       fieldHeights: [dw.height, dh.height], iconHeights: [dlock.height, dreset.height],
       leadingFlush: +(rect('dwf').left - exrow.left).toFixed(2), trailingFlush: +(exrow.right - dreset.right).toFixed(2),
       columnGap: +(dh.left - dw.right).toFixed(2) },
-    caseE: { headWidth: rect('chead').width, headHeight: rect('chead').height, selectWidth: rect('csel').width, unitWidth: rect('cunit').width, unitHeightBox: rect('cunit').height,
-      headLeadingFlush: +(rect('csel').left - rect('chead').left).toFixed(2), headTrailingFlush: +(rect('chead').right - rect('cunit').right).toFixed(2),
-      unitButtonWidths: [rect('cupct').width, rect('cupx').width], unitHeight: rect('cupct').height, selectHeight: rect('csel').height,
-      cropRowWidth: rect('crow').width, cropFieldWidth: rect('cl').width },
+    caseE: { headWidth: rect('chead').width, headHeight: rect('chead').height, selectWidth: rect('csel').width, pickHeight: rect('csel').height,
+      lockWidth: rect('clock').width, lockHeight: rect('clock').height,
+      titleBottom: rect('ctitle').bottom, headTop: rect('chead').top,
+      hasCropUnit: Boolean(document.getElementById('cunit')),
+      markTransform: getComputedStyle(document.getElementById('cmark')).textTransform,
+      popLeft: rect('cpop').left, popRight: rect('cpop').right, popTop: rect('cpop').top, markBottom: rect('cmark').bottom,
+      contentLeft: rect('fcontent').left, contentRight: rect('fcontent').right,
+      selectLeadingFlush: +(rect('csel').left - rect('chead').left).toFixed(2), lockTrailingFlush: +(rect('chead').right - rect('clock').right).toFixed(2),
+      cropRowWidth: rect('crow').width, cropFieldWidth: rect('cl').width, cropResetLeft: rect('creset').left, cropLastRight: rect('cb').right },
     // Folding: an open group holds what it is given, a collapsed one holds nothing at all, and folding
     // does not change the height of the heading — or the sidebar would jump as groups were folded.
     // The controls inside keep filling their group, which the width rule has to allow for now that a
@@ -352,6 +359,8 @@ const measure = `(() => {
       // under it must not push what it governs any further down than the heading would have. Its rule is
       // the tab strip's own, because a section's name is a heading and the line says how far it reaches.
       actionsRow: Math.abs(rect('gactions').top - rect('gclosedname').top), actionsRightOfToggle: rect('gactions').left >= rect('gclosedname').right,
+      separatorGap: +(rect('gopenhint').left - rect('gopenlabel').right).toFixed(2),
+      hintText: document.getElementById('gopenhint').textContent,
       headingRule: [getComputedStyle(document.getElementById('gopenhead')).borderBottomWidth, getComputedStyle(document.getElementById('gopenhead')).borderBottomColor],
       tabRule: [getComputedStyle(document.querySelector('#ftabs button.active')).borderBottomWidth, getComputedStyle(document.querySelector('#ftabs button.active')).borderBottomColor],
       nameOneLine: rect('gopenname').height <= 20 },
@@ -578,6 +587,26 @@ app.whenReady().then(async () => {
     if (!(groups.selectWidth > groups.groupInnerWidth * 0.8)) problems.push(`a control inside a group does not fill it: ${groups.selectWidth}px of ${groups.groupInnerWidth}px`)
     if (!groups.nameOneLine) problems.push('a heading\u2019s name and sublabel do not fit on one line')
     if (JSON.stringify(groups.headingRule) !== JSON.stringify(groups.tabRule)) problems.push(`a heading's rule is not the tab strip's: ${JSON.stringify(groups.headingRule)} of ${JSON.stringify(groups.tabRule)}`)
+    // NAME // SUBLABEL: the separator has to be clear of the name on its left — a flex row trims a
+    // leading space, which is how it came to read NAME// SUBLABEL — and carry its space on the right.
+    if (!(groups.separatorGap >= 3)) problems.push(`the separator is not clear of the name: ${groups.separatorGap}px`)
+    if (!/^\/\/ /.test(groups.hintText)) problems.push(`the sublabel does not read as // SUBLABEL: ${JSON.stringify(groups.hintText)}`)
+  }
+  // The crop's own shape: a heading on a line of its own above the shape list, no unit switch of its
+  // own (the framing section carries the only one), and the four figures with their reset at the end.
+  const cropHead = laid.caseE
+  if (cropHead) {
+    if (cropHead.hasCropUnit) problems.push('the crop still carries a unit switch of its own')
+    if (!(cropHead.titleBottom <= cropHead.headTop + 0.5)) problems.push(`the crop heading is not on a line of its own above its shape list: ${cropHead.titleBottom} of ${cropHead.headTop}`)
+    if (!(cropHead.selectWidth > cropHead.headWidth - cropHead.lockWidth - 12)) problems.push(`the shape list does not fill its row beside the lock: ${cropHead.selectWidth} of ${cropHead.headWidth}`)
+    if (!(cropHead.cropResetLeft > cropHead.cropLastRight - 0.5)) problems.push('the crop reset is not at the end of its own row')
+    // A mark that is a letter must stay a letter: the app upper-cases buttons, which is right for a
+    // label and wrong here. And the crop's explanation has to land inside the sidebar, under its own
+    // heading — the two things that made its mark appear to do nothing at all.
+    if (cropHead.markTransform !== 'none') problems.push(`the explanation mark is not a lower-case i: text-transform is ${cropHead.markTransform}`)
+    if (!(cropHead.popRight <= cropHead.contentRight + 0.5)) problems.push(`the crop's explanation runs past the sidebar's right edge: ${cropHead.popRight} of ${cropHead.contentRight}`)
+    if (!(cropHead.popLeft >= cropHead.contentLeft - 0.5)) problems.push(`the crop's explanation runs out of the sidebar on the left: ${cropHead.popLeft} of ${cropHead.contentLeft}`)
+    if (!(cropHead.popTop >= cropHead.markBottom)) problems.push('the crop’s explanation is drawn over its own mark')
   }
   if (problems.length) {
     console.error(`\n${problems.length} LAYOUT PROBLEM(S)\n${problems.map((problem) => `  - ${problem}`).join('\n')}\n`)
