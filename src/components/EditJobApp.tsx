@@ -91,7 +91,7 @@ const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft)
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
-  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean }
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
@@ -127,8 +127,14 @@ export const EditJobApp: React.FC = () => {
   const [mediaTargets, setMediaTargets] = useState<Record<string, { path: string; previewUnavailable?: boolean }>>({})
   /** Set when a still could not be turned into a clip, so the monitor is not lying. */
   const [previewNotice, setPreviewNotice] = useState<string | null>(null)
-  /** Source whose MEDIA INFO inspector is open, by index on the main lane. */
-  const [inspectedIndex, setInspectedIndex] = useState<number | null>(null)
+  /**
+   * The clip whose MEDIA INFO inspector is open, by the lane it is on and its place in that lane.
+   *
+   * Not an index into `sourcePaths`: an audio track is not one of those, so a menu opened on one could
+   * only name the job's first video — and the inspector then described a file the user had not asked
+   * about.
+   */
+  const [inspected, setInspected] = useState<{ laneId: string; segmentIndex: number } | null>(null)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
@@ -219,6 +225,17 @@ export const EditJobApp: React.FC = () => {
   const muted = useMemo(() => draft?.mutedLanes ?? {}, [draft?.mutedLanes])
   /** Whether each source carries an audio stream, which is what a clip's own hairline reports. */
   const [sourceAudio, setSourceAudio] = useState<Record<string, boolean>>({})
+  /**
+   * Whether each source has a picture at all, probed with the same call that reads its audio.
+   *
+   * A path is not a picture. An audio track has no frame to show, no frame to extract and no
+   * waveform-shaped tile, and everything that assumes otherwise — asking ffmpeg for a frame, pointing
+   * a <video> at it — fails in ways that read as a broken file rather than as a wrong question.
+   * `undefined` means not known yet, which is treated as "assume a picture" so nothing flashes.
+   */
+  const [sourceVideo, setSourceVideo] = useState<Record<string, boolean>>({})
+  /** The source the monitor is showing, so its audio can be drawn as a waveform when it has no picture. */
+  const [monitorSource, setMonitorSource] = useState<string | null>(null)
   /** Each source's audio as peaks, read once per file, for a lane drawn as a waveform. */
   const [waveforms, setWaveforms] = useState<Record<string, number[]>>({})
   const waveformsAskedRef = useRef<Set<string>>(new Set())
@@ -332,24 +349,27 @@ export const EditJobApp: React.FC = () => {
 
   const resolveTiming = (sourcePath: string): SourceTiming | undefined => probedTiming[sourcePath]
 
-  // Whether each source has an audio stream of its own, probed once per source: it is a fact about
-  // the file, and it is what a clip's hairline reports, so it must be known for every source and
-  // not only for the ones a probe was already needed for.
+  // What each source is MADE of: whether it carries audio, and whether it has a picture at all. Probed
+  // once per source, from one call, because both answers come out of the same probe and both are facts
+  // about the file. The audio is what a clip's hairline reports; the picture is what decides whether a
+  // clip can be drawn as frames at all, which is what an audio track cannot be.
   useEffect(() => {
     if (!candidateSources.length) return
-    const missing = candidateSources.filter((sourcePath) => sourceAudio[sourcePath] === undefined && !probedPathsRef.current.has(`audio:${sourcePath}`))
+    const missing = candidateSources.filter((sourcePath) => sourceAudio[sourcePath] === undefined && !probedPathsRef.current.has(`streams:${sourcePath}`))
     if (!missing.length) return
-    missing.forEach((sourcePath) => probedPathsRef.current.add(`audio:${sourcePath}`))
+    missing.forEach((sourcePath) => probedPathsRef.current.add(`streams:${sourcePath}`))
     let cancelled = false
     void Promise.all(missing.map(async (sourcePath) => {
       try {
         const info = await window.electronAPI?.probeMedia(sourcePath)
-        return [sourcePath, Boolean(info?.audioStreams?.length)] as const
+        return [sourcePath, { audio: Boolean(info?.audioStreams?.length), video: Boolean(info?.videoStreams?.length) }] as const
       } catch {
-        return [sourcePath, false] as const
+        return [sourcePath, { audio: false, video: false }] as const
       }
     })).then((entries) => {
-      if (!cancelled) setSourceAudio((current) => ({ ...current, ...Object.fromEntries(entries) }))
+      if (cancelled) return
+      setSourceAudio((current) => ({ ...current, ...Object.fromEntries(entries.map(([path, kinds]) => [path, kinds.audio])) }))
+      setSourceVideo((current) => ({ ...current, ...Object.fromEntries(entries.map(([path, kinds]) => [path, kinds.video])) }))
     })
     return () => { cancelled = true }
   }, [probeSignature])
@@ -357,16 +377,21 @@ export const EditJobApp: React.FC = () => {
     () => (draft ? buildTimeline(draft, { resolveTiming }) : null),
     [timelineSignature, probedTiming],
   )
-  // The audio of every lane being drawn as a waveform, read once per file. It is the file's audio
-  // rather than the clip's, so a trim or a zoom needs no new reading: what is drawn of it changes,
-  // what it is does not. It waits until there is a lane showing one, since a file that is only ever
-  // drawn as a clip of frames never needs decoding for its peaks.
+  // The audio every lane the timeline or the monitor is drawing as a waveform, read once per file. It
+  // is the file's audio rather than the clip's, so a trim or a zoom needs no new reading: what is drawn
+  // of it changes, what it is does not. It waits until something is actually drawing one — a file that
+  // is only ever drawn as a clip of frames never needs decoding for its peaks.
   useEffect(() => {
     const bridge = window.electronAPI
     if (!bridge?.waveformFor || !model) return
     const wanted = new Set<string>()
     model.lanes.forEach((lane) => {
-      if (lane.kind !== 'audio' || !filmstripLanes[lane.id]) return
+      if (lane.kind !== 'audio') return
+      // The lane drawn as a waveform needs its peaks. So does the lane the MONITOR is showing, because
+      // a clip with no picture has a waveform instead of a frame — and that is the monitor's own
+      // playhead rather than any tile, so it is asked for by source.
+      const shown = monitorSource != null && lane.segments.some((segment) => segment.sourcePath === monitorSource)
+      if (!filmstripLanes[lane.id] && !shown) return
       lane.segments.forEach((segment) => { wanted.add(segment.sourcePath) })
     })
     const missing = [...wanted].filter((sourcePath) => !waveformsAskedRef.current.has(sourcePath))
@@ -377,7 +402,7 @@ export const EditJobApp: React.FC = () => {
       if (!cancelled) setWaveforms((current) => ({ ...current, ...Object.fromEntries(entries) }))
     })
     return () => { cancelled = true }
-  }, [filmstripLanes, timelineSignature, model])
+  }, [filmstripLanes, timelineSignature, model, monitorSource])
   // Frame rate of the primary source, for stepping and reverse. Kept separate from
   // the displayed rate because the hook is created before a segment is known.
   const primaryFps = draft ? sourceFps(draft, draft.sourcePaths[0], undefined, resolveTiming) : 25
@@ -389,6 +414,11 @@ export const EditJobApp: React.FC = () => {
   )
 
   const focusedSourceIndex = playback.segmentIndex
+  // The source the monitor is showing, so the waveform fetch above knows to read its audio: a clip
+  // with no picture is drawn from decoded peaks, and the one the monitor is on changes with the
+  // playhead while the lanes are drawn all at once.
+  const playingSource = playback.segment?.sourcePath ?? null
+  useEffect(() => { setMonitorSource(playingSource) }, [playingSource])
   // The frame the encoder will produce, worked out before the strip's own layout and fetching
   // rather than beside the monitor, because a tile is the shape of the frame: a frame the strips
   // saw late would be a strip laid out for a shape that is no longer the output's. It needs nothing
@@ -489,14 +519,19 @@ export const EditJobApp: React.FC = () => {
     void Promise.all(missing.map(async (sourcePath) => {
       const info = await window.electronAPI?.probeMedia(sourcePath)
       const resolution = info?.videoStreams?.[0]?.resolution?.split('x').map(Number)
+      // A source with no video stream has no shape to record. That is what stops a strip being laid
+      // out for it at all — and with it, every frame being asked of a file that has none.
+      if (!resolution || !(resolution[0] > 0) || !(resolution[1] > 0)) return [sourcePath, undefined] as const
       return [sourcePath, {
-        width: resolution && resolution[0] > 0 ? resolution[0] : 16,
-        height: resolution && resolution[1] > 0 ? resolution[1] : 9,
+        width: resolution[0],
+        height: resolution[1],
         fps: info?.videoStreams?.[0]?.fps && info.videoStreams[0].fps > 0 ? info.videoStreams[0].fps : 30,
       }] as const
     })).then((entries) => {
       if (cancelled || !entries.length) return
-      setSourceShape((current) => ({ ...current, ...Object.fromEntries(entries) }))
+      const shapes = entries.filter((entry): entry is readonly [string, { width: number; height: number; fps: number }] => entry[1] !== undefined)
+      if (!shapes.length) return
+      setSourceShape((current) => ({ ...current, ...Object.fromEntries(shapes) }))
     })
     return () => { cancelled = true }
   }, [filmstripLanes, timelineSignature, shapeSignature])
@@ -655,6 +690,9 @@ export const EditJobApp: React.FC = () => {
         // A still has no frames to sample: its one picture repeated is its strip, and it is drawn
         // straight from the file rather than extracted.
         if (!plan || !shape || !target || segment.still) return
+        // A clip with no picture has no frames to ask for. Its strip is its waveform, drawn from the
+        // decoded peaks rather than from anything ffmpeg would be asked to extract.
+        if (sourceVideo[segment.sourcePath] === false) return
         const signature = signatureFor(segment)
         const cacheId = segment.sourcePath
         const fit = draft ? sourceFitFor(draft, segment.sourcePath, clipIndexOf(segment)) : undefined
@@ -712,7 +750,7 @@ export const EditJobApp: React.FC = () => {
       })
     }, FILMSTRIP_SETTLE_MS)
     return () => { window.clearTimeout(timer) }
-  }, [filmstripLanes, laneZoom, mediaTargets, sourceShape, timelineSignature, frameImages, draft?.preset.crop, draft?.imageSequencePreviews, outputFrame, draft?.sourceFit])
+  }, [filmstripLanes, laneZoom, mediaTargets, sourceShape, sourceVideo, timelineSignature, frameImages, draft?.preset.crop, draft?.imageSequencePreviews, outputFrame, draft?.sourceFit])
 
   // A context menu closes on the next press anywhere, or on Escape.
   useEffect(() => {
@@ -1064,8 +1102,8 @@ export const EditJobApp: React.FC = () => {
   // MEDIA INFO reads the source under the playhead, which is the one the inspector was
   // opened on. A source with an intrinsic rate shows it; a still or a sequence, whose
   // rate is a choice rather than a fact about the file, can have it changed here.
-  const inspectedSegment = inspectedIndex != null ? mainLane?.segments[inspectedIndex] : undefined
-  const inspectedSource = inspectedSegment?.sourcePath ?? (inspectedIndex != null ? draft.sourcePaths[inspectedIndex] : undefined)
+  const inspectedSegment = inspected ? model?.lanes.find((lane) => lane.id === inspected.laneId)?.segments[inspected.segmentIndex] : undefined
+  const inspectedSource = inspectedSegment?.sourcePath
   const inspectedSequence = inspectedSource ? sequenceFor(draft, inspectedSource) : undefined
   const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
   const inspectedEditable = Boolean(inspectedSegment && (inspectedSegment.still || inspectedSegment.sequence))
@@ -1250,6 +1288,10 @@ export const EditJobApp: React.FC = () => {
       y: point.y,
       sourceIndex: Math.max(0, draft.sourcePaths.indexOf(segment.sourcePath)),
       mainIndex,
+      // The lane and the place in it, so a menu opened on a clip can name THAT clip: an audio track is
+      // not in `sourcePaths` at all, and an index that misses it names the first video instead.
+      laneId,
+      segmentIndex: index,
       sourcePath: segment.sourcePath,
       label: segmentLabel(segment),
       fitKey: `${segment.sourcePath}#${clipIndex}`,
@@ -1309,6 +1351,17 @@ export const EditJobApp: React.FC = () => {
     return target ? mediaUrl(target) : null
   }
   const elementUrl = sourceUrlFor(playback.segment)
+  /**
+   * Whether the clip the monitor is showing is sound with no picture.
+   *
+   * A path is not a picture, and an audio track has no frame to decode: handing its own path to a
+   * <video> element is asking that element for a frame out of a file that has none, which is what
+   * "Unsupported pixel format: -1" is. Such a clip's waveform is what it IS, so that is what is drawn.
+   *
+   * The extension answers immediately and the probe answers properly: a file named .wav has no picture
+   * whatever it holds, and one named .mp4 might hold nothing but sound.
+   */
+  const monitorIsAudio = Boolean(playback.segment && (mediaKind(playback.segment.sourcePath) === 'audio' || sourceVideo[playback.segment.sourcePath] === false))
 
   /**
    * Jumps the playhead to the point that was clicked.
@@ -1362,10 +1415,16 @@ export const EditJobApp: React.FC = () => {
    * helper reports the filmstrip range back on close, so opening it without the
    * current points would overwrite existing trim with the full source range.
    */
-  const openNativePreview = async (sourceIndex: number = focusedSourceIndex) => {
-    // A still that becomes a timed clip is opened in the advanced helper as a
-    // generated clip, so its filmstrip and trimming behave like real footage.
-    const request = await resolveQuickLookRequest(draft, window.electronAPI, { sourceIndex, preferTimedStill: true })
+  const openNativePreview = async (target?: { sourcePath: string; sourceIndex: number }) => {
+    // A still that becomes a timed clip is opened in the advanced helper as a generated clip, so its
+    // filmstrip and trimming behave like real footage. The source is named OUTRIGHT rather than by its
+    // place in `sourcePaths`, because an audio track has no place there — and naming one that does not
+    // exist resolves to the first video, which is the bug this signature closes.
+    const request = await resolveQuickLookRequest(draft, window.electronAPI, {
+      sourceIndex: target?.sourceIndex,
+      sourcePath: target?.sourcePath,
+      preferTimedStill: true,
+    })
     if (!request) { setPreviewNotice('NO PREVIEW TARGET FOR THIS SOURCE.'); return }
     setPreviewNotice(request.previewUnavailable
       ? `COULD NOT BUILD A ${Math.round(draft.stillImageDuration || 10)}s CLIP FOR THIS STILL, SO THE FRAME IS SHOWN INSTEAD. THE FFMPEG ERROR IS IN THE LOG.`
@@ -1784,6 +1843,24 @@ export const EditJobApp: React.FC = () => {
       }
     })()
     : null
+  /**
+   * The waveform the monitor draws when the clip it is showing is sound rather than a picture.
+   *
+   * On the helper's own rules and over the clip's own trim — the same drawing the lane makes, at the
+   * size of the output frame. It needs the frame's box, which is why it is worked out here beside it
+   * rather than with the media URL: a <video> for a clip with no picture is exactly what is avoided.
+   */
+  const monitorWaveform = (() => {
+    const segment = playback.segment
+    if (!segment || !monitorIsAudio || !frameRect) return null
+    const peaks = waveforms[segment.sourcePath]
+    const total = sourceDuration(draft, segment.sourcePath, undefined, resolveTiming)
+    const shown = peaks && peaks.length
+      ? peaksForTrim(peaks, segment.sourceIn, segment.sourceIn + segment.duration, total)
+      : []
+    return { peaks: shown, width: Math.max(1, frameRect.width), height: Math.max(1, frameRect.height) }
+  })()
+
   /** What the window says when there is nothing to draw in it yet. */
   const screenMessage = duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'
 
@@ -1996,19 +2073,30 @@ export const EditJobApp: React.FC = () => {
                       ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} />
                       : playback.segment?.still
                         ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} />
-                        : elementUrl
-                          ? <video
-                            ref={playback.attachVideo}
-                            className="editor-video"
-                            src={elementUrl}
-                            preload="metadata"
-                            playsInline
-                            style={{ ...mediaStyle, opacity: previewGain }}
-                            onContextMenu={(event) => event.preventDefault()}
-                            onLoadedMetadata={measureNatural}
-                            onClick={toggleFromClick}
-                          />
-                          : <span className="editor-screen-message">{screenMessage}</span>}
+                        // Sound with no picture: a waveform, never a <video>. The element would be
+                        // asked for a frame out of a file that has none.
+                        : monitorIsAudio
+                          ? monitorWaveform
+                            ? <svg className="editor-waveform" width="100%" height="100%" viewBox={`0 0 ${monitorWaveform.width} ${monitorWaveform.height}`} preserveAspectRatio="none" aria-hidden="true">
+                              <line x1="0" y1={monitorWaveform.height / 2} x2={monitorWaveform.width} y2={monitorWaveform.height / 2} stroke="var(--ui-border)" strokeWidth="1" />
+                              {monitorWaveform.peaks.length
+                                ? <path d={waveformPath({ peaks: monitorWaveform.peaks, width: monitorWaveform.width, height: monitorWaveform.height })} stroke="var(--crt-green)" strokeWidth={WAVEFORM_BAR} fill="none" />
+                                : null}
+                            </svg>
+                            : <span className="editor-screen-message">{screenMessage}</span>
+                          : elementUrl
+                            ? <video
+                              ref={playback.attachVideo}
+                              className="editor-video"
+                              src={elementUrl}
+                              preload="metadata"
+                              playsInline
+                              style={{ ...mediaStyle, opacity: previewGain }}
+                              onContextMenu={(event) => event.preventDefault()}
+                              onLoadedMetadata={measureNatural}
+                              onClick={toggleFromClick}
+                            />
+                            : <span className="editor-screen-message">{screenMessage}</span>}
                 </div>
                 {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
                 {/* The box the clip's own margins leave inside the frame. The background the export
@@ -2081,9 +2169,9 @@ export const EditJobApp: React.FC = () => {
               <span>%</span>
             </label>}
           </div>
-          {inspectedIndex != null && inspectedSource && (
+          {inspected != null && inspectedSource && (
             <div className="media-inspector">
-              <button className="inspector-close" onClick={() => setInspectedIndex(null)} aria-label="Close the media info inspector" title="Close">&times;</button>
+              <button className="inspector-close" onClick={() => setInspected(null)} aria-label="Close the media info inspector" title="Close">&times;</button>
               <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
               <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
               <EditorRow
@@ -2532,8 +2620,8 @@ export const EditJobApp: React.FC = () => {
           >REMOVE</button>
         </div>
       </> : <>
-        <button role="menuitem" onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void openNativePreview(index) }}>QUICK LOOK...</button>
-        <button role="menuitem" onClick={() => { const index = timelineMenu.mainIndex ?? timelineMenu.sourceIndex; setTimelineMenu(null); setInspectedIndex(index) }}>MEDIA INFO</button>
+        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); void openNativePreview({ sourcePath: target.sourcePath, sourceIndex: target.mainIndex ?? 0 }) }}>QUICK LOOK...</button>
+        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setInspected({ laneId: target.laneId, segmentIndex: target.segmentIndex }) }}>MEDIA INFO</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
           const blocked = timelineMenu.fitReason

@@ -115,15 +115,20 @@ export const rememberedPreviewFor = (task: QueueTask, sourcePath: string | undef
  * image-sequence handling, still-frame detection, or trim-point lookup. Passing
  * `sourceIndex` previews that specific source; without it the queue's original
  * rule stands and a finished task previews its output instead.
+ *
+ * `sourcePath` names a source outright, which is what an AUDIO TRACK needs: a multi-track job keeps
+ * its tracks in `additionalAudioTracks` rather than in `sourcePaths`, so no index into `sourcePaths`
+ * can name one — and an index that misses resolves to the first entry, which is how a preview asked
+ * for from an audio clip came back showing the job's first video.
  */
 export const resolveQuickLookRequest = async (
   task: QueueTask,
   bridge: QuickLookBridge | undefined,
-  options: { sourceIndex?: number; preferOutput?: boolean; preferTimedStill?: boolean } = {},
+  options: { sourceIndex?: number; sourcePath?: string; preferOutput?: boolean; preferTimedStill?: boolean } = {},
 ): Promise<QuickLookRequest | null> => {
-  const explicitIndex = options.sourceIndex != null || task.quickLookSourceIndex != null
+  const explicitIndex = options.sourceIndex != null || options.sourcePath != null || task.quickLookSourceIndex != null
   const sourceIndex = options.sourceIndex ?? task.quickLookSourceIndex ?? 0
-  const sourceTarget = explicitIndex ? (task.sourcePaths[sourceIndex] || task.sourcePaths[0]) : task.sourcePaths[0]
+  const sourceTarget = options.sourcePath ?? (explicitIndex ? (task.sourcePaths[sourceIndex] || task.sourcePaths[0]) : task.sourcePaths[0])
 
   const sequence = sourceTarget
     ? task.sequenceInputs?.[sourceTarget] || (task.sequenceInput?.firstFrame === sourceTarget ? task.sequenceInput : undefined)

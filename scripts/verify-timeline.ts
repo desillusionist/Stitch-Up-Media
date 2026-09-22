@@ -1,7 +1,7 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
-import { dropPreviewsFor, previewKey, rememberedPreviewFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
+import { dropPreviewsFor, previewKey, rememberedPreviewFor, resolveQuickLookRequest, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
@@ -1185,5 +1185,39 @@ console.log('\n== the waveform ==')
   check('and no more bars than buckets', waveformPath({ peaks: Array.from({ length: 10 }, () => 1), width: 100000, height: 32 }).length < 600, true)
 }
 
-console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
-process.exit(failures === 0 ? 0 : 1)
+void (async () => {
+  // WHICH source a preview is for. A multi-track job keeps its audio in `additionalAudioTracks`, not in
+  // `sourcePaths`, so an index into `sourcePaths` cannot name one — and an index that misses resolves to
+  // the first entry, which is how a Quick Look asked for from an audio clip came back showing the job's
+  // first video. Naming the source outright is what closes that.
+  console.log('\n== which source a preview is for ==')
+  {
+    const task = {
+      id: 'q', type: 'multitrack', status: 'pending', progress: 0,
+      sourcePaths: ['/video-one.mp4', '/video-two.mp4'],
+      additionalAudioTracks: [{ id: 't1', path: '/podcast.wav', language: 'und' }],
+      outputDirectory: '/out', outputFilename: 'o.mov',
+      preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    } as unknown as QueueTask
+    // The old call: an index, which for an audio track can only land on a video.
+    const byIndex = await resolveQuickLookRequest(task, undefined, { sourceIndex: 0 })
+    check('an index into the sources names a video, which is all it can name', byIndex?.target, '/video-one.mp4')
+    // The fix: the track's own path, which is what the menu now passes.
+    const byPath = await resolveQuickLookRequest(task, undefined, { sourcePath: '/podcast.wav', sourceIndex: 0 })
+    check('naming the audio track resolves to the audio itself', byPath?.target, '/podcast.wav')
+    // No generated clip and no still handling: the helper is handed the file and draws its own
+    // waveform, which it decides to do by finding no video track in it.
+    check('and it is handed over as footage rather than a still frame', byPath?.stillMode, false)
+    check('with nothing unavailable about it', byPath?.previewUnavailable, undefined)
+    // A video named the same way still resolves to itself, and to the generated clip if it is a
+    // sequence — naming a source must not bypass what resolution does for it.
+    const named = await resolveQuickLookRequest(task, undefined, { sourcePath: '/video-two.mp4', sourceIndex: 1 })
+    check('a video named outright is still itself', named?.target, '/video-two.mp4')
+    // And a task that names nothing keeps the queue's own rule: no index, no path, the first source.
+    const plain = await resolveQuickLookRequest(task, undefined, {})
+    check('a request naming nothing is the job\u2019s first source', plain?.target, '/video-one.mp4')
+  }
+
+  console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
+  process.exit(failures === 0 ? 0 : 1)
+})()

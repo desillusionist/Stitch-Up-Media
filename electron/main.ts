@@ -200,6 +200,33 @@ app.whenReady().then(() => {
   // lane is re-laid out is the same picture and comes from the cache, so a zoom extracts only the
   // frames it did not already have; and since a generated clip is rebuilt under a new name, keying on
   // the file would have thrown the whole cache away every rebuild for pictures that had not changed.
+  /**
+   * Whether a file has a picture at all, probed once and remembered.
+   *
+   * Frames are asked for by path, and a path may be one with no video stream in it — an audio track of
+   * a multi-track job, say. Asking such a file for a frame is asking for something it does not have:
+   * ffmpeg fails with "Output file does not contain any stream", which says nothing useful about the
+   * file and everything about the request being wrong. The answer is a fact about the file and never
+   * changes, so it is asked once and kept — the strip asks far more often than a file changes.
+   *
+   * This is the belt to the renderer's braces: the editor does not ask for frames of an audio clip,
+   * and the one place that hands a path to ffmpeg refuses to make a picture out of one either.
+   */
+  const videoStreamCache = new Map<string, boolean>()
+  const hasVideoStream = async (filePath: string): Promise<boolean> => {
+    const remembered = videoStreamCache.get(filePath)
+    if (remembered !== undefined) return remembered
+    let hasVideo = false
+    try {
+      hasVideo = Boolean((await probeFile(filePath))?.videoStreams?.length)
+    } catch {
+      // A file that cannot be probed has no picture this process can read, which is the same answer
+      // as far as the caller is concerned.
+      hasVideo = false
+    }
+    videoStreamCache.set(filePath, hasVideo)
+    return hasVideo
+  }
   const frameCache = new Map<string, Map<string, string>>()
   const framesFor = (cacheId: string) => {
     const existing = frameCache.get(cacheId)
@@ -229,6 +256,8 @@ app.whenReady().then(() => {
     const signature = options?.signature ?? ''
     if (!filePath || !times.length) return []
     try { if (!(await fs.promises.stat(filePath)).isFile()) return [] } catch { return [] }
+    // Nothing to extract from: an audio track has no frame to ask for at any time.
+    if (!(await hasVideoStream(filePath))) return []
     // Cached by the SOURCE, never by the file the frame is read out of. For a sequence those differ:
     // the file is a generated clip, and a clip is rebuilt — at another rate, after a purge — under a
     // new name every time. Keyed by that name the cache could never survive a rebuild, so every tile
