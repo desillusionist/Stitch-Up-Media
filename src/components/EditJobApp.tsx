@@ -6,7 +6,7 @@ import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, canApplyClipFit, clipIndexOf, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipIndexOf, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
@@ -120,10 +120,11 @@ const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLE
 const TimelineRuler: React.FC<{
   duration: number
   zoom: number
+  fps: number
   label: (seconds: number) => string
   scroller: React.RefObject<HTMLDivElement | null>
   onWheel: (event: React.WheelEvent<HTMLElement>) => void
-}> = ({ duration, zoom, label, scroller, onWheel }) => {
+}> = ({ duration, zoom, fps, label, scroller, onWheel }) => {
   const [visible, setVisible] = useState({ from: 0, to: 0 })
   useEffect(() => {
     const element = scroller.current
@@ -144,7 +145,7 @@ const TimelineRuler: React.FC<{
     }
   }, [scroller, zoom])
 
-  const ticks = rulerTicks(duration, zoom, visible)
+  const ticks = rulerTicks(duration, zoom, visible, fps)
   return <div className="timeline-ruler" onWheel={onWheel}>
     {duration > 0
       ? ticks.map((tick) => (
@@ -1085,7 +1086,7 @@ export const EditJobApp: React.FC = () => {
 
   const timelineDuration = model?.duration ?? 0
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
-  const audioLaneIds = (model?.lanes ?? []).filter((lane) => !lane.embedded).map((lane) => lane.id).join('|')
+  const audioLaneIds = (model?.lanes ?? []).filter((lane) => lane.kind === 'audio' || !lane.embedded).map((lane) => lane.id).join('|')
   /** Read by the lane refs below, which are made once and so must not close over a value that changes. */
   const mutedRef = useRef(muted)
   mutedRef.current = muted
@@ -1309,7 +1310,7 @@ export const EditJobApp: React.FC = () => {
   const zoomByWheel = (event: React.WheelEvent<HTMLElement>) => {
     if (event.deltaY === 0) return
     event.stopPropagation()
-    setZoom((current) => zoomedBy(current, event.deltaY < 0 ? 1 : -1))
+    setZoom((current) => zoomedBy(current, event.deltaY))
   }
 
   /**
@@ -1632,9 +1633,32 @@ export const EditJobApp: React.FC = () => {
     void window.electronAPI?.applySourceTiming(draft.id, sourcePath, override)
   }
 
-  const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
+  /**
+   * The lanes that need an element of their own to be heard.
+   *
+   * Every added track, and — because a job can be nothing but audio — a main lane that IS audio. Such a
+   * lane has no picture for the video element to ride on, so its own <audio> is the only thing that can
+   * play it. The transport can slave one element to one segment, so a lane of several joined tracks is
+   * left out rather than played in part.
+   *
+   * The same test is made in the transport, which is what drives these elements; the two have to agree,
+   * or an element is rendered that nothing plays or played that nothing rendered.
+   */
+  const audioLanes = model.lanes.filter((lane) => {
+    if (!lane.segments.length) return false
+    if (!lane.embedded) return true
+    return lane.kind === 'audio' && lane.segments.length === 1
+  })
   const playable = model.duration > 0
   const stamp = (seconds: number) => timestampMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
+  /**
+   * What a mark on the scale says.
+   *
+   * The bare number in framestamp mode: a stamp carries the word FRAME because it is read on its own, and
+   * a column of labels all saying it would be nine words too many. The live readout in the gutter is the
+   * one that says it, because it is the one that is read on its own.
+   */
+  const scaleLabel = (seconds: number) => timestampMode === 'framestamp' ? frameNumber(seconds, fps) : timecode(seconds, fps)
   /** The unit the window is showing lengths in, which is a setting rather than a fact about any clip. */
   const timestampMode: 'framestamp' | 'timestamp' = settings?.timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp'
   const segmentDetail = (segment: TimelineSegment) => {
@@ -1652,7 +1676,7 @@ export const EditJobApp: React.FC = () => {
     const sequence = draft ? sequenceFor(draft, segment.sourcePath) : undefined
     return sequence ? sequenceLabel(sequence) : sourceName(segment.sourcePath)
   }
-  const clipTitle = (segment: TimelineSegment) => clipSummary({
+  const clipTitle = (segment: TimelineSegment) => `${segmentLabel(segment)} \u2014 ${clipSummary({
     // The SOURCE's whole length, which is what the clip is a piece of — the sequence's own length for
     // an image sequence, the still's chosen length for a still, and the probe's for anything else.
     totalSeconds: sourceDuration(draft, segment.sourcePath, undefined, resolveTiming),
@@ -1661,7 +1685,7 @@ export const EditJobApp: React.FC = () => {
     sourceIn: segment.sourceIn,
     trimmed: segment.trimmed,
     mode: timestampMode,
-  })
+  })}`
   /**
    * Where the right-click menu was asked for, and where it ended up.
    *
@@ -1710,6 +1734,30 @@ export const EditJobApp: React.FC = () => {
     setTimelineMenu({ kind: 'lane', x: point.x, y: point.y, laneId, label })
   }
   const duration = model.duration
+  /**
+   * Where the picture stops, which is the end of the last clip on the visual lane.
+   *
+   * A multi-track output runs to its longest AUDIBLE track, so past this point the export is the black the
+   * encoder pads with — and the monitor shows that rather than holding the last frame its element happens
+   * to have decoded, which is not a frame the output contains.
+   */
+  const pictureEnd = (() => {
+    const lane = model.lanes.find((candidate) => candidate.kind === 'video')
+    const last = lane?.segments[lane.segments.length - 1]
+    return last ? last.start + last.duration : 0
+  })()
+  /**
+   * When the output outlasts its picture, and the black tail therefore applies.
+   *
+   * A LONE STILL is the exception, and it is the same exception the encoder makes: a single still under a
+   * longer track is LOOPED for as long as the track runs, so its output is the whole of it and there is no
+   * tail to draw. A still that is one of several visuals is concatenated like any other clip and does get
+   * one. A track that is muted is not in the output at all, which is a question the encoder answers, not
+   * this.
+   */
+  const visualLane = model.lanes.find((candidate) => candidate.kind === 'video')
+  const loneStill = visualLane?.segments.length === 1 && Boolean(visualLane.segments[0].still)
+  const inBlackTail = Boolean(visualLane && !loneStill && pictureEnd > 0 && duration > pictureEnd + 0.01 && playback.position >= pictureEnd - 0.001)
 
   const showBoundaries = cuts.length > 0
   // A single frame in and a single frame out has nothing to time.
@@ -2479,6 +2527,7 @@ export const EditJobApp: React.FC = () => {
                     waiting for the media to tell it. Until then the picture fills the stage at its
                     own proportions, and the outline, the fit and the crop box appear with the size. */}
                 <div className={`editor-frame-window${frameRect && frameOrigin ? '' : ' is-open'}`} style={frameRect && frameOrigin ? { left: frameOrigin.x, top: frameOrigin.y, width: frameRect.width, height: frameRect.height } : undefined}>
+                  {inBlackTail && <div className="editor-tail" aria-hidden="true" />}
                   {playback.error
                     ? <span className="editor-screen-message">{playback.error}</span>
                     : stillFrameJob
@@ -2661,7 +2710,7 @@ export const EditJobApp: React.FC = () => {
                 ruler nor the skimmer can travel under the column. Its rows carry the same heights
                 as the lanes opposite, so the two columns cannot drift apart. */}
             <div className="timeline-gutter">
-              <div className="timeline-gutter-ruler" aria-hidden="true" />
+              <div className="timeline-gutter-ruler">{stamp(playback.position)}</div>
               {model.lanes.map((lane) => (
                 <div className="timeline-lane-head" key={lane.id} onContextMenu={(event) => openLaneMenu(event, lane.id, lane.label)} title="Right-click to choose how this lane's clips are drawn">
                   <button
@@ -2679,14 +2728,14 @@ export const EditJobApp: React.FC = () => {
                   part of this drawing at all, which is what makes a point in it map to a time with
                   the timeline's rate and no other figure. */}
               <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${laneWidthFor(duration, zoom)}px` }}>
-                <TimelineRuler duration={duration} zoom={zoom} label={(seconds) => (duration > 0 ? stamp(seconds) : '--:--:--.--')} scroller={timelineScrollRef} onWheel={zoomByWheel} />
+                <TimelineRuler duration={duration} zoom={zoom} fps={fps} label={(seconds) => (duration > 0 ? scaleLabel(seconds) : '--:--:--.--')} scroller={timelineScrollRef} onWheel={zoomByWheel} />
                 {model.lanes.map((lane) => (
                   <div className="timeline-lane" key={lane.id}>
                     <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
                     {lane.segments.map((segment, index) => (
                       <div
                         key={segment.key}
-                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${selected && selected.laneId === lane.id && selected.segmentIndex === index ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
                         style={{ width: `${laneWidthFor(segment.duration, zoom)}px` }}
                         title={clipTitle(segment)}
                         onClick={() => setSelected({ laneId: lane.id, segmentIndex: index })}
@@ -3097,7 +3146,7 @@ export const EditJobApp: React.FC = () => {
         <span className="timeline-menu-divider" aria-hidden="true" />
         <button role="menuitem" className="is-danger" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: true })}>REMOVE SOURCE</button>
       </>) : <>
-        <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? '' : 'is-on'} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: false })) }}>COMPACT VIEW</button>
+        <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? '' : 'is-on'} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: false })) }}>SIMPLE VIEW</button>
         <button role="menuitem" className={filmstripLanes[timelineMenu.laneId] ? 'is-on' : ''} onClick={() => { const laneId = timelineMenu.laneId; setTimelineMenu(null); setFilmstripLanes((current) => ({ ...current, [laneId]: true })) }}>{model.lanes.find((lane) => lane.id === timelineMenu.laneId)?.kind === 'audio' ? 'WAVEFORM' : 'FILMSTRIP'}</button>
       </>}
     </div>}

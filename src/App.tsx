@@ -576,7 +576,7 @@ export const App: React.FC = () => {
     if (sequenceTask?.sequenceInput && (!sequenceTask.sequenceInput.fps || sequenceTask.sequenceInput.fps <= 0)) return 'IMAGE SEQUENCE requires an interpretation FPS before encoding.'
     const videos = sourcePaths.filter((path) => mediaKind(path) !== 'audio')
     const audios = [...sourcePaths.filter((path) => mediaKind(path) === 'audio'), ...tracks.map((track) => track.path)]
-    if (type === 'transcode' && (sourcePaths.length !== 1 || audios.length > 0)) return 'CONVERT requires exactly one non-audio source and no audio tracks.'
+    if (type === 'transcode' && (sourcePaths.length !== 1 || tracks.length > 0)) return 'CONVERT requires exactly one source and no added audio tracks.'
     const audioOnlyStitch = videos.length === 0 && sourcePaths.length >= 2 && tracks.length === 0
     if (type === 'stitch' && !audioOnlyStitch && (videos.length < 2 || audios.length > 0)) return 'STITCH UP requires at least two video/image sources and no audio tracks, or multiple audio sources.'
     if (type === 'multitrack' && (videos.length !== 1 || audios.length < 1)) return 'MULTI-TRACK requires exactly one video/image source and at least one audio track.'

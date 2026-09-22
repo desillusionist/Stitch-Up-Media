@@ -400,7 +400,15 @@ export const timecode = (seconds: number, fps: number) => {
   return `${String(Math.floor(whole / 3600)).padStart(2, '0')}:${String(Math.floor(whole / 60) % 60).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}.${String(frames).padStart(2, '0')}`
 }
 
-export const frameStamp = (seconds: number, fps: number) => `FRAME ${String(Math.max(0, Math.round(seconds * fps))).padStart(6, '0')}`
+export const frameStamp = (seconds: number, fps: number) => `FRAME ${frameNumber(seconds, fps)}`
+
+/**
+ * The frame a time falls on, as a number and nothing else.
+ *
+ * A stamp carries the word FRAME because it is read on its own; a scale does not, because the column of
+ * numbers under it says what they are — ten labels all saying FRAME would be nine words too many.
+ */
+export const frameNumber = (seconds: number, fps: number) => String(Math.max(0, Math.round(seconds * fps))).padStart(6, '0')
 
 /**
  * Where the playhead is and how long the output is, as one line.
@@ -448,7 +456,10 @@ export const clipSummary = ({ totalSeconds, fps, usedSeconds, sourceIn, trimmed,
   const frames = (seconds: number) => String(Math.max(0, Math.round(seconds * rate)))
   const stamp = (seconds: number) => (mode === 'framestamp' ? frames(seconds) : timecode(seconds, rate))
   const whole = mode === 'framestamp' ? `${frames(totalSeconds)} frames` : timecode(totalSeconds, rate)
-  if (!trimmed) return `${whole} at ${rate} fps \u2022 source`
+  // A trim that takes NOTHING away is not a trim: a range that spans the whole source IS the source, and
+  // "2160 trimmed frames [0000-2160]" about a clip that uses all of it is a range drawn around everything.
+  // A still is the same case — its chosen length is the whole of it — so it says source too.
+  if (!trimmed || usedSeconds >= totalSeconds - 1e-6) return `${whole} at ${rate} fps \u2022 source`
   const used = mode === 'framestamp' ? `${frames(usedSeconds)} trimmed frames` : `${timecode(usedSeconds, rate)} trimmed`
   // The range is padded to four digits in frames, because a range is read as a box of digits rather
   // than as two numbers, and a ragged box is read twice.

@@ -88,7 +88,21 @@ export const useConsolidatedPlayback = (
 
   const mainSegments = model.lanes[0]?.segments ?? []
   const segment = mainSegments[segmentIndex]
-  const addedAudioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
+  /**
+   * The lanes the transport drives, which is every lane that has an element of its own.
+   *
+   * Every added track, and a main lane that is AUDIO: such a lane has no picture for the video element to
+   * carry, so its own <audio> is the only thing that can play it — which is what a CONVERT of an audio
+   * file needs in order to be heard as well as drawn. Only a single-segment one, because this loop slaves
+   * one element to one segment.
+   *
+   * The editor renders an element for exactly these lanes; the two tests have to agree.
+   */
+  const addedAudioLanes = model.lanes.filter((lane) => {
+    if (!lane.segments.length) return false
+    if (!lane.embedded) return true
+    return lane.kind === 'audio' && lane.segments.length === 1
+  })
   const audioLaneSignature = addedAudioLanes.map((lane) => lane.id).join('|')
 
   // Read inside event handlers and the frame loop so they never capture stale values.
@@ -104,6 +118,15 @@ export const useConsolidatedPlayback = (
   shuttleRef.current = shuttleRate
   const fpsRef = useRef(fps)
   fpsRef.current = Math.max(1, fps)
+  /**
+   * Whether the main lane has no picture at all, which is what a CONVERT of a sound file is.
+   *
+   * Such a job has no video element to own the playhead and never will have one, so the clock has to fall
+   * back to the anchored one and the lane's own <audio> is slaved to it. A ref because the clock reads it
+   * every frame and a captured value would be the one from the first render.
+   */
+  const silentMainLaneRef = useRef(false)
+  silentMainLaneRef.current = (model.lanes[0]?.kind ?? 'video') === 'audio'
   const loadedSourceRef = useRef<string | null>(null)
   /** Consolidated position waiting to be applied once the element can seek. */
   const pendingSeekRef = useRef<number | null>(null)
@@ -294,8 +317,10 @@ export const useConsolidatedPlayback = (
 
     // A still frame has no element clock, so it advances on the anchored clock. The
     // clamp is to the segment end, which still lets the crossing happen because
-    // indexForTime reads the end of a segment as the start of the next one.
-    if (current?.still) {
+    // indexForTime reads the end of a segment as the start of the next one. A main lane that is
+    // nothing but AUDIO is the same case for the same reason — there is no element to own the playhead
+    // and never will be — which is what lets a CONVERT of a sound file play rather than stand still.
+    if (current?.still || (silentMainLaneRef.current && !video)) {
       const from = Math.max(current.start, Math.min(current.start + current.duration, snapshot.position))
       return Math.min(current.start + current.duration, anchored(from))
     }

@@ -172,7 +172,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    shape: an exact size stretches to it, a named resolution fits inside it. The spread
    shadow dims everything the output does not cover, so the output area reads as a window
    even when its outline coincides with the picture's. It is clipped by the stage. */
-.editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85), 0 0 0 9999px rgba(3, 9, 16, .55); pointer-events: none; }
+.editor-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); border: 1px solid var(--ui-accent); box-shadow: 0 0 0 1px rgba(3, 9, 16, .85), 0 0 0 9999px rgba(3, 9, 16, .55); pointer-events: none; z-index: 4; }
+/* The black the export writes where the picture has run out. It is drawn over the media rather than
+   instead of it, so the monitor shows what the output contains rather than holding the last frame the
+   element happens to have decoded — and UNDER the frame's outline, which is the edge of the export and
+   is not part of it. */
+.editor-tail { position: absolute; inset: 0; background: #000; pointer-events: none; z-index: 3; }
 /* The window the picture is drawn in: the frame's own box, and clipped by it, so a clip that is
    fitted to one axis and overflows the other is cut off exactly where the export cuts it. Its
    opacity is not set, so a fade through black in the monitor still reads on the picture inside. */
@@ -345,7 +350,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-lanes { display: grid; grid-template-columns: 102px minmax(0, 1fr); align-items: stretch; }
 .timeline-gutter { display: flex; flex-direction: column; background: var(--ui-panel); border-right: 1px dotted var(--ui-border); }
 /* Exactly the ruler's own height and margin, so both columns' first lane starts on the same line. */
-.timeline-gutter-ruler { height: 20px; margin: 0 0 6px; border-bottom: 1px dotted var(--ui-border); }
+.timeline-gutter-ruler { height: 20px; margin: 0 0 6px; padding: 0 6px; display: flex; align-items: center; border-bottom: 1px dotted var(--ui-border); color: var(--ui-foreground); font-size: 9px; letter-spacing: .04em; white-space: nowrap; overflow: hidden; }
 .timeline-scroll { overflow-x: auto; overflow-y: hidden; min-width: 0; }
 /* The output shape buttons, and the four crop figures. */
 .aspect-row { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -441,6 +446,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-lane .timeline-clip small { display: block; padding: 0 6px; font-size: 8px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .timeline-lane .timeline-clip:hover { background: rgba(159, 191, 154, .08); }
 .timeline-lane .timeline-clip.is-active { outline-color: var(--ui-foreground); background: rgba(159, 191, 154, .14); }
+/* The clip the editor is POINTED AT, in one solid outline wherever it is. An audio container is as
+   selectable as a visual one, and the lane's own colour says what a clip IS rather than whether it is in
+   hand — so this comes last, and a selected clip is drawn in the accent whichever lane it sits on. */
+.timeline-lane .timeline-clip.is-selected { outline-color: var(--ui-accent); outline-style: solid; background: rgba(159, 191, 154, .14); }
 .timeline-lane .timeline-clip.is-trimmed { outline-style: dashed; }
 .timeline-lane-track.is-audio .timeline-clip { outline-color: var(--ui-paused); }
 .timeline-fill { flex: 0 0 auto; min-width: 0; margin: 5px 0; border: 1px dashed var(--ui-border-dim); opacity: .5; }

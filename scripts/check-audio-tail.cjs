@@ -123,6 +123,24 @@ const main = async () => {
       tailSeconds: 4,
       cover: true,
     },
+    {
+      // Item 9's other half: a MUTED track is not in the export at all, so it does not lengthen it
+      // either. Padding in black for a track nobody will hear would be lengthening the output with
+      // silence, which is not what a mute means.
+      name: 'a muted track that is longer',
+      task: {
+        id: 'tail-muted', type: 'multitrack', status: 'pending', progress: 0,
+        sourcePaths: [video],
+        additionalAudioTracks: [{ id: 't1', path: audio, language: 'und' }],
+        mutedLanes: { t1: true },
+        outputDirectory: root, outputFilename: 'muted-out.mp4', preset,
+      },
+      output: path.join(root, 'muted-out.mp4'),
+      // The visual is two seconds; the track is five and is not carried.
+      expectedSeconds: 2,
+      pictureSeconds: 1,
+      muted: true,
+    },
   ]
 
   for (const item of cases) {
@@ -135,10 +153,11 @@ const main = async () => {
       continue
     }
     const seconds = Number(await probeValue(item.output, 'format=duration'))
-    check('the output runs to the length of its sound', seconds, item.expectedSeconds)
+    check(item.muted ? 'a muted track does not lengthen the output' : 'the output runs to the length of its sound', seconds, item.expectedSeconds)
     const picture = await pixelAt(item.output, item.pictureSeconds)
-    const tail = await pixelAt(item.output, item.tailSeconds)
     check('the visual is still a picture where it plays', isPicture(picture), true)
+    if (item.muted) continue
+    const tail = await pixelAt(item.output, item.tailSeconds)
     if (item.cover) check('and a still cover is still showing under its track', isPicture(tail), true)
     else check('and the picture past its end is black', isBlack(tail), true)
   }

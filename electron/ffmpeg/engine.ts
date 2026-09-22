@@ -562,8 +562,12 @@ export class FFmpegEngine {
     // file whose framing was decided clip by clip before it was joined, so there is nothing here for
     // a fit to apply to and the override suppresses it.
     const clipChain = videoOverride ? null : this.clipFraming(task, videoSource, videoSize)
+    // A visual shorter than its longest track is padded out, and that filter joins the same chain as any
+    // scaling rather than replacing it. The padding is written as BLACK rather than left to the filter's
+    // default: a tail that is a held frame and a tail that is black are one word apart in a filter chain,
+    // and only one of them is what the export should contain where the picture has run out.
     const tailFilter = tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
-      ? [`tpad=stop_mode=add:stop_duration=${tailDuration.toFixed(3)}`]
+      ? [`tpad=stop_mode=add:color=black:stop_duration=${tailDuration.toFixed(3)}`]
       : []
     this.applyPresetToCommand(cmd, task.preset, tailFilter, clipChain ? { clipChain } : {})
     if (isStillCover && extraAudios.length > 0) {

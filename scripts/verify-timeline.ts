@@ -1167,19 +1167,27 @@ console.log('\n== the timeline scale ==')
   const drawn = rulerTicks(1800, 32, { from: 0, to: secondsAt(1350, 32) })
   check('only the visible stretch of a long scale is drawn', drawn.length <= 200, true)
   check('and that stretch is covered by it', drawn[0].time <= 0 && drawn[drawn.length - 1].time >= secondsAt(1350, 32), true)
-  // The end of the output is a place a reader looks for, so it is on the scale even when it is not on
-  // the grid, and nothing at all is drawn past it.
+  // The end of the output is NOT a mark: it is right-aligned inside the scale, so it lands on top of the
+  // mark before it, and the live readout in the gutter is what says where the output ends.
   const whole = rulerTicks(span, 1)
-  check('the scale reaches the end of the output', whole[whole.length - 1].time, span)
-  check('and its last mark is a labelled one', whole[whole.length - 1].major, true)
+  check('the end of the output is not a mark', whole.every((tick) => tick.time < span), true)
+  check('and the scale still reaches up to it', span - whole[whole.length - 1].time < rulerSteps(1).step, true)
   check('and nothing is drawn past the end', whole.every((tick) => tick.time <= span + 1e-9), true)
+  // Where a frame can be seen, a mark IS a frame — which is what makes one arrow press land on one mark
+  // rather than between two of them. The arrow step is a frame, so the two are the same unit.
+  check('at a close zoom a mark is a frame apart', rulerSteps(32, 25).step, 1 / 25)
+  check('and one frame is exactly one mark', rulerSteps(32, 25).step * 25, 1)
+  check('and its labels stand several frames apart', rulerSteps(32, 25).divisor > 1, true)
   // A mark stands where the time it names stands, which is what lets it be placed by time alone.
   const at = rulerTicks(60, 4)
   check('every mark is a whole number of steps from the start', at.every((tick, index) => Math.abs(tick.time - index * rulerSteps(4).step) < 1e-9), true)
-  // A wheel notch is finer than a magnifier press, because a wheel arrives in dozens and a button once.
-  check('a notch magnifies in', zoomedBy(2, 1) > 2, true)
-  check('and out', zoomedBy(2, -1) < 2, true)
-  check('and neither can leave the range', [zoomedBy(ZOOM_MAX, 1), zoomedBy(ZOOM_MIN, -1)], [ZOOM_MAX, ZOOM_MIN])
+  // A wheel notch is gentle, eased, and finer than a magnifier press, because a wheel arrives in dozens.
+  check('a notch magnifies in', zoomedBy(2, -100) > 2, true)
+  check('and out', zoomedBy(2, 100) < 2, true)
+  check('and a wheel that did not move changes nothing', zoomedBy(2, 0), 2)
+  check('a notch is a gentle step', zoomedBy(1, -100) < 1.1, true)
+  check('and a faster flick travels further', zoomedBy(1, -400) > zoomedBy(1, -100), true)
+  check('and neither can leave the range', [zoomedBy(ZOOM_MAX, -100), zoomedBy(ZOOM_MIN, 100)], [ZOOM_MAX, ZOOM_MIN])
 }
 
 console.log('\n== what a clip says it is ==')
@@ -1210,6 +1218,14 @@ console.log('\n== what a clip says it is ==')
   check('and reads as time when that is the setting',
     clipSummary({ totalSeconds: 90, usedSeconds: 30, sourceIn: 60, trimmed: true, fps: 30, mode: 'timestamp' }),
     '00:01:30.00 at 30 fps \u2022 00:00:30.00 trimmed [00:01:00.00-00:01:30.00]')
+  // A trim that takes nothing away is not a trim: a range around the whole of the source IS the source,
+  // and a still's chosen length is the whole of it in the same way.
+  check('a trim of the whole source is the source',
+    clipSummary({ ...frames, totalSeconds: 72, usedSeconds: 72, sourceIn: 0, trimmed: true }),
+    '2160 frames at 30 fps \u2022 source')
+  check('and so is a still, whose length is the whole of it',
+    clipSummary({ ...frames, totalSeconds: 10, usedSeconds: 10, sourceIn: 0, trimmed: true }),
+    '300 frames at 30 fps \u2022 source')
   // The playhead's own line: the unit said once, and the two figures joined by "of".
   check('the playhead line in frames', stampPair(0, 123456 / 30, 30, 'framestamp'), 'FRAME 000000 of 123456')
   check('the playhead line in timecodes', stampPair(1, 60, 30, 'timestamp'), '00:00:01.00 of 00:01:00.00')

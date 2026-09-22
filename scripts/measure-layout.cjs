@@ -37,7 +37,7 @@ const GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABA
 const lanes = (outerId, seconds, heads, inners) => `
 <div class="timeline-lanes" id="${outerId}">
   <div class="timeline-gutter" id="gutter-${outerId}">
-    <div class="timeline-gutter-ruler"></div>
+    <div class="timeline-gutter-ruler" id="grouler-${outerId}">FRAME 000000</div>
     ${heads}
   </div>
   <div class="timeline-scroll" id="scroll-${outerId}">
@@ -89,6 +89,7 @@ const caseC = `
   <div class="editor-stage-pan" id="cpan">
     <div class="editor-frame" id="cframe" style="width:200px;height:200px"><b id="clabel">OUTPUT 1080×1080</b></div>
     <div class="editor-crop-shade" id="cshade" style="left:0;top:0;width:25px;height:300px"></div>
+    <div class="editor-tail" id="ctail"></div>
   </div>
 </div>`
 
@@ -344,12 +345,27 @@ const measure = `(() => {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0'),
       clipHeight: clip0.height, name: lineA.name, detail: lineA.detail,
-      rulerHeight: document.getElementById('ruler-lanesA').clientHeight, majorMark: scaleMarks('rmaj-lanesA'), minorMark: scaleMarks('rmin-lanesA') },
+      rulerHeight: document.getElementById('ruler-lanesA').clientHeight, majorMark: scaleMarks('rmaj-lanesA'), minorMark: scaleMarks('rmin-lanesA'),
+      // The live readout in the gutter, directly above the lanes: the one place a stamp says FRAME, and
+      // the one place that has to fit inside the label column.
+      readout: (() => {
+        const element = document.getElementById('grouler-lanesA')
+        const style = getComputedStyle(element)
+        return { text: element.textContent, fontSize: style.fontSize, height: +element.getBoundingClientRect().height.toFixed(2), inside: element.getBoundingClientRect().right <= rect('gutter-lanesA').right + 0.5 }
+      })() },
     caseB: { trackWidth: +(bTrack.right - bTrack.left).toFixed(2), clip0Right: bClip0.right, markerCenter: bMarker.center, playheadLeft: bPlayhead.left, audioRight: bAudio.right,
       cutVsMarker: +(bClip0.right - bMarker.center).toFixed(2), cutVsPlayhead: +(bClip0.right - bPlayhead.left).toFixed(2),
-      laneOverflow: +(bAudio.right - bTrack.right).toFixed(2) },
+      laneOverflow: +(bAudio.right - bTrack.right).toFixed(2),
+      selectedAudio: (() => {
+        const element = document.getElementById('b2')
+        element.classList.add('is-selected')
+        const style = getComputedStyle(element)
+        return { color: style.outlineColor, style: style.outlineStyle }
+      })() },
     caseC: { stage: [stage.width, stage.height], frame: [cframe.width, cframe.height],
       shadeAtRest, shadeWhileCropping,
+      frameZ: getComputedStyle(document.getElementById('cframe')).zIndex,
+      tailZ: getComputedStyle(document.getElementById('ctail')).zIndex,
       centeredX: +(cframe.center - stage.center).toFixed(2), centeredY: +(cframe.centerY - stage.centerY).toFixed(2),
       labelVsFrameLeft: +(clabel.left - cframe.left).toFixed(2), labelVsFrameTop: +(clabel.top - cframe.top).toFixed(2),
       shadeLeft: cshade.left, shadeHeight: cshade.height,
@@ -612,6 +628,22 @@ app.whenReady().then(async () => {
   if (shade) {
     if (shade.shadeAtRest !== 'rgb(0, 0, 0)') problems.push(`the shade outside the crop is not the export's black at rest: ${shade.shadeAtRest}`)
     if (!/^rgba\(3, 9, 16/.test(shade.shadeWhileCropping)) problems.push(`the shade does not lift while the crop box is dragged: ${shade.shadeWhileCropping}`)
+    // The output frame's outline is the edge of the export, and the letterbox and the black tail are
+    // drawn inside it: neither can cover it however much of the frame they fill.
+    if (!(Number(shade.frameZ) > Number(shade.tailZ))) problems.push(`the frame outline does not stand above the black tail: ${shade.frameZ} of ${shade.tailZ}`)
+    if (!(Number(shade.tailZ) > 0)) problems.push(`the black tail is not drawn above the picture: z-index ${shade.tailZ}`)
+  }
+  // The live readout in the gutter, and an audio container in the selection's own outline.
+  const scaleRow = laid.caseA
+  if (scaleRow && scaleRow.readout) {
+    if (!scaleRow.readout.text) problems.push('the gutter carries no live readout')
+    if (scaleRow.readout.fontSize !== '9px') problems.push(`the readout is not set in the scale's own type: ${scaleRow.readout.fontSize}`)
+    if (!(scaleRow.readout.height > 0 && scaleRow.readout.height <= 20)) problems.push(`the readout does not fit the gutter's own row: ${scaleRow.readout.height}`)
+    if (!scaleRow.readout.inside) problems.push('the readout runs out of the label column')
+  }
+  if (laid.caseB && laid.caseB.selectedAudio) {
+    if (laid.caseB.selectedAudio.color !== 'rgb(159, 191, 154)') problems.push(`a selected clip is not drawn in the accent: ${laid.caseB.selectedAudio.color}`)
+    if (laid.caseB.selectedAudio.style !== 'solid') problems.push(`a selected clip is not drawn solid: ${laid.caseB.selectedAudio.style}`)
   }
   if (framing) {
     // The explanation: a bare lower-case i, and a popover outlined in the border colour rather than the

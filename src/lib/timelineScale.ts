@@ -96,12 +96,21 @@ export interface RulerWindow {
  * The two steps a scale is drawn at: how far apart its labelled marks are, and how far apart its marks are.
  *
  * Both come from the ZOOM alone, which is what makes the scale read the same at every zoom: what changes
- * is what the marks SAY, not how many of them there are across the screen. The major step is the first
- * rung of the ladder that stands far enough apart to be read, and the subdivisions are the finest of the
- * usual ones — fifths down to halves — that still stands apart enough to be seen.
+ * is what the marks SAY, not how many of them there are across the screen.
+ *
+ * Where a FRAME is wide enough to see, the scale counts in FRAMES rather than in ladder steps: a mark per
+ * frame, and a label every so many frames that it stands far enough apart to read. That is not a detail —
+ * the arrow keys step by one frame, and a scale whose marks are not frames makes a one-frame step land
+ * between two marks and read as though it had skipped one. Below that width the ladder takes over, because
+ * frames are no longer separable and a grid a reader can halve is the most useful thing left.
  */
-export const rulerSteps = (zoom: number): { major: number; divisor: number; step: number } => {
+export const rulerSteps = (zoom: number, fps = 0): { major: number; divisor: number; step: number } => {
   const rate = pxPerSec(zoom)
+  const frame = fps > 0 ? 1 / Math.round(fps) : 0
+  if (frame > 0 && frame * rate >= RULER_MINOR_PX) {
+    const divisor = Math.max(1, Math.ceil(RULER_MAJOR_PX / (frame * rate)))
+    return { major: frame * divisor, divisor, step: frame }
+  }
   const major = RULER_STEPS.find((candidate) => candidate * rate >= RULER_MAJOR_PX) ?? RULER_STEPS[RULER_STEPS.length - 1]
   const divisor = [5, 4, 2, 1].find((part) => (major / part) * rate >= RULER_MINOR_PX) ?? 1
   return { major, divisor, step: major / divisor }
@@ -122,10 +131,10 @@ export const rulerSteps = (zoom: number): { major: number; divisor: number; step
  *
  * With no window, the whole span is drawn: that is what a caller that has no screen — a test — means.
  */
-export const rulerTicks = (duration: number, zoom: number, visible?: RulerWindow): RulerTick[] => {
+export const rulerTicks = (duration: number, zoom: number, visible?: RulerWindow, fps = 0): RulerTick[] => {
   const span = Number.isFinite(duration) && duration > 0 ? duration : 0
   if (span <= 0) return []
-  const { step, divisor } = rulerSteps(zoom)
+  const { step, divisor } = rulerSteps(zoom, fps)
   const from = Math.max(0, Math.min(span, visible ? visible.from : 0))
   const to = Math.max(from, Math.min(span, visible ? visible.to : span))
   const ticks: RulerTick[] = []
@@ -136,20 +145,27 @@ export const rulerTicks = (duration: number, zoom: number, visible?: RulerWindow
     if (time > span + step / 1000) break
     ticks.push({ time, major: index % divisor === 0 })
   }
-  // The end of the output itself, which a reader looks for and which is not always on the grid.
-  const onGrid = ticks.some((tick) => Math.abs(tick.time - span) < step / 1000)
-  if (!onGrid && to >= span - step / 1000) ticks.push({ time: span, major: true })
+  // The mark at the very end of the output is DROPPED rather than drawn. It is right-aligned inside the
+  // scale, so it lands on top of the mark before it as soon as the two are a label apart — and the end of
+  // the output is said by the live readout in the gutter beside the lanes, which cannot overlap itself.
+  if (ticks.length && span - ticks[ticks.length - 1].time < step / 2) ticks.pop()
   return ticks
 }
 
 /**
- * A wheel notch's worth of zoom.
+ * A wheel notch's worth of zoom, eased.
  *
- * Finer than the magnifier's doubling, and for a plain reason: a button is pressed once and a wheel
- * arrives in dozens, so a step that feels right on a button makes a wheel unusable before the finger
- * has stopped moving.
+ * Gentle on purpose. The magnifier steps by halves because a button is pressed once; a wheel arrives in
+ * dozens, and at a fifth per notch a flick crossed the whole range before the finger had stopped moving.
+ * The response is eased rather than fixed: a small movement zooms a little and a fast one travels, which
+ * is the ease-in a gesture wants and the ease-out a flick wants. It is the same easing the wheel SCRUB is
+ * given, because a wheel should feel like one thing wherever in this window it is used.
  */
-export const RULER_ZOOM_PER_NOTCH = 1.2
+export const RULER_ZOOM_PER_NOTCH = 0.06
 
-export const zoomedBy = (zoom: number, direction: 1 | -1): number =>
-  clampZoom(zoom * (direction > 0 ? RULER_ZOOM_PER_NOTCH : 1 / RULER_ZOOM_PER_NOTCH))
+export const zoomedBy = (zoom: number, deltaY: number): number => {
+  if (!Number.isFinite(deltaY) || deltaY === 0) return zoom
+  const eased = Math.tanh(Math.abs(deltaY) / 40)
+  const factor = 1 + RULER_ZOOM_PER_NOTCH * eased
+  return clampZoom(deltaY < 0 ? zoom * factor : zoom / factor)
+}
