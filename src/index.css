@@ -255,12 +255,13 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 
 /* EDIT JOB window: editable controls, locked-state disclosure, conflict banner */
 .editor-field { display: grid; gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); color: var(--ui-muted); font-size: 10px; }
-/* A group of settings that folds away. The heading is ruled off from what it governs by the same
-   full-width accent the tab strip uses for the tab in play, so a section's name says how far it
-   reaches. The whole heading folds, and the mark at the far right is the same action for anyone who
-   reaches for a caret rather than for a name. */
+/* A group of settings that folds away. The heading is ruled off from what it governs by a line in the
+   tab strip's own accent, drawn at half strength so it reads as a boundary between sections rather
+   than as something to look at: at full strength it competed with the section names it sits under.
+   The whole heading folds, and the mark at the far right is the same action for anyone who reaches
+   for a caret rather than for a name. */
 .editor-group { display: grid; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
-.editor-group-head { display: flex; align-items: center; gap: 8px; padding-bottom: 5px; border-bottom: 2px solid var(--ui-accent); }
+.editor-group-head { display: flex; align-items: center; gap: 8px; padding-bottom: 5px; border-bottom: 2px solid color-mix(in srgb, var(--ui-accent) 50%, transparent); }
 .editor-group-name { flex: 1 1 auto; display: flex; align-items: baseline; gap: 5px; padding: 0; color: var(--ui-muted); background: transparent; border: 0; font-family: inherit; font-size: 10px; letter-spacing: .08em; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 /* Only the NAME goes green. The sublabel is a fact ABOUT the name rather than a second control, so
    lighting both would read as two things turning over at once; the gap on the name button is what
@@ -348,21 +349,24 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-row { display: flex; align-items: center; gap: 5px; }
 .crop-row .mini-field { flex: 1 1 0; min-width: 0; }
 .crop-row .exact-icon { flex: 0 0 auto; }
-/* The heading of a sub-section, on its own line above the controls it governs. It carries the position
-   context the explanation hangs from, so the paragraph opens under the whole row rather than off the
-   small mark that raised it. */
-.crop-title { position: relative; }
+/* The heading of a sub-section, on its own line above the controls it governs. It is set in the same
+   type as its fields and spaced the same way, so a sub-section heading reads as the same kind of thing
+   as the one above it; before this it inherited from the sidebar and came out larger than the labels
+   it sat above. It carries the position context the explanation hangs from, so the paragraph opens
+   under the whole row rather than off the small mark that raised it. */
+.crop-title { position: relative; display: flex; justify-content: space-between; gap: 8px; color: var(--ui-muted); font-size: 10px; }
 .exact-row { display: grid; align-items: center; gap: 5px; }
 /* A sub-section's own line: which clip the figures belong to, and the one action that puts them on
    every clip at once. Kept small: it is a remark about the figures above, not a control of its own. */
-.crop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-muted); font-size: 8px; letter-spacing: .06em; }
-.crop-actions button { padding: 2px 5px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-family: inherit; font-size: 8px; letter-spacing: .06em; }
+.crop-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
+.crop-actions button { padding: 6px 8px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-family: inherit; font-size: 9px; letter-spacing: .06em; }
 .crop-actions button:hover { border-color: var(--ui-accent); }
 /* The picture's position, in the section's own unit. */
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
-/* A label and the mark that explains it, as one flex item so the row's own spacing leaves them
-   together — the field row spaces its children apart, which would throw the mark to the far edge. */
-.editor-label { display: flex; align-items: center; gap: 5px; }
+/* A sub-section's name, at the head of its own row. The explanation mark is deliberately NOT part of
+   it: the name keeps the left end and the row's own spacing puts the mark at the far right, where it
+   is in the same place for every sub-section however long the name is. */
+.editor-label { display: flex; align-items: center; }
 /* The explanation of a setting, behind a mark. Anchored to the ROW rather than to the mark: the
    sidebar clips whatever passes its right edge, and the mark sits wherever its label ends, so a
    popover hung off the mark leaves the sidebar on one side or the other as soon as a label is long.
@@ -383,11 +387,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .unit-toggle button + button { border-left: 0; }
 .unit-toggle button.is-on { color: var(--ui-canvas); background: var(--ui-accent); border-color: var(--ui-accent); }
 .unit-toggle button:disabled { opacity: .4; }
-.mini-field { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 3px; }
-.mini-field span { color: var(--ui-muted); font-size: 8px; }
-.mini-field input { width: 100%; min-width: 0; padding: 2px 3px; font-size: 9px; line-height: 1.25; text-align: center; }
+.mini-field { display: flex; align-items: center; gap: 4px; }
+.mini-field span { color: var(--ui-muted); font-size: 9px; }
+.mini-field input { width: 100%; min-width: 0; padding: 5px 4px; text-align: center; }
 /* The lock and reset glyphs beside the fields, sized to the fields they sit with. */
-.exact-icon { width: 19px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); }
+.exact-icon { width: 27px; padding: 5px 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); }
 .exact-icon:hover:not(:disabled) { color: var(--ui-accent); border-color: var(--ui-accent); }
 .exact-icon.is-on { color: var(--ui-accent); border-color: var(--ui-accent); }
 .exact-icon:disabled { opacity: .4; cursor: not-allowed; }

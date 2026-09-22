@@ -10,7 +10,7 @@ import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
-import { cropBands, cropForProportion, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MIN_KEPT, CropCorner, CropFractions } from '../lib/outputFrame'
+import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MIN_KEPT, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
 import { ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
 
@@ -1775,6 +1775,9 @@ export const EditJobApp: React.FC = () => {
   /** The crop the preset applies. Its edges are fractions of the picture, which is what makes them
    *  survive a resize; the pixel figures the fields show are read off `picture` just above. */
   const crop = perClipFraming && activeSourceCrop ? cropFractionsOf(activeSourceCrop) : draft.preset.crop
+  // The crop's own pixel figures, read off the picture just above: the four fields show these when the
+  // FRAMING switch is on px, and they are the source's pixels rather than the frame's.
+  const cropPx = crop && picture ? cropPixels(crop, picture) : null
   /** The proportion list's value: no shape held, a shape the crop keeps, or the user's own. */
   const keptProportion = crop && naturalAspect ? keptAspect(crop, naturalAspect) : undefined
   const matchedProportion = keptProportion != null
@@ -1858,18 +1861,22 @@ export const EditJobApp: React.FC = () => {
     updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
   }
   /**
-   * Sets one crop edge from its field, as a share of the source.
+   * Sets one crop edge from its field, in the unit the FRAMING section is currently showing.
    *
-   * The crop is measured against the SOURCE, so its unit is the source's own and is not the section's:
-   * the framing switch reads insets and offsets as shares of the output frame, which is a different
-   * rectangle, so a single switch could not mean one thing for both. One edge moves at a time: the
-   * other three are already settled, so only the edited one changes. While the lock is on the axis that
-   * was NOT typed follows from the one that was, so the figure in the field stays the one the user set
-   * and the region is nonetheless the output's shape.
+   * The switch is the section's, and its two readings are honest about different rectangles: per cent
+   * means a share of the SOURCE for these four figures and a share of the OUTPUT FRAME for the insets
+   * and the offset below, and so does a pixel — the figures are always stored as fractions either way,
+   * so the switch changes only how a field is read and written. One edge moves at a time: the other
+   * three are already settled, so only the edited one changes and the rest survive the unit's inverse.
+   * While the lock is on, the axis that was NOT typed follows from the one that was, so the figure in
+   * the field stays the one the user set and the region is nonetheless the output's shape.
    */
   const setCropEdge = (edge: keyof CropFractions, raw: number) => {
     if (!crop) return
-    const next = { ...crop, [edge]: Math.max(0, Math.min(1, raw / 100)) }
+    const next = framingUnit === 'px'
+      ? (cropPx && picture ? cropFractions({ ...cropPx, [edge]: Math.max(0, Math.round(raw)) }, picture) : null)
+      : { ...crop, [edge]: Math.max(0, Math.min(1, raw / 100)) }
+    if (!next) return
     if (lockRatio && naturalAspect) { writeCrop(holdCropShape(next, lockRatio, naturalAspect, edge === 'left' || edge === 'right' ? 'width' : 'height')); return }
     setCrop(next)
   }
@@ -2699,17 +2706,23 @@ export const EditJobApp: React.FC = () => {
             </div>
             </EditorGroup>
             <EditorGroup id="framing" label="FRAMING" hint="PER CLIP" reason="What each clip is framed with: what part of its source is kept, the margin it leaves, and where the picture is placed inside the frame. Starts folded because it is per clip rather than per job." collapsed={collapsedSections.includes('framing')} onToggle={toggleSection} actions={<>
-              {/* ONE unit switch for the section, and no reset here: the reset belongs to the four
-                  figures it puts back, so it sits at the end of their own row rather than in a heading
-                  that would have to be read to work out what it resets. */}
+              {/* ONE unit switch for the whole section: it governs all three of its controls, and each
+                  reads it against its OWN rectangle rather than a shared one — per cent is a share of
+                  the source for the crop and of the output frame for the insets and the offset, and a
+                  pixel is the source's own for the one and the frame's for the other two. The figures
+                  are stored as fractions either way, so the switch changes only how a field reads. No
+                  reset here: the reset belongs to the four figures it puts back, so it sits at the end
+                  of their own row rather than in a heading that would have to be read to work out what
+                  it resets. */}
               <div className="unit-toggle">
-                <button className={framingUnit === '%' ? 'is-on' : ''} onClick={() => setFramingUnit('%')} title="Per cent of the output frame">%</button>
-                <button className={framingUnit === 'px' ? 'is-on' : ''} disabled={!outputFrame} onClick={() => setFramingUnit('px')} title={outputFrame ? 'Pixels of the output frame' : 'THE OUTPUT FRAME IS NOT KNOWN YET.'}>px</button>
+                <button className={framingUnit === '%' ? 'is-on' : ''} onClick={() => setFramingUnit('%')} title="Per cent: of the source for the crop, of the output frame for the insets and the offset">%</button>
+                <button className={framingUnit === 'px' ? 'is-on' : ''} disabled={!outputFrame} onClick={() => setFramingUnit('px')} title={outputFrame ? "Pixels: the source's own for the crop, the output frame's for the insets and the offset" : 'THE OUTPUT FRAME IS NOT KNOWN YET.'}>px</button>
               </div>
             </>}>
             <div className="editor-subsection">
               <div className="crop-title">
-                <span className="editor-label">CROP<EditorInfo text={CROP_HELP} /></span>
+                <span className="editor-label">CROP</span>
+                <EditorInfo text={CROP_HELP} />
               </div>
               <div className="crop-head">
                 {/* The shape list is the switch as well: NONE is one of its entries, so choosing to
@@ -2739,12 +2752,14 @@ export const EditJobApp: React.FC = () => {
                       <span>{edge.slice(0, 1).toUpperCase()}</span>
                       <NumberField
                         min={0}
-                        max={Math.round((1 - MIN_KEPT - crop[OPPOSITE_EDGE[edge]]) * 100)}
+                        max={framingUnit === 'px' && picture
+                          ? Math.round((1 - MIN_KEPT - crop[OPPOSITE_EDGE[edge]]) * (edge === 'left' || edge === 'right' ? picture.width : picture.height))
+                          : Math.round((1 - MIN_KEPT - crop[OPPOSITE_EDGE[edge]]) * 100)}
                         step={1}
                         className="editor-input"
-                        value={Math.round(crop[edge] * 100)}
+                        value={framingUnit === 'px' && cropPx ? cropPx[edge] : Math.round(crop[edge] * 100)}
                         onValue={(raw) => setCropEdge(edge, raw)}
-                        title={`${edge} edge, per cent of the source`}
+                        title={`${edge} edge, ${framingUnit === 'px' ? 'pixels' : 'per cent'} of the source`}
                       />
                     </label>
                   ))}
@@ -2771,7 +2786,7 @@ export const EditJobApp: React.FC = () => {
                 them. Two controls, one answer, so they share the section's unit switch and its one
                 reset rather than carrying a copy of each — see the FRAMING heading above. */}
             <div className="editor-field">
-              <span><span className="editor-label">INSETS<EditorInfo text={INSETS_HELP} /></span></span>
+              <span><span className="editor-label">INSETS</span><EditorInfo text={INSETS_HELP} /></span>
               <div className="crop-row">
                 {(['l', 't', 'r', 'b'] as const).map((edge) => {
                   const span = outputFrame ? (edge === 'l' || edge === 'r' ? outputFrame.width : outputFrame.height) : 0
@@ -2793,7 +2808,7 @@ export const EditJobApp: React.FC = () => {
             </div>
             <div className="editor-divider" aria-hidden="true" />
             <div className="editor-field">
-              <span><span className="editor-label">OFFSET<EditorInfo text={OFFSET_HELP} /></span></span>
+              <span><span className="editor-label">OFFSET</span><EditorInfo text={OFFSET_HELP} /></span>
               <div className="crop-row is-two">
                 {(['x', 'y'] as const).map((axis) => {
                   const span = outputFrame ? (axis === 'x' ? outputFrame.width : outputFrame.height) : 0
@@ -2826,7 +2841,7 @@ export const EditJobApp: React.FC = () => {
                 a placeholder is read as what to put in it. */}
             <EditorField label="FPS" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={`SOURCE \u00b7 ${defaultFps}`} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
             <div className="editor-field">
-              <span><span className="editor-label">QUALITY<EditorInfo text={QUALITY_HELP} /></span></span>
+              <span><span className="editor-label">QUALITY</span><EditorInfo text={QUALITY_HELP} /></span>
               <input type="text" className="editor-input" aria-label="Video bitrate" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE \u00b7 E.G. 8M" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} />
             </div>
             </EditorGroup>

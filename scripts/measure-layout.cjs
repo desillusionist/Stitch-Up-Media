@@ -102,7 +102,7 @@ const caseD = `
     </div>
   </div>
   <div class="editor-subsection">
-    <div class="crop-title" id="ctitle"><span class="editor-label" id="clabel2">CROP<span class="editor-info" id="cinfo"><button class="editor-info-mark" id="cmark">i</button><span class="editor-info-pop" id="cpop">What part of the source this clip keeps.</span></span></span></div>
+    <div class="crop-title" id="ctitle"><span class="editor-label" id="clabel2">CROP</span><span class="editor-info" id="cinfo"><button class="editor-info-mark" id="cmark">i</button><span class="editor-info-pop" id="cpop">What part of the source this clip keeps.</span></span></div>
     <div class="crop-head" id="chead">
       <select id="csel"><option>NONE</option><option>16:9</option></select>
       <button class="exact-icon" id="clock">L</button>
@@ -192,15 +192,16 @@ const caseJ = `
 // right edge, so whether the popover is readable inside it is a question only a measurement answers.
 const caseK = `
 <div class="editor-field" id="kfield">
-  <span><span class="editor-label" id="klabel">INSETS<span class="editor-info" id="kinfo"><button class="editor-info-mark" id="kmark">i</button><span class="editor-info-pop" id="kpop">The margin this clip leaves around itself, and where the picture sits inside it.</span></span></span></span>
+  <span id="khead"><span class="editor-label" id="klabel">INSETS</span><span class="editor-info" id="kinfo"><button class="editor-info-mark" id="kmark">i</button><span class="editor-info-pop" id="kpop">The margin this clip leaves around itself, and where the picture sits inside it.</span></span></span>
   <div class="crop-row" id="krow">
-    <label class="mini-field" id="kl"><span>L</span><input id="klin" value="0"></label>
+    <label class="mini-field" id="kl"><span>L</span><input id="klin" class="editor-input" value="0"></label>
     <label class="mini-field" id="kt"><span>T</span><input value="0"></label>
     <label class="mini-field" id="kr"><span>R</span><input value="0"></label>
     <label class="mini-field" id="kb"><span>B</span><input value="0"></label>
     <button class="exact-icon" id="kreset">R</button>
   </div>
 </div>
+<div class="editor-field" id="kplain"><span>PLAIN</span><input id="kplainin" class="editor-input" value="0"></div>
 <div class="editor-field">
   <span><span class="editor-label">OFFSET</span></span>
   <div class="crop-row" id="krow2">
@@ -320,7 +321,7 @@ const measure = `(() => {
   const groupOpen = rect('gopen'); const groupClosed = rect('gclosed')
   const groupBody = rect('gopenbody'); const groupSelect = rect('gsel')
   // The framing controls, and the content box they have to stay inside.
-  const framing = { t: rect('kt'), l: rect('kl'), r: rect('kr'), b: rect('kb'), reset: rect('kreset'), row: rect('krow'), y: rect('ky'), x: rect('kx'), input: rect('klin'), pop: rect('kpop'), mark: rect('kmark'), content: rect('fcontent') }
+  const framing = { t: rect('kt'), l: rect('kl'), r: rect('kr'), b: rect('kb'), reset: rect('kreset'), row: rect('krow'), y: rect('ky'), x: rect('kx'), input: rect('klin'), pop: rect('kpop'), mark: rect('kmark'), content: rect('fcontent'), plain: rect('kplainin'), head: rect('khead'), info: rect('kinfo') }
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0'),
@@ -343,6 +344,9 @@ const measure = `(() => {
       titleBottom: rect('ctitle').bottom, headTop: rect('chead').top,
       hasCropUnit: Boolean(document.getElementById('cunit')),
       markTransform: getComputedStyle(document.getElementById('cmark')).textTransform,
+      labelFont: getComputedStyle(document.getElementById('clabel2')).fontSize,
+      labelLeftVsTitle: +(rect('clabel2').left - rect('ctitle').left).toFixed(2),
+      markRightVsTitle: +(rect('ctitle').right - rect('cmark').right).toFixed(2),
       popLeft: rect('cpop').left, popRight: rect('cpop').right, popTop: rect('cpop').top, markBottom: rect('cmark').bottom,
       contentLeft: rect('fcontent').left, contentRight: rect('fcontent').right,
       selectLeadingFlush: +(rect('csel').left - rect('chead').left).toFixed(2), lockTrailingFlush: +(rect('chead').right - rect('clock').right).toFixed(2),
@@ -371,7 +375,9 @@ const measure = `(() => {
       widths: [framing.l.width, framing.t.width, framing.r.width, framing.b.width],
       resetLeft: framing.reset ? framing.reset.left : 0, lastFieldRight: framing.b.right,
       offsetLefts: [framing.x.left, framing.y.left], offsetResetLeft: rect('kreset2') ? rect('kreset2').left : 0, offsetLastRight: framing.y.right,
-      inputHeight: framing.input.height, rowHeight: framing.row.height,
+      inputHeight: framing.input.height, rowHeight: framing.row.height, plainInputHeight: framing.plain ? framing.plain.height : 0,
+      labelFont: getComputedStyle(document.getElementById('klabel')).fontSize,
+      markRightVsHead: +(framing.head.right - framing.info.right).toFixed(2),
       popRight: framing.pop.right, popTop: framing.pop.top, markBottom: framing.mark.bottom,
       contentRight: framing.content.right, contentLeft: framing.content.left,
       popLeft: framing.pop.left, fieldCount: document.querySelectorAll('#krow .mini-field').length },
@@ -572,7 +578,9 @@ app.whenReady().then(async () => {
     if (!(framing.offsetLefts[1] > framing.offsetLefts[0])) problems.push('the offset figures are not in X Y order')
     if (!(framing.offsetResetLeft > framing.offsetLastRight - 0.5)) problems.push('the offset reset is not at the end of its own row')
     if (framing.fieldCount !== 4) problems.push(`the insets hold ${framing.fieldCount} figures rather than four`)
-    if (!(framing.inputHeight <= 21)) problems.push(`the fields are not compact: an input is ${framing.inputHeight}px tall`)
+    if (!(framing.plainInputHeight > 0)) problems.push('the harness has no ordinary field to measure the framing figures against')
+    if (framing.plainInputHeight > 0 && !(Math.abs(framing.inputHeight - framing.plainInputHeight) <= 6)) problems.push(`the framing figures are not an ordinary field's size: ${framing.inputHeight}px against ${framing.plainInputHeight}px`)
+    if (!(Math.abs(framing.markRightVsHead) <= 0.5)) problems.push(`the explanation mark is not at the row's far end: ${framing.markRightVsHead}px from it`)
     if (!(framing.popRight <= framing.contentRight + 0.5)) problems.push(`the explanation runs past the sidebar's right edge: ${framing.popRight} of ${framing.contentRight}`)
     if (!(framing.popLeft >= framing.contentLeft - 0.5)) problems.push(`the explanation runs out of the sidebar on the left: ${framing.popLeft} of ${framing.contentLeft}`)
     if (!(framing.popTop >= framing.markBottom)) problems.push('the explanation is drawn over its own mark')
@@ -586,7 +594,23 @@ app.whenReady().then(async () => {
     if (!groups.actionsRightOfToggle) problems.push('a heading puts its own controls before its name')
     if (!(groups.selectWidth > groups.groupInnerWidth * 0.8)) problems.push(`a control inside a group does not fill it: ${groups.selectWidth}px of ${groups.groupInnerWidth}px`)
     if (!groups.nameOneLine) problems.push('a heading\u2019s name and sublabel do not fit on one line')
-    if (JSON.stringify(groups.headingRule) !== JSON.stringify(groups.tabRule)) problems.push(`a heading's rule is not the tab strip's: ${JSON.stringify(groups.headingRule)} of ${JSON.stringify(groups.tabRule)}`)
+    // The heading's rule is the tab strip's accent at half strength rather than the accent itself: at
+    // full strength it competed with the section names it sits under. Two notations have to be read,
+    // because the browser answers a colour-mix in one and a plain colour in the other.
+    const parseColor = (value) => {
+      const srgb = /color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\)/.exec(value)
+      if (srgb) return { r: +srgb[1] * 255, g: +srgb[2] * 255, b: +srgb[3] * 255, a: srgb[4] === undefined ? 1 : +srgb[4] }
+      const rgb = /rgba?\(([^)]+)\)/.exec(value)
+      if (rgb) { const p = rgb[1].split(',').map(Number); return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 } }
+      return null
+    }
+    const headingAccent = parseColor(groups.headingRule[1]); const tabAccent = parseColor(groups.tabRule[1])
+    if (groups.headingRule[0] !== groups.tabRule[0]) problems.push(`the heading's rule is a different width to the tab strip's: ${groups.headingRule[0]} of ${groups.tabRule[0]}`)
+    if (!headingAccent || !tabAccent) problems.push(`a rule's colour could not be read: ${groups.headingRule[1]} / ${groups.tabRule[1]}`)
+    else {
+      if (['r', 'g', 'b'].some((channel) => Math.abs(headingAccent[channel] - tabAccent[channel]) > 1)) problems.push(`the heading's rule is not the tab strip's accent: ${groups.headingRule[1]} of ${groups.tabRule[1]}`)
+      if (Math.abs(headingAccent.a - 0.5) > 0.02) problems.push(`the heading's rule is not at half strength: alpha ${headingAccent.a}`)
+    }
     // NAME // SUBLABEL: the separator has to be clear of the name on its left — a flex row trims a
     // leading space, which is how it came to read NAME// SUBLABEL — and carry its space on the right.
     if (!(groups.separatorGap >= 3)) problems.push(`the separator is not clear of the name: ${groups.separatorGap}px`)
@@ -606,7 +630,13 @@ app.whenReady().then(async () => {
     if (cropHead.markTransform !== 'none') problems.push(`the explanation mark is not a lower-case i: text-transform is ${cropHead.markTransform}`)
     if (!(cropHead.popRight <= cropHead.contentRight + 0.5)) problems.push(`the crop's explanation runs past the sidebar's right edge: ${cropHead.popRight} of ${cropHead.contentRight}`)
     if (!(cropHead.popLeft >= cropHead.contentLeft - 0.5)) problems.push(`the crop's explanation runs out of the sidebar on the left: ${cropHead.popLeft} of ${cropHead.contentLeft}`)
-    if (!(cropHead.popTop >= cropHead.markBottom)) problems.push('the crop’s explanation is drawn over its own mark')
+    if (!(cropHead.popTop >= cropHead.markBottom)) problems.push('the crop\u2019s explanation is drawn over its own mark')
+    // A sub-section's name is at its row's left end and its mark at the right, the same way in every
+    // sub-section; and CROP's heading is set in the SAME type as the others, which is what it did not
+    // do when it inherited from the sidebar instead.
+    if (!(Math.abs(cropHead.labelLeftVsTitle) <= 0.5)) problems.push(`the crop's name is not at its row's left end: ${cropHead.labelLeftVsTitle}px from it`)
+    if (!(Math.abs(cropHead.markRightVsTitle) <= 0.5)) problems.push(`the crop's explanation mark is not at its row's far end: ${cropHead.markRightVsTitle}px from it`)
+    if (framing && cropHead.labelFont !== framing.labelFont) problems.push(`the crop's heading is a different size to the other sub-sections: ${cropHead.labelFont} of ${framing.labelFont}`)
   }
   if (problems.length) {
     console.error(`\n${problems.length} LAYOUT PROBLEM(S)\n${problems.map((problem) => `  - ${problem}`).join('\n')}\n`)
