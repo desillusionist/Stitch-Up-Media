@@ -59,6 +59,8 @@ export interface IElectronAPI {
   showItemInFolder: (path: string) => Promise<void>
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
+  /** Settings changed in another window, so the app-state file can be brought up to date. */
+  onSettingsChanged: (callback: (settings: AppSettings) => void) => () => void
   clearCache: (directory?: string) => Promise<{ deleted: number }>
   loadAppState: () => Promise<{ tasks: QueueTask[]; settings: AppSettings } | null>
   saveAppState: (state: { tasks: QueueTask[]; settings: AppSettings }) => Promise<void>
@@ -148,6 +150,11 @@ const api: IElectronAPI = {
   showItemInFolder: (path: string) => ipcRenderer.invoke('show-item-in-folder', path),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: AppSettings) => ipcRenderer.invoke('save-settings', settings),
+  onSettingsChanged: (callback) => {
+    const handler = (_: any, settings: AppSettings) => callback(settings)
+    ipcRenderer.on('settings-changed', handler)
+    return () => ipcRenderer.removeListener('settings-changed', handler)
+  },
   clearCache: (directory?: string) => ipcRenderer.invoke('clear-cache', directory),
   loadAppState: () => ipcRenderer.invoke('load-app-state'),
   saveAppState: (state) => ipcRenderer.invoke('save-app-state', state),

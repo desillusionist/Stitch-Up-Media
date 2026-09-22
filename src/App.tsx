@@ -247,6 +247,12 @@ export const App: React.FC = () => {
         // wholesale replace dropped whichever settings it does not carry.
         if (s) setSettings((current) => ({ ...current, ...s }))
       })
+      // A setting changed in another window arrives here so that this window — the one that owns the
+      // app-state file — writes it. The state change alone is what saves it, since that is what the
+      // saver below watches.
+      const unsubscribeSettings = window.electronAPI.onSettingsChanged((changed) => {
+        setSettings((current) => ({ ...current, ...changed }))
+      })
 
       const unsubscribeEditor = window.electronAPI.onEditJobApplied((patch) => {
         setTasks((prev) => prev.map((task) => task.id === patch.id ? applyEditJobPatch(task, patch) : task))
@@ -318,6 +324,7 @@ export const App: React.FC = () => {
 
       return () => {
         unsubscribeEditor()
+        unsubscribeSettings()
         unsubscribeProgress()
         unsubscribeComplete()
         unsubscribeError()

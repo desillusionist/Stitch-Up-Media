@@ -286,4 +286,14 @@ export interface AppSettings {
   screenshotDirectory?: string
   defaultImageDuration: number
   timestampDisplayMode?: 'timestamp' | 'framestamp'
+  /**
+   * Which of the EDIT JOB sidebar's groups are folded away, by each group's own id.
+   *
+   * A way of LOOKING at the settings rather than a setting: it changes nothing about what is exported.
+   * It is kept with the rest all the same, because the sidebar is long enough that folding it is the
+   * difference between seeing the setting wanted and scrolling past a dozen that are not — and having
+   * to fold the same groups again on every launch would make that a chore rather than a preference.
+   * Absent, or missing a group, means that group is open: nothing is hidden until it is folded.
+   */
+  collapsedSections?: string[]
 }

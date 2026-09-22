@@ -628,6 +628,10 @@ app.whenReady().then(() => {
 
   ipcMain.handle('save-settings', async (_, settings: AppSettings) => {
     queueManager?.updateSettings(settings)
+    // Settings are persisted by the main window, which owns the app-state file, so a change made in
+    // another window has to reach it or it lives only in this process's memory. That was invisible
+    // while the queue was the only thing that ever changed a setting.
+    mainWindow?.webContents.send('settings-changed', settings)
   })
 
   ipcMain.handle('clear-cache', async (_, directory?: string) => {

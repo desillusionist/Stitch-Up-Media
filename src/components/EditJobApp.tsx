@@ -105,6 +105,27 @@ const EditorField: React.FC<{ label: string; hint?: string; reason?: string; chi
 )
 
 /**
+ * A group of settings that can be folded away, with its own heading acting as the disclosure.
+ *
+ * The sidebar holds more settings than fit on a screen, and the ones that matter for a given job are
+ * rarely all of them: folding is what lets a reader see the shape of the settings rather than a run
+ * of fields. It is a way of LOOKING at them, so it is kept per group and out of the export entirely.
+ *
+ * The whole heading is the target rather than a caret beside it, because a caret to hit is a caret to
+ * miss — and a group that needs a switch as well as a disclosure puts BOTH in this one row, so there
+ * is never a heading that only repeats the row beneath it.
+ */
+const EditorGroup: React.FC<{ id: string; label: string; hint?: string; reason?: string; collapsed: boolean; onToggle: (id: string) => void; children: React.ReactNode }> = ({ id, label, hint, reason, collapsed, onToggle, children }) => (
+  <section className={`editor-group${collapsed ? ' is-collapsed' : ''}`}>
+    <button type="button" className="editor-group-head" onClick={() => onToggle(id)} title={reason} aria-expanded={!collapsed}>
+      <span>{label}{hint ? <em>{hint}</em> : null}</span>
+      <span className="editor-group-mark" aria-hidden="true">{collapsed ? '+' : '\u2212'}</span>
+    </button>
+    {!collapsed && <div className="editor-group-body">{children}</div>}
+  </section>
+)
+
+/**
  * Reports what a media element was handed, and whether it failed on it.
  *
  * A decode failure is a fact about a FILE and a guess about where it came from, and the message the
@@ -216,6 +237,24 @@ export const EditJobApp: React.FC = () => {
    */
   const [insetUnit, setInsetUnit] = useState<'%' | 'px'>('%')
   const [offsetUnit, setOffsetUnit] = useState<'%' | 'px'>('%')
+  /**
+   * Which sidebar groups are folded away, from the settings.
+   *
+   * A group is open unless it is named here, so a new group arrives visible and nothing is hidden
+   * from a reader who has never folded anything.
+   */
+  const collapsedSections = settings?.collapsedSections ?? []
+  const toggleSection = (id: string) => {
+    const next = collapsedSections.includes(id)
+      ? collapsedSections.filter((name) => name !== id)
+      : [...collapsedSections, id]
+    // Written to the settings rather than kept in this window, so folding survives a re-launch the way
+    // every other preference does. The window is a separate renderer, so the change is sent on and the
+    // queue window — which owns the file — is told to write it.
+    const nextSettings = { ...(settings ?? ({} as AppSettings)), collapsedSections: next }
+    setSettings(nextSettings)
+    void window.electronAPI?.saveSettings(nextSettings)
+  }
   /**
    * The crop's own controls: which entry the shape list is showing, and the clear-crop question.
    *
@@ -2510,6 +2549,10 @@ export const EditJobApp: React.FC = () => {
 
               {/* Resolution Scaling */}
             {tab === 'VIDEO' && <>
+            {/* Three groups rather than eight foldouts: a group is a decision about the OUTPUT, and the
+                settings inside one are read together or not at all. Folding a single field away would be
+                a heading that only repeats the row beneath it. */}
+            <EditorGroup id="output-frame" label="OUTPUT FRAME" hint="SHAPE AND SIZE" reason="What the encoder writes: the shape of the frame, the box it is scaled into, and an exact size that overrides both." collapsed={collapsedSections.includes('output-frame')} onToggle={toggleSection}>
             <div className="editor-field"><span>ASPECT RATIO<em>OUTPUT FRAME</em></span>
               <div className="aspect-row">
                 {ASPECTS.map((candidate) => (
@@ -2527,6 +2570,8 @@ export const EditJobApp: React.FC = () => {
                 <button className="exact-icon" disabled={!exactSet} onClick={clearExactSize} title="Clear exact size" aria-label="Clear exact size"><RotateCcw size={12} /></button>
               </div>
             </div>
+            </EditorGroup>
+            <EditorGroup id="framing" label="FRAMING" hint="HOW EACH CLIP SITS" reason="What each clip is framed with: what part of its source is kept, the margin it leaves, and where the picture is placed inside the frame." collapsed={collapsedSections.includes('framing')} onToggle={toggleSection}>
             <div className="editor-subsection">
               <EditorToggle
                 label="CROP SOURCE VIDEO"
@@ -2672,10 +2717,12 @@ export const EditJobApp: React.FC = () => {
               </div>
             </div>
             <div className="editor-note">&gt; 0 / 0 CENTRES THE PICTURE, WHICH IS WHERE IT SITS UNTIL IT IS MOVED. THE FIGURES ARE THE OUTPUT FRAME'S OWN, SO THEY MEAN THE SAME AT ANY RESOLUTION, AND THEY ARE NOT HELD IN: A PICTURE MOVED PAST AN EDGE IS CLIPPED BY THE FRAME, AND A PICTURE THAT LEAVES A GAP IS FILLED WITH THE BACKGROUND. DRAG IT ON THE PREVIEW, OR SET THE TWO FIGURES HERE.</div>
-            <div className="editor-divider" aria-hidden="true" />
+            </EditorGroup>
+            <EditorGroup id="encoding" label="ENCODING" hint="RATE AND QUALITY" reason="How the output is encoded: the frame rate it is written at, and the bitrate it is written to." collapsed={collapsedSections.includes('encoding')} onToggle={toggleSection}>
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={String(defaultFps)} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
             <EditorField label="QUALITY" hint="BITRATE, E.G. 8M" reason={videoReason}><input type="text" className="editor-input" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} /></EditorField>
             <div className="editor-note">&gt; BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.</div>
+            </EditorGroup>
           </>}
 
           {tab === 'AUDIO' && <>

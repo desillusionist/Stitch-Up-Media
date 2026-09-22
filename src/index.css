@@ -255,16 +255,29 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 
 /* EDIT JOB window: editable controls, locked-state disclosure, conflict banner */
 .editor-field { display: grid; gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); color: var(--ui-muted); font-size: 10px; }
+/* A group of settings that folds away. The heading carries the same box as a field so folding one
+   changes nothing about where the settings sit, and the whole heading is the target rather than a
+   caret beside it. */
+.editor-group { display: grid; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
+.editor-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0; color: var(--ui-muted); background: transparent; border: 0; font-size: 10px; letter-spacing: .08em; text-align: left; cursor: pointer; }
+.editor-group-head:hover, .editor-group-head:hover em { color: var(--ui-accent); }
+.editor-group-head em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: .06em; }
+.editor-group-mark { flex: 0 0 auto; color: var(--ui-border); font-size: 12px; line-height: 1; }
+.editor-group-body { display: grid; gap: 0; }
+/* The first field of a body carries no rule of its own: the heading is what separates it from what
+   came before, so a second line under it would be one line too many. */
+.editor-group-body > .editor-field:first-child, .editor-group-body > .editor-subsection:first-child { border-top: 0; }
+.editor-group-body > .editor-field:first-child { padding-top: 6px; }
 .editor-field > span { display: flex; justify-content: space-between; gap: 8px; }
-.editor-field em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: .06em; }
-.editor-field select, .editor-field input, .crop-head select { width: 100%; margin: 0; padding: 7px 8px; color: var(--ui-foreground); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; }
-.editor-field select:focus, .editor-field input:focus, .crop-head select:focus { border-color: var(--ui-accent); }
+.editor-field em, .crop-head em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: .06em; }
+.editor-field select, .editor-field input, .editor-group select, .editor-group input, .crop-head select { width: 100%; margin: 0; padding: 7px 8px; color: var(--ui-foreground); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; }
+.editor-field select:focus, .editor-field input:focus, .editor-group select:focus, .editor-group input:focus, .crop-head select:focus { border-color: var(--ui-accent); }
 /* The EDIT JOB window draws its own state, so the platform's focus box is suppressed rather
    than left to appear around whatever was clicked last. Inputs and selects still mark focus by
    taking the accent border, which is a change of colour rather than a box arriving. */
 .edit-job-shell button:focus, .edit-job-shell input:focus, .edit-job-shell select:focus,
 .edit-job-shell textarea:focus, .edit-job-shell [type="checkbox"]:focus { outline: none; box-shadow: none; }
-.editor-field select:disabled, .editor-field input:disabled { opacity: .45; }
+.editor-field select:disabled, .editor-field input:disabled, .editor-group select:disabled, .editor-group input:disabled { opacity: .45; }
 .editor-input { font-family: monospace !important; text-transform: none; }
 .editor-input::placeholder { color: var(--ui-border); }
 .editor-toggle.is-locked { opacity: .45; }

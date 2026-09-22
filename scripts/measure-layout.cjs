@@ -161,6 +161,22 @@ const readMonitor = `(() => {
 
 const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></div>'
 
+// Case J: the folding groups. A collapsed group must hide what it holds — a heading that still
+// reserved the space beneath it would be a heading that did nothing — and folding must not change the
+// height of the heading itself, or the sidebar would jump as groups were folded. A control inside a
+// group must also still fill it: the width rule used to be written against the field alone.
+const caseJ = `
+<section class="editor-group" id="gopen">
+  <button class="editor-group-head" id="gopenhead"><span>OUTPUT FRAME<em>SHAPE AND SIZE</em></span><span class="editor-group-mark">-</span></button>
+  <div class="editor-group-body" id="gopenbody">
+    <label class="editor-field" id="gf1"><span>RESOLUTION</span><select id="gsel"><option>4K</option></select></label>
+    <label class="editor-field" id="gf2"><span>FPS</span><input id="gin" value="24"></label>
+  </div>
+</section>
+<section class="editor-group is-collapsed" id="gclosed">
+  <button class="editor-group-head" id="gclosedhead"><span>FRAMING<em>HOW EACH CLIP SITS</em></span><span class="editor-group-mark">+</span></button>
+</section>`
+
 // Case G: a lane drawn as a filmstrip. The clip is the whole lane, so its width is the lane's, and
 // the tiles are painted exactly as the JSX paints them: the cell's own width in pixels, from the
 // plan, inside a row whose height comes from the one constant. The strips are painted by the
@@ -201,7 +217,7 @@ const readFilm = `(() => {
 const caseF = `
 <div class="export-title" id="ftitle">EXPORT SETTINGS</div>
 <div class="export-tabs" id="ftabs"><button class="active">EXPORT</button><button>VIDEO</button><button>AUDIO</button><button>EFFECTS</button><button>CAPTIONS</button></div>
-<div class="export-content" id="fcontent">${caseD}${filler.repeat(30)}</div>
+<div class="export-content" id="fcontent">${caseD}${caseJ}${filler.repeat(30)}</div>
 <div class="editor-actions" id="factions"><button>CANCEL</button><button class="primary-retro">OK / APPLY</button></div>`
 
 const page = `<!doctype html><html><head><meta charset="utf-8">
@@ -266,6 +282,10 @@ const measure = `(() => {
   pan.style.transform = 'translate(40px,-30px)'
   const moved = { frame: rect('cframe'), shade: rect('cshade'), layer: rect('cpan') }
   pan.style.transform = ''
+  // The folding groups, measured once. A rect helper answers null for an element that is not there,
+  // which is exactly what a collapsed group's body should be — so "no body" is measured, not assumed.
+  const groupOpen = rect('gopen'); const groupClosed = rect('gclosed')
+  const groupBody = rect('gopenbody'); const groupSelect = rect('gsel')
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0'),
@@ -287,6 +307,14 @@ const measure = `(() => {
       headLeadingFlush: +(rect('csel').left - rect('chead').left).toFixed(2), headTrailingFlush: +(rect('chead').right - rect('cunit').right).toFixed(2),
       unitButtonWidths: [rect('cupct').width, rect('cupx').width], unitHeight: rect('cupct').height, selectHeight: rect('csel').height,
       cropRowWidth: rect('crow').width, cropFieldWidth: rect('cl').width },
+    // Folding: an open group holds what it is given, a collapsed one holds nothing at all, and folding
+    // does not change the height of the heading — or the sidebar would jump as groups were folded.
+    // The controls inside keep filling their group, which the width rule has to allow for now that a
+    // group can hold them directly.
+    caseJ: { openHead: [rect('gopenhead').width, rect('gopenhead').height], closedHead: [rect('gclosedhead').width, rect('gclosedhead').height],
+      bodyHeight: groupBody ? groupBody.height : 0, closedHeight: groupClosed ? groupClosed.height : 0, openHeight: groupOpen ? groupOpen.height : 0,
+      selectWidth: groupSelect ? groupSelect.width : 0, groupInnerWidth: groupOpen ? groupOpen.width : 0,
+      closedStillShowsBody: Boolean(document.getElementById('gclosedbody')) },
     // The head must sit at the sidebar's top, the foot at its bottom, and the settings between
     // them must be scrollable: a taller content than viewport with both neighbours still in view.
     caseF: { sidebarHeight: fside.height, titleVsTop: +(rect('ftitle').top - fside.top).toFixed(2), contentVsTabs: +(rect('fcontent').top - rect('ftabs').bottom).toFixed(2),
@@ -469,6 +497,16 @@ app.whenReady().then(async () => {
   // one that fails is a line of output and a non-zero exit rather than something to be spotted.
   const problems = Array.isArray(laid.problems) ? laid.problems : []
   problems.push(...monitorProblems)
+  // The folding groups, asserted here rather than in the page because these are questions about
+  // DIFFERENCES between two elements — one folded, one not — rather than about either alone.
+  const groups = laid.caseJ
+  if (groups) {
+    if (groups.closedStillShowsBody) problems.push('a collapsed group still holds its body, so folding hides nothing')
+    if (!(groups.bodyHeight > groups.openHead[1])) problems.push(`an open group does not show what it holds: body ${groups.bodyHeight}px, head ${groups.openHead[1]}px`)
+    if (Math.abs(groups.openHead[1] - groups.closedHead[1]) > 0.5) problems.push(`folding changes the height of a group heading: ${groups.openHead[1]}px open, ${groups.closedHead[1]}px folded`)
+    if (!(groups.closedHeight > 0 && groups.closedHeight < groups.openHeight)) problems.push(`a folded group is not shorter than an open one: ${groups.closedHeight}px of ${groups.openHeight}px`)
+    if (!(groups.selectWidth > groups.groupInnerWidth * 0.8)) problems.push(`a control inside a group does not fill it: ${groups.selectWidth}px of ${groups.groupInnerWidth}px`)
+  }
   if (problems.length) {
     console.error(`\n${problems.length} LAYOUT PROBLEM(S)\n${problems.map((problem) => `  - ${problem}`).join('\n')}\n`)
   }
