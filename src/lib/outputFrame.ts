@@ -171,8 +171,11 @@ const clampEdge = (value: number): number => Math.max(0, Math.min(1, Number.isFi
  * centred and one that was not keeps its balance; where an end has less to give than its share, the
  * other end gives the rest. Both edges at MAX_CROP still pass through unchanged, which is what makes
  * this a widening of the old rule rather than a different one.
+ *
+ * Shared with the INSETS, which ask exactly the same question of the output frame: two edges eating
+ * into one axis of it, with something having to be left between them for anything to be drawn in.
  */
-const clampAxis = (near: number, far: number): [number, number] => {
+export const clampAxis = (near: number, far: number): [number, number] => {
   let a = clampEdge(near)
   let b = clampEdge(far)
   let excess = a + b - (1 - MIN_KEPT)

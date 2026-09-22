@@ -5,7 +5,7 @@ import { dropPreviewsFor, previewKey, rememberedPreviewFor, sequencePreviewKey, 
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
-import { DEFAULT_FIT_OFFSET, clipFilters, cropRegion, croppedSize, fitFilters, fitOffsetFor, fitPlacement, fitSignature, fittedSize, placedSource, sourceCropOf, storedFitOffset } from '../src/lib/sourceFit'
+import { DEFAULT_FIT_OFFSET, clipFilters, cropRegion, croppedSize, fitFilters, fitOffsetFor, fitPlacement, fitSignature, fittedSize, hasInsets, innerBox, normaliseInsets, placedSource, sourceCropOf, storedFitOffset } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
@@ -730,7 +730,7 @@ console.log('\n== the timeline filmstrip ==')
   check('and so is the same placement moved', frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0 } } })) === frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0.2 } } })), false)
   check('while the same placement is the same picture', frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0 } } })) === frameKey(120, signature({ fit: { mode: 'width', offset: { x: 0, y: 0 } } })), true)
   check('a job crop is part of it too', signature({ crop: { left: 0.1, top: 0, right: 0.1, bottom: 0 } }) === signature(), false)
-  check('and no fit at all is its own signature', signature(), 'contain@1920x1080|full|none')
+  check('and no fit at all is its own signature', signature(), 'contain@1920x1080|full|i0.000,0.000,0.000,0.000|none')
 }
 
 console.log('\n== the monitor zoom ==')
@@ -832,16 +832,51 @@ console.log('\n== the per-clip output fit ==')
   // background rather than the two-pixel smudge `pad` would otherwise leave in the middle.
   check('a picture pushed clear of the canvas is background and nothing else', fitFilters({ source, frame, fit: { mode: 'contain', offset: { x: 1, y: 0 } } }), ['scale=608:1080', 'crop=2:2:0:0', 'drawbox=x=0:y=0:w=2:h=2:color=black:t=fill', 'pad=1920:1080:0:0:color=black', 'setsar=1'])
 
+  // The INSETS. A margin is neither a crop nor a position: it decides how much of the OUTPUT the clip
+  // is not given, so the fit scales the clip into the box the margins leave and centres it THERE, and
+  // the offset then slides the picture in frame space as it always did. The two compose in that order.
+  // With no margins the box IS the frame, which is why nothing above needed to know about any of this.
+  const inset = (l: number, t: number, r: number, b: number) => fitPlacement({ source, frame, fit: { mode: 'contain', offset: DEFAULT_FIT_OFFSET, insets: { l, t, r, b } } })!
+  check('no margins is the whole frame', innerBox(frame, undefined), { x: 0, y: 0, width: 1920, height: 1080 })
+  check('and leaves the picture exactly where it was', inset(0, 0, 0, 0).at, place('contain')!.at)
+  check('all four zero is the same as none at all', hasInsets({ l: 0, t: 0, r: 0, b: 0 }), false)
+  // A tenth in from every side leaves four fifths of the frame, starting a tenth in.
+  check('a margin shrinks the box the fit works in', innerBox(frame, { l: 0.1, t: 0.1, r: 0.1, b: 0.1 }), { x: 192, y: 108, width: 1536, height: 864 })
+  // Four fifths of a 16:9 frame is still 16:9, so the picture is scaled down to fill it: 864 tall, and
+  // as wide as its own shape allows. It is INSIDE the frame now, which is what "scaled down" means.
+  check('so the clip is scaled down into it', inset(0.1, 0.1, 0.1, 0.1).size, { width: 486, height: 864 })
+  check('and sits inside the frame rather than at its edge', inset(0.1, 0.1, 0.1, 0.1).at, { x: 718, y: 108 })
+  // The margins of one axis only move the picture along that axis, and by half of what they took: the
+  // box's left edge is the margin in, and the picture is centred in what is left of the box.
+  check('a margin on one side pushes the box, and the picture with it', innerBox(frame, { l: 0.25, t: 0, r: 0, b: 0 }), { x: 480, y: 0, width: 1440, height: 1080 })
+  check('which is where the picture is centred', inset(0.25, 0, 0, 0).at, { x: 896, y: 0 })
+  // A FILL fit fills the BOX rather than the frame: the same fill semantics, in a smaller box, which is
+  // the whole of what an inset does to a fit.
+  check('a fill fit fills the box instead of the frame', fitPlacement({ source, frame, fit: { mode: 'width', offset: DEFAULT_FIT_OFFSET, insets: { l: 0.1, t: 0.1, r: 0.1, b: 0.1 } } })!.size.width, 1536)
+  check('and the box is what it overflows', fitPlacement({ source, frame, fit: { mode: 'width', offset: DEFAULT_FIT_OFFSET, insets: { l: 0.1, t: 0.1, r: 0.1, b: 0.1 } } })!.size.height > 864, true)
+  // The chain needs nothing added for a margin: the placement put the picture inside the box, so the pad
+  // that fills a letterbox fills the margins with it, and the background is one job rather than two.
+  check('the margins are filled by the same pad as any other shortfall', fitFilters({ source, frame, fit: { mode: 'contain', offset: DEFAULT_FIT_OFFSET, insets: { l: 0.25, t: 0, r: 0, b: 0 } } }), ['scale=608:1080', 'pad=1920:1080:896:0:color=black', 'setsar=1'])
+  check('and zero margins are the chain it always was', fitFilters({ source, frame, fit: { mode: 'contain', offset: DEFAULT_FIT_OFFSET, insets: { l: 0, t: 0, r: 0, b: 0 } } }), fitFilters({ source, frame, fit: { mode: 'contain', offset: DEFAULT_FIT_OFFSET } }))
+
+  // The clamp. Each axis is capped on what its two edges take TOGETHER, by the crop's own rule, so the
+  // box cannot be squeezed to nothing — while one edge reaching in hard on its own is allowed, which is
+  // the distinction that rule exists to keep.
+  check('margins that would leave nothing keep a tenth of the frame', innerBox(frame, { l: 0.9, t: 0, r: 0.9, b: 0 }), { x: 864, y: 0, width: 192, height: 1080 })
+  check('and the two edges share the overshoot', normaliseInsets({ l: 0.6, t: 0, r: 0.6, b: 0 }), { l: 0.45, t: 0, r: 0.45, b: 0 })
+  check('while one edge on its own may reach in as far as it likes', innerBox(frame, { l: 0.6, t: 0, r: 0, b: 0 }), { x: 1152, y: 0, width: 768, height: 1080 })
+  check('a nonsense margin is no margin', normaliseInsets({ l: Number.NaN, t: -1, r: 0, b: 5 }), { l: 0, t: 0, r: 0, b: 0.9 })
+
   // The cache key: everything that changes the picture — the mode, both figures of the position, the
   // two boxes and the crop — with the position quantised so a dragger still moving does not ask for a
   // new set of thumbnails at every pixel of the drag.
   const sig = (mode: 'width' | 'height' | 'contain', x: number, y: number) => fitSignature({ source, frame, fit: { mode, offset: { x, y } } })
-  check('a signature names the fit, the position, both boxes and the crop', sig('width', 0, 0), 'width@0.000,0.000@720x1280>1920x1080|full')
+  check('a signature names the fit, the position, both boxes, the crop and the margins', sig('width', 0, 0), 'width@0.000,0.000@720x1280>1920x1080|full|i0.000,0.000,0.000,0.000')
   check('a hair of movement is not a different picture', sig('width', 0, 0.0004) === sig('width', 0, 0), true)
   check('a real move is', sig('width', 0, 0.01) === sig('width', 0, 0), false)
   check('each axis counts', sig('width', 0.01, 0) === sig('width', 0, 0.01), false)
   check('the scale is a different picture at the same position', sig('height', 0, 0) === sig('width', 0, 0), false)
-  check('and the default says so rather than naming a fit', fitSignature({ source, frame }), 'contain@1920x1080|full')
+  check('and the default says so rather than naming a fit', fitSignature({ source, frame }), 'contain@1920x1080|full|i0.000,0.000,0.000,0.000')
 
   // The OLD record: a single number, a place along the one axis a fit left over, counted in the slack
   // that axis had. It converts exactly, because the picture's old position and the centred position are
@@ -947,9 +982,9 @@ console.log('\n== the per-clip crop ==')
   // The signature carries the crop, quantised, because it is part of what a thumbnail looks like: a
   // crop dragged a tenth of a per cent does not need the strip again, a real one does.
   const sig = (crop: Parameters<typeof fitSignature>[0]['crop']) => fitSignature({ source, frame, crop })
-  check('a signature carries the crop', sig(middleBand).endsWith('|0.000,0.333,0.000,0.333'), true)
+  check('a signature carries the crop', sig(middleBand).endsWith('|0.000,0.333,0.000,0.333|i0.000,0.000,0.000,0.000'), true)
   check('a different crop is a different picture', sig(middleBand) === sig({ left: 0.1, top: 0, right: 0, bottom: 0 }), false)
-  check('and no crop says so', sig(undefined).endsWith('|full'), true)
+  check('and no crop says so', sig(undefined).endsWith('|full|i0.000,0.000,0.000,0.000'), true)
 
   // What the monitor draws. A crop is a box over a picture rather than a smaller picture, so the
   // whole source is drawn AROUND the kept region: the region lands exactly where the fit put it,

@@ -1,5 +1,5 @@
-import { CropFractions, FitMode, FrameSize } from './outputFrame'
-import { SourceCrop, SourceFit } from '../types'
+import { CropFractions, FitMode, FrameSize, clampAxis } from './outputFrame'
+import { Insets, SourceCrop, SourceFit } from '../types'
 
 /**
  * Per-clip output framing: how one clip is scaled, and where the result sits.
@@ -23,6 +23,49 @@ import { SourceCrop, SourceFit } from '../types'
 
 /** Centred: where a picture sits until it is moved. */
 export const DEFAULT_FIT_OFFSET: { x: number; y: number } = { x: 0, y: 0 }
+
+/** No margin: the whole output frame, which is what a clip with no insets is given. */
+export const DEFAULT_INSETS: Insets = { l: 0, t: 0, r: 0, b: 0 }
+
+/**
+ * A record's insets, with nonsense and over-reach taken out.
+ *
+ * Each axis is capped on what its two edges take TOGETHER, by the same rule a crop's is and for the
+ * same reason: an empty box has no size to scale a picture into, so something has to be left between
+ * the two edges. The cap is on the total rather than on each edge, so a picture inset hard from one
+ * side is allowed while one squeezed from both is not — which is the same distinction the crop's own
+ * clamp exists to draw, and why the rule is borrowed rather than written again here.
+ */
+export const normaliseInsets = (insets: Insets | undefined): Insets => {
+  if (!insets) return { ...DEFAULT_INSETS }
+  const [l, r] = clampAxis(insets.l, insets.r)
+  const [t, b] = clampAxis(insets.t, insets.b)
+  return { l, t, r, b }
+}
+
+/** True when a margin would actually take something off the output frame. */
+export const hasInsets = (insets: Insets | undefined): boolean =>
+  Boolean(insets && (insets.l > 0 || insets.t > 0 || insets.r > 0 || insets.b > 0))
+
+/** The insets a fit record carries, or none. */
+export const insetsOf = (fit: SourceFit | undefined): Insets => normaliseInsets(fit?.insets)
+
+/**
+ * The box the insets leave: where it starts on the output canvas, and how big it is.
+ *
+ * Whole pixels, because it is a box drawn on a canvas of them. The picture that is fitted into it is
+ * rounded to an even pair by the fit itself, which is the size the encoders need and not this
+ * arithmetic's business.
+ */
+export const innerBox = (frame: FrameSize, insets: Insets | undefined): { x: number; y: number; width: number; height: number } => {
+  const margin = normaliseInsets(insets)
+  return {
+    x: Math.max(0, Math.round(frame.width * margin.l)),
+    y: Math.max(0, Math.round(frame.height * margin.t)),
+    width: Math.max(0, Math.round(frame.width * (1 - margin.l - margin.r))),
+    height: Math.max(0, Math.round(frame.height * (1 - margin.t - margin.b))),
+  }
+}
 
 /** An offset with nonsense in it read as nothing, so a bad record cannot place a picture anywhere. */
 export const normaliseFitOffset = (offset: { x?: unknown; y?: unknown } | undefined): { x: number; y: number } => ({
@@ -87,8 +130,12 @@ export const fitOffsetWithin = (fit: SourceFit | undefined, size: FrameSize, fra
 }
 
 /** The same, for a caller that has the source rather than the size the fit scales it to. */
-export const fitOffsetFor = (fit: SourceFit | undefined, source: FrameSize, frame: FrameSize): { x: number; y: number } =>
-  fitOffsetWithin(fit, fittedSize(source, frame, fit?.mode ?? 'contain'), frame)
+export const fitOffsetFor = (fit: SourceFit | undefined, source: FrameSize, frame: FrameSize): { x: number; y: number } => {
+  // Worked out against the box the fit scales INTO, which is the box the offset is then measured
+  // against as well. With no insets the box is the frame, so this is what it always was.
+  const box = innerBox(frame, insetsOf(fit))
+  return fitOffsetWithin(fit, fittedSize(source, box, fit?.mode ?? 'contain'), box)
+}
 
 export interface FitPlacement {
   /** The picture's box after scaling, in frame pixels. */
@@ -105,18 +152,27 @@ export interface FitPlacement {
  * changes does not move a picture that has not been moved. With no fit given the answer is `contain`,
  * which is what the encoder did before there was a choice, so the default case goes through the same
  * arithmetic as the chosen ones rather than down a separate path that could drift from it.
+ *
+ * The CENTRING is within the inner box rather than within the frame, and that is the whole of how
+ * insets enter the model: they narrow the box the picture is scaled into and centred in, and the
+ * offset then slides that picture in FRAME space, as a fraction of the frame it always was. So an
+ * inset makes the picture smaller and gives it a smaller box to sit in; it does not move it, and it
+ * does not change what the offset means. With no insets the box IS the frame, and every figure here
+ * is the one it was before there were insets at all.
  */
 export const fitPlacement = (input: { source: FrameSize; frame: FrameSize; fit?: SourceFit }): FitPlacement | null => {
   const { source, frame } = input
   if (!(source.width > 0) || !(source.height > 0) || !(frame.width > 0) || !(frame.height > 0)) return null
-  const size = fittedSize(source, frame, input.fit?.mode ?? 'contain')
+  const box = innerBox(frame, insetsOf(input.fit))
+  if (!(box.width > 0) || !(box.height > 0)) return null
+  const size = fittedSize(source, box, input.fit?.mode ?? 'contain')
   if (!(size.width > 0) || !(size.height > 0)) return null
-  const offset = fitOffsetWithin(input.fit, size, frame)
+  const offset = fitOffsetWithin(input.fit, size, box)
   return {
     size,
     at: {
-      x: evenSigned((frame.width - size.width) / 2 + offset.x * frame.width),
-      y: evenSigned((frame.height - size.height) / 2 + offset.y * frame.height),
+      x: evenSigned(box.x + (box.width - size.width) / 2 + offset.x * frame.width),
+      y: evenSigned(box.y + (box.height - size.height) / 2 + offset.y * frame.height),
     },
   }
 }
@@ -127,7 +183,10 @@ export const fitPlacement = (input: { source: FrameSize; frame: FrameSize; fit?:
  * Scale by both figures rather than by `force_original_aspect_ratio`, so the box the chain works on is
  * the box this arithmetic worked out. What follows depends on whether the scaled picture is still
  * inside the canvas. Inside it, `pad` places it and fills what it does not cover, which is the
- * letterbox and pillarbox case and needs no crop at all. Over an edge, `pad` cannot be used — it
+ * letterbox and pillarbox case AND the inset case — a margin is background the picture was never
+ * given, so the same `pad` that fills a shortfall fills it. Those are one case rather than two, which
+ * is why insets need nothing at all here: the placement already put the picture where the margins
+ * leave it, and the pad fills the canvas around it. Over an edge, `pad` cannot be used — it
  * refuses an output smaller than its input, and it SILENTLY CENTRES the input when handed a negative
  * offset rather than putting it off the canvas — so the part of the picture that IS on the canvas is
  * cropped out of it first and then padded into place at its own corner, which is the crop side of the
@@ -168,10 +227,10 @@ export const fitFilters = (input: { source: FrameSize; frame: FrameSize; fit?: S
  * What a placement looks like to a cache.
  *
  * Everything that changes the picture belongs in it: the mode, the position — quantised, so a drag
- * that is still moving does not ask for a new set of thumbnails at every pixel — and the two boxes.
- * Frames cached under one placement must never be served for another. The position is written in the
- * CONVERTED form, so a record from the older model and its equivalent pair share a signature rather
- * than asking for the same thumbnails twice.
+ * that is still moving does not ask for a new set of thumbnails at every pixel — the margins, and
+ * the two boxes. Frames cached under one placement must never be served for another. The position is
+ * written in the CONVERTED form, so a record from the older model and its equivalent pair share a
+ * signature rather than asking for the same thumbnails twice.
  */
 export const fitSignature = (input: { source?: FrameSize; frame?: FrameSize; fit?: SourceFit; crop?: CropFractions }): string => {
   const box = (size?: FrameSize) => (size && size.width > 0 && size.height > 0 ? `${size.width}x${size.height}` : '-')
@@ -180,12 +239,16 @@ export const fitSignature = (input: { source?: FrameSize; frame?: FrameSize; fit
   const region = input.crop
     ? [input.crop.left, input.crop.top, input.crop.right, input.crop.bottom].map((edge) => (Number.isFinite(edge) ? edge.toFixed(3) : '0')).join(',')
     : 'full'
-  if (!input.fit) return `contain@${box(input.frame)}|${region}`
+  // A margin changes what a tile looks like as surely as the fit does — an inset picture IS a smaller
+  // picture in a smaller box — so it belongs in the key, quantised like the rest of it.
+  const insets = insetsOf(input.fit)
+  const margin = [insets.l, insets.t, insets.r, insets.b].map((edge) => (Math.round(edge * 1000) / 1000).toFixed(3)).join(',')
+  if (!input.fit) return `contain@${box(input.frame)}|${region}|i${margin}`
   const offset = input.source && input.frame
     ? fitOffsetFor(input.fit, input.source, input.frame)
     : storedFitOffset(input.fit)
   const at = [offset.x, offset.y].map((value) => (Math.round(value * 1000) / 1000).toFixed(3)).join(',')
-  return `${input.fit.mode}@${at}@${box(input.source)}>${box(input.frame)}|${region}`
+  return `${input.fit.mode}@${at}@${box(input.source)}>${box(input.frame)}|${region}|i${margin}`
 }
 
 /**

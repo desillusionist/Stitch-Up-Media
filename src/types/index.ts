@@ -92,6 +92,25 @@ export interface SourceCrop {
 }
 
 /**
+ * The margin a clip leaves at each edge of the OUTPUT frame, as fractions of it.
+ *
+ * Not a crop, and the two are independent: a crop decides what part of the SOURCE is kept, and an
+ * inset decides how much of the OUTPUT the clip is not given. Like the crop it is a fraction of the
+ * frame it means something in, so it survives a change of output resolution or aspect ratio, and zero
+ * on every edge is the whole frame — which is what a clip carrying no record behaves as.
+ */
+export interface Insets {
+  /** Left edge, as a fraction of the output frame's width. */
+  l: number
+  /** Top edge, as a fraction of the output frame's height. */
+  t: number
+  /** Right edge, as a fraction of the output frame's width. */
+  r: number
+  /** Bottom edge, as a fraction of the output frame's height. */
+  b: number
+}
+
+/**
  * How one clip is placed in the output frame, when it is not left to fit itself.
  *
  * Keyed like trimPoints, by the clip that owns it (`"path#index"`), so it follows the clip
@@ -115,6 +134,16 @@ export interface SourceFit {
    * That is the point of a position — bars are what a position produces, not a mistake in it.
    */
   offset: { x: number; y: number }
+  /**
+   * The margin this clip leaves around itself, as fractions of the output frame.
+   *
+   * This is the box the fit scales the clip INTO and centres it in, and the frame the offset then
+   * slides the result around in. The two are independent and they compose in that order: the insets
+   * decide how big the picture is and where its box is, and the offset decides where the picture sits
+   * once it is that size. Absent, or zero on every edge, leaves every step of that exactly as it was
+   * — which is what makes insets additive rather than a second way of saying position.
+   */
+  insets?: Insets
 }
 
 export interface ClipTransition {

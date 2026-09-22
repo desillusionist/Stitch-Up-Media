@@ -176,7 +176,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 /* The window the picture is drawn in: the frame's own box, and clipped by it, so a clip that is
    fitted to one axis and overflows the other is cut off exactly where the export cuts it. Its
    opacity is not set, so a fade through black in the monitor still reads on the picture inside. */
-.editor-frame-window { position: absolute; overflow: hidden; }
+.editor-frame-window { position: absolute; overflow: hidden; background: #000; }
 /* Before the output frame's size is known — which, for a frame that follows the source, means before
    the media has reported its own — the picture fills the stage instead of sitting inside the frame's
    window. The media is mounted either way, which is what lets it report the size the frame is
@@ -191,6 +191,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    dimmed by four explicit bands (see cropBands) rather than one spread shadow, which used
    to shade the output frame outline and the whole stage along with it. */
 .editor-crop { position: absolute; border: 1px solid var(--ui-encoding); cursor: move; }
+/* The box a clip's own margins leave inside the output frame: the picture is scaled into it and
+   centred in it, and the offset then slides it from there. Drawn rather than filled, because the
+   picture belongs in it — and the margins themselves need no filling, since what shows through them
+   is the output's own background. */
+.editor-insets { position: absolute; border: 1px dashed var(--ui-muted); pointer-events: none; }
 .editor-crop-shade { position: absolute; background: rgba(3, 9, 16, .62); pointer-events: none; }
 .crop-handle { position: absolute; display: block; }
 .crop-handle.is-left { left: -4px; top: 0; bottom: 0; width: 9px; cursor: ew-resize; }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, RotateCcw, Unlink, ZoomIn, ZoomOut } from 'lucide-react'
-import { AppSettings, EditJobPatch, EncodingPreset, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
+import { AppSettings, EditJobPatch, EncodingPreset, Insets, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
@@ -36,7 +36,7 @@ const ASPECT_TOLERANCE = 0.01
  */
 const FREEFORM = 'FREEFORM'
 import { sourceTimingOverrides, SourceTimingOverride, withSourceTiming } from '../lib/sourceTiming'
-import { DEFAULT_FIT_OFFSET, cropFractionsOf, fitOffsetWithin, placedSource, sourceCropOf, storedFitOffset } from '../lib/sourceFit'
+import { DEFAULT_FIT_OFFSET, cropFractionsOf, fitOffsetWithin, hasInsets, innerBox, insetsOf, normaliseInsets, placedSource, sourceCropOf, storedFitOffset } from '../lib/sourceFit'
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 import { placeMenu } from '../lib/menuPlacement'
@@ -1108,13 +1108,19 @@ export const EditJobApp: React.FC = () => {
    */
   const setSourceFit = (key: string, mode: SourceFit['mode'] | null) => {
     const next = { ...(latest().sourceFit || {}) }
-    const offset = storedFitOffset(next[key])
-    const placed = offset.x !== 0 || offset.y !== 0
+    const existing = next[key]
+    const offset = storedFitOffset(existing)
+    const insets = insetsOf(existing)
+    // The record carries a SCALE, a POSITION and MARGINS, and it is kept while it carries any of them:
+    // a fit switched off is a change of scale, not a reason to throw the other two away. A clip that
+    // has never carried one leaves no record behind at all rather than a `contain` fit meaning nothing.
+    const record = (fitMode: SourceFit['mode']): SourceFit => (hasInsets(insets) ? { mode: fitMode, offset, insets } : { mode: fitMode, offset })
+    const decided = offset.x !== 0 || offset.y !== 0 || hasInsets(insets)
     if (mode === null) {
-      if (placed) next[key] = { mode: 'contain', offset }
+      if (decided) next[key] = record('contain')
       else delete next[key]
     } else {
-      next[key] = { mode, offset }
+      next[key] = record(mode)
     }
     updateDraft({ sourceFit: Object.keys(next).length ? next : undefined })
   }
@@ -1130,10 +1136,41 @@ export const EditJobApp: React.FC = () => {
    */
   const setFitOffset = (xPercent: number, yPercent: number) => {
     if (!activeFitKey) return
+    const insets = insetsOf(activeFit)
     updateDraft({
       sourceFit: {
         ...(latest().sourceFit ?? {}),
-        [activeFitKey]: { mode: activeFit?.mode ?? 'contain', offset: { x: xPercent / 100, y: yPercent / 100 } },
+        [activeFitKey]: {
+          mode: activeFit?.mode ?? 'contain',
+          offset: { x: xPercent / 100, y: yPercent / 100 },
+          // The margins are carried over: this control moves the picture, and the box it is sized
+          // into is the other control's business.
+          ...(hasInsets(insets) ? { insets } : {}),
+        },
+      },
+    })
+  }
+  /**
+   * Insets the clip, by the figures in the INSETS sub-section.
+   *
+   * The margins live on the clip's fit record because they are part of the same decision — how the
+   * clip is placed in the output — and because such a record already follows its clip through a
+   * reorder. They size the box the fit scales the clip into; they do NOT move it, so the position is
+   * carried across untouched and a picture that has been dragged stays where it was put while the box
+   * shrinks around it. A clip with no fit of its own gets a `contain` one, which changes its scale not
+   * at all: a margin is a decision a clip can have on its own.
+   */
+  const setInsets = (edges: Partial<Insets>) => {
+    if (!activeFitKey) return
+    const insets = normaliseInsets({ ...insetsOf(activeFit), ...edges })
+    updateDraft({
+      sourceFit: {
+        ...(latest().sourceFit ?? {}),
+        [activeFitKey]: {
+          mode: activeFit?.mode ?? 'contain',
+          offset: { ...storedFitOffset(activeFit) },
+          ...(hasInsets(insets) ? { insets } : {}),
+        },
       },
     })
   }
@@ -1407,6 +1444,8 @@ export const EditJobApp: React.FC = () => {
   const perClipFraming = clipsConcatenate(draft)
   const activeSourceCrop = activeClipKey ? draft.sourceCrop?.[activeClipKey] : undefined
   const activeFit = activeFitKey && draft ? draft.sourceFit?.[activeFitKey] : undefined
+  /** The margins the shown clip carries, which are the box its fit scales it into. */
+  const activeInsets = insetsOf(activeFit)
   /** The crop the preset applies. Its edges are fractions of the picture, which is what makes them
    *  survive a resize; the pixel figures the fields show are read off `picture` just above. */
   const crop = perClipFraming && activeSourceCrop ? cropFractionsOf(activeSourceCrop) : draft.preset.crop
@@ -1724,6 +1763,27 @@ export const EditJobApp: React.FC = () => {
    * as a pair, which is how such a record turns into one of these.
    */
   const pictureOffset = placement && outputFrame ? fitOffsetWithin(activeFit, placement.size, outputFrame) : DEFAULT_FIT_OFFSET
+  /**
+   * The inner box the insets leave, in the monitor's own pixels.
+   *
+   * Scaled from the output frame's box as it is DRAWN rather than from the stage, so the box keeps its
+   * place when the preview is zoomed or panned — it is a box on the frame, and it moves with it. It is
+   * drawn so that the margins read as the background they are, and so that the box the picture is being
+   * sized into can be seen while it is being set.
+   */
+  const insetBox = frameRect && frameOrigin && outputFrame
+    ? (() => {
+      const box = innerBox(outputFrame, activeInsets)
+      const scaleX = frameRect.width / outputFrame.width
+      const scaleY = frameRect.height / outputFrame.height
+      return {
+        left: frameOrigin.x + box.x * scaleX,
+        top: frameOrigin.y + box.y * scaleY,
+        width: box.width * scaleX,
+        height: box.height * scaleY,
+      }
+    })()
+    : null
   /** What the window says when there is nothing to draw in it yet. */
   const screenMessage = duration > 0 ? 'PREPARING THIS SEGMENT...' : 'NO PLAYABLE MEDIA'
 
@@ -1801,6 +1861,7 @@ export const EditJobApp: React.FC = () => {
     const start = { x: event.clientX, y: event.clientY }
     const from = pictureOffset
     const mode = activeFit?.mode ?? 'contain'
+    const insets = insetsOf(activeFit)
     let moved = false
     const move = (moveEvent: PointerEvent) => {
       const dx = moveEvent.clientX - start.x
@@ -1810,7 +1871,13 @@ export const EditJobApp: React.FC = () => {
       updateDraft({
         sourceFit: {
           ...(latest().sourceFit ?? {}),
-          [activeFitKey]: { mode, offset: { x: from.x + dx / Math.max(1, frameRect.width), y: from.y + dy / Math.max(1, frameRect.height) } },
+          [activeFitKey]: {
+            mode,
+            offset: { x: from.x + dx / Math.max(1, frameRect.width), y: from.y + dy / Math.max(1, frameRect.height) },
+            // Carried over: dragging moves the picture, and the box it is sized into is the other
+            // control's business. A drag must not quietly undo a margin.
+            ...(hasInsets(insets) ? { insets } : {}),
+          },
         },
       })
     }
@@ -1944,6 +2011,11 @@ export const EditJobApp: React.FC = () => {
                           : <span className="editor-screen-message">{screenMessage}</span>}
                 </div>
                 {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
+                {/* The box the clip's own margins leave inside the frame. The background the export
+                    will fill them with is already what shows through — the window is the output's own
+                    black — so this only says where the box IS: the picture is scaled into it and
+                    centred in it, and the offset then slides it from there. */}
+                {insetBox && hasInsets(activeInsets) && <div className="editor-insets" style={{ left: insetBox.left, top: insetBox.top, width: insetBox.width, height: insetBox.height }} aria-hidden="true" />}
                 {cropShade.map((band, index) => (
                   <div key={index} className="editor-crop-shade" style={{ left: band.left, top: band.top, width: band.width, height: band.height }} aria-hidden="true" />
                 ))}
@@ -2338,6 +2410,31 @@ export const EditJobApp: React.FC = () => {
                 <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON A SHAPE; FREEFORM HOLDS NO SHAPE AT ALL, SO A CORNER FOLLOWS THE POINTER ON BOTH AXES AND THE REGION KEEPS ITS OWN. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.{lockRatio ? ' WITH THE LOCK ON, EVERY EDIT HOLDS THE OUTPUT\u2019S SHAPE.' : ''}</div>
               </>}
             </div>
+            {/* The margins this clip leaves at the edges of the output. They are not a position and not
+                a crop: a crop decides what part of the SOURCE is kept and this decides how much of the
+                OUTPUT the clip is not given, so it survives a change of resolution or shape exactly as
+                the crop does. The four figures are per cent of the output frame, which is why they mean
+                the same at any resolution. */}
+            <EditorField
+              label="INSETS · L / T / R / B"
+              hint="% OF THE OUTPUT FRAME"
+              reason="The margin this clip leaves around itself: the box its fit scales it into. The picture is centred in the box, and the OFFSET below then slides it from there. 0 everywhere is the whole frame, which is what the clip gets until it is inset."
+            >
+              <div className="crop-row">
+                {(['l', 't', 'r', 'b'] as const).map((edge) => (
+                  <label key={edge} className="mini-field"><span>{edge.toUpperCase()}</span>
+                    <NumberField
+                      step={1}
+                      className="editor-input"
+                      value={Math.round(activeInsets[edge] * 100)}
+                      onValue={(raw) => setInsets({ [edge]: raw / 100 })}
+                      title={`${edge.toUpperCase()} margin, per cent of the output frame`}
+                    />
+                  </label>
+                ))}
+              </div>
+            </EditorField>
+            <div className="editor-note">&gt; A MARGIN SHRINKS THE BOX THE CLIP IS FITTED INTO, SO THE PICTURE GETS SMALLER AND THE OUTPUT'S OWN BACKGROUND SHOWS IN THE MARGIN. THE PICTURE KEEPS ITS SHAPE EITHER WAY. AN INSET AND THE OFFSET ARE INDEPENDENT: THE INSET SETS THE SIZE OF THE BOX, AND THE OFFSET BELOW SLIDES THE PICTURE IN THE FRAME.{hasInsets(activeInsets) ? '' : ' ALL FOUR ARE ZERO, SO THIS CLIP IS USING THE WHOLE FRAME.'}</div>
             {/* Where the picture sits on the canvas, as a pair of figures. Two fields rather than one
                 slider, because a position is two numbers and a bar with a middle would say the middle
                 is special; the middle is only where the picture STARTS. Nothing is bounded: X and Y go
