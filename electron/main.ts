@@ -38,6 +38,12 @@ let mainWindow: BrowserWindow | null = null
 let queueManager: QueueManager | null = null
 let editJobWindow: BrowserWindow | null = null
 let editJobTask: QueueTask | null = null
+// Set while the window is being closed ON PURPOSE — by OK, APPLY-and-close, or a confirmed discard —
+// so that a close the user asked for is not turned back into the question the close button asks.
+let editJobClosing = false
+// Whether the renderer is up and listening. Before it is, there is nobody to ask, so a close is let
+// through rather than swallowed by a question that no window is there to put.
+let editJobReady = false
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -129,19 +135,31 @@ app.whenReady().then(() => {
     if (editJobWindow && !editJobWindow.isDestroyed()) {
       editJobWindow.focus(); sendEditJobTask(); return
     }
+    editJobClosing = false
+    editJobReady = false
     editJobWindow = new BrowserWindow({ width: 1320, height: 840, minWidth: 980, minHeight: 640, title: 'EDIT JOB', titleBarStyle: 'hiddenInset', backgroundColor: '#07111d', parent: mainWindow || undefined, webPreferences: { preload: path.join(__dirname, 'preload.mjs'), nodeIntegration: false, contextIsolation: true, sandbox: false } })
     editJobWindow.webContents.setVisualZoomLevelLimits(1, 1)
-    editJobWindow.on('closed', () => { editJobWindow = null; editJobTask = null })
-    editJobWindow.webContents.once('did-finish-load', sendEditJobTask)
+    editJobWindow.on('closed', () => { editJobWindow = null; editJobTask = null; editJobReady = false; editJobClosing = false })
+    // The title bar's own close button asks the same question CANCEL does. The window is not shut here:
+    // it is held open and the renderer is asked, so an edit is not lost by reaching for the traffic
+    // light instead of the footbar. A close that was asked for deliberately passes straight through.
+    editJobWindow.on('close', (event) => {
+      if (editJobClosing || !editJobReady) return
+      event.preventDefault()
+      editJobWindow?.webContents.send('edit-job-close-requested')
+    })
+    editJobWindow.webContents.once('did-finish-load', () => { editJobReady = true; sendEditJobTask() })
     if (process.env.VITE_DEV_SERVER_URL) await editJobWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}#edit-job`)
     else await editJobWindow.loadFile(path.join(__dirname, '../dist/index.html'), { hash: 'edit-job' })
   })
+  /** Shuts the window for real: the flag is what stops the close handler asking about it. */
+  const closeEditJob = () => { editJobClosing = true; editJobWindow?.close() }
   // The editor sends only the fields it owns; the queue merges them field-scoped. APPLY keeps
   // the window open so a change can be made and looked at again; OK is the same thing and a
   // close, which is what the caller asks for with `close`.
   ipcMain.handle('apply-edit-job', async (_, patch: EditJobPatch, close = true) => {
     mainWindow?.webContents.send('edit-job-applied', patch)
-    if (close) editJobWindow?.close()
+    if (close) closeEditJob()
   })
   // The queue pushes editable-field changes here while the editor is open, so the
   // editor never applies edits on top of a stale snapshot. Ignored once the
@@ -152,7 +170,7 @@ app.whenReady().then(() => {
     editJobTask = task
     sendEditJobTask()
   })
-  ipcMain.handle('cancel-edit-job', async () => { editJobWindow?.close() })
+  ipcMain.handle('cancel-edit-job', async () => { closeEditJob() })
   // A generated clip belongs to the task, not to the window that happened to build it,
   // so the window reports it here and the queue records it. Without this the helper would
   // rebuild the footage for every still it opens, and the in/out points reported on close
@@ -655,3 +673,6 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+// A quit is not a question. Every window closes without asking on the way out, which is what stops the
+// EDIT JOB window's own close handler from holding the app open by asking a question as it leaves.
+app.on('before-quit', () => { editJobClosing = true })

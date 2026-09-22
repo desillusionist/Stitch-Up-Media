@@ -752,6 +752,21 @@ export const EditJobApp: React.FC = () => {
     return () => { window.clearTimeout(timer) }
   }, [filmstripLanes, laneZoom, mediaTargets, sourceShape, sourceVideo, timelineSignature, frameImages, draft?.preset.crop, draft?.imageSequencePreviews, outputFrame, draft?.sourceFit])
 
+  // The window's own close button asks what CANCEL asks, rather than throwing unsaved edits away
+  // quietly. The main process turns its close into this message and holds the window open until it is
+  // answered, which is what makes the question one the user has to face rather than a notice.
+  useEffect(() => {
+    const subscribe = window.electronAPI?.onEditJobCloseRequested
+    if (!subscribe) return
+    return subscribe(() => {
+      const task = draftRef.current
+      // Nothing to lose and nothing to ask about: a window that has not been handed a task yet has no
+      // edits to discard.
+      if (!task) { void window.electronAPI?.cancelEditJob(); return }
+      if (isDirty(task, baselineRef.current ?? task)) setConfirmingDiscard(true)
+      else void window.electronAPI?.cancelEditJob()
+    })
+  }, [])
   // A context menu closes on the next press anywhere, or on Escape.
   useEffect(() => {
     if (!timelineMenu) return

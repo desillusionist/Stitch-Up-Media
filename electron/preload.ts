@@ -47,6 +47,13 @@ export interface IElectronAPI {
   onSourceTiming: (callback: (taskId: string, sourceKey: string, override: { fps?: number; seconds?: number }) => void) => () => void
   /** Tells the queue a generated clip exists, so it survives the window that built it. */
   rememberPreview: (taskId: string, sourceKey: string, previewPath: string) => Promise<void>
+  /**
+   * The EDIT JOB window's own close button was pressed, and the window is holding itself open.
+   *
+   * The renderer answers it the way the CANCEL button is answered: keep editing, or discard and
+   * close. Subscribing is what makes the window closable at all, so the reply is not optional.
+   */
+  onEditJobCloseRequested: (callback: () => void) => () => void
   onSequencePreviewReady: (callback: (taskId: string, sourceKey: string, previewPath: string) => void) => () => void
   selectOutputFilename: (path: string, container: string) => Promise<string | null>
   showItemInFolder: (path: string) => Promise<void>
@@ -121,6 +128,11 @@ const api: IElectronAPI = {
     return () => ipcRenderer.removeListener('quicklook-points', handler)
   },
   rememberPreview: (taskId: string, sourceKey: string, previewPath: string) => ipcRenderer.invoke('remember-preview', taskId, sourceKey, previewPath),
+  onEditJobCloseRequested: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('edit-job-close-requested', handler)
+    return () => ipcRenderer.removeListener('edit-job-close-requested', handler)
+  },
   onSequencePreviewReady: (callback) => {
     const handler = (_: any, payload: { taskId: string; sourceKey: string; previewPath: string }) => callback(payload.taskId, payload.sourceKey, payload.previewPath)
     ipcRenderer.on('sequence-preview-ready', handler)
