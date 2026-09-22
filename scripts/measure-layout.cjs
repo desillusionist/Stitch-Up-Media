@@ -167,15 +167,44 @@ const filler = '<div class="editor-field"><span>FILLER</span><input value="x"></
 // group must also still fill it: the width rule used to be written against the field alone.
 const caseJ = `
 <section class="editor-group" id="gopen">
-  <button class="editor-group-head" id="gopenhead"><span>OUTPUT FRAME<em>SHAPE AND SIZE</em></span><span class="editor-group-mark">-</span></button>
+  <div class="editor-group-head" id="gopenhead">
+    <button class="editor-group-toggle" id="gopentoggle"><span>OUTPUT FRAME<em>SHAPE AND SIZE</em></span><span class="editor-group-mark">-</span></button>
+  </div>
   <div class="editor-group-body" id="gopenbody">
     <label class="editor-field" id="gf1"><span>RESOLUTION</span><select id="gsel"><option>4K</option></select></label>
     <label class="editor-field" id="gf2"><span>FPS</span><input id="gin" value="24"></label>
   </div>
 </section>
 <section class="editor-group is-collapsed" id="gclosed">
-  <button class="editor-group-head" id="gclosedhead"><span>FRAMING<em>HOW EACH CLIP SITS</em></span><span class="editor-group-mark">+</span></button>
+  <div class="editor-group-head" id="gclosedhead">
+    <button class="editor-group-toggle" id="gclosedtoggle"><span>FRAMING<em>HOW EACH CLIP SITS</em></span><span class="editor-group-mark">+</span></button>
+    <div class="editor-group-actions" id="gactions"><div class="unit-toggle"><button class="is-on">%</button><button>px</button></div><button class="exact-icon">R</button></div>
+  </div>
 </section>`
+
+// Case K: the FRAMING section's shape. Each figure must sit where the edge it moves is — T above, the
+// sides flanking, B below — or the arrangement says nothing and four boxes may as well be a row. And
+// the explanation grows LEFTWARDS from its mark: the sidebar clips anything past its right edge, so
+// whether the popover is readable inside it is a question only a measurement answers.
+const caseK = `
+<div class="editor-field" id="kfield">
+  <span><span class="editor-label" id="klabel">INSETS<span class="editor-info" id="kinfo"><button class="editor-info-mark" id="kmark">i</button><span class="editor-info-pop" id="kpop">The margin this clip leaves around itself, and where the picture sits inside it.</span></span></span></span>
+  <div class="inset-box" id="kbox">
+    <label class="mini-field is-t" id="kt"><span>T</span><input value="0"></label>
+    <label class="mini-field is-l" id="kl"><span>L</span><input value="0"></label>
+    <label class="mini-field is-r" id="kr"><span>R</span><input value="0"></label>
+    <label class="mini-field is-b" id="kb"><span>B</span><input value="0"></label>
+    <span class="inset-box-core"></span>
+  </div>
+</div>
+<div class="editor-field">
+  <span><span class="editor-label">OFFSET</span></span>
+  <div class="offset-cross" id="kcross">
+    <label class="mini-field is-y" id="ky"><span>Y</span><input value="0"></label>
+    <label class="mini-field is-x" id="kx"><span>X</span><input value="0"></label>
+    <span class="offset-cross-core">+</span>
+  </div>
+</div>`
 
 // Case G: a lane drawn as a filmstrip. The clip is the whole lane, so its width is the lane's, and
 // the tiles are painted exactly as the JSX paints them: the cell's own width in pixels, from the
@@ -217,7 +246,7 @@ const readFilm = `(() => {
 const caseF = `
 <div class="export-title" id="ftitle">EXPORT SETTINGS</div>
 <div class="export-tabs" id="ftabs"><button class="active">EXPORT</button><button>VIDEO</button><button>AUDIO</button><button>EFFECTS</button><button>CAPTIONS</button></div>
-<div class="export-content" id="fcontent">${caseD}${caseJ}${filler.repeat(30)}</div>
+<div class="export-content" id="fcontent">${caseD}${caseJ}${caseK}${filler.repeat(30)}</div>
 <div class="editor-actions" id="factions"><button>CANCEL</button><button class="primary-retro">OK / APPLY</button></div>`
 
 const page = `<!doctype html><html><head><meta charset="utf-8">
@@ -286,6 +315,8 @@ const measure = `(() => {
   // which is exactly what a collapsed group's body should be — so "no body" is measured, not assumed.
   const groupOpen = rect('gopen'); const groupClosed = rect('gclosed')
   const groupBody = rect('gopenbody'); const groupSelect = rect('gsel')
+  // The framing controls, and the content box they have to stay inside.
+  const framing = { t: rect('kt'), l: rect('kl'), r: rect('kr'), b: rect('kb'), box: rect('kbox'), y: rect('ky'), x: rect('kx'), pop: rect('kpop'), mark: rect('kmark'), content: rect('fcontent') }
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0'),
@@ -314,7 +345,18 @@ const measure = `(() => {
     caseJ: { openHead: [rect('gopenhead').width, rect('gopenhead').height], closedHead: [rect('gclosedhead').width, rect('gclosedhead').height],
       bodyHeight: groupBody ? groupBody.height : 0, closedHeight: groupClosed ? groupClosed.height : 0, openHeight: groupOpen ? groupOpen.height : 0,
       selectWidth: groupSelect ? groupSelect.width : 0, groupInnerWidth: groupOpen ? groupOpen.width : 0,
-      closedStillShowsBody: Boolean(document.getElementById('gclosedbody')) },
+      closedStillShowsBody: Boolean(document.getElementById('gclosedbody')),
+      // A heading that carries the group's own controls is still ONE line: a row that governs everything
+      // under it must not push what it governs any further down than the heading would have.
+      actionsRow: Math.abs(rect('gactions').top - rect('gclosedtoggle').top), actionsRightOfToggle: rect('gactions').left >= rect('gclosedtoggle').right },
+    // The framing controls, read as positions rather than as sizes: which figure is above, beside and
+    // below which is the whole of what a box layout says.
+    caseK: { boxCentre: framing.box.center, tCentre: framing.t.center, topVsSides: framing.t.bottom - framing.l.top,
+      sidesRow: +(framing.l.top - framing.r.top).toFixed(2), leftOfRight: framing.r.left > framing.l.right,
+      bottomVsSides: framing.b.top - framing.l.top, yVsX: +(framing.y.top - framing.x.top).toFixed(2),
+      popRight: framing.pop.right, popTop: framing.pop.top, markBottom: framing.mark.bottom,
+      contentRight: framing.content.right, contentLeft: framing.content.left,
+      popLeft: framing.pop.left, fieldCount: document.querySelectorAll('#kbox .mini-field').length },
     // The head must sit at the sidebar's top, the foot at its bottom, and the settings between
     // them must be scrollable: a taller content than viewport with both neighbours still in view.
     caseF: { sidebarHeight: fside.height, titleVsTop: +(rect('ftitle').top - fside.top).toFixed(2), contentVsTabs: +(rect('fcontent').top - rect('ftabs').bottom).toFixed(2),
@@ -500,11 +542,29 @@ app.whenReady().then(async () => {
   // The folding groups, asserted here rather than in the page because these are questions about
   // DIFFERENCES between two elements — one folded, one not — rather than about either alone.
   const groups = laid.caseJ
+  // The FRAMING section's shape. T centred over the box with the sides on one row beneath it and B
+  // below them; Y above X in the cross; and the explanation landing inside the sidebar rather than
+  // being clipped by its right edge, which is what decides which way it has to grow.
+  const framing = laid.caseK
+  if (framing) {
+    if (Math.abs(framing.tCentre - framing.boxCentre) > 0.6) problems.push(`the top margin is not centred over the box: ${framing.tCentre} of ${framing.boxCentre}`)
+    if (!(framing.topVsSides < 0)) problems.push('the top margin does not sit above the sides')
+    if (Math.abs(framing.sidesRow) > 0.6) problems.push(`the two side margins are not on one row: ${framing.sidesRow}px apart`)
+    if (!framing.leftOfRight) problems.push('the left margin is not left of the right one')
+    if (!(framing.bottomVsSides > 0)) problems.push('the bottom margin does not sit below the sides')
+    if (!(framing.yVsX < 0)) problems.push('the vertical offset does not sit above the horizontal one')
+    if (framing.fieldCount !== 4) problems.push(`the inset box holds ${framing.fieldCount} figures rather than four`)
+    if (!(framing.popRight <= framing.contentRight + 0.5)) problems.push(`the explanation runs past the sidebar's right edge: ${framing.popRight} of ${framing.contentRight}`)
+    if (!(framing.popLeft >= framing.contentLeft - 0.5)) problems.push(`the explanation runs out of the sidebar on the left: ${framing.popLeft} of ${framing.contentLeft}`)
+    if (!(framing.popTop >= framing.markBottom)) problems.push('the explanation is drawn over its own mark')
+  }
   if (groups) {
     if (groups.closedStillShowsBody) problems.push('a collapsed group still holds its body, so folding hides nothing')
     if (!(groups.bodyHeight > groups.openHead[1])) problems.push(`an open group does not show what it holds: body ${groups.bodyHeight}px, head ${groups.openHead[1]}px`)
-    if (Math.abs(groups.openHead[1] - groups.closedHead[1]) > 0.5) problems.push(`folding changes the height of a group heading: ${groups.openHead[1]}px open, ${groups.closedHead[1]}px folded`)
+    if (Math.abs(groups.openHead[1] - groups.closedHead[1]) > 0.5) problems.push(`a heading that carries controls is a different height to one that does not: ${groups.openHead[1]}px of ${groups.closedHead[1]}px`)
     if (!(groups.closedHeight > 0 && groups.closedHeight < groups.openHeight)) problems.push(`a folded group is not shorter than an open one: ${groups.closedHeight}px of ${groups.openHeight}px`)
+    if (!(groups.actionsRow < 0.6)) problems.push(`a heading's own controls are on a line of their own: ${groups.actionsRow}px out`)
+    if (!groups.actionsRightOfToggle) problems.push('a heading puts its own controls before its name')
     if (!(groups.selectWidth > groups.groupInnerWidth * 0.8)) problems.push(`a control inside a group does not fill it: ${groups.selectWidth}px of ${groups.groupInnerWidth}px`)
   }
   if (problems.length) {

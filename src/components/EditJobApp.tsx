@@ -105,6 +105,16 @@ const EditorField: React.FC<{ label: string; hint?: string; reason?: string; chi
 )
 
 /**
+ * The FRAMING section's explanations, which used to be paragraphs under the controls.
+ *
+ * They are the same words: what changed is that they are one gesture away rather than permanently in
+ * the way of the two fields they are about.
+ */
+const INSETS_HELP = 'The margin this clip leaves around itself: the box its fit scales it into. The picture is centred in the box, and the OFFSET slides it from there. All four at 0 is the whole frame, which is what the clip is given until it is inset. The figures are per cent of the output frame, so they mean the same at any resolution.'
+const OFFSET_HELP = 'Where the picture sits on the output canvas. 0 and 0 is centred, which is where it sits until it is moved. The figures are the output frame\u2019s own, so they mean the same at any resolution, and they are not held in: a picture moved past an edge is clipped by the frame, and one that leaves a gap is filled with the background. The monitor\u2019s dragger writes the same two figures.'
+const QUALITY_HELP = 'BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.'
+
+/**
  * A group of settings that can be folded away, with its own heading acting as the disclosure.
  *
  * The sidebar holds more settings than fit on a screen, and the ones that matter for a given job are
@@ -115,15 +125,46 @@ const EditorField: React.FC<{ label: string; hint?: string; reason?: string; chi
  * miss — and a group that needs a switch as well as a disclosure puts BOTH in this one row, so there
  * is never a heading that only repeats the row beneath it.
  */
-const EditorGroup: React.FC<{ id: string; label: string; hint?: string; reason?: string; collapsed: boolean; onToggle: (id: string) => void; children: React.ReactNode }> = ({ id, label, hint, reason, collapsed, onToggle, children }) => (
+const EditorGroup: React.FC<{ id: string; label: string; hint?: string; reason?: string; collapsed: boolean; onToggle: (id: string) => void; actions?: React.ReactNode; children: React.ReactNode }> = ({ id, label, hint, reason, collapsed, onToggle, actions, children }) => (
   <section className={`editor-group${collapsed ? ' is-collapsed' : ''}`}>
-    <button type="button" className="editor-group-head" onClick={() => onToggle(id)} title={reason} aria-expanded={!collapsed}>
-      <span>{label}{hint ? <em>{hint}</em> : null}</span>
-      <span className="editor-group-mark" aria-hidden="true">{collapsed ? '+' : '\u2212'}</span>
-    </button>
-    {!collapsed && <div className="editor-group-body">{children}</div>}
+    <div className="editor-group-head">
+      <button type="button" className="editor-group-toggle" onClick={() => onToggle(id)} title={reason} aria-expanded={!collapsed}>
+        <span>{label}{hint ? <em>{hint}</em> : null}</span>
+        <span className="editor-group-mark" aria-hidden="true">{collapsed ? '+' : '\u2212'}</span>
+      </button>
+      {/* Controls that belong to the whole group rather than to one setting in it, so a reader does
+          not have to find the same switch twice. Kept in the heading rather than in a row of its own:
+          a row that governs everything under it should BE the heading of everything under it. */}
+      {actions ? <div className="editor-group-actions">{actions}</div> : null}
+    </div>
+    {collapsed ? null : <div className="editor-group-body">{children}</div>}
   </section>
 )
+
+/**
+ * The explanation of a setting, behind a mark rather than in the way.
+ *
+ * These paragraphs were always on screen, and there are enough of them that the settings they
+ * explain had become the minority of the sidebar. The mark reveals the same words on hover, on
+ * focus and on a click, so the explanation is one gesture away rather than one paragraph closer.
+ */
+const EditorInfo: React.FC<{ text: string }> = ({ text }) => {
+  const [open, setOpen] = useState(false)
+  return <span className="editor-info">
+    <button
+      type="button"
+      className="editor-info-mark"
+      aria-label="What this setting does"
+      aria-expanded={open}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      onClick={() => setOpen(true)}
+    >i</button>
+    {open ? <span className="editor-info-pop" role="tooltip">{text}</span> : null}
+  </span>
+}
 
 /**
  * Reports what a media element was handed, and whether it failed on it.
@@ -231,19 +272,20 @@ export const EditJobApp: React.FC = () => {
   /**
    * Whether the INSETS and OFFSET fields read as per cent of the output frame or as pixels of it.
    *
-   * Each has its own switch rather than sharing one, because they are read at different moments: a
-   * margin is a size one thinks about in pixels of the frame, and a position is usually "a tenth to
-   * the right". Deciding the unit of one should not silently change how the other reads.
+   * ONE switch for both, because they are two halves of one answer: what box the picture is given and
+   * where it sits in the frame are read together, and a reader who thinks in pixels of the frame
+   * thinks in pixels of it for both. Two switches meant finding the same control twice.
    */
-  const [insetUnit, setInsetUnit] = useState<'%' | 'px'>('%')
-  const [offsetUnit, setOffsetUnit] = useState<'%' | 'px'>('%')
+  const [framingUnit, setFramingUnit] = useState<'%' | 'px'>('%')
   /**
    * Which sidebar groups are folded away, from the settings.
    *
-   * A group is open unless it is named here, so a new group arrives visible and nothing is hidden
-   * from a reader who has never folded anything.
+   * A group is open unless it is named here, so a group added later arrives visible and nothing is
+   * hidden from a reader who has never folded anything — except FRAMING, which starts folded because
+   * it is the advanced one: it is per clip rather than per job, and a job with one clip rarely needs
+   * it. Once the settings have been written the list is the list, that default included.
    */
-  const collapsedSections = settings?.collapsedSections ?? []
+  const collapsedSections = settings?.collapsedSections ?? ['framing']
   const toggleSection = (id: string) => {
     const next = collapsedSections.includes(id)
       ? collapsedSections.filter((name) => name !== id)
@@ -1365,6 +1407,22 @@ export const EditJobApp: React.FC = () => {
       },
     })
   }
+  /**
+   * Puts the margin and the position back together, in one write so one undo takes all of it.
+   *
+   * Both are framing decisions and the section gives them one reset: a margin and a position are the
+   * pair of things a reader means by "put this clip back where it started", and unpicking one of them
+   * while leaving the other moved is not a reset. A clip left carrying nothing is left with no record
+   * at all, which is the same terms the fit menu works on.
+   */
+  const resetFraming = () => {
+    if (!activeFitKey) return
+    const next = { ...(latest().sourceFit ?? {}) }
+    const mode = activeFit?.mode ?? 'contain'
+    if (mode === 'contain') delete next[activeFitKey]
+    else next[activeFitKey] = { mode, offset: { x: 0, y: 0 } }
+    updateDraft({ sourceFit: Object.keys(next).length ? next : undefined })
+  }
   const setBoundaryTransition = (index: number, type: TransitionType, duration = 0.5) => {
     const cut = cuts.find((candidate) => candidate.index === index)
     if (!cut) return
@@ -1987,6 +2045,8 @@ export const EditJobApp: React.FC = () => {
    * as a pair, which is how such a record turns into one of these.
    */
   const pictureOffset = placement && outputFrame ? fitOffsetWithin(activeFit, placement.size, outputFrame) : DEFAULT_FIT_OFFSET
+  /** Whether the section's one reset has anything to put back, across both of its controls. */
+  const framingMoved = hasInsets(activeInsets) || pictureOffset.x !== 0 || pictureOffset.y !== 0
   /**
    * The inner box the insets leave, in the monitor's own pixels.
    *
@@ -2604,7 +2664,16 @@ export const EditJobApp: React.FC = () => {
               </div>
             </div>
             </EditorGroup>
-            <EditorGroup id="framing" label="FRAMING" hint="HOW EACH CLIP SITS" reason="What each clip is framed with: what part of its source is kept, the margin it leaves, and where the picture is placed inside the frame." collapsed={collapsedSections.includes('framing')} onToggle={toggleSection}>
+            <EditorGroup id="framing" label="FRAMING" hint="HOW EACH CLIP SITS" reason="What each clip is framed with: what part of its source is kept, the margin it leaves, and where the picture is placed inside the frame. Starts folded because it is per clip rather than per job." collapsed={collapsedSections.includes('framing')} onToggle={toggleSection} actions={<>
+              {/* One unit switch and one reset for the section rather than one of each per control: the
+                  margins and the position are two halves of one answer, both read in the output frame's
+                  own terms, and asking a reader to set the same two switches twice was noise. */}
+              <div className="unit-toggle">
+                <button className={framingUnit === '%' ? 'is-on' : ''} onClick={() => setFramingUnit('%')} title="Per cent of the output frame">%</button>
+                <button className={framingUnit === 'px' ? 'is-on' : ''} disabled={!outputFrame} onClick={() => setFramingUnit('px')} title={outputFrame ? 'Pixels of the output frame' : 'THE OUTPUT FRAME IS NOT KNOWN YET.'}>px</button>
+              </div>
+              <button className="exact-icon" disabled={!activeFitKey || !framingMoved} onClick={resetFraming} title="Take the margins away and centre the picture" aria-label="Take the margins away and centre the picture"><RotateCcw size={12} /></button>
+            </>}>
             <div className="editor-subsection">
               <EditorToggle
                 label="CROP SOURCE VIDEO"
@@ -2672,31 +2741,20 @@ export const EditJobApp: React.FC = () => {
                 <div className="editor-note">&gt; THE SHAPE LIST CENTRES A CROP ON A SHAPE; FREEFORM HOLDS NO SHAPE AT ALL, SO A CORNER FOLLOWS THE POINTER ON BOTH AXES AND THE REGION KEEPS ITS OWN. A CROP IS OF THE SOURCE, SO A CHANGE OF OUTPUT SIZE OR SHAPE NEVER INVALIDATES IT; IT IS TAKEN BEFORE ANY SCALING, SO CROPPING TO A SHAPE IS A CROP THEN A FIT. DRAG THE EDGES ON THE PREVIEW, OR SET THE FOUR FIGURES HERE.{lockRatio ? ' WITH THE LOCK ON, EVERY EDIT HOLDS THE OUTPUT\u2019S SHAPE.' : ''}</div>
               </>}
             </div>
-            {/* The margins this clip leaves at the edges of the output. They are not a position and not
-                a crop: a crop decides what part of the SOURCE is kept and this decides how much of the
-                OUTPUT the clip is not given, so it survives a change of resolution or shape exactly as
-                the crop does. The four figures are per cent of the output frame, which is why they mean
-                the same at any resolution. */}
-            {/* A div rather than the EditorField label, because the row holds buttons: a button inside
-                a label also activates the label's own control, so the unit switch would steal focus from
-                the field beside it. The exact-size row is built this way for the same reason. */}
-            <div className="editor-field" title="The margin this clip leaves around itself: the box its fit scales it into. The picture is centred in the box, and the OFFSET below then slides it from there. 0 everywhere is the whole frame, which is what the clip gets until it is inset.">
-              <span>INSETS · L / T / R / B<em>{insetUnit === 'px' ? 'PIXELS OF THE OUTPUT FRAME' : '% OF THE OUTPUT FRAME'}</em></span>
-              <div className="sub-head">
-                <div className="unit-toggle">
-                  <button className={insetUnit === '%' ? 'is-on' : ''} onClick={() => setInsetUnit('%')} title="Per cent of the output frame">%</button>
-                  <button className={insetUnit === 'px' ? 'is-on' : ''} disabled={!outputFrame} onClick={() => setInsetUnit('px')} title={outputFrame ? 'Pixels of the output frame' : 'THE OUTPUT FRAME IS NOT KNOWN YET.'}>px</button>
-                </div>
-                <button className="exact-icon" disabled={!hasInsets(activeInsets)} onClick={() => setInsets({ l: 0, t: 0, r: 0, b: 0 })} title="Take all four margins away" aria-label="Take all four margins away"><RotateCcw size={12} /></button>
-              </div>
-              <div className="crop-row">
-                {(['l', 't', 'r', 'b'] as const).map((edge) => {
-                  // The two sides of one axis are measured along the same one, which is what makes a
-                  // figure in pixels comparable between them.
+            {/* The margins this clip leaves at the edges of the output, and where the picture sits inside
+                them. Two controls, one answer, so they share the section's unit switch and its one
+                reset rather than carrying a copy of each — see the FRAMING heading above. */}
+            <div className="editor-field">
+              <span><span className="editor-label">INSETS<EditorInfo text={INSETS_HELP} /></span></span>
+              {/* A box rather than a row: each field sits where the edge it moves is. T above, the two
+                  sides flanking, B below — the shape a dev-tools margin editor uses, and the shape of
+                  the thing being edited. */}
+              <div className="inset-box">
+                {(['t', 'l', 'r', 'b'] as const).map((edge) => {
                   const span = outputFrame ? (edge === 'l' || edge === 'r' ? outputFrame.width : outputFrame.height) : 0
-                  const inPixels = insetUnit === 'px' && span > 0
+                  const inPixels = framingUnit === 'px' && span > 0
                   return (
-                    <label key={edge} className="mini-field"><span>{edge.toUpperCase()}</span>
+                    <label key={edge} className={`mini-field is-${edge}`}><span>{edge.toUpperCase()}</span>
                       <NumberField
                         step={1}
                         className="editor-input"
@@ -2707,36 +2765,26 @@ export const EditJobApp: React.FC = () => {
                     </label>
                   )
                 })}
+                <span className="inset-box-core" aria-hidden="true" />
               </div>
             </div>
-            <div className="editor-note">&gt; A MARGIN SHRINKS THE BOX THE CLIP IS FITTED INTO, SO THE PICTURE GETS SMALLER AND THE OUTPUT'S OWN BACKGROUND SHOWS IN THE MARGIN. THE PICTURE KEEPS ITS SHAPE EITHER WAY. AN INSET AND THE OFFSET ARE INDEPENDENT: THE INSET SETS THE SIZE OF THE BOX, AND THE OFFSET BELOW SLIDES THE PICTURE IN THE FRAME.{hasInsets(activeInsets) ? '' : ' ALL FOUR ARE ZERO, SO THIS CLIP IS USING THE WHOLE FRAME.'}</div>
             <div className="editor-divider" aria-hidden="true" />
-            {/* Where the picture sits on the canvas, as a pair of figures. Two fields rather than one
-                slider, because a position is two numbers and a bar with a middle would say the middle
-                is special; the middle is only where the picture STARTS. Nothing is bounded: X and Y go
-                as far in either direction as they are asked to, and past the canvas the background
-                shows, which is what a position past the edge looks like. */}
-            <div className="editor-field" title="Where the picture sits on the output canvas. 0 and 0 is centred; the figures may be negative, and may be far enough to take the picture clear of the frame, where the background shows. The monitor’s dragger writes the same two figures.">
-              <span>OFFSET · X / Y<em>{offsetUnit === 'px' ? 'PIXELS OF THE OUTPUT FRAME' : '% OF THE OUTPUT FRAME'}</em></span>
-              <div className="sub-head">
-                <div className="unit-toggle">
-                  <button className={offsetUnit === '%' ? 'is-on' : ''} onClick={() => setOffsetUnit('%')} title="Per cent of the output frame">%</button>
-                  <button className={offsetUnit === 'px' ? 'is-on' : ''} disabled={!outputFrame} onClick={() => setOffsetUnit('px')} title={outputFrame ? 'Pixels of the output frame' : 'THE OUTPUT FRAME IS NOT KNOWN YET.'}>px</button>
-                </div>
-                <button className="exact-icon" disabled={pictureOffset.x === 0 && pictureOffset.y === 0} onClick={() => setFitOffset(0, 0)} title="Centre the picture again" aria-label="Centre the picture again"><RotateCcw size={12} /></button>
-              </div>
-              <div className="offset-row">
-                {(['x', 'y'] as const).map((axis) => {
+            <div className="editor-field">
+              <span><span className="editor-label">OFFSET<EditorInfo text={OFFSET_HELP} /></span></span>
+              {/* A cross rather than two boxes: X reads along the horizontal and Y up the vertical, so
+                  the pair says which way each figure moves the picture without a word of explanation. */}
+              <div className="offset-cross">
+                {(['y', 'x'] as const).map((axis) => {
                   const span = outputFrame ? (axis === 'x' ? outputFrame.width : outputFrame.height) : 0
-                  const inPixels = offsetUnit === 'px' && span > 0
+                  const inPixels = framingUnit === 'px' && span > 0
                   const value = axis === 'x' ? pictureOffset.x : pictureOffset.y
                   // The setter works in the frame's own fractions, so a pixel entry is divided by the
                   // axis it was read along; the figure NOT being edited is carried through as a
-                  // fraction too, whatever unit it happens to be displayed in.
+                  // fraction too, whatever unit it happens to be shown in.
                   const keep = Math.round((axis === 'x' ? pictureOffset.y : pictureOffset.x) * 100)
                   const next = (raw: number) => (inPixels ? (raw / span) * 100 : raw)
                   return (
-                    <label key={axis} className="mini-field"><span>{axis.toUpperCase()}</span>
+                    <label key={axis} className={`mini-field is-${axis}`}><span>{axis.toUpperCase()}</span>
                       <NumberField
                         step={1}
                         className="editor-input"
@@ -2747,20 +2795,25 @@ export const EditJobApp: React.FC = () => {
                     </label>
                   )
                 })}
+                <span className="offset-cross-core" aria-hidden="true">+</span>
               </div>
             </div>
-            <div className="editor-note">&gt; 0 / 0 CENTRES THE PICTURE, WHICH IS WHERE IT SITS UNTIL IT IS MOVED. THE FIGURES ARE THE OUTPUT FRAME'S OWN, SO THEY MEAN THE SAME AT ANY RESOLUTION, AND THEY ARE NOT HELD IN: A PICTURE MOVED PAST AN EDGE IS CLIPPED BY THE FRAME, AND A PICTURE THAT LEAVES A GAP IS FILLED WITH THE BACKGROUND. DRAG IT ON THE PREVIEW, OR SET THE TWO FIGURES HERE.</div>
             </EditorGroup>
             <EditorGroup id="encoding" label="ENCODING" hint="RATE AND QUALITY" reason="How the output is encoded: the frame rate it is written at, and the bitrate it is written to." collapsed={collapsedSections.includes('encoding')} onToggle={toggleSection}>
-            <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={String(defaultFps)} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
-            <EditorField label="QUALITY" hint="BITRATE, E.G. 8M" reason={videoReason}><input type="text" className="editor-input" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} /></EditorField>
-            <div className="editor-note">&gt; BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.</div>
+            {/* The two micro-labels this section carried are in the fields now: what a blank FPS means,
+                and what a quality figure looks like. A label beside a field is read as a title for it;
+                a placeholder is read as what to put in it. */}
+            <EditorField label="FPS" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={`SOURCE \u00b7 ${defaultFps}`} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
+            <div className="editor-field">
+              <span><span className="editor-label">QUALITY<EditorInfo text={QUALITY_HELP} /></span></span>
+              <input type="text" className="editor-input" aria-label="Video bitrate" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE \u00b7 E.G. 8M" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} />
+            </div>
             </EditorGroup>
           </>}
 
           {tab === 'AUDIO' && <>
             <EditorField label="CODEC" reason={audioReason}><select value={draft.preset.audioCodec} disabled={audioDisabled} onChange={(event) => updatePreset({ audioCodec: event.target.value as EncodingPreset['audioCodec'] })}>{AUDIO_CODECS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
-            <EditorField label="BITRATE" hint="E.G. 320K" reason={audioReason}><input type="text" className="editor-input" value={draft.preset.audioBitrate ?? ''} placeholder="SOURCE" disabled={audioDisabled || draft.preset.audioCodec === 'copy' || draft.preset.audioCodec === 'pcm'} onChange={(event) => updatePreset({ audioBitrate: event.target.value.trim() || undefined })} /></EditorField>
+            <EditorField label="BITRATE" reason={audioReason}><input type="text" className="editor-input" value={draft.preset.audioBitrate ?? ''} placeholder="SOURCE \u00b7 E.G. 320K" disabled={audioDisabled || draft.preset.audioCodec === 'copy' || draft.preset.audioCodec === 'pcm'} onChange={(event) => updatePreset({ audioBitrate: event.target.value.trim() || undefined })} /></EditorField>
             <EditorField label="SAMPLE RATE" reason={audioReason}><select value={draft.preset.audioSampleRate ?? 0} disabled={audioDisabled} onChange={(event) => updatePreset({ audioSampleRate: Number(event.target.value) || undefined })}><option value={0}>SOURCE</option><option value={44100}>44.1 KHZ</option><option value={48000}>48 KHZ</option><option value={96000}>96 KHZ</option></select></EditorField>
             <EditorRow label="TRACKS" value={draft.additionalAudioTracks?.length ? `${draft.additionalAudioTracks.length + 1} (EMBEDDED + ${draft.additionalAudioTracks.length})` : '1 EMBEDDED'} />
             <div className="editor-note">&gt; ADDING AND REORDERING TRACKS ARRIVES WITH THE TRACK EDITOR.</div>

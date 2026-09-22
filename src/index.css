@@ -259,16 +259,26 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    changes nothing about where the settings sit, and the whole heading is the target rather than a
    caret beside it. */
 .editor-group { display: grid; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); }
-.editor-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0; color: var(--ui-muted); background: transparent; border: 0; font-size: 10px; letter-spacing: .08em; text-align: left; cursor: pointer; }
+.editor-group-head { display: flex; align-items: center; gap: 8px; }
+.editor-group-toggle { flex: 1 1 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0; color: var(--ui-muted); background: transparent; border: 0; font-size: 10px; letter-spacing: .08em; text-align: left; cursor: pointer; }
 .editor-group-head:hover, .editor-group-head:hover em { color: var(--ui-accent); }
-.editor-group-head em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: .06em; }
+/* The subtitle is a tail on the heading rather than a second heading: smaller, dimmer, untracked, and
+   never wrapped, so the row reads as one thing however long the name is. */
+.editor-group-head em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: 0; opacity: .72; margin-left: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .editor-group-mark { flex: 0 0 auto; color: var(--ui-border); font-size: 12px; line-height: 1; }
+/* The controls that belong to a whole group, in its heading rather than in a row of their own. */
+.editor-group-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
+/* Sized to the height of a heading's own line rather than to a comfortable button, so a heading that
+   carries controls is not taller than one that does not: a row of headings is read as a list, and one
+   of them being a line taller reads as a different kind of thing. */
+.editor-group-actions .unit-toggle button { height: 15px; min-width: 17px; padding: 0 3px; font-size: 7px; }
+.editor-group-actions .exact-icon { height: 15px; width: 17px; padding: 0; }
 .editor-group-body { display: grid; gap: 0; }
 /* The first field of a body carries no rule of its own: the heading is what separates it from what
    came before, so a second line under it would be one line too many. */
 .editor-group-body > .editor-field:first-child, .editor-group-body > .editor-subsection:first-child { border-top: 0; }
 .editor-group-body > .editor-field:first-child { padding-top: 6px; }
-.editor-field > span { display: flex; justify-content: space-between; gap: 8px; }
+.editor-field > span { display: flex; justify-content: space-between; gap: 8px; position: relative; }
 .editor-field em, .crop-head em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: .06em; }
 .editor-field select, .editor-field input, .editor-group select, .editor-group input, .crop-head select { width: 100%; margin: 0; padding: 7px 8px; color: var(--ui-foreground); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; }
 .editor-field select:focus, .editor-field input:focus, .editor-group select:focus, .editor-group input:focus, .crop-head select:focus { border-color: var(--ui-accent); }
@@ -345,15 +355,33 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-confirm-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .crop-confirm-actions button { padding: 6px 9px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
 .crop-confirm-actions button.is-danger { color: var(--ui-error); border-color: var(--ui-error); }
-/* The picture's position. Two figures of the frame's own, side by side. */
-.offset-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 6px; }
-.offset-row input.editor-input { padding: 5px 4px; text-align: center; }
+/* The picture's position, in the section's own unit. */
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
-/* A sub-section's own head row: what the figures below are measured in, and the one action that puts
-   them back where they started. The unit switch and the reset are the two controls the crop and the
-   exact size already use, so a reader meets them once and knows them everywhere. */
-.sub-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.sub-head .exact-icon { height: 30px; }
+/* A label and the mark that explains it, as one flex item so the row's own spacing leaves them
+   together — the field row spaces its children apart, which would throw the mark to the far edge. */
+.editor-label { display: flex; align-items: center; gap: 5px; }
+/* The explanation of a setting, behind a mark. Anchored to the ROW rather than to the mark: the
+   sidebar clips whatever passes its right edge, and the mark sits wherever its label ends, so a
+   popover hung off the mark leaves the sidebar on one side or the other as soon as a label is long.
+   Spanning the row it is drawn under cannot go wrong whichever label it belongs to. */
+.editor-info { display: inline-flex; }
+.editor-info-mark { width: 12px; height: 12px; padding: 0; display: grid; place-items: center; color: var(--ui-border); background: transparent; border: 1px solid var(--ui-border); border-radius: 50%; font-family: inherit; font-size: 8px; line-height: 1; cursor: help; }
+.editor-info-mark:hover, .editor-info-mark:focus { color: var(--ui-accent); border-color: var(--ui-accent); }
+.editor-info-pop { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 8; padding: 7px 8px; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-accent); font-size: 9px; letter-spacing: .04em; line-height: 1.55; text-align: left; }
+/* The INSETS as a box, each field where the edge it moves is: T above, the sides flanking, B below.
+   The same shape a dev-tools margin editor uses, and the shape of the thing being edited. */
+.inset-box { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; align-items: center; }
+.inset-box .is-t { grid-column: 2; grid-row: 1; }
+.inset-box .is-l { grid-column: 1; grid-row: 2; }
+.inset-box .is-r { grid-column: 3; grid-row: 2; }
+.inset-box .is-b { grid-column: 2; grid-row: 3; }
+.inset-box-core { grid-column: 2; grid-row: 2; justify-self: center; align-self: center; width: 9px; height: 9px; border: 1px dotted var(--ui-border); }
+/* The OFFSET as a cross: X reads across the row it sits on and Y up the column it sits in, so the pair
+   says which way each figure moves the picture without a word of explanation. */
+.offset-cross { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; align-items: center; }
+.offset-cross .is-y { grid-column: 2; grid-row: 1; }
+.offset-cross .is-x { grid-column: 1; grid-row: 2; }
+.offset-cross-core { grid-column: 2; grid-row: 2; justify-self: center; align-self: center; color: var(--ui-border); font-size: 10px; line-height: 1; }
 /* A rule between one group of settings and the next, for the groups that have to read as separate
    rather than as one long run of fields. */
 .editor-divider { border-top: 1px dotted var(--ui-border-dim); }
