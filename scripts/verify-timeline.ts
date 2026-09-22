@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, edgeFade, firstVisualSource, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask } from '../src/lib/sourceRemoval'
 
@@ -1180,6 +1180,39 @@ console.log('\n== the timeline scale ==')
   check('a notch magnifies in', zoomedBy(2, 1) > 2, true)
   check('and out', zoomedBy(2, -1) < 2, true)
   check('and neither can leave the range', [zoomedBy(ZOOM_MAX, 1), zoomedBy(ZOOM_MIN, -1)], [ZOOM_MAX, ZOOM_MIN])
+}
+
+console.log('\n== what a clip says it is ==')
+{
+  // The figures the request gave, spelled the way it asked for them: the whole source, what the output
+  // takes from it, and the range it takes it from. The same shape for a picture and for a track,
+  // because it is the same question — a track's frames are counted at the project's rate, which is the
+  // only rate a track has and the rate the output is written at.
+  const frames = { fps: 30, mode: 'framestamp' as const }
+  check('a trimmed clip in frames',
+    clipSummary({ ...frames, totalSeconds: 4306 / 30, usedSeconds: 2160 / 30, sourceIn: 0, trimmed: true }),
+    '4306 frames at 30 fps \u2022 2160 trimmed frames [0000-2160]')
+  check('an untrimmed clip in frames',
+    clipSummary({ ...frames, totalSeconds: 4306 / 30, usedSeconds: 4306 / 30, sourceIn: 0, trimmed: false }),
+    '4306 frames at 30 fps \u2022 source')
+  check('a trimmed clip in timecodes',
+    clipSummary({ totalSeconds: 4306 / 30, usedSeconds: 72, sourceIn: 0, trimmed: true, fps: 30, mode: 'timestamp' }),
+    '00:02:23.16 at 30 fps \u2022 00:01:12.00 trimmed [00:00:00.00-00:01:12.00]')
+  check('an untrimmed clip in timecodes',
+    clipSummary({ totalSeconds: 4306 / 30, usedSeconds: 4306 / 30, sourceIn: 0, trimmed: false, fps: 30, mode: 'timestamp' }),
+    '00:02:23.16 at 30 fps \u2022 source')
+  check('a track is counted at the project rate',
+    clipSummary({ ...frames, totalSeconds: 90, usedSeconds: 90, sourceIn: 0, trimmed: false }),
+    '2700 frames at 30 fps \u2022 source')
+  check('and a trimmed track says what was taken',
+    clipSummary({ ...frames, totalSeconds: 90, usedSeconds: 30, sourceIn: 60, trimmed: true }),
+    '2700 frames at 30 fps \u2022 900 trimmed frames [1800-2700]')
+  check('and reads as time when that is the setting',
+    clipSummary({ totalSeconds: 90, usedSeconds: 30, sourceIn: 60, trimmed: true, fps: 30, mode: 'timestamp' }),
+    '00:01:30.00 at 30 fps \u2022 00:00:30.00 trimmed [00:01:00.00-00:01:30.00]')
+  // The playhead's own line: the unit said once, and the two figures joined by "of".
+  check('the playhead line in frames', stampPair(0, 123456 / 30, 30, 'framestamp'), 'FRAME 000000 of 123456')
+  check('the playhead line in timecodes', stampPair(1, 60, 30, 'timestamp'), '00:00:01.00 of 00:01:00.00')
 }
 
 console.log('\n== the waveform ==')

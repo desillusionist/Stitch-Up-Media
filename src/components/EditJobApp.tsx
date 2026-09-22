@@ -6,7 +6,7 @@ import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
-import { buildTimeline, canApplyClipFit, clipIndexOf, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipIndexOf, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
@@ -300,7 +300,18 @@ export const EditJobApp: React.FC = () => {
    * only name the job's first video — and the inspector then described a file the user had not asked
    * about.
    */
-  const [inspected, setInspected] = useState<{ laneId: string; segmentIndex: number } | null>(null)
+  /**
+   * The clip the editor is pointed at: what a click on the timeline selects, and what the inspector
+   * describes.
+   *
+   * Not an index into `sourcePaths`: an audio track is not one of those, so a menu opened on one could
+   * only name the job's first video — and the inspector then described a file the user had not asked
+   * about. It is a SELECTION rather than the moment the inspector was opened, so changing what is
+   * selected changes what is described.
+   */
+  const [selected, setSelected] = useState<{ laneId: string; segmentIndex: number } | null>(null)
+  /** Whether the MEDIA INFO inspector is showing. It describes whatever is selected. */
+  const [inspectorOpen, setInspectorOpen] = useState(false)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
@@ -1481,7 +1492,7 @@ export const EditJobApp: React.FC = () => {
   // MEDIA INFO reads the source under the playhead, which is the one the inspector was
   // opened on. A source with an intrinsic rate shows it; a still or a sequence, whose
   // rate is a choice rather than a fact about the file, can have it changed here.
-  const inspectedSegment = inspected ? model?.lanes.find((lane) => lane.id === inspected.laneId)?.segments[inspected.segmentIndex] : undefined
+  const inspectedSegment = selected ? model?.lanes.find((lane) => lane.id === selected.laneId)?.segments[selected.segmentIndex] : undefined
   const inspectedSource = inspectedSegment?.sourcePath
   const inspectedSequence = inspectedSource ? sequenceFor(draft, inspectedSource) : undefined
   const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
@@ -1623,7 +1634,9 @@ export const EditJobApp: React.FC = () => {
 
   const audioLanes = model.lanes.filter((lane) => !lane.embedded && lane.segments.length > 0)
   const playable = model.duration > 0
-  const stamp = (seconds: number) => settings?.timestampDisplayMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
+  const stamp = (seconds: number) => timestampMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
+  /** The unit the window is showing lengths in, which is a setting rather than a fact about any clip. */
+  const timestampMode: 'framestamp' | 'timestamp' = settings?.timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp'
   const segmentDetail = (segment: TimelineSegment) => {
     const parts = [stamp(segment.duration)]
     if (segment.trimmed) parts.push('TRIMMED')
@@ -1639,12 +1652,16 @@ export const EditJobApp: React.FC = () => {
     const sequence = draft ? sequenceFor(draft, segment.sourcePath) : undefined
     return sequence ? sequenceLabel(sequence) : sourceName(segment.sourcePath)
   }
-  const clipTitle = (segment: TimelineSegment) => {
-    const kind = segment.sequence
-      ? `image sequence, ${segment.sequence.frames} frames at ${segment.sequence.fps} fps`
-      : segment.still ? 'still image' : 'media'
-    return `${segmentLabel(segment)} — ${kind}, ${stamp(segment.duration)}${segment.trimmed ? ', trimmed' : ''}`
-  }
+  const clipTitle = (segment: TimelineSegment) => clipSummary({
+    // The SOURCE's whole length, which is what the clip is a piece of — the sequence's own length for
+    // an image sequence, the still's chosen length for a still, and the probe's for anything else.
+    totalSeconds: sourceDuration(draft, segment.sourcePath, undefined, resolveTiming),
+    fps: sourceFps(draft, segment.sourcePath, undefined, resolveTiming),
+    usedSeconds: segment.duration,
+    sourceIn: segment.sourceIn,
+    trimmed: segment.trimmed,
+    mode: timestampMode,
+  })
   /**
    * Where the right-click menu was asked for, and where it ended up.
    *
@@ -1659,6 +1676,9 @@ export const EditJobApp: React.FC = () => {
     event.stopPropagation()
     const point = menuPoint(event)
     const mainIndex = laneId === model.lanes[0]?.id ? index : null
+    // A right-click SELECTS as well as asks: both items in the menu describe this clip, and the
+    // inspector goes on describing it until something else is selected.
+    setSelected({ laneId, segmentIndex: index })
     // The clip's own entry in the job, which is what a trim or a fit is keyed by.
     const clipIndex = mainIndex ?? Math.max(0, draft.sourcePaths.indexOf(segment.sourcePath))
     setTimelineMenu({
@@ -2523,7 +2543,7 @@ export const EditJobApp: React.FC = () => {
             <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 ? ' is-fast' : ''}`}>
               {playback.shuttleRate > 0 ? `\u25b6 ${playback.shuttleRate}\u00d7` : playback.shuttleRate < 0 ? `\u25c0 ${Math.abs(playback.shuttleRate)}\u00d7` : playback.playing ? '\u25b6 1\u00d7' : '\u275a\u275a'}
             </span>
-            <span>{stamp(playback.position)} / {stamp(duration)}</span>
+            <span>{stampPair(playback.position, duration, fps, timestampMode)}</span>
             <input
               type="range"
               min={0}
@@ -2564,9 +2584,9 @@ export const EditJobApp: React.FC = () => {
               <span>%</span>
             </label>}
           </div>
-          {inspected != null && inspectedSource && (
+          {inspectorOpen && inspectedSource && (
             <div className="media-inspector">
-              <button className="inspector-close" onClick={() => setInspected(null)} aria-label="Close the media info inspector" title="Close">&times;</button>
+              <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the media info inspector" title="Close">&times;</button>
               <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
               <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
               <EditorRow
@@ -2580,17 +2600,30 @@ export const EditJobApp: React.FC = () => {
                   </select>
                   : <input className="editor-input" type="text" value={`${inspectedFps} FPS`} readOnly />
               }</EditorField>
-              {inspectedSegment?.still && (
-                <EditorField label="CLIP LENGTH" hint="THIS IMAGE">{
-                  <NumberField
-                    className="editor-input"
-                    min={0.1}
-                    step={0.1}
-                    value={stillSecondsFor(draft, inspectedSource)}
-                    onValue={(seconds) => { if (seconds > 0) setSourceTiming(inspectedSource, { seconds }) }}
-                  />
+              {inspectedSegment?.still && (() => {
+                // The length is a CHOICE for a still, so it is a figure the window is asked for — and the
+                // window is showing lengths in frames or in time, so the field asks in whichever it is
+                // showing. What is stored is seconds either way; only the reading of it changes.
+                const seconds = stillSecondsFor(draft, inspectedSource)
+                const rate = Math.max(1, inspectedFps)
+                return <EditorField label="CLIP LENGTH" hint={timestampMode === 'framestamp' ? 'IN FRAMES' : 'IN SECONDS'}>{
+                  timestampMode === 'framestamp'
+                    ? <NumberField
+                      className="editor-input"
+                      min={1}
+                      step={1}
+                      value={Math.round(seconds * rate)}
+                      onValue={(frames) => { if (frames > 0) setSourceTiming(inspectedSource, { seconds: frames / rate }) }}
+                    />
+                    : <NumberField
+                      className="editor-input"
+                      min={0.1}
+                      step={0.1}
+                      value={seconds}
+                      onValue={(entered) => { if (entered > 0) setSourceTiming(inspectedSource, { seconds: entered }) }}
+                    />
                 }</EditorField>
-              )}
+              })()}
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
@@ -2656,6 +2689,7 @@ export const EditJobApp: React.FC = () => {
                         className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
                         style={{ width: `${laneWidthFor(segment.duration, zoom)}px` }}
                         title={clipTitle(segment)}
+                        onClick={() => setSelected({ laneId: lane.id, segmentIndex: index })}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
                       >
                         {/* The cells share the lane exactly, so there is no gap at the end, and each
@@ -3036,7 +3070,7 @@ export const EditJobApp: React.FC = () => {
         </div>
       </> : <>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); void openNativePreview({ sourcePath: target.sourcePath, sourceIndex: target.mainIndex ?? 0 }) }}>QUICK LOOK...</button>
-        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setInspected({ laneId: target.laneId, segmentIndex: target.segmentIndex }) }}>MEDIA INFO</button>
+        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setSelected({ laneId: target.laneId, segmentIndex: target.segmentIndex }); setInspectorOpen(true) }}>MEDIA INFO</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
           const blocked = timelineMenu.fitReason

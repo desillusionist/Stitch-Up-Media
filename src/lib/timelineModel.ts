@@ -403,6 +403,62 @@ export const timecode = (seconds: number, fps: number) => {
 export const frameStamp = (seconds: number, fps: number) => `FRAME ${String(Math.max(0, Math.round(seconds * fps))).padStart(6, '0')}`
 
 /**
+ * Where the playhead is and how long the output is, as one line.
+ *
+ * "of" rather than a slash, and the frame stamp's own word said once rather than twice: a reader
+ * comparing the two numbers wants the numbers, and a unit repeated on both sides of the join is a unit
+ * read twice. A framestamp is therefore spelled out here rather than by joining two stamps.
+ */
+export const stampPair = (position: number, total: number, fps: number, mode: 'framestamp' | 'timestamp'): string => {
+  const rate = fps > 0 ? Math.round(fps) : 25
+  const frames = (seconds: number) => String(Math.max(0, Math.round(seconds * rate))).padStart(6, '0')
+  return mode === 'framestamp'
+    ? `FRAME ${frames(position)} of ${frames(total)}`
+    : `${timecode(position, rate)} of ${timecode(total, rate)}`
+}
+
+/** What a clip's tooltip needs to say, in the terms the window is showing lengths in. */
+export interface ClipSummaryInput {
+  /** The whole source, which is what the clip is a piece of. */
+  totalSeconds: number
+  /** The rate the clip is measured at: the source's own, or the project's for a track. */
+  fps: number
+  /** How much of the source the output uses. */
+  usedSeconds: number
+  /** Where in the source that piece starts. */
+  sourceIn: number
+  /** Whether any of it was taken away, which is the difference between the two spellings. */
+  trimmed: boolean
+  mode: 'framestamp' | 'timestamp'
+}
+
+/**
+ * A clip in one line: what it is made of, and what the output takes from it.
+ *
+ * The same shape for a picture and a track, because it is the same question: how much of this source is
+ * there, and how much of it is being used. What differs is only the unit, and that is the window's own
+ * setting rather than a fact about the clip — a track measured in frames is counted at the project's
+ * rate, which is the only rate it has, and a track measured in timecodes is read as the time it is.
+ *
+ * A clip that uses all of its source says "source" rather than repeating the whole length twice, since
+ * the two figures would be the same figure.
+ */
+export const clipSummary = ({ totalSeconds, fps, usedSeconds, sourceIn, trimmed, mode }: ClipSummaryInput): string => {
+  const rate = fps > 0 ? Math.round(fps) : 25
+  const frames = (seconds: number) => String(Math.max(0, Math.round(seconds * rate)))
+  const stamp = (seconds: number) => (mode === 'framestamp' ? frames(seconds) : timecode(seconds, rate))
+  const whole = mode === 'framestamp' ? `${frames(totalSeconds)} frames` : timecode(totalSeconds, rate)
+  if (!trimmed) return `${whole} at ${rate} fps \u2022 source`
+  const used = mode === 'framestamp' ? `${frames(usedSeconds)} trimmed frames` : `${timecode(usedSeconds, rate)} trimmed`
+  // The range is padded to four digits in frames, because a range is read as a box of digits rather
+  // than as two numbers, and a ragged box is read twice.
+  const range = mode === 'framestamp'
+    ? `[${stamp(sourceIn).padStart(4, '0')}-${stamp(sourceIn + usedSeconds).padStart(4, '0')}]`
+    : `[${stamp(sourceIn)}-${stamp(sourceIn + usedSeconds)}]`
+  return `${whole} at ${rate} fps \u2022 ${used} ${range}`
+}
+
+/**
  * Draws the fades the encoder will actually render onto the clips they belong to,
  * using the one clamping rule, so a drawn ramp can never disagree with the output.
  */
