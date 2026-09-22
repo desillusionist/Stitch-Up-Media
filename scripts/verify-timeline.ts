@@ -1,7 +1,7 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
-import { dropPreviewsFor, previewKey, rememberedPreviewFor, resolveQuickLookRequest, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from '../src/lib/quickLookTarget'
+import { PREVIEW_FORMAT_VERSION, dropPreviewsFor, previewKey, rememberedPreviewFor, resolveQuickLookRequest, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey, stillPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
@@ -318,19 +318,23 @@ console.log('\n== a generated clip is keyed by what it was built with ==')
   check('a plain key is the source', previewKey('/seq/f_0001.png'), '/seq/f_0001.png')
   // A still's also carries the rate and length, so changing either misses the cache and
   // rebuilds instead of handing back footage at parameters the user replaced.
-  const at25 = previewKey('/frame.png', 'still:25:10')
-  const at30 = previewKey('/frame.png', 'still:30:10')
-  const longer = previewKey('/frame.png', 'still:25:20')
+  // A clip's key carries the FORMAT it was written in as well as the parameters it was written at, so
+  // a change to how one is encoded is a change of key: a job that has already been queued names the
+  // clip built the old way, and without the version it would go on playing it.
+  const at25 = stillPreviewKey('/frame.png', 25, 10)
+  const at30 = stillPreviewKey('/frame.png', 30, 10)
+  const longer = stillPreviewKey('/frame.png', 25, 20)
   check('a different rate is a different clip', at25 === at30, false)
   check('a different length is a different clip', at25 === longer, false)
   check('and both still name their source', [sourceOfPreviewKey(at25), sourceOfPreviewKey(at30)], ['/frame.png', '/frame.png'])
+  check('the key says which format the clip was written in', at25.includes(`v${PREVIEW_FORMAT_VERSION}`), true)
 
   // A sequence's clip carries its rate and frame count: a clip built at another rate is a
   // different length, so playing it would run the sequence at the wrong speed rather than
   // merely looking stale. This is what made every sequence play too fast.
-  const seqAt25 = previewKey('/seq/f_0001.png', 'seq:25:240')
-  const seqAt30 = previewKey('/seq/f_0001.png', 'seq:30:240')
-  const seqReframed = previewKey('/seq/f_0001.png', 'seq:30:300')
+  const seqAt25 = sequencePreviewKey('/seq/f_0001.png', 25, 240)
+  const seqAt30 = sequencePreviewKey('/seq/f_0001.png', 30, 240)
+  const seqReframed = sequencePreviewKey('/seq/f_0001.png', 30, 300)
   check('another rate is another sequence clip', seqAt25 === seqAt30, false)
   check('and so is another frame count', seqAt30 === seqReframed, false)
   check('a sequence clip still names its source', sourceOfPreviewKey(seqAt30), '/seq/f_0001.png')
@@ -1063,7 +1067,7 @@ console.log('\n== where a sequence picture is without asking ==')
   // clips are all built. The key carries the rate, so a clip built at another rate is not this
   // source's clip — it is a different length from the one the timeline expects.
   const frame = '/seq/f_0001.png'
-  const spec = (rate: number) => previewKey(frame, `seq:${rate}:240`)
+  const spec = (rate: number) => sequencePreviewKey(frame, rate, 240)
   const task = {
     id: 's', type: 'stitch', sourcePaths: [frame], outputDirectory: '/out', outputFilename: 'o.mov',
     preset: { id: 'p', name: 'P', container: 'mov', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },

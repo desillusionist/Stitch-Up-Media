@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, RotateCcw, Unlink, ZoomIn, ZoomOut } from 'lucide-react'
-import { AppSettings, EditJobPatch, EncodingPreset, Insets, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
+import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
@@ -421,6 +421,26 @@ export const EditJobApp: React.FC = () => {
   ])) : []
   const probeSignature = candidateSources.join('\u0000')
 
+  /**
+   * One probe per source per window, however many things ask for it.
+   *
+   * The window wants several facts about the same file — what it is made of, how long it is, and the
+   * shape a strip is laid out from — and each of those used to ask separately, so a still in a lane
+   * drawn as a filmstrip was read three times on the way in. The answers are facts about a file that
+   * does not change while a window is open, so a second ask waits on the first and shares its answer.
+   * What is still decided per asker is WHETHER to ask at all, which is where the cost of a probe is
+   * actually spent: the strips only want a shape for a lane showing one.
+   */
+  const probeCacheRef = useRef(new Map<string, Promise<MediaProbeInfo | undefined>>())
+  const probeSource = useCallback((sourcePath: string) => {
+    const cache = probeCacheRef.current
+    const existing = cache.get(sourcePath)
+    if (existing) return existing
+    const request = Promise.resolve(window.electronAPI?.probeMedia(sourcePath)).catch(() => undefined)
+    cache.set(sourcePath, request)
+    return request
+  }, [])
+
   // What each source is: how long it is, what rate it carries, and whether it has audio or a picture.
   //
   // ONE probe per source. The questions used to be asked by two effects — a length for a source without
@@ -445,7 +465,7 @@ export const EditJobApp: React.FC = () => {
     let cancelled = false
     void Promise.all(wanted.map(async (sourcePath) => {
       try {
-        return [sourcePath, await window.electronAPI?.probeMedia(sourcePath)] as const
+        return [sourcePath, await probeSource(sourcePath)] as const
       } catch {
         return [sourcePath, undefined] as const
       }
@@ -637,7 +657,7 @@ export const EditJobApp: React.FC = () => {
     missing.forEach((sourcePath) => probedPathsRef.current.add(`shape:${sourcePath}`))
     let cancelled = false
     void Promise.all(missing.map(async (sourcePath) => {
-      const info = await window.electronAPI?.probeMedia(sourcePath)
+      const info = await probeSource(sourcePath)
       const resolution = info?.videoStreams?.[0]?.resolution?.split('x').map(Number)
       // A source with no video stream has no shape to record. That is what stops a strip being laid
       // out for it at all — and with it, every frame being asked of a file that has none.

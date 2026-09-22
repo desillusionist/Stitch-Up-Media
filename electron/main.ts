@@ -452,12 +452,18 @@ app.whenReady().then(() => {
       // A still is whatever size it happens to be, and 4:2:0 output needs both
       // dimensions even. An odd source, 1195 wide say, used to fail the whole run,
       // which left the caller with no clip and a helper reading the image as video.
-      args.push('-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2')
+      args.push('-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p')
       // Named outright rather than left to the muxer's default, because this file is played by a
-      // <video> element in the EDIT JOB and a decoder is not a muxer: H.264 at 4:2:0 with the index at
-      // the front is what every Chromium build reads without argument, and the index at the front is
-      // what lets the monitor seek into it before it has finished loading.
+      // <video> element and a decoder is not a muxer: H.264 at 4:2:0 with the index at the front is
+      // what every Chromium build reads without argument, and the index at the front is what lets the
+      // monitor seek into it before it has finished loading.
       args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-r', String(rate))
+      // LIMITED RANGE, and this is the line that matters most for whether the clip plays at all. A
+      // frame out of a JPEG is full range, and `-pix_fmt yuv420p` — or a format filter — does not
+      // change that: ffmpeg names a full-range 4:2:0 frame yuvj420p, which IS yuv420p at the other
+      // range, and Chromium's decoder has no entry for that name. It reported an unsupported pixel
+      // format instead, so a still exported from a JPEG produced a clip nothing could play.
+      args.push('-color_range', 'tv')
       // The concat demuxer emits a frame past the last one, so a sequence's clip came
       // out longer than frameCount over rate and drifted from the timeline across it.
       // An explicit length pins it to exactly the frames the timeline expects.

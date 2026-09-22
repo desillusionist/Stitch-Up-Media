@@ -43,26 +43,45 @@ export const previewKey = (sourcePath: string, spec?: string): string =>
   spec ? `${sourcePath}${PREVIEW_SPEC}${spec}` : sourcePath
 
 /**
+ * The version of the format a generated clip is written in, and part of every key one is kept under.
+ *
+ * Bumped when the CONTENTS of a clip change for a reason its rate and its length do not show. A job
+ * that has already been queued still names the clip that was built the old way, and a key that does
+ * not carry the version goes on pointing at it forever — which for a clip a decoder cannot read means
+ * the error goes on being reported for a file nothing has any reason to rebuild.
+ *
+ * 2: a still exported from a JPEG was written as yuvj420p, because `-pix_fmt yuv420p` is a request the
+ *     encoder may take as meaning "full range", and yuvj420p IS yuv420p at full range. Chromium's
+ *     decoder has no entry for it, so such a clip did not play at all and said so as an unsupported
+ *     pixel format. Written at limited range now, and every clip written the old way is built again.
+ */
+export const PREVIEW_FORMAT_VERSION = 2
+
+/**
  * What identifies an image sequence's generated clip, at the rate it was built at.
  *
  * The frame count belongs in it as well as the rate, because the clip's LENGTH comes from the two
  * together: a clip built from a shorter sequence is a different length at the same rate, and playing
  * it would drift from the timeline rather than merely look stale.
  */
-const sequenceSpec = (rate: number, frameCount: number): string => `seq:${rate}:${frameCount}`
+const sequenceSpec = (rate: number, frameCount: number): string => `seq:v${PREVIEW_FORMAT_VERSION}:${rate}:${frameCount}`
+
+/** The same for a still's clip, whose length is a choice rather than a count of frames. */
+const stillSpec = (rate: number, seconds: number): string => `still:v${PREVIEW_FORMAT_VERSION}:${rate}:${seconds}`
 
 /**
- * The key an image sequence's generated clip is held under.
+ * The keys a generated clip is held under, for a sequence and for a still.
  *
- * The one place the sequence spec is spelled out. The queue files a clip when a sequence is imported
- * and the editor looks one up when it draws that clip, and while the two spelled the key separately
- * they disagreed: the queue wrote the bare source path while every reader asked for the rate and the
- * frame count along with it, so the lookup always missed. Nothing looked broken — the clip was on
- * disk and correct — but the editor fell back to building it, frame by frame, on every open, which is
- * what made opening a job with a long sequence in it as slow as importing it had been.
+ * The one place each spec is spelled out. The queue files a clip when a source is imported and the
+ * editor looks one up when it draws that clip, and while the two spelled the key separately they
+ * disagreed: the queue wrote the bare source path while every reader asked for the rate and the frame
+ * count with it, so the lookup always missed and every open rebuilt the whole sequence.
  */
 export const sequencePreviewKey = (sourcePath: string, rate: number, frameCount: number): string =>
   previewKey(sourcePath, sequenceSpec(rate, frameCount))
+
+export const stillPreviewKey = (sourcePath: string, rate: number, seconds: number): string =>
+  previewKey(sourcePath, stillSpec(rate, seconds))
 
 /** The logical source a cache key belongs to. */
 export const sourceOfPreviewKey = (key: string): string => key.split(PREVIEW_SPEC)[0]
@@ -157,7 +176,7 @@ export const resolveQuickLookRequest = async (
   // settings said 25 kept playing at 25 after the rate was changed to 30.
   const spec = sequence
     ? sequenceSpec(rate, sequence.frameCount)
-    : timedStill ? `still:${rate}:${stillSeconds}` : undefined
+    : timedStill ? stillSpec(rate, stillSeconds) : undefined
   const cacheKey = sourceTarget ? previewKey(sourceTarget, spec) : undefined
   let existingPreview = cacheKey ? task.imageSequencePreviews?.[cacheKey] : undefined
   let regeneratedPreview: QuickLookRequest['regeneratedPreview']
