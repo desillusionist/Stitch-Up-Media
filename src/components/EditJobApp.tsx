@@ -12,7 +12,7 @@ import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey,
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
 import { cropBands, cropFractions, cropForProportion, cropPixels, exactSizeFields, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resizeCorner, shiftCrop, resolutionBox, aspectSize, resolutionShortSide, resizeExact, clampCrop, MIN_KEPT, CropCorner, CropFractions } from '../lib/outputFrame'
 import { DEFAULT_PREVIEW_ZOOM, MAX_PREVIEW_ZOOM, MIN_PREVIEW_ZOOM, PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomedRaster } from '../lib/previewZoom'
-import { ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, secondsAt } from '../lib/timelineScale'
+import { ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, rulerTicks, secondsAt, zoomedBy } from '../lib/timelineScale'
 
 /** The edge opposite each of the four, which is what bounds how far one of them may reach in. */
 const OPPOSITE_EDGE: Record<keyof CropFractions, keyof CropFractions> = { left: 'right', right: 'left', top: 'bottom', bottom: 'top' }
@@ -103,6 +103,62 @@ type TimelineMenu =
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
+
+/**
+ * The timeline's scale.
+ *
+ * A component of its own because it is the one part of the timeline that has to re-render when the
+ * TIMELINE is scrolled, and only what it draws should. It reads the stretch of lane that is on screen
+ * and asks the scale for the marks in that stretch, so a close zoom on a long job draws a hundred marks
+ * rather than the tens of thousands the whole drawing would hold — of which the same hundred are ever
+ * visible. Keeping that state upstairs would redraw every lane and every strip on every scroll event,
+ * which is the whole window sixty times a second.
+ *
+ * The labels are passed in rather than made here, because what a mark SAYS is the window's business:
+ * frames or timecodes, decided by a setting this component has no opinion about.
+ */
+const TimelineRuler: React.FC<{
+  duration: number
+  zoom: number
+  label: (seconds: number) => string
+  scroller: React.RefObject<HTMLDivElement | null>
+  onWheel: (event: React.WheelEvent<HTMLElement>) => void
+}> = ({ duration, zoom, label, scroller, onWheel }) => {
+  const [visible, setVisible] = useState({ from: 0, to: 0 })
+  useEffect(() => {
+    const element = scroller.current
+    if (!element) return
+    // Half a viewport either side of what is shown, so a mark is drawn before it is scrolled onto the
+    // screen rather than a moment after.
+    const read = () => setVisible({
+      from: secondsAt(Math.max(0, element.scrollLeft - element.clientWidth / 2), zoom),
+      to: secondsAt(element.scrollLeft + element.clientWidth * 1.5, zoom),
+    })
+    read()
+    element.addEventListener('scroll', read, { passive: true })
+    const observer = new ResizeObserver(read)
+    observer.observe(element)
+    return () => {
+      element.removeEventListener('scroll', read)
+      observer.disconnect()
+    }
+  }, [scroller, zoom])
+
+  const ticks = rulerTicks(duration, zoom, visible)
+  return <div className="timeline-ruler" onWheel={onWheel}>
+    {duration > 0
+      ? ticks.map((tick) => (
+        <span
+          key={tick.time}
+          className={`ruler-tick${tick.major ? ' is-major' : ''}`}
+          style={{ left: `${laneWidthFor(tick.time, zoom)}px`, transform: tick.time >= duration ? 'translateX(-100%)' : 'none' }}
+        >
+          {tick.major ? label(tick.time) : null}
+        </span>
+      ))
+      : <span className="ruler-tick is-major" style={{ left: 0 }}>--:--:--.--</span>}
+  </div>
+}
 
 const EditorRow: React.FC<{ label: string; value: React.ReactNode; reason?: string }> = ({ label, value, reason }) => (
   <div className="editor-row" title={reason}><span>{label}</span><strong>{value}</strong></div>
@@ -1231,6 +1287,19 @@ export const EditJobApp: React.FC = () => {
       window.removeEventListener('keyup', onKeyUp)
     }
   }, [])
+
+  /**
+   * Wheel over the SCALE magnifies, rather than scrubbing as the same wheel does over the lanes.
+   *
+   * The scale is the one part of the timeline that is about the timeline's own scale, so a wheel there
+   * is read as being about that and nothing else. Stopping the event is what keeps it from reaching the
+   * lanes' scrub, which is the handler below it and would otherwise move the playhead as well.
+   */
+  const zoomByWheel = (event: React.WheelEvent<HTMLElement>) => {
+    if (event.deltaY === 0) return
+    event.stopPropagation()
+    setZoom((current) => zoomedBy(current, event.deltaY < 0 ? 1 : -1))
+  }
 
   /**
    * Wheel over the timeline scrubs the playhead, as the helper's strip does: a
@@ -2577,16 +2646,7 @@ export const EditJobApp: React.FC = () => {
                   part of this drawing at all, which is what makes a point in it map to a time with
                   the timeline's rate and no other figure. */}
               <div className="timeline-lanes-inner" ref={timelineInnerRef} style={{ width: `${laneWidthFor(duration, zoom)}px` }}>
-                <div className="timeline-ruler">
-                  {/* Placed by TIME rather than by a share of the row: when a short timeline is
-                      stretched to fill the panel, a percentage would put mid-way at the middle of the
-                      panel instead of at half the output. */}
-                  {Array.from({ length: 5 }, (_, index) => index / 4).map((fraction) => (
-                    <span key={fraction} style={{ left: `${laneWidthFor(duration * fraction, zoom)}px`, transform: fraction === 0 ? 'none' : fraction === 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
-                      {duration > 0 ? stamp(duration * fraction) : '--:--:--.--'}
-                    </span>
-                  ))}
-                </div>
+                <TimelineRuler duration={duration} zoom={zoom} label={(seconds) => (duration > 0 ? stamp(seconds) : '--:--:--.--')} scroller={timelineScrollRef} onWheel={zoomByWheel} />
                 {model.lanes.map((lane) => (
                   <div className="timeline-lane" key={lane.id}>
                     <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">

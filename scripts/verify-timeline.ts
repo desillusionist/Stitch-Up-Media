@@ -8,7 +8,7 @@ import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/films
 import { DEFAULT_FIT_OFFSET, clipFilters, cropRegion, croppedSize, fitFilters, fitOffsetFor, fitPlacement, fitSignature, fittedSize, hasInsets, innerBox, normaliseInsets, placedSource, sourceCropOf, storedFitOffset } from '../src/lib/sourceFit'
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
-import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, secondsAt } from '../src/lib/timelineScale'
+import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, rulerSteps, rulerTicks, secondsAt, zoomedBy } from '../src/lib/timelineScale'
 import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
@@ -1153,6 +1153,35 @@ console.log('\n== undo and redo ==')
   check('the history stops growing at its limit', deep.past.length, HISTORY_LIMIT)
   check('and the oldest states are the ones let go', deep.past[0], { step: 10 })
 }
+console.log('\n== the timeline scale ==')
+{
+  const span = 137.5
+  const stepAt = (zoom: number) => rulerSteps(zoom).step
+  // The step follows the ZOOM, which is what makes the scale read the same at every zoom: zooming in
+  // puts marks between the ones that were there, and zooming out takes them away again.
+  check('the scale subdivides as the zoom goes in', stepAt(8) < stepAt(1), true)
+  check('and coarsens as it comes out', stepAt(1) < stepAt(0.2), true)
+  check('and the labelled step is always a rung of the ladder', [0.2, 1, 4, 16, 32].every((zoom) => RULER_STEPS.includes(rulerSteps(zoom).major)), true)
+  // Half an hour of lane at the closest zoom is an enormous drawing, and the scale is drawn only where
+  // it is being looked at — which is what lets it stay fine without being tens of thousands of marks.
+  const drawn = rulerTicks(1800, 32, { from: 0, to: secondsAt(1350, 32) })
+  check('only the visible stretch of a long scale is drawn', drawn.length <= 200, true)
+  check('and that stretch is covered by it', drawn[0].time <= 0 && drawn[drawn.length - 1].time >= secondsAt(1350, 32), true)
+  // The end of the output is a place a reader looks for, so it is on the scale even when it is not on
+  // the grid, and nothing at all is drawn past it.
+  const whole = rulerTicks(span, 1)
+  check('the scale reaches the end of the output', whole[whole.length - 1].time, span)
+  check('and its last mark is a labelled one', whole[whole.length - 1].major, true)
+  check('and nothing is drawn past the end', whole.every((tick) => tick.time <= span + 1e-9), true)
+  // A mark stands where the time it names stands, which is what lets it be placed by time alone.
+  const at = rulerTicks(60, 4)
+  check('every mark is a whole number of steps from the start', at.every((tick, index) => Math.abs(tick.time - index * rulerSteps(4).step) < 1e-9), true)
+  // A wheel notch is finer than a magnifier press, because a wheel arrives in dozens and a button once.
+  check('a notch magnifies in', zoomedBy(2, 1) > 2, true)
+  check('and out', zoomedBy(2, -1) < 2, true)
+  check('and neither can leave the range', [zoomedBy(ZOOM_MAX, 1), zoomedBy(ZOOM_MIN, -1)], [ZOOM_MAX, ZOOM_MIN])
+}
+
 console.log('\n== the waveform ==')
 {
   // The helper's rules, which the timeline borrows: root mean square per bucket, normalised against

@@ -42,7 +42,10 @@ const lanes = (outerId, seconds, heads, inners) => `
   </div>
   <div class="timeline-scroll" id="scroll-${outerId}">
     <div class="timeline-lanes-inner" style="width:${laneWidthFor(seconds, ZOOM)}px">
-      <div class="timeline-ruler"></div>
+      <div class="timeline-ruler" id="ruler-${outerId}">
+        <span class="ruler-tick" id="rmin-${outerId}" style="left:20px"></span>
+        <span class="ruler-tick is-major" id="rmaj-${outerId}" style="left:60px">00:00:01.00</span>
+      </div>
       ${inners}
     </div>
   </div>
@@ -300,6 +303,14 @@ const measure = `(() => {
   const cframe = rect('cframe')
   const clabel = rect('clabel')
   const cshade = rect('cshade')
+  // The scale's two ranks of mark, read from the stylesheet: the subdivisions are fainter than the
+  // labelled ones and stand the full height of the scale, or they read as debris rather than as a grid.
+  const scaleMarks = (id) => {
+    const element = document.getElementById(id)
+    if (!element) return null
+    const style = getComputedStyle(element)
+    return { color: style.borderLeftColor, height: +element.getBoundingClientRect().height.toFixed(2), text: element.textContent }
+  }
   // The shade's own colour at rest and while the box is being dragged: what lies outside the crop is
   // the black the export will letterbox with, and it lifts to see-through only for the gesture that is
   // choosing the crop. Both are read here because only the stylesheet knows what either resolves to.
@@ -332,7 +343,8 @@ const measure = `(() => {
   return {
     caseA: { trackWidth: +(track.right - track.left).toFixed(2), clip0Right: clip0.right, markerCenter: marker.center, playheadLeft: playhead.left,
       cutVsMarker: +(clip0.right - marker.center).toFixed(2), cutVsPlayhead: +(clip0.right - playhead.left).toFixed(2), glyph: glyph('am0'),
-      clipHeight: clip0.height, name: lineA.name, detail: lineA.detail },
+      clipHeight: clip0.height, name: lineA.name, detail: lineA.detail,
+      rulerHeight: document.getElementById('ruler-lanesA').clientHeight, majorMark: scaleMarks('rmaj-lanesA'), minorMark: scaleMarks('rmin-lanesA') },
     caseB: { trackWidth: +(bTrack.right - bTrack.left).toFixed(2), clip0Right: bClip0.right, markerCenter: bMarker.center, playheadLeft: bPlayhead.left, audioRight: bAudio.right,
       cutVsMarker: +(bClip0.right - bMarker.center).toFixed(2), cutVsPlayhead: +(bClip0.right - bPlayhead.left).toFixed(2),
       laneOverflow: +(bAudio.right - bTrack.right).toFixed(2) },
@@ -574,6 +586,20 @@ app.whenReady().then(async () => {
   // one that fails is a line of output and a non-zero exit rather than something to be spotted.
   const problems = Array.isArray(laid.problems) ? laid.problems : []
   problems.push(...monitorProblems)
+  // The scale's own marks: a labelled rank and a faint one, both standing the height of the scale, and
+  // only the labelled rank carrying text — which is what makes the subdivisions read as divisions of
+  // the mark they sit between rather than as marks of their own.
+  const scale = laid.caseA
+  if (scale) {
+    if (!(scale.majorMark && scale.minorMark)) problems.push('the scale has no marks to read')
+    else {
+      if (scale.minorMark.color === scale.majorMark.color) problems.push('the scale\u2019s subdivisions are as loud as its labelled marks')
+      if (Math.abs(scale.minorMark.height - scale.rulerHeight) > 0.5) problems.push(`a subdivision does not stand the height of the scale: ${scale.minorMark.height} of ${scale.rulerHeight}`)
+      if (Math.abs(scale.majorMark.height - scale.rulerHeight) > 0.5) problems.push(`a labelled mark does not stand the height of the scale: ${scale.majorMark.height} of ${scale.rulerHeight}`)
+      if (!scale.majorMark.text) problems.push('a labelled mark carries no text')
+      if (scale.minorMark.text) problems.push(`a subdivision carries text: ${JSON.stringify(scale.minorMark.text)}`)
+    }
+  }
   // The folding groups, asserted here rather than in the page because these are questions about
   // DIFFERENCES between two elements — one folded, one not — rather than about either alone.
   const groups = laid.caseJ

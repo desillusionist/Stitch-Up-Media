@@ -325,6 +325,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .preview-divider { width: 1px; align-self: stretch; min-height: 18px; background: var(--ui-border-dim); }
 .timeline-ruler { position: relative; height: 20px; padding: 0; margin: 0 0 6px; color: var(--ui-muted); font-size: 9px; border-bottom: 1px dotted var(--ui-border); }
 .timeline-ruler span { position: absolute; top: 0; white-space: nowrap; }
+/* The scale's own grid: a line for every mark, and a label only on the ones with room for one. Both are
+   placed by TIME, so a mark stands where the time it names stands however wide the lane is drawn. The
+   subdivisions are a fainter line and no text, which is what makes them read as the divisions of the
+   labelled mark rather than as marks of their own. */
+.ruler-tick { bottom: 0; border-left: 1px solid var(--ui-border-dim); }
+.ruler-tick.is-major { border-left-color: var(--ui-border); padding-left: 4px; }
 .timeline-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .timeline-zoom { display: flex; align-items: center; gap: 6px; }
 .timeline-zoom button { display: inline-flex; align-items: center; justify-content: center; padding: 4px 6px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 10px; line-height: 1; }
