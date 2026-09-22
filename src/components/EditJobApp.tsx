@@ -104,6 +104,43 @@ const EditorField: React.FC<{ label: string; hint?: string; reason?: string; chi
   <label className="editor-field" title={reason}><span>{label}{hint ? <em>{hint}</em> : null}</span>{children}</label>
 )
 
+/**
+ * Reports what a media element was handed, and whether it failed on it.
+ *
+ * A decode failure is a fact about a FILE and a guess about where it came from, and the message the
+ * decoder prints names neither: "Unsupported pixel format: -1" says which format was wrong and not
+ * which file it was wrong about, so finding the culprit becomes a matter of correlating timings.
+ * This names it — the element's kind, the source it was given, and the code the element reports —
+ * and writes it to the app's own log, beside the decoder's complaint rather than in a console that
+ * nobody is reading.
+ *
+ * Instrumentation rather than a fix: the fix is not handing an element something it cannot decode.
+ * But a wrong guess about WHICH file is being decoded costs more than this line does, and this is the
+ * line that ends the guessing.
+ */
+const logMediaElement = (element: HTMLMediaElement | HTMLImageElement | null, kind: string) => {
+  if (!element) return
+  const marked = element as (HTMLMediaElement | HTMLImageElement) & { __stitchWatched?: boolean; __stitchLogged?: string }
+  if (!marked.__stitchWatched) {
+    marked.__stitchWatched = true
+    element.addEventListener('error', () => {
+      const media = element as HTMLMediaElement
+      void window.electronAPI?.diagnosticLog('[media-error]', {
+        kind,
+        src: element.currentSrc || element.getAttribute('src') || '',
+        code: media.error?.code,
+        message: media.error?.message,
+      })
+    })
+  }
+  // Once per source, so a re-render does not fill the log with the same line.
+  const src = element.currentSrc || element.getAttribute('src') || ''
+  if (src && src !== marked.__stitchLogged) {
+    marked.__stitchLogged = src
+    void window.electronAPI?.diagnosticLog('[media-src]', { kind, src })
+  }
+}
+
 const EditorToggle: React.FC<{ label: string; checked: boolean; onChange?: (checked: boolean) => void; reason?: string }> = ({ label, checked, onChange, reason }) => (
   <label className={`editor-toggle${onChange ? '' : ' is-locked'}`} title={reason}>
     <span>{label}</span>
@@ -2129,9 +2166,9 @@ export const EditJobApp: React.FC = () => {
                   {playback.error
                     ? <span className="editor-screen-message">{playback.error}</span>
                     : stillFrameJob
-                      ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} />
+                      ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} ref={(element) => logMediaElement(element, 'monitor-still')} />
                       : playback.segment?.still
-                        ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} />
+                        ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={mediaUrl(playback.segment.sourcePath)} alt={sourceName(playback.segment.sourcePath)} onLoad={measureNatural} ref={(element) => logMediaElement(element, 'monitor-still')} />
                         // Sound with no picture: a waveform, never a <video>. The element would be
                         // asked for a frame out of a file that has none.
                         : monitorIsAudio
@@ -2145,7 +2182,7 @@ export const EditJobApp: React.FC = () => {
                             : <span className="editor-screen-message">{screenMessage}</span>
                           : elementUrl
                             ? <video
-                              ref={playback.attachVideo}
+                              ref={(element) => { playback.attachVideo(element); logMediaElement(element, 'monitor-video') }}
                               className="editor-video"
                               src={elementUrl}
                               preload="metadata"
@@ -2682,7 +2719,7 @@ export const EditJobApp: React.FC = () => {
       const url = laneSegment ? sourceUrlFor(laneSegment) : null
       return url ? <audio
         key={lane.id}
-        ref={(element) => { audioElementsRef.current[lane.id] = element; if (element) element.muted = Boolean(muted[lane.id]) }}
+        ref={(element) => { audioElementsRef.current[lane.id] = element; if (element) element.muted = Boolean(muted[lane.id]); logMediaElement(element, `audio:${lane.id}`) }}
         src={url}
         preload="auto"
       /> : null
