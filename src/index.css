@@ -332,11 +332,18 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .crop-confirm-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .crop-confirm-actions button { padding: 6px 9px; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
 .crop-confirm-actions button.is-danger { color: var(--ui-error); border-color: var(--ui-error); }
-/* The picture's position. Two figures of the frame's own percentages, side by side. */
-.offset-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: center; gap: 6px; }
+/* The picture's position. Two figures of the frame's own, side by side. */
+.offset-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 6px; }
 .offset-row input.editor-input { padding: 5px 4px; text-align: center; }
-.offset-unit { color: var(--ui-muted); font-size: 9px; }
 .exact-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto auto; }
+/* A sub-section's own head row: what the figures below are measured in, and the one action that puts
+   them back where they started. The unit switch and the reset are the two controls the crop and the
+   exact size already use, so a reader meets them once and knows them everywhere. */
+.sub-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.sub-head .exact-icon { height: 30px; }
+/* A rule between one group of settings and the next, for the groups that have to read as separate
+   rather than as one long run of fields. */
+.editor-divider { border-top: 1px dotted var(--ui-border-dim); }
 /* The shape list and the unit switch, above the crop's four figures. The switch's glyph buttons
    match the select's height so the row reads as one control rather than two. */
 .crop-head { display: flex; align-items: center; gap: 5px; }

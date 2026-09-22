@@ -171,6 +171,15 @@ export const EditJobApp: React.FC = () => {
   /** Whether the crop fields read as per cent of the source or as pixels of it. */
   const [cropUnit, setCropUnit] = useState<'%' | 'px'>('%')
   /**
+   * Whether the INSETS and OFFSET fields read as per cent of the output frame or as pixels of it.
+   *
+   * Each has its own switch rather than sharing one, because they are read at different moments: a
+   * margin is a size one thinks about in pixels of the frame, and a position is usually "a tenth to
+   * the right". Deciding the unit of one should not silently change how the other reads.
+   */
+  const [insetUnit, setInsetUnit] = useState<'%' | 'px'>('%')
+  const [offsetUnit, setOffsetUnit] = useState<'%' | 'px'>('%')
+  /**
    * The crop's own controls: which entry the shape list is showing, and the clear-crop question.
    *
    * The shape list's entry is a CHOICE rather than a reading of the region — FREEFORM says "no shape
@@ -2553,47 +2562,80 @@ export const EditJobApp: React.FC = () => {
                 OUTPUT the clip is not given, so it survives a change of resolution or shape exactly as
                 the crop does. The four figures are per cent of the output frame, which is why they mean
                 the same at any resolution. */}
-            <EditorField
-              label="INSETS · L / T / R / B"
-              hint="% OF THE OUTPUT FRAME"
-              reason="The margin this clip leaves around itself: the box its fit scales it into. The picture is centred in the box, and the OFFSET below then slides it from there. 0 everywhere is the whole frame, which is what the clip gets until it is inset."
-            >
-              <div className="crop-row">
-                {(['l', 't', 'r', 'b'] as const).map((edge) => (
-                  <label key={edge} className="mini-field"><span>{edge.toUpperCase()}</span>
-                    <NumberField
-                      step={1}
-                      className="editor-input"
-                      value={Math.round(activeInsets[edge] * 100)}
-                      onValue={(raw) => setInsets({ [edge]: raw / 100 })}
-                      title={`${edge.toUpperCase()} margin, per cent of the output frame`}
-                    />
-                  </label>
-                ))}
+            {/* A div rather than the EditorField label, because the row holds buttons: a button inside
+                a label also activates the label's own control, so the unit switch would steal focus from
+                the field beside it. The exact-size row is built this way for the same reason. */}
+            <div className="editor-field" title="The margin this clip leaves around itself: the box its fit scales it into. The picture is centred in the box, and the OFFSET below then slides it from there. 0 everywhere is the whole frame, which is what the clip gets until it is inset.">
+              <span>INSETS · L / T / R / B<em>{insetUnit === 'px' ? 'PIXELS OF THE OUTPUT FRAME' : '% OF THE OUTPUT FRAME'}</em></span>
+              <div className="sub-head">
+                <div className="unit-toggle">
+                  <button className={insetUnit === '%' ? 'is-on' : ''} onClick={() => setInsetUnit('%')} title="Per cent of the output frame">%</button>
+                  <button className={insetUnit === 'px' ? 'is-on' : ''} disabled={!outputFrame} onClick={() => setInsetUnit('px')} title={outputFrame ? 'Pixels of the output frame' : 'THE OUTPUT FRAME IS NOT KNOWN YET.'}>px</button>
+                </div>
+                <button className="exact-icon" disabled={!hasInsets(activeInsets)} onClick={() => setInsets({ l: 0, t: 0, r: 0, b: 0 })} title="Take all four margins away" aria-label="Take all four margins away"><RotateCcw size={12} /></button>
               </div>
-            </EditorField>
+              <div className="crop-row">
+                {(['l', 't', 'r', 'b'] as const).map((edge) => {
+                  // The two sides of one axis are measured along the same one, which is what makes a
+                  // figure in pixels comparable between them.
+                  const span = outputFrame ? (edge === 'l' || edge === 'r' ? outputFrame.width : outputFrame.height) : 0
+                  const inPixels = insetUnit === 'px' && span > 0
+                  return (
+                    <label key={edge} className="mini-field"><span>{edge.toUpperCase()}</span>
+                      <NumberField
+                        step={1}
+                        className="editor-input"
+                        value={inPixels ? Math.round(activeInsets[edge] * span) : Math.round(activeInsets[edge] * 100)}
+                        onValue={(raw) => setInsets({ [edge]: inPixels ? raw / span : raw / 100 })}
+                        title={`${edge.toUpperCase()} margin, ${inPixels ? 'pixels' : 'per cent'} of the output frame`}
+                      />
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
             <div className="editor-note">&gt; A MARGIN SHRINKS THE BOX THE CLIP IS FITTED INTO, SO THE PICTURE GETS SMALLER AND THE OUTPUT'S OWN BACKGROUND SHOWS IN THE MARGIN. THE PICTURE KEEPS ITS SHAPE EITHER WAY. AN INSET AND THE OFFSET ARE INDEPENDENT: THE INSET SETS THE SIZE OF THE BOX, AND THE OFFSET BELOW SLIDES THE PICTURE IN THE FRAME.{hasInsets(activeInsets) ? '' : ' ALL FOUR ARE ZERO, SO THIS CLIP IS USING THE WHOLE FRAME.'}</div>
+            <div className="editor-divider" aria-hidden="true" />
             {/* Where the picture sits on the canvas, as a pair of figures. Two fields rather than one
                 slider, because a position is two numbers and a bar with a middle would say the middle
                 is special; the middle is only where the picture STARTS. Nothing is bounded: X and Y go
                 as far in either direction as they are asked to, and past the canvas the background
                 shows, which is what a position past the edge looks like. */}
-            <EditorField
-              label="OFFSET · X / Y"
-              hint="OF THE OUTPUT FRAME"
-              reason="Where the picture sits on the output canvas. 0 and 0 is centred; the figures may be negative, and may be far enough to take the picture clear of the frame, where the background shows. The monitor’s dragger writes the same two figures."
-            >
-              <div className="offset-row">
-                <label className="mini-field"><span>X</span>
-                  <NumberField step={1} className="editor-input" value={Math.round(pictureOffset.x * 100)} onValue={(value) => setFitOffset(value, Math.round(pictureOffset.y * 100))} />
-                </label>
-                <label className="mini-field"><span>Y</span>
-                  <NumberField step={1} className="editor-input" value={Math.round(pictureOffset.y * 100)} onValue={(value) => setFitOffset(Math.round(pictureOffset.x * 100), value)} />
-                </label>
-                <span className="offset-unit">%</span>
+            <div className="editor-field" title="Where the picture sits on the output canvas. 0 and 0 is centred; the figures may be negative, and may be far enough to take the picture clear of the frame, where the background shows. The monitor’s dragger writes the same two figures.">
+              <span>OFFSET · X / Y<em>{offsetUnit === 'px' ? 'PIXELS OF THE OUTPUT FRAME' : '% OF THE OUTPUT FRAME'}</em></span>
+              <div className="sub-head">
+                <div className="unit-toggle">
+                  <button className={offsetUnit === '%' ? 'is-on' : ''} onClick={() => setOffsetUnit('%')} title="Per cent of the output frame">%</button>
+                  <button className={offsetUnit === 'px' ? 'is-on' : ''} disabled={!outputFrame} onClick={() => setOffsetUnit('px')} title={outputFrame ? 'Pixels of the output frame' : 'THE OUTPUT FRAME IS NOT KNOWN YET.'}>px</button>
+                </div>
+                <button className="exact-icon" disabled={pictureOffset.x === 0 && pictureOffset.y === 0} onClick={() => setFitOffset(0, 0)} title="Centre the picture again" aria-label="Centre the picture again"><RotateCcw size={12} /></button>
               </div>
-            </EditorField>
-            <div className="editor-note">&gt; 0 / 0 CENTRES THE PICTURE, WHICH IS WHERE IT SITS UNTIL IT IS MOVED. THE FIGURES ARE PERCENTAGES OF THE OUTPUT FRAME, SO THEY MEAN THE SAME AT ANY RESOLUTION, AND THEY ARE NOT HELD IN: A PICTURE MOVED PAST AN EDGE IS CLIPPED BY THE FRAME, AND A PICTURE THAT LEAVES A GAP IS FILLED WITH THE BACKGROUND. DRAG IT ON THE PREVIEW, OR SET THE TWO FIGURES HERE.</div>
+              <div className="offset-row">
+                {(['x', 'y'] as const).map((axis) => {
+                  const span = outputFrame ? (axis === 'x' ? outputFrame.width : outputFrame.height) : 0
+                  const inPixels = offsetUnit === 'px' && span > 0
+                  const value = axis === 'x' ? pictureOffset.x : pictureOffset.y
+                  // The setter works in the frame's own fractions, so a pixel entry is divided by the
+                  // axis it was read along; the figure NOT being edited is carried through as a
+                  // fraction too, whatever unit it happens to be displayed in.
+                  const keep = Math.round((axis === 'x' ? pictureOffset.y : pictureOffset.x) * 100)
+                  const next = (raw: number) => (inPixels ? (raw / span) * 100 : raw)
+                  return (
+                    <label key={axis} className="mini-field"><span>{axis.toUpperCase()}</span>
+                      <NumberField
+                        step={1}
+                        className="editor-input"
+                        value={inPixels ? Math.round(value * span) : Math.round(value * 100)}
+                        onValue={(raw) => setFitOffset(axis === 'x' ? next(raw) : keep, axis === 'x' ? keep : next(raw))}
+                        title={`${axis.toUpperCase()} of the output frame, ${inPixels ? 'in pixels' : 'in per cent'}`}
+                      />
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="editor-note">&gt; 0 / 0 CENTRES THE PICTURE, WHICH IS WHERE IT SITS UNTIL IT IS MOVED. THE FIGURES ARE THE OUTPUT FRAME'S OWN, SO THEY MEAN THE SAME AT ANY RESOLUTION, AND THEY ARE NOT HELD IN: A PICTURE MOVED PAST AN EDGE IS CLIPPED BY THE FRAME, AND A PICTURE THAT LEAVES A GAP IS FILLED WITH THE BACKGROUND. DRAG IT ON THE PREVIEW, OR SET THE TWO FIGURES HERE.</div>
+            <div className="editor-divider" aria-hidden="true" />
             <EditorField label="FPS" hint="BLANK = SOURCE" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={String(defaultFps)} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
             <EditorField label="QUALITY" hint="BITRATE, E.G. 8M" reason={videoReason}><input type="text" className="editor-input" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} /></EditorField>
             <div className="editor-note">&gt; BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.</div>
