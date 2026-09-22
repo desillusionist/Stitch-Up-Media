@@ -300,6 +300,13 @@ const measure = `(() => {
   const cframe = rect('cframe')
   const clabel = rect('clabel')
   const cshade = rect('cshade')
+  // The shade's own colour at rest and while the box is being dragged: what lies outside the crop is
+  // the black the export will letterbox with, and it lifts to see-through only for the gesture that is
+  // choosing the crop. Both are read here because only the stylesheet knows what either resolves to.
+  const shadeAtRest = getComputedStyle(document.getElementById('cshade')).backgroundColor
+  document.getElementById('stage').classList.add('is-cropping')
+  const shadeWhileCropping = getComputedStyle(document.getElementById('cshade')).backgroundColor
+  document.getElementById('stage').classList.remove('is-cropping')
   const exrow = rect('exrow')
   const dw = rect('dw')
   const dh = rect('dh')
@@ -330,6 +337,7 @@ const measure = `(() => {
       cutVsMarker: +(bClip0.right - bMarker.center).toFixed(2), cutVsPlayhead: +(bClip0.right - bPlayhead.left).toFixed(2),
       laneOverflow: +(bAudio.right - bTrack.right).toFixed(2) },
     caseC: { stage: [stage.width, stage.height], frame: [cframe.width, cframe.height],
+      shadeAtRest, shadeWhileCropping,
       centeredX: +(cframe.center - stage.center).toFixed(2), centeredY: +(cframe.centerY - stage.centerY).toFixed(2),
       labelVsFrameLeft: +(clabel.left - cframe.left).toFixed(2), labelVsFrameTop: +(clabel.top - cframe.top).toFixed(2),
       shadeLeft: cshade.left, shadeHeight: cshade.height,
@@ -378,6 +386,9 @@ const measure = `(() => {
       inputHeight: framing.input.height, rowHeight: framing.row.height, plainInputHeight: framing.plain ? framing.plain.height : 0,
       labelFont: getComputedStyle(document.getElementById('klabel')).fontSize,
       markRightVsHead: +(framing.head.right - framing.info.right).toFixed(2),
+      markBorderWidth: getComputedStyle(document.getElementById('kmark')).borderTopWidth,
+      popBorder: getComputedStyle(document.getElementById('kpop')).borderTopColor,
+      popShadow: getComputedStyle(document.getElementById('kpop')).boxShadow !== 'none',
       popRight: framing.pop.right, popTop: framing.pop.top, markBottom: framing.mark.bottom,
       contentRight: framing.content.right, contentLeft: framing.content.left,
       popLeft: framing.pop.left, fieldCount: document.querySelectorAll('#krow .mini-field').length },
@@ -570,7 +581,18 @@ app.whenReady().then(async () => {
   // carry the meaning; what is left to check is that they ARE one row, in the right order, evenly
   // sized, with the row's own reset at its end — and that the fields are as compact as they claim.
   const framing = laid.caseK
+  // The monitor's crop shade, which is a fact about two stylesheet states rather than about a box.
+  const shade = laid.caseC
+  if (shade) {
+    if (shade.shadeAtRest !== 'rgb(0, 0, 0)') problems.push(`the shade outside the crop is not the export's black at rest: ${shade.shadeAtRest}`)
+    if (!/^rgba\(3, 9, 16/.test(shade.shadeWhileCropping)) problems.push(`the shade does not lift while the crop box is dragged: ${shade.shadeWhileCropping}`)
+  }
   if (framing) {
+    // The explanation: a bare lower-case i, and a popover outlined in the border colour rather than the
+    // accent, lifted off the page rather than drawn flat on it.
+    if (framing.markBorderWidth !== '0px') problems.push(`the explanation mark is still boxed: ${framing.markBorderWidth} of border`)
+    if (framing.popBorder !== 'rgb(105, 112, 120)') problems.push(`the explanation is outlined in something other than the border colour: ${framing.popBorder}`)
+    if (!framing.popShadow) problems.push('the explanation is drawn without a drop shadow')
     if (!framing.rowTops.every((top) => Math.abs(top - framing.rowTops[0]) <= 0.6)) problems.push(`the inset figures are not on one row: ${JSON.stringify(framing.rowTops)}`)
     if (!framing.lefts.every((left, index) => index === 0 || left > framing.lefts[index - 1])) problems.push(`the inset figures are not in L T R B order: ${JSON.stringify(framing.lefts)}`)
     if (!framing.widths.every((width) => Math.abs(width - framing.widths[0]) <= 1)) problems.push(`the inset figures are not the same width: ${JSON.stringify(framing.widths)}`)

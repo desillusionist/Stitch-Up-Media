@@ -338,6 +338,14 @@ export const EditJobApp: React.FC = () => {
   const [zoomText, setZoomText] = useState('100')
   /** How far the drawing has been panned inside the monitor. View only, and clamped to its slack. */
   const [pan, setPan] = useState({ x: 0, y: 0 })
+  /**
+   * Whether the crop box is being dragged, moved or resized right now.
+   *
+   * The shade outside the crop is drawn as the black the export will letterbox with, and it lifts to
+   * see-through for exactly as long as a gesture is choosing where the crop goes. It is a fact about
+   * the POINTER rather than about the crop, so it lives here and not in the record.
+   */
+  const [cropDragging, setCropDragging] = useState(false)
   /** Read while dragging, so a crop can still be dragged while the picture is panned. */
   const panRef = useRef({ x: 0, y: 0 })
   /** When a pan last ended, so the click it ends with is not also read as a click on the media. */
@@ -1952,6 +1960,23 @@ export const EditJobApp: React.FC = () => {
     setCrop(cropForProportion(naturalAspect, option.ratio))
   }
   /**
+   * Runs a crop drag, and says so for as long as it lasts.
+   *
+   * Every crop gesture is the same shape — a move handler and an up handler on the window — so the
+   * shade's lifting and settling is written once here rather than three times in the handlers, where it
+   * would be three chances to forget the settling half.
+   */
+  const trackCropDrag = (move: (event: PointerEvent) => void) => {
+    setCropDragging(true)
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setCropDragging(false)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  /**
    * Drags one edge of the crop box. The pointer position is turned into a fraction of the
    * picture, which is the space the crop is stored in, so the same drag works whatever the
    * window size.
@@ -1983,12 +2008,7 @@ export const EditJobApp: React.FC = () => {
       if (lockRatio && naturalAspect) { writeCrop(holdCropShape(next, lockRatio, naturalAspect, horizontal ? 'width' : 'height')); return }
       setCrop(next)
     }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    trackCropDrag(move)
   }
   /**
    * Slides the whole crop box, which is what the move cursor over it invites. The pointer's
@@ -2010,12 +2030,7 @@ export const EditJobApp: React.FC = () => {
         (moveEvent.clientY - start.y) / Math.max(1, cropRect.box.height),
       )))
     }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    trackCropDrag(move)
   }
   /**
    * Resizes from a corner, holding the shape chosen in the proportion list, or the region's own
@@ -2046,14 +2061,9 @@ export const EditJobApp: React.FC = () => {
           y: (moveEvent.clientY - stage.top - cropRect.originY - panRef.current.y) / Math.max(1, cropRect.box.height),
         },
       })))
-    }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
   }
+  trackCropDrag(move)
+}
   // The frame the encoder will produce was worked out above, where the hooks that lay the strips
   // out could see it; this is the box to outline it in, centred in the stage by the stylesheet too.
   const frameRect = outputFrame && stageSize ? zoomedRaster(outputFrame, previewZoom, stageSize) : null
@@ -2367,7 +2377,7 @@ export const EditJobApp: React.FC = () => {
                 be drawn around the picture rather than around the panel. The stage is also the
                 pan surface: everything drawn lives in one layer inside it and moves together
                 when a zoom has left more than the panel can show. */}
-            <div className={`editor-stage${drawable ? ' is-pannable' : ''}${canPlacePicture ? ' is-placing' : ''}`} ref={attachStage} onPointerDown={beginMonitorDrag}>
+            <div className={`editor-stage${drawable ? ' is-pannable' : ''}${canPlacePicture ? ' is-placing' : ''}${cropDragging ? ' is-cropping' : ''}`} ref={attachStage} onPointerDown={beginMonitorDrag}>
               <div className="editor-stage-pan" style={{ transform: `translate(${panX}px, ${panY}px)` }}>
                 {/* The frame's own window: the picture is drawn inside it and clipped by it, so
                     what the monitor shows is the output's own area and not the picture spilling

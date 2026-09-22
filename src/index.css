@@ -153,7 +153,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 14px; gap: 14px; overflow: hidden; }
 .editor-preview, .timeline-panel, .export-sidebar { border: 1px solid var(--ui-border); background: var(--ui-panel); }
 .editor-preview { padding: 10px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.editor-screen { min-height: 120px; flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--ui-muted); background: #030910; border-top: 1px dashed var(--ui-border); border-bottom: 1px dashed var(--ui-border); margin-top: 8px; overflow: hidden; }
+.editor-screen { min-height: 120px; flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--ui-muted); background: #1c2228; border-top: 1px dashed var(--ui-border); border-bottom: 1px dashed var(--ui-border); margin-top: 8px; overflow: hidden; }
 /* The picture's own box, so the output frame outline can be drawn around it. A column, so
    the media stretches to the space available exactly as it did as a direct child. */
 .editor-stage { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
@@ -199,7 +199,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 /* What the monitor draws for a clip that is sound and nothing else. There is no frame to show, so the
    waveform is the picture — on the same rules the lane draws it, filling the output frame. */
 .editor-waveform { display: block; width: 100%; height: 100%; }
-.editor-crop-shade { position: absolute; background: rgba(3, 9, 16, .62); pointer-events: none; }
+.editor-crop-shade { position: absolute; background: #000; pointer-events: none; }
+/* What lies outside the crop is the black the export will letterbox with, so it is drawn as that until
+   the box is being moved — which is the one moment the picture underneath is worth seeing, because it
+   is what the drag is choosing between. The shade lifts only for the drag and settles back on release. */
+.editor-stage.is-cropping .editor-crop-shade { background: rgba(3, 9, 16, .62); }
 .crop-handle { position: absolute; display: block; }
 .crop-handle.is-left { left: -4px; top: 0; bottom: 0; width: 9px; cursor: ew-resize; }
 .crop-handle.is-right { right: -4px; top: 0; bottom: 0; width: 9px; cursor: ew-resize; }
@@ -372,9 +376,9 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    popover hung off the mark leaves the sidebar on one side or the other as soon as a label is long.
    Spanning the row it is drawn under cannot go wrong whichever label it belongs to. */
 .editor-info { display: inline-flex; }
-.editor-info-mark { width: 12px; height: 12px; padding: 0; display: grid; place-items: center; color: var(--ui-border); background: transparent; border: 1px solid var(--ui-border); border-radius: 50%; font-family: inherit; font-size: 8px; line-height: 1; text-transform: none; cursor: help; }
-.editor-info-mark:hover, .editor-info-mark:focus { color: var(--ui-accent); border-color: var(--ui-accent); }
-.editor-info-pop { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 8; padding: 7px 8px; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-accent); font-size: 9px; letter-spacing: .04em; line-height: 1.55; text-align: left; }
+.editor-info-mark { width: 12px; height: 12px; padding: 0; display: grid; place-items: center; color: var(--ui-border); background: transparent; border: 0; font-family: inherit; font-size: 9px; line-height: 1; text-transform: none; cursor: help; }
+.editor-info-mark:hover, .editor-info-mark:focus { color: var(--ui-accent); }
+.editor-info-pop { position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 8; padding: 7px 8px; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); box-shadow: 0 8px 20px rgba(0, 0, 0, .6); font-size: 9px; letter-spacing: .04em; line-height: 1.55; text-align: left; }
 /* A rule between one group of settings and the next, for the groups that have to read as separate
    rather than as one long run of fields. */
 .editor-divider { border-top: 1px dotted var(--ui-border-dim); }
