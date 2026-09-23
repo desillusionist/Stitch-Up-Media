@@ -17,6 +17,7 @@
     "verify-wave": "npm run build && esbuild src/lib/waveform.ts --bundle --platform=node --format=cjs --outfile=scripts/.waveform.cjs --log-level=warning && node scripts/check-waveform.cjs",
     "verify-run": "esbuild electron/ffmpeg/run.ts --bundle --platform=node --format=cjs --outfile=scripts/.ffmpegRun.cjs --log-level=warning && node scripts/check-ffmpeg-run.cjs",
     "check-mount": "npm run build && electron scripts/check-editor-mount.cjs",
+    "check-scale": "swiftc electron/quicklook-scale.swift scripts/check-quicklook-scale.swift -o scripts/.check-scale && scripts/.check-scale",
     "preview": "vite preview",
     "electron:dev": "vite",
     "dist": "npm run build && electron-builder --mac",

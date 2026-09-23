@@ -549,18 +549,23 @@ app.whenReady().then(() => {
     // an unreadable file. Prefer the unpacked copy. When no archive is in play
     // (development), getAppPath() has no .asar segment and this is the repo root.
     const unpackedRoot = app.getAppPath().replace(/app\.asar([\\/]|$)/, 'app.asar.unpacked$1')
-    const sourceCandidates = [
-      path.join(unpackedRoot, `electron/${helperSourceName}`),
-      path.join(__dirname, `../electron/${helperSourceName}`),
-      path.resolve(process.cwd(), `electron/${helperSourceName}`),
+    const sourceRoots = [
+      path.join(unpackedRoot, 'electron'),
+      path.join(__dirname, '../electron'),
+      path.resolve(process.cwd(), 'electron'),
     ]
-    const source = sourceCandidates.find((candidate) => fs.existsSync(candidate))
+    // The preview helper is two files: its own, and the ruler arithmetic, which lives apart so it can be
+    // asserted without a window. swiftc takes them as one program. The still helper needs only its own.
+    const sourceNames = stillMode ? [helperSourceName] : [helperSourceName, 'quicklook-scale.swift']
+    const sources = sourceRoots.map((root) => sourceNames.map((name) => path.join(root, name))).find((group) => group.every((file) => fs.existsSync(file)))
+    const source = sources?.[0]
     const helper = path.join(os.tmpdir(), stillMode ? 'stitch-up-quicklook-lite' : 'stitch-up-quicklook')
     try {
-      if (!source) throw new Error(`Quick Look helper source not found. Checked: ${sourceCandidates.join(', ')}`)
+      if (!source || !sources) throw new Error(`Quick Look helper source not found. Checked: ${sourceRoots.map((root) => path.join(root, helperSourceName)).join(', ')}`)
       logEvent('quick-look', 'starting native helper', { source, helper, targetPath, stillMode })
-      if (!fs.existsSync(helper) || fs.statSync(source).mtimeMs > fs.statSync(helper).mtimeMs) {
-        execFileSync('swiftc', [source, '-o', helper, '-framework', 'AppKit', '-framework', 'AVKit', '-framework', 'AVFoundation'])
+      const newest = Math.max(...sources.map((file) => fs.statSync(file).mtimeMs))
+      if (!fs.existsSync(helper) || newest > fs.statSync(helper).mtimeMs) {
+        execFileSync('swiftc', [...sources, '-o', helper, '-framework', 'AppKit', '-framework', 'AVKit', '-framework', 'AVFoundation'])
       }
       fs.chmodSync(helper, 0o755)
       const child = spawn(helper, [targetPath, taskId || '', trimStart == null ? '' : String(trimStart), trimEnd == null ? '' : String(trimEnd), sourceIndex == null ? '0' : String(sourceIndex), stillMode ? 'still' : '', screenshotDirectory || '', timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp', sequenceFps == null ? '' : String(sequenceFps), sequenceFrameCount == null ? '' : String(sequenceFrameCount)], {

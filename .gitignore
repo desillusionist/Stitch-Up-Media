@@ -18,6 +18,8 @@ scripts/.mediaRange.cjs
 scripts/.monitor-repro.js
 scripts/.monitor-repro.html
 scripts/.engine.cjs
+# The compact scale's arithmetic harness (see `npm run check-scale`)
+scripts/.check-scale
 
 # Logs
 *.log

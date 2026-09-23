@@ -146,16 +146,31 @@ final class FilmstripView: NSView {
     private let sourceAspect: CGFloat
     private let sourceAsset: AVAsset
     private let sourceDuration: Double
-    private var generatedCount = 0
-    private let frameRate: Double
+    private var lastRenderedCells = -1
+    let frameRate: Double
     private var trackingAreaRef: NSTrackingArea?
     private var longPressWork: DispatchWorkItem?
-    private var zoomMode = false
+    /**
+     * The stretch of the source the strip is showing, as frames, and how long the source is in them.
+     *
+     * The overview is a window of the whole source; the hold-to-zoom gesture and a scroll on the scale
+     * above both narrow it to a window inside the source, which is the same request at two degrees. What
+     * used to be a question of "zoomed or not" is a reading of this window, so there is one model rather
+     * than two, and the scale can draw the range the strip is actually showing.
+     */
+    private(set) var totalFrames = 1
+    private(set) var windowFirstFrame = 0
+    private(set) var windowFrameCount = 1
+    /** Whether the window was narrowed by the HOLD, which is let go of when the mouse is released. */
+    private var zoomHeld = false
+    /** Told whenever the range or the playhead moves, so the scale above draws the same range. */
+    var onScaleChange: (() -> Void)?
     private var hoverRequest = 0
     private var zoomToken = 0
-    private var zoomFirstFrame = 0
     private var pressOrigin: NSPoint = .zero
     private var skimIndex = -1
+    /** Whether the strip is showing less than the whole source, which is what a zoom means here. */
+    private var zoomed: Bool { windowFrameCount < totalFrames }
 
     init(asset: AVAsset, duration: Double, sourceAspect: CGFloat, isAudio: Bool, frameRate: Double = 30, frame: NSRect) {
         self.sourceAsset = asset
@@ -163,6 +178,8 @@ final class FilmstripView: NSView {
         self.sourceAspect = max(0.1, sourceAspect)
         self.isAudio = isAudio
         self.frameRate = max(1, frameRate)
+        self.totalFrames = max(1, Int((duration * max(1, frameRate)).rounded()))
+        self.windowFrameCount = self.totalFrames
         let frameCount = isAudio ? 0 : max(Int(duration * 4.0), 240)
         imageViews = (0..<frameCount).map { _ in
             let view = NSView(frame: .zero); view.wantsLayer = true; view.layer?.backgroundColor = NSColor(calibratedWhite: 0.14, alpha: 1).cgColor; view.layer?.contentsGravity = .resizeAspectFill; view.layer?.masksToBounds = true; view.layer?.contentsScale = 2; return view
@@ -173,7 +190,7 @@ final class FilmstripView: NSView {
         selectionView.wantsLayer = true; selectionView.layer?.borderColor = crtYellow.cgColor; selectionView.layer?.borderWidth = 2; selectionView.layer?.backgroundColor = crtYellow.withAlphaComponent(0.16).cgColor; addSubview(selectionView)
         for handle in [inHandle, outHandle] { handle.wantsLayer = true; handle.layer?.backgroundColor = crtYellow.cgColor; handle.layer?.borderColor = crtBlack.cgColor; handle.layer?.borderWidth = 1; handle.layer?.cornerRadius = 2; addSubview(handle) }
         playhead.wantsLayer = true; playhead.layer?.backgroundColor = NSColor.systemRed.cgColor; addSubview(playhead)
-        if isAudio { loadWaveform(asset: asset) } else { generateFrames(asset: asset, duration: duration, count: visibleCount) }
+        if isAudio { loadWaveform(asset: asset) }
     }
     required init?(coder: NSCoder) { fatalError() }
     override var acceptsFirstResponder: Bool { true }
@@ -187,13 +204,72 @@ final class FilmstripView: NSView {
                 view.frame = NSRect(x: left, y: 3, width: right - left, height: content)
             }
         }
-        if generatedCount != visibleCount {
-            generatedCount = visibleCount
-            generateFrames(asset: sourceAsset, duration: sourceDuration, count: visibleCount)
+        if lastRenderedCells != visibleCount {
+            lastRenderedCells = visibleCount
+            setWindow(first: windowFirstFrame, count: windowFrameCount)
         }
         updateSelection()
     }
+
+    /**
+     * Sets the stretch of the source the strip shows, and asks for its frames.
+     *
+     * The window is clamped to the source and to never being narrower than one frame per cell, so a
+     * gesture at either end settles against the end rather than running off it — and a strip that has room
+     * for more cells than the source has frames shows the whole source rather than repeating one frame.
+     */
+    func setWindow(first frame: Int, count: Int) {
+        let total = max(1, totalFrames)
+        let floorCount = max(1, min(visibleCount, total))
+        windowFrameCount = max(floorCount, min(total, count))
+        windowFirstFrame = max(0, min(total - windowFrameCount, frame))
+        onScaleChange?()
+        renderWindow()
+    }
+
+    /**
+     * The frames the window is showing, spread across the cells the strip has room for.
+     *
+     * One request for every degree of zoom, because they are the same request: the overview is a window of
+     * the whole source and the closest zoom is one frame per cell, and everything between is spread the
+     * same way. A cell is asked for the frame at its own MIDDLE, which is the frame the playhead shows when
+     * it is over that cell, so the strip and the scale agree about where a frame stands.
+     */
+    private func renderWindow() {
+        guard !isAudio, visibleCount > 0, windowFrameCount > 0 else { return }
+        zoomToken += 1
+        let token = zoomToken
+        let step = Double(windowFrameCount) / Double(max(visibleCount, 1))
+        for index in 0..<visibleCount {
+            let frame = min(totalFrames - 1, max(0, Int((Double(windowFirstFrame) + (Double(index) + 0.5) * step).rounded())))
+            // A cell standing for a stretch of the source is asked for loosely — the frame in it is a
+            // representative rather than a stepping stone — and a cell standing for one frame is asked for
+            // exactly, because it is the frame the picture is about.
+            let tolerance = step <= 1 ? CMTime.zero : CMTime(value: 1, timescale: 4)
+            requestFrame(at: Double(frame) / frameRate, index: index, tolerance: tolerance, seekMonitor: false, isValid: { [weak self] in self?.zoomToken == token })
+        }
+    }
+
+    /**
+     * Narrows onto a point in the source, which is what the hold-to-zoom gesture asks for: the frames
+     * around the point held, one frame per cell, and the monitor taken to that point.
+     */
+    private func zoomOnto(center: Double) {
+        let frame = Int((max(0, min(1, center)) * sourceDuration * frameRate).rounded())
+        setWindow(first: frame - visibleCount / 2, count: visibleCount)
+        onHoverTime?(min(1, max(0, Double(frame) / max(sourceDuration * frameRate, 1))))
+    }
+
+    /**
+     * Zooms by a factor about a frame, which is what a scroll on the scale asks for, holding that frame
+     * where it is. The arithmetic — and the anchor it keeps — is in `scaledWindow`.
+     */
+    func zoom(by factor: Double, anchoredAt anchor: Double) {
+        let next = scaledWindow(firstFrame: windowFirstFrame, frameCount: windowFrameCount, totalFrames: totalFrames, minFrames: visibleCount, factor: factor, anchorFrame: anchor)
+        setWindow(first: next.first, count: next.count)
+    }
     private func updateSelection() {
+        onScaleChange?()
         guard bounds.width > 0 else { return }
         let left = bounds.width * start; let right = bounds.width * end
         selectionView.frame = NSRect(x: left, y: 1, width: max(18, right - left), height: bounds.height - 2)
@@ -223,24 +299,18 @@ final class FilmstripView: NSView {
             DispatchQueue.main.async { guard isValid(), index >= 0, index < self.imageViews.count else { return }; self.imageViews[index].layer?.contents = image; if seekMonitor { self.onHoverTime?(seconds / max(self.sourceDuration, 0.001)) } }
         }
     }
-    private func generateZoomFrames(center: Double) {
-        guard !isAudio, visibleCount > 0 else { return }
-        zoomToken += 1; let token = zoomToken
-        let centerFrame = Int((max(0, min(1, center)) * sourceDuration * frameRate).rounded()); let first = max(0, centerFrame - visibleCount / 2); zoomFirstFrame = first
-        for index in 0..<visibleCount { requestFrame(at: Double(first + index) / frameRate, index: index, tolerance: .zero, seekMonitor: index == visibleCount / 2, isValid: { [weak self] in self?.zoomToken == token && self?.zoomMode == true }) }
-    }
     func skimThumbnail(at norm: Double) {
-        guard !isAudio, !zoomMode, visibleCount > 0 else { return }
+        guard !isAudio, !zoomed, visibleCount > 0 else { return }
         let index = min(visibleCount - 1, max(0, Int(norm * CGFloat(visibleCount))))
         if skimIndex >= 0, skimIndex != index, skimIndex < visibleCount {
             let repNorm = (Double(skimIndex) + 0.5) / Double(visibleCount)
-            requestFrame(at: repNorm * sourceDuration, index: skimIndex, tolerance: CMTime(value: 1, timescale: 4), seekMonitor: false, isValid: { [weak self] in self?.zoomMode == false })
+            requestFrame(at: repNorm * sourceDuration, index: skimIndex, tolerance: CMTime(value: 1, timescale: 4), seekMonitor: false, isValid: { [weak self] in self?.zoomed == false })
         }
         skimIndex = index
         hoverRequest += 1; let token = hoverRequest
-        requestFrame(at: norm * sourceDuration, index: index, tolerance: CMTime(value: 1, timescale: 12), seekMonitor: false, isValid: { [weak self] in self?.hoverRequest == token && self?.zoomMode == false })
+        requestFrame(at: norm * sourceDuration, index: index, tolerance: CMTime(value: 1, timescale: 12), seekMonitor: false, isValid: { [weak self] in self?.hoverRequest == token && self?.zoomed == false })
     }
-    private func restoreOverview() { zoomMode = false; zoomToken += 1; longPressWork?.cancel(); generatedCount = 0; generateFrames(asset: sourceAsset, duration: sourceDuration, count: visibleCount) }
+    private func restoreOverview() { zoomHeld = false; setWindow(first: 0, count: totalFrames) }
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil); let left = bounds.width * start; let right = bounds.width * end
         pressOrigin = p
@@ -256,13 +326,13 @@ final class FilmstripView: NSView {
         case "out": center = end
         default: center = frameTime(at: p) / max(sourceDuration, 0.001)
         }
-        let work = DispatchWorkItem { [weak self] in guard let self, self.dragging != nil else { return }; self.zoomMode = true; self.generateZoomFrames(center: center) }
+        let work = DispatchWorkItem { [weak self] in guard let self, self.dragging != nil else { return }; self.zoomHeld = true; self.zoomOnto(center: center) }
         longPressWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
     override func mouseDragged(with event: NSEvent) {
         guard let dragging else { return }; let point = convert(event.locationInWindow, from: nil); let value = value(at: point)
-        if !zoomMode, abs(point.x - pressOrigin.x) > 3 { longPressWork?.cancel() }
-        if zoomMode {
+        if !zoomed, abs(point.x - pressOrigin.x) > 3 { longPressWork?.cancel() }
+        if zoomed {
             let pixelsPerFrame = 4.0                                             // sensitivity knob: lower = faster, higher = finer
             let deltaSeconds = Double(event.deltaX) / (pixelsPerFrame * frameRate)
             switch dragging {
@@ -277,16 +347,16 @@ final class FilmstripView: NSView {
                 playheadValue = t / max(sourceDuration, 0.001); onHoverTime?(playheadValue)
             }
             let pos = (dragging == "in" ? start : dragging == "out" ? end : playheadValue) * sourceDuration
-            let winStart = Double(zoomFirstFrame) / frameRate
-            let winEnd = Double(zoomFirstFrame + visibleCount) / frameRate
-            if pos < winStart || pos > winEnd { generateZoomFrames(center: pos / max(sourceDuration, 0.001)) }  // page only when the skimmer exits the window
+            let winStart = Double(windowFirstFrame) / frameRate
+            let winEnd = Double(windowFirstFrame + windowFrameCount) / frameRate
+            if pos < winStart || pos > winEnd { zoomOnto(center: pos / max(sourceDuration, 0.001)) }  // page only when the skimmer exits the window
             return
         }
         if dragging == "in" { start = min(value, end - 0.001); onHandleChange?("in", start); skimThumbnail(at: start) }
         else if dragging == "out" { end = max(value, start + 0.001); onHandleChange?("out", end); skimThumbnail(at: end) }
         else { let bounded = max(start, min(end, value)); playheadValue = bounded; onPlayheadChange?(bounded); skimThumbnail(at: bounded) }
     }
-    override func mouseUp(with event: NSEvent) { dragging = nil; if zoomMode { restoreOverview() } else { longPressWork?.cancel(); longPressWork = nil } }
+    override func mouseUp(with event: NSEvent) { dragging = nil; if zoomHeld { restoreOverview() } else { longPressWork?.cancel(); longPressWork = nil } }
     override func scrollWheel(with event: NSEvent) {
         let delta = -(event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX)
         guard delta != 0 else { return }
@@ -327,29 +397,76 @@ final class FilmstripView: NSView {
         let barWidth: CGFloat = 2, gap: CGFloat = 2, stride = barWidth + gap, barCount = max(1, Int(bounds.width / stride)), half = max(1, (midY - 3) * 0.9); crtGreen.setFill()
         for i in 0..<barCount { let lo = Int(Double(i) / Double(barCount) * Double(peaks.count)); let hi = max(lo + 1, Int(Double(i + 1) / Double(barCount) * Double(peaks.count))); var peak: CGFloat = 0; for bucket in lo..<min(hi, peaks.count) { peak = max(peak, peaks[bucket]) }; let height = max(1, peak * half); ctx.fill(NSRect(x: CGFloat(i) * stride, y: midY - height, width: barWidth, height: height * 2)) }
     }
-    private func generateFrames(asset: AVAsset, duration: Double, count: Int) {
-        let generator = AVAssetImageGenerator(asset: asset); generator.appliesPreferredTrackTransform = true; generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
-        guard duration.isFinite, duration > 0 else { return }
-        let frameQueue = DispatchQueue(label: "stitch-up.quicklook.frames", qos: .userInitiated)
-        for index in 0..<count {
-            let normalizedPosition = count <= 1 ? 0.5 : Double(index) / Double(count - 1)
-            let time = CMTime(seconds: duration * normalizedPosition, preferredTimescale: 600)
-            frameQueue.async { [weak self] in
-                var image = try? generator.copyCGImage(at: time, actualTime: nil)
-                if image == nil {
-                    generator.requestedTimeToleranceBefore = CMTime.positiveInfinity
-                    generator.requestedTimeToleranceAfter = CMTime.positiveInfinity
-                    image = try? generator.copyCGImage(at: time, actualTime: nil)
-                }
-                guard let image else { return }
-                DispatchQueue.main.async { self?.imageViews[index].layer?.contents = image }
-            }
-        }
+}
+
+/**
+ * The compact scale above the filmstrip: the same range as the strip, drawn as notches and nothing else.
+ *
+ * It is a ruler, so it carries no labels — no frame numbers, no timecodes, no units. A scale twenty pixels
+ * tall with text on it would be read instead of the picture, and the strip under it is what says which
+ * frames these are. Its two jobs are to make the range legible at a glance and to give the zoom a place of
+ * its own: a scroll over the STRIP scrubs, a scroll over the SCALE zooms, and neither has to ask the other
+ * what it meant, because they are different views.
+ *
+ * Everything it draws comes from the filmstrip's window, so its marks cannot describe a range the strip is
+ * not showing. The arithmetic is in `quicklook-scale.swift`, where it is asserted without a window.
+ */
+final class TimelineScaleView: NSView {
+    weak var filmstrip: FilmstripView?
+    /** The closest two subdivisions may stand, in pixels: what keeps a wide range from crowding. */
+    private let minSpacing: CGFloat = 9
+    /** How tall a subdivision stands, of the scale's own height. A labelled rank is the whole of it. */
+    private let subdivisionHeight: CGFloat = 7
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = crtBlack.cgColor
     }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let filmstrip, !filmstrip.isHidden, bounds.width > 1, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let first = filmstrip.windowFirstFrame
+        let count = filmstrip.windowFrameCount
+        guard count > 0 else { return }
+        // The strip's cell edges are rounded to the half-pixel it draws them at, and a mark rounded the
+        // same way stands ON the boundary it describes rather than a fraction beside it.
+        let half: (CGFloat) -> CGFloat = { (value) in (value * 2).rounded() / 2 }
+        let x: (Int) -> CGFloat = { (frame) in half(CGFloat(frame - first) / CGFloat(count) * self.bounds.width) }
+        for notch in scaleNotches(firstFrame: first, frameCount: count, width: Double(bounds.width), minSpacing: Double(minSpacing)) {
+            ctx.setFillColor((notch.major ? crtGreen.withAlphaComponent(0.85) : crtDim.withAlphaComponent(0.6)).cgColor)
+            ctx.fill(NSRect(x: x(notch.frame), y: 0, width: 1, height: notch.major ? bounds.height : subdivisionHeight))
+        }
+        // The playhead, drawn where the strip draws its own: the same share of the whole source.
+        ctx.setFillColor(NSColor.systemRed.withAlphaComponent(0.85).cgColor)
+        ctx.fill(NSRect(x: half(bounds.width * CGFloat(filmstrip.playheadValue)), y: 0, width: 1, height: bounds.height))
+    }
+
+    /**
+     * A scroll here zooms the strip, about whatever frame is under the pointer.
+     *
+     * The anchor is the point of the whole gesture: the frame under the cursor stays under it, so a zoom
+     * reads as a lens on the part being looked at rather than as a jump to somewhere else. The pace is the
+     * editor's own — a hyperbola-eased fraction per tick — so a trackpad and a wheel feel alike.
+     */
+    override func scrollWheel(with event: NSEvent) {
+        guard let filmstrip, filmstrip.windowFrameCount > 0 else { return }
+        let delta = -(event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX)
+        guard delta != 0 else { return }
+        let location = convert(event.locationInWindow, from: nil)
+        let fraction = max(0, min(1, location.x / max(bounds.width, 1)))
+        let anchor = Double(filmstrip.windowFirstFrame) + Double(fraction) * Double(filmstrip.windowFrameCount)
+        filmstrip.zoom(by: scaleZoomFactor(delta: Double(delta)), anchoredAt: anchor)
+    }
+
+    /** A press here is a press on a ruler: nothing to drag, and nothing to hand on to the strip. */
+    override func mouseDown(with event: NSEvent) {}
 }
 
 final class PreviewView: NSView {
-    let playerView: MonitorPlayerView; let imageView = NSImageView(frame: .zero); let player: AVPlayer; let asset: AVAsset; let sourceURL: URL; let screenshotDirectory: URL?; let audioArtwork: Bool; let filmstrip: FilmstripView; let frameRate: Double; let displayFps: Double; let sourceDuration: Double; let stampMode: String
+    let playerView: MonitorPlayerView; let imageView = NSImageView(frame: .zero); let player: AVPlayer; let asset: AVAsset; let sourceURL: URL; let screenshotDirectory: URL?; let audioArtwork: Bool; let filmstrip: FilmstripView; let scaleView = TimelineScaleView(frame: .zero); let frameRate: Double; let displayFps: Double; let sourceDuration: Double; let stampMode: String
     let appTitlebar = NSView()
     let appTitle = NSTextField(labelWithString: "STITCH UP MEDIA // QUICK LOOK")
     let doneButton = NSButton(title: "DONE", target: nil, action: nil); let revertButton = NSButton(title: "REVERT", target: nil, action: nil); let cancelButton = NSButton(title: "CANCEL", target: nil, action: nil)
@@ -376,6 +493,11 @@ final class PreviewView: NSView {
         sourceStampLabel.textColor = crtGreen; sourceStampLabel.font = NSFont(name: dotoFontName, size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .medium); sourceStampLabel.alignment = .center; sourceStampLabel.translatesAutoresizingMaskIntoConstraints = false; sourceStampLabel.wantsLayer = true; sourceStampLabel.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.45).cgColor; sourceStampLabel.layer?.cornerRadius = 3; addSubview(sourceStampLabel)
         trimmedDurationLabel.textColor = crtGreen; trimmedDurationLabel.font = NSFont(name: dotoFontName, size: 11) ?? NSFont.monospacedSystemFont(ofSize: 11, weight: .medium); trimmedDurationLabel.alignment = .center; trimmedDurationLabel.translatesAutoresizingMaskIntoConstraints = false; trimmedDurationLabel.wantsLayer = true; addSubview(trimmedDurationLabel)
         filmstrip.translatesAutoresizingMaskIntoConstraints = false; addSubview(filmstrip)
+        // The scale sits in the gap between the monitor and the strip, sharing the strip's own leading and
+        // trailing edges so a mark stands over the frame it describes. It is told to redraw whenever the
+        // strip's range or playhead moves, which is the whole of how the two stay in step.
+        scaleView.translatesAutoresizingMaskIntoConstraints = false; scaleView.filmstrip = filmstrip; addSubview(scaleView)
+        filmstrip.onScaleChange = { [weak self] in self?.scaleView.needsDisplay = true }
         [inField, outField, doneButton, revertButton, cancelButton, screenshotFolderButton].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
         screenshotFolderButton.title = "↗"; screenshotFolderButton.toolTip = "Open screenshot folder"; screenshotFolderButton.isHidden = true; screenshotFolderButton.font = NSFont(name: dotoFontName, size: 13) ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .medium); screenshotFolderButton.contentTintColor = crtGreen; screenshotFolderButton.isBordered = false; screenshotFolderButton.target = self; screenshotFolderButton.action = #selector(openScreenshotFolder)
         addSubview(screenshotFolderButton)
@@ -405,7 +527,7 @@ final class PreviewView: NSView {
             self.seek(to: bounded)
         }
         addSubview(inField); addSubview(outField)
-        if stillMode { filmstrip.isHidden = true; inField.isHidden = true; outField.isHidden = true; timestampLabel.isHidden = true; sourceStampLabel.isHidden = true; playerView.isHidden = true }
+        if stillMode { filmstrip.isHidden = true; scaleView.isHidden = true; inField.isHidden = true; outField.isHidden = true; timestampLabel.isHidden = true; sourceStampLabel.isHidden = true; playerView.isHidden = true }
         var layout: [NSLayoutConstraint] = [
             appTitlebar.topAnchor.constraint(equalTo: topAnchor), appTitlebar.leadingAnchor.constraint(equalTo: leadingAnchor), appTitlebar.trailingAnchor.constraint(equalTo: trailingAnchor), appTitlebar.heightAnchor.constraint(equalToConstant: 42),
             appTitle.leadingAnchor.constraint(equalTo: appTitlebar.leadingAnchor, constant: 92), appTitle.trailingAnchor.constraint(lessThanOrEqualTo: appTitlebar.trailingAnchor, constant: -18), appTitle.centerYAnchor.constraint(equalTo: appTitlebar.centerYAnchor),
@@ -422,7 +544,10 @@ final class PreviewView: NSView {
                     timestampLabel.leadingAnchor.constraint(equalTo: playerView.leadingAnchor, constant: 12), timestampLabel.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12),
                     sourceStampLabel.trailingAnchor.constraint(equalTo: playerView.trailingAnchor, constant: -12), sourceStampLabel.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12),
                 trimmedDurationLabel.centerXAnchor.constraint(equalTo: centerXAnchor), trimmedDurationLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
-                playerView.topAnchor.constraint(equalTo: appTitlebar.bottomAnchor), playerView.leadingAnchor.constraint(equalTo: leadingAnchor), playerView.trailingAnchor.constraint(equalTo: trailingAnchor), playerView.bottomAnchor.constraint(equalTo: filmstrip.topAnchor, constant: -14),
+                playerView.topAnchor.constraint(equalTo: appTitlebar.bottomAnchor), playerView.leadingAnchor.constraint(equalTo: leadingAnchor), playerView.trailingAnchor.constraint(equalTo: trailingAnchor), playerView.bottomAnchor.constraint(equalTo: scaleView.topAnchor, constant: -10),
+                // The scale and the strip share both edges exactly: this is what makes a mark stand over
+                // the frame it names rather than near it.
+                scaleView.leadingAnchor.constraint(equalTo: filmstrip.leadingAnchor), scaleView.trailingAnchor.constraint(equalTo: filmstrip.trailingAnchor), scaleView.heightAnchor.constraint(equalToConstant: 20), scaleView.bottomAnchor.constraint(equalTo: filmstrip.topAnchor, constant: -10),
                 filmstrip.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18), filmstrip.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18), filmstrip.heightAnchor.constraint(equalToConstant: 82), filmstrip.bottomAnchor.constraint(equalTo: inField.topAnchor, constant: -10),
                 inField.leadingAnchor.constraint(equalTo: filmstrip.leadingAnchor), inField.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12), inField.widthAnchor.constraint(equalToConstant: 150),
                 outField.trailingAnchor.constraint(equalTo: filmstrip.trailingAnchor), outField.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12), outField.widthAnchor.constraint(equalToConstant: 150)
@@ -592,6 +717,25 @@ final class PreviewController: NSObject, NSApplicationDelegate, NSWindowDelegate
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
-guard let argument = CommandLine.arguments.dropFirst().first, !argument.isEmpty else { exit(64) }
-let url = URL(fileURLWithPath: argument).standardizedFileURL; guard FileManager.default.fileExists(atPath: url.path) else { exit(66) }
-registerDotoFont(); let application = NSApplication.shared; let delegate = PreviewController(url: url); application.delegate = delegate; application.run()
+/**
+ * Where the helper starts.
+ *
+ * In a `main` type rather than as statements at the top of the file, because the ruler's arithmetic lives in
+ * a file of its own — so it can be asserted without a window — and Swift allows top-level statements only in
+ * a file named `main.swift`. What was here is the whole of its body; nothing else moved.
+ */
+@main
+enum QuickLookPreview {
+    static func main() {
+        guard let argument = CommandLine.arguments.dropFirst().first, !argument.isEmpty else { exit(64) }
+        let url = URL(fileURLWithPath: argument).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else { exit(66) }
+        registerDotoFont()
+        let application = NSApplication.shared
+        // Held for the life of the process: `run` never returns, so the delegate outlives every callback it
+        // is given, which is what an application delegate has to do.
+        let delegate = PreviewController(url: url)
+        application.delegate = delegate
+        application.run()
+    }
+}
