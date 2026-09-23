@@ -233,6 +233,18 @@ export const canApplyClipFit = (preset: EncodingPreset): boolean =>
   preset.outputMode !== 'audio' && preset.videoCodec !== 'copy' && preset.container !== 'gif'
 
 /**
+ * Whether a job's export carries a picture of its own.
+ *
+ * Asked in two places that have to agree. A sound file asked for a video preset is a video job: its
+ * export holds a video stream, so the lane the export writes is the picture lane and is named as
+ * such. The encoder asks the same question to know it has to SUPPLY that picture — a source with no
+ * frame of its own would otherwise leave a container that is a video file in name only. The lane's
+ * NAME follows the export; what the lane holds does not, because the file still has no frames and is
+ * still drawn as what it is.
+ */
+export const jobExportsPicture = (task: Pick<QueueTask, 'preset'>): boolean => task.preset.outputMode !== 'audio'
+
+/**
  * Whether a clip's own framing is what the encoder must run, on a job whose clips are NOT joined.
  *
  * Where clips are concatenated every clip is normalized through its own chain, so a fit is a fit
@@ -529,7 +541,10 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
     // ramp is what will actually be rendered.
     applyFades(task, segments)
     const audioOnly = task.sourcePaths.length > 0 && task.sourcePaths.every((sourcePath) => mediaKind(sourcePath) === 'audio')
-    lanes.push({ id: MAIN_LANE_ID, label: audioOnly ? 'AUDIO 1' : 'VIDEO', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: cursor })
+    // A job whose export carries a picture is named for the picture it writes, whatever its sources
+    // hold: a stitch of sound files asked for a video preset is a video job.
+    const soundLane = audioOnly && !jobExportsPicture(task)
+    lanes.push({ id: MAIN_LANE_ID, label: soundLane ? 'AUDIO 1' : 'VIDEO', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: cursor })
     return { lanes, duration: cursor, unusedVideoSources: [] }
   }
 
@@ -546,12 +561,15 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   })
   const mainSource = visualSources[0]
   const mainIsAudio = mainSource != null && mediaKind(mainSource) === 'audio'
+  // Named for the export, not for the file: a lone sound file asked for a video preset is a video
+  // job whose export carries a black picture beside the track, so its lane says VIDEO.
+  const mainNamesItselfSound = mainIsAudio && !jobExportsPicture(task)
   // A combo that concatenates has real cuts, so its fades are resolved here too.
   // A multi-track job has a single clip, where resolveFades finds no boundary.
   applyFades(task, mainSegments)
   lanes.push({
     id: MAIN_LANE_ID,
-    label: mainIsAudio ? 'AUDIO 1' : 'VIDEO',
+    label: mainNamesItselfSound ? 'AUDIO 1' : 'VIDEO',
     kind: mainIsAudio ? 'audio' : 'video',
     embedded: true,
     segments: mainSegments,

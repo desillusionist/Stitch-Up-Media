@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask } from '../src/lib/sourceRemoval'
 
@@ -127,6 +127,36 @@ console.log('\n== tail seeking on a multi-track lane ==')
   const mutedTask = { ...task, mutedLanes: { trk: true } } as unknown as QueueTask
   check('and is not carried once it is', laneIsMuted(mutedTask, 'trk'), true)
   check('while another lane is untouched', laneIsMuted(mutedTask, 'main'), false)
+}
+
+console.log('\n== what a lone sound file is named ==')
+{
+  // One sound file, asked for as video, is a video job: the export carries a picture of its own — the
+  // encoder supplies a black one, the file having no frames to give — so the lane the export writes is
+  // named for that picture. Asked for as sound it keeps its own name. What the lane HOLDS does not
+  // follow the name, because the file is a sound file either way and is drawn as its waveform.
+  const job = (over: Partial<QueueTask> = {}) => ({
+    id: 's', type: 'transcode', status: 'pending', progress: 0,
+    sourcePaths: ['/track.wav'], outputDirectory: '/out', outputFilename: 'o.mp4',
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    ...over,
+  }) as unknown as QueueTask
+  const timing = { resolveTiming: () => ({ duration: 300 }) }
+
+  const asVideo = job()
+  const videoLane = buildTimeline(asVideo, timing).lanes[0]
+  check('a sound file asked for video is named VIDEO', videoLane.label, 'VIDEO')
+  check('and its export carries a picture', jobExportsPicture(asVideo), true)
+  check('while the lane still holds a sound', videoLane.kind, 'audio')
+
+  const asSound = job({ preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source', outputMode: 'audio' } })
+  check('asked for sound it is named AUDIO 1', buildTimeline(asSound, timing).lanes[0].label, 'AUDIO 1')
+  check('and its export carries no picture', jobExportsPicture(asSound), false)
+
+  const stitchOfSounds = job({ type: 'stitch', sourcePaths: ['/a.wav', '/b.wav'] })
+  check('a stitch of sound files asked for video is named VIDEO', buildTimeline(stitchOfSounds, { resolveTiming: () => ({ duration: 5 }) }).lanes[0].label, 'VIDEO')
+  const pictureJob = job({ sourcePaths: ['/clip.mp4'] })
+  check('and a picture job is named VIDEO as it always was', buildTimeline(pictureJob, { resolveTiming: () => ({ duration: 10 }) }).lanes[0].label, 'VIDEO')
 }
 
 console.log('\n== fades on a concatenated lane ==')

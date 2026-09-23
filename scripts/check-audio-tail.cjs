@@ -141,6 +141,34 @@ const main = async () => {
       pictureSeconds: 1,
       muted: true,
     },
+    {
+      // A sound file with a preset that asks for video. It has no picture to give, so the export must
+      // supply one — otherwise the container holds an audio stream and no video stream at all, which is a
+      // video file in name only.
+      name: 'a sound file exported as video',
+      task: {
+        id: 'tail-sound', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'sound-out.mp4', preset,
+      },
+      output: path.join(root, 'sound-out.mp4'),
+      expectedSeconds: 5,
+      soundOnly: true,
+    },
+    {
+      // The same question asked of a STITCH: sound files joined, under a preset that asks for video.
+      // The joined picture is black for the whole of the joined sound, and it is ONE input rather
+      // than one per clip, because a picture that never changes has nothing per clip to differ about.
+      name: 'a stitch of sound files exported as video',
+      task: {
+        id: 'tail-sound-stitch', type: 'stitch', status: 'pending', progress: 0,
+        sourcePaths: [audio, audio],
+        outputDirectory: root, outputFilename: 'sound-stitch.mp4', preset,
+      },
+      output: path.join(root, 'sound-stitch.mp4'),
+      expectedSeconds: 10,
+      soundOnly: true,
+    },
   ]
 
   for (const item of cases) {
@@ -154,6 +182,15 @@ const main = async () => {
     }
     const seconds = Number(await probeValue(item.output, 'format=duration'))
     check(item.muted ? 'a muted track does not lengthen the output' : 'the output runs to the length of its sound', seconds, item.expectedSeconds)
+    if (item.soundOnly) {
+      // The picture a sound file cannot supply has to be there, and it has to be BLACK: a video stream of
+      // the right length that is a held frame or a colour would be a picture nothing asked for.
+      const kinds = String(await probeValue(item.output, 'stream=codec_type')).split('\n').map((line) => line.trim()).filter(Boolean)
+      check('a sound file exported as video carries a picture', kinds.includes('video'), true)
+      check('and it carries the sound it came from', kinds.includes('audio'), true)
+      if (kinds.includes('video')) check('and the picture it was given is black', isBlack(await pixelAt(item.output, 2)), true)
+      continue
+    }
     const picture = await pixelAt(item.output, item.pictureSeconds)
     check('the visual is still a picture where it plays', isPicture(picture), true)
     if (item.muted) continue

@@ -4,11 +4,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
+import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
+import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { probeFile } from './probe'
+import { teachLavfiFormat } from './virtualInput'
+
+// Before any command is built: a black picture for a job whose source has no frame of its own is
+// asked for with `-f lavfi`, which fluent-ffmpeg refuses until it knows that format's name.
+teachLavfiFormat()
 
 export interface ProgressData {
   percent: number
@@ -214,6 +220,13 @@ export class FFmpegEngine {
       cmd.inputOptions(['-loop 1', `-framerate ${this.stillRate(task, source)}`, '-t ' + stillSecondsFor(task, source)])
     }
     if (!isSequence) this.applyTrimInput(cmd, trim)
+    // A sound file has no frame to give, so a preset that asks for video would write a container
+    // holding a sound stream and no picture at all — a video file in name only. The export's own
+    // frame is supplied instead. It is skipped for a muted lane, where the audio is dropped and
+    // there would be nothing left for a picture to accompany.
+    if (jobExportsPicture(task) && mediaKind(source) === 'audio' && !laneIsMuted(task, MAIN_LANE_ID)) {
+      this.addBlackPicture(cmd, task.preset, expectedSeconds)
+    }
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
     // the picture is not normalized first: a single visual has no other clip to be joined to, so
@@ -354,6 +367,15 @@ export class FFmpegEngine {
         `-af aresample=${targetSampleRate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${targetChannels === 1 ? 'mono' : 'stereo'}`,
         ...(targetBitrate > 0 ? [`-b:a ${Math.max(128000, targetBitrate)}`] : []),
       ])
+    }
+
+    // The same rule as the transcode path: a stitch of sound files asked for a picture has none to
+    // join, so the export's own frame is supplied — black, for the whole of the joined sound. It
+    // takes ONE input rather than one per clip, because the picture never changes from clip to clip
+    // and there is nothing here for a clip's own picture to differ about.
+    const soundOnlyStitch = task.sourcePaths.length > 0 && task.sourcePaths.every((source) => mediaKind(source) === 'audio')
+    if (jobExportsPicture(task) && soundOnlyStitch && !laneIsMuted(task, MAIN_LANE_ID)) {
+      this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
     }
 
     cmd
@@ -634,6 +656,27 @@ export class FFmpegEngine {
     if (point.in > 0) inputOptions.push('-ss', String(Math.max(0, point.in)))
     if (point.out > point.in) inputOptions.push('-t', String(Math.max(0, point.out - point.in)))
     if (inputOptions.length) cmd.inputOptions(inputOptions)
+  }
+
+  /**
+   * A black picture for a source that has none.
+   *
+   * Built by ffmpeg itself and added as a second input, so the export has a video stream where its
+   * one source could not supply one. The size is the export's own frame: a source with no picture
+   * cannot say how big a picture should be, so the job's resolution answers and a job that asks for
+   * "source" falls back to 1080p rather than inventing a size out of nothing. The length is the one
+   * the job's own timeline gives it, and `-shortest` keeps the pair trimmed to the sound, so the
+   * picture neither outlasts the track it accompanies nor holds the encode open when it is endless.
+   */
+  private addBlackPicture(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, seconds: number): void {
+    const box = preset.width && preset.height
+      ? { width: preset.width, height: preset.height }
+      : resolutionBox(preset.resolution) ?? { width: 1920, height: 1080 }
+    const evenSize = (value: number) => Math.max(2, Math.floor(value / 2) * 2)
+    const rate = preset.fps && preset.fps > 0 ? preset.fps : 30
+    const length = seconds > 0 ? `:d=${seconds.toFixed(3)}` : ''
+    cmd.input(`color=c=black:s=${evenSize(box.width)}x${evenSize(box.height)}:r=${rate}${length}`).inputOptions(['-f', 'lavfi'])
+    cmd.outputOptions(['-shortest'])
   }
 
   /**
