@@ -4,7 +4,7 @@ import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, Queu
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
-import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, VISUALIZATIONS } from '../lib/visualization'
+import { DRAWING_STILL_SETTLE_MS, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATION_COLOR, VISUALIZATIONS, drawingPictureFor, visualizationBackgroundKind } from '../lib/visualization'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -1407,6 +1407,54 @@ export const EditJobApp: React.FC = () => {
     if (next != null) scroller.scrollLeft = next
   }, [playheadFraction, zoom])
 
+  /**
+   * Whether this job's export shows a drawing of its own sound, and what that drawing is made from.
+   *
+   * Read here rather than beside the settings that offer it because the MONITOR needs it too, and the
+   * monitor is drawn long before those settings are. It comes from one function either way, so the two
+   * cannot disagree about what is being drawn — see `drawingPictureFor`.
+   */
+  const drawingPicture = useMemo(() => (draft ? drawingPictureFor(draft) : { offersPicture: false, draws: false, sources: [], still: null }), [draft])
+  /**
+   * The still of that drawing, which is what the monitor shows instead of the app's own green line.
+   *
+   * Regenerated when the style changes, and DELAYED while it does: a colour is typed a character at a
+   * time and a frame is an ffmpeg run, so the field would otherwise start one per keystroke. The delay is
+   * on the fetch only — the monitor keeps the still it has until the next one arrives, so the picture does
+   * not blink out while it is being redrawn.
+   */
+  const [drawingStill, setDrawingStill] = useState<string | null>(null)
+  const drawingBackground = draft ? visualizationBackgroundKind(draft.preset) : 'colour'
+  const drawingStillKey = JSON.stringify([
+    drawingPicture.draws ? drawingPicture.sources : [],
+    draft?.preset.visualization ?? 'waveform',
+    draft?.preset.visualizationColor ?? '',
+    drawingBackground,
+    draft?.preset.visualizationBackgroundColor ?? '',
+    drawingBackground === 'image' ? draft?.preset.visualizationBackgroundImage ?? '' : '',
+    drawingBackground === 'still' ? drawingPicture.still ?? '' : '',
+  ])
+  useEffect(() => {
+    const bridge = window.electronAPI
+    if (!drawingPicture.draws || !drawingPicture.sources.length || !bridge?.visualizationStill) { setDrawingStill(null); return }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void bridge.visualizationStill({
+        sources: drawingPicture.sources,
+        template: draft?.preset.visualization ?? 'waveform',
+        color: draft?.preset.visualizationColor,
+        background: drawingBackground,
+        backgroundColor: draft?.preset.visualizationBackgroundColor,
+        backgroundImage: drawingBackground === 'image' ? draft?.preset.visualizationBackgroundImage : drawingPicture.still ?? undefined,
+        ...(outputFrame ? { width: outputFrame.width, height: outputFrame.height } : {}),
+        fps: draft?.preset.fps ?? 30,
+      }).then((url) => { if (!cancelled) setDrawingStill(url) }).catch(() => { if (!cancelled) setDrawingStill(null) })
+    }, DRAWING_STILL_SETTLE_MS)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+    // The key is the request in one string, so this runs when the DESIGN changes and not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawingStillKey])
+
   if (!draft || !model) return <div className="edit-job-shell"><div className="editor-loading">WAITING FOR QUEUE ITEM...</div></div>
 
   /**
@@ -2577,11 +2625,21 @@ export const EditJobApp: React.FC = () => {
   const hasFootage = visuals.some((kind) => kind === 'video') || Boolean(draft.sequenceInput) || Object.keys(draft.sequenceInputs ?? {}).length > 0
   const hasStill = visuals.includes('image')
   const jobSound = visuals.includes('audio') || Boolean(draft.additionalAudioTracks?.length)
-  const offersPicture = outputCarriesPicture(container) && !isImageContainer && !isGif && draft.preset.outputMode !== 'audio' && !hasFootage && jobSound
+  // The gate and the drawing both come from the one function the monitor reads too, so a job cannot be
+  // shown one picture and given another.
+  const offersPicture = drawingPicture.offersPicture || (jobSound && outputCarriesPicture(container) && !isImageContainer && !isGif && draft.preset.outputMode !== 'audio' && !hasFootage)
   /** What the export would show: what was chosen, or the job's own default of its still and then black. */
   const pictureSource = draft.preset.audioPicture ?? (hasStill ? 'still' : 'black')
   const artCoverOffered = outputTakesArt(container) && hasStill && !hasFootage
   const stillIntoWav = container === 'wav' && hasStill
+  /** The drawing's own background, as the one choice the editor and the encoder share. */
+  const backgroundKind = visualizationBackgroundKind(draft.preset)
+  /** Picks the image a drawing sits on, and stores it on the preset the export reads. */
+  const chooseBackgroundImage = async () => {
+    const chosen = await window.electronAPI?.selectImage()
+    if (chosen) updatePreset({ visualizationBackground: 'image', visualizationBackgroundImage: chosen })
+  }
+  const backgroundImageName = draft.preset.visualizationBackgroundImage?.split('/').pop() ?? ''
 
   return <div className="edit-job-shell">
     <header className="editor-header">
@@ -2640,7 +2698,13 @@ export const EditJobApp: React.FC = () => {
                         // Sound with no picture: a waveform, never a <video>. The element would be
                         // asked for a frame out of a file that has none.
                         : monitorIsAudio
-                          ? monitorWaveform
+                          // The export's own picture, when the job's picture IS a drawing: a still of the
+                          // chosen template in the chosen colours, because the app's green line would be a
+                          // drawing of a design nobody asked for. Until it arrives, and if it cannot be
+                          // made, the waveform below stands in rather than the monitor going blank.
+                          ? drawingStill && drawingPicture.draws
+                            ? <img className="editor-still" draggable={false} style={{ ...mediaStyle }} src={drawingStill} alt="DRAWING THE SOUND" />
+                            : monitorWaveform
                             ? <svg className="editor-waveform" width="100%" height="100%" viewBox={`0 0 ${monitorWaveform.width} ${monitorWaveform.height}`} preserveAspectRatio="none" aria-hidden="true">
                               <line x1="0" y1={monitorWaveform.height / 2} x2={monitorWaveform.width} y2={monitorWaveform.height / 2} stroke="var(--ui-border)" strokeWidth="1" />
                               {monitorWaveform.peaks.length
@@ -3169,10 +3233,17 @@ export const EditJobApp: React.FC = () => {
                 {(draft.preset.visualization ?? 'waveform') !== 'spectrum' && <EditorField label="COLOUR" reason="The colour the drawing is made in, as a hex figure. The spectrum colours itself by intensity and takes no colour of its own.">
                   <input type="text" className="editor-input" value={draft.preset.visualizationColor ?? ''} placeholder={VISUALIZATION_COLOR.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
                 </EditorField>}
-                <EditorField label="BACKGROUND" reason="What the drawing sits on: black, or any other colour, as a hex figure.">
-                  <input type="text" className="editor-input" value={draft.preset.visualizationBackgroundColor ?? ''} placeholder={VISUALIZATION_BACKGROUND.toUpperCase()} onChange={(event) => updatePreset({ visualizationBackgroundColor: event.target.value.trim() || undefined })} />
+                <EditorField label="BACKGROUND" reason="What the drawing sits on: a flat colour, the still the job already has, or an image of your own. The image is scaled to the frame and the drawing is laid over it.">
+                  <select value={backgroundKind} onChange={(event) => updatePreset({ visualizationBackground: event.target.value as NonNullable<EncodingPreset['visualizationBackground']> })}>
+                    {VISUALIZATION_BACKGROUNDS.filter((option) => option.id !== 'still' || hasStill).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+                  </select>
                 </EditorField>
-                {hasStill && <EditorToggle label="DRAW OVER THE STILL" checked={Boolean(draft.preset.visualizationOnStill)} onChange={(checked) => updatePreset({ visualizationOnStill: checked || undefined })} />}
+                {backgroundKind === 'colour' && <EditorField label="UNDER THE DRAWING" reason="The colour the drawing sits on, as a hex figure.">
+                  <input type="text" className="editor-input" value={draft.preset.visualizationBackgroundColor ?? ''} placeholder={VISUALIZATION_BACKGROUND.toUpperCase()} onChange={(event) => updatePreset({ visualizationBackgroundColor: event.target.value.trim() || undefined })} />
+                </EditorField>}
+                {/* A ROW rather than a FIELD: a field is a label, and a button inside a label is a button
+                    that is pressed twice. */}
+                {backgroundKind === 'image' && <EditorRow label="IMAGE" value={<button className="editor-pick" onClick={() => { void chooseBackgroundImage() }}>{backgroundImageName || 'CHOOSE\u2026'}</button>} reason="The image the drawing sits on. It is scaled to the frame's own shape and the drawing is laid over it." />}
               </>}
             </>}
             {artCoverOffered && <EditorToggle label="COVER ART" checked={draft.preset.coverArt !== false} onChange={(checked) => updatePreset({ coverArt: checked })} reason="Attach the still to the file as its artwork. It is stored as a picture rather than played as a frame, which is what an MP3, M4A or FLAC can hold." />}

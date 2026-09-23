@@ -4,6 +4,24 @@ import { QueueTask, MediaProbeInfo, AppSettings, EditJobPatch, SourceFit } from 
 export interface IElectronAPI {
   probeMedia: (filePath: string) => Promise<MediaProbeInfo>
   selectFiles: () => Promise<string[]>
+  /** One image, for a drawing to sit on. Its own picker so a sound cannot be chosen for a picture. */
+  selectImage: () => Promise<string | null>
+  /**
+   * One still of a drawing in the current style, as a data URL, for the editor's monitor.
+   *
+   * The export's own graph builds it, so the design being judged is the design that will be encoded.
+   */
+  visualizationStill: (options: {
+    sources: string[]
+    template: 'waveform' | 'eq' | 'spectrum'
+    color?: string
+    background?: 'colour' | 'still' | 'image'
+    backgroundColor?: string
+    backgroundImage?: string
+    width?: number
+    height?: number
+    fps?: number
+  }) => Promise<string | null>
   expandMediaPaths: (paths: string[]) => Promise<string[]>
   createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>
   findImageSiblings: (path: string) => Promise<string[]>
@@ -89,6 +107,8 @@ export interface IElectronAPI {
 const api: IElectronAPI = {
   probeMedia: (filePath: string) => ipcRenderer.invoke('probe-media', filePath),
   selectFiles: () => ipcRenderer.invoke('select-files'),
+  selectImage: () => ipcRenderer.invoke('select-image'),
+  visualizationStill: (options) => ipcRenderer.invoke('visualization-still', options),
   expandMediaPaths: (paths: string[]) => ipcRenderer.invoke('expand-media-paths', paths),
   createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => ipcRenderer.invoke('create-image-sequence-preview', paths, options),
   findImageSiblings: (filePath: string) => ipcRenderer.invoke('find-image-siblings', filePath),

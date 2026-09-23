@@ -10,7 +10,7 @@ import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, visualizationGraph } from '../../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, visualizationBackgroundKind, visualizationGraph } from '../../src/lib/visualization'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -234,7 +234,7 @@ export class FFmpegEngine {
     // EVERY audio stream of the input, which is fine for a lone sound file and wrong the moment one is
     // not, while `[0:a:0]` is the one stream this path means. The drawing is laid out to the same rate
     // and channel count every other path writes, because the two halves of one split cannot differ.
-    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(task.preset, undefined), 48000, 2)
+    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, 2)
     else if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
@@ -401,7 +401,7 @@ export class FFmpegEngine {
     // files, because a stitch plays its sources one after another and the picture has to show that
     // rather than a mix of them. Black remains the answer when nothing was asked for.
     if (stitchPictured) {
-      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(task.preset, undefined), targetSampleRate, targetChannels)
+      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, targetChannels)
       else this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
     }
 
@@ -611,7 +611,7 @@ export class FFmpegEngine {
     ]
     const pictured = drawsSound && audible.length > 0
     if (pictured) {
-      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(task.preset, isStillCover ? 0 : undefined), 48000, 2)
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, 2)
     }
     const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
@@ -795,11 +795,25 @@ export class FFmpegEngine {
   }
 
   /**
-   * What the drawing sits on: the job's own still where that was asked for and there is one to use, and
-   * the colour it was given otherwise.
+   * What the drawing sits on, adding the image input if the choice is one.
+   *
+   * The choice itself is `visualizationBackgroundKind`, which the editor asks too, so the two cannot
+   * disagree about a job saved before the background was a choice. A still is an input the caller already
+   * has — the visual the job is covered with — and is passed in by index. An uploaded IMAGE is not an input
+   * yet, so it is added here and its index returned.
+   *
+   * It is added LOOPED, which is not a detail: one still is one frame, and an overlay of a drawing over a
+   * single frame ends with that frame. Without the loop the export is a picture one frame long, whatever
+   * the sound does.
    */
-  private visualizationBackgroundFor(preset: EncodingPreset, stillInput: number | undefined): string | { input: number } {
-    if (preset.visualizationOnStill && stillInput !== undefined) return { input: stillInput }
+  private visualizationBackgroundFor(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, stillInput: number | undefined, nextInputIndex: number): string | { input: number } {
+    const kind = visualizationBackgroundKind(preset)
+    if (kind === 'image' && preset.visualizationBackgroundImage) {
+      cmd.input(preset.visualizationBackgroundImage)
+      cmd.inputOptions(['-loop 1', `-framerate ${this.pictureRateFor(preset)}`])
+      return { input: nextInputIndex }
+    }
+    if (kind === 'still' && stillInput !== undefined) return { input: stillInput }
     return preset.visualizationBackgroundColor || VISUALIZATION_BACKGROUND
   }
 

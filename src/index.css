@@ -308,6 +308,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-field select:disabled, .editor-field input:disabled, .editor-group select:disabled, .editor-group input:disabled { opacity: .45; }
 .editor-input { font-family: monospace !important; text-transform: none; }
 .editor-input::placeholder { color: var(--ui-border); }
+/* The picker beside a drawing's IMAGE row: a button where a field would be, in the same type and the
+   same measured size, so the row reads as one of the settings rather than as an action. */
+.editor-pick { width: 100%; padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-family: inherit; font-size: inherit; text-align: left; }
+.editor-pick:hover { border-color: var(--ui-accent); }
 .editor-toggle.is-locked { opacity: .45; }
 .editor-toggle.is-locked input { cursor: not-allowed; }
 .editor-conflict { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin: 12px 14px 0; padding: 10px 14px; border: 1px solid var(--ui-encoding); background: var(--ui-panel-inset); color: var(--ui-foreground); }

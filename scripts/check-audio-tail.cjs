@@ -71,6 +71,30 @@ const brightestLuma = async (file, time) => {
   return Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0)
 }
 
+/**
+ * How bright a narrow column of a frame is, at a fraction across it.
+ *
+ * Which is how a spectrum is asked whether it reaches the right-hand edge: `showspectrum` left on its
+ * default draws one column per emitted frame into a frame nothing ever fills, so its right-hand side is
+ * black for the whole export. Black through a limited-range encode reads 16.
+ */
+const columnLuma = async (file, time, fraction) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `crop=iw*0.04:ih:iw*${fraction}:0,signalstats,metadata=print:file=-`, '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
+}
+
+/** How far apart the brightest and darkest pixel of a frame are: how much is DRAWN in it. */
+const contrast = async (file, time) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', 'signalstats,metadata=print:file=-', '-f', 'null', '-'])
+  const text = String(out)
+  const lo = Number(text.match(/YMIN=([\d.]+)/)?.[1] ?? 0)
+  const hi = Number(text.match(/YMAX=([\d.]+)/)?.[1] ?? 0)
+  return Math.round(hi - lo)
+}
+
+/** How many pictures the file holds, which is how a picture kept ONE FRAME long is caught. */
+const frameCount = async (file) => Number(await run('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v', '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1:nokey=1', file]))
+
 const failures = []
 const check = (label, actual, expected) => {
   const ok = typeof expected === 'number' ? Math.abs(actual - expected) <= 0.25 : actual === expected
@@ -99,6 +123,18 @@ const main = async () => {
   for (let frame = 1; frame <= 3; frame += 1) {
     await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:size=320x240', '-frames:v', '1', path.join(seqDir, `frame_${String(frame).padStart(6, '0')}.png`)])
   }
+  // Two seconds loud and three seconds silent, so WHICH stretch of the source a drawing is of can be read
+  // off the picture: a drawing of the loud half is a tall line and a drawing of the silent half is nothing
+  // at all. This is what makes "the drawn audio follows the trim" a measurement rather than a claim.
+  const loudHalf = path.join(root, 'loud.wav')
+  const quietHalf = path.join(root, 'quiet.wav')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2', '-c:a', 'pcm_s16le', loudHalf])
+  await runFfmpeg(['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=mono', '-t', '3', '-c:a', 'pcm_s16le', quietHalf])
+  const halfway = path.join(root, 'halfway.wav')
+  await runFfmpeg(['-i', loudHalf, '-i', quietHalf, '-filter_complex', '[0:a][1:a]concat=n=2:v=0:a=1[out]', '-map', '[out]', '-c:a', 'pcm_s16le', halfway])
+  // An image of a colour nothing else in these fixtures uses, for a drawing to be laid over.
+  const artwork = path.join(root, 'artwork.png')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=0x204060:s=320x180', '-frames:v', '1', artwork])
 
   const engine = new FFmpegEngine()
   const encode = (task) => new Promise((resolve, reject) => engine.runTask(task, () => {}, resolve, reject))
@@ -292,6 +328,72 @@ const main = async () => {
       drawn: true,
     },
     {
+      // The spectrum's own fault, and it was never about the trim: `showspectrum` left on its default slide
+      // draws one column per emitted frame into a frame that is never filled, so the right-hand side stays
+      // BLACK for the whole export. What is asserted is the thing a listener would notice — at the end of
+      // the sound the drawing is still reaching the right-hand edge.
+      name: 'a sound file exported as a spectrum that fills its frame',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'spectrum', fps: 30 },
+      task: {
+        id: 'viz-spectrum-fill', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'viz-spectrum-fill.mp4', preset,
+      },
+      output: path.join(root, 'viz-spectrum-fill.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      fillsTheFrame: true,
+    },
+    {
+      // Whether the DRAWN audio follows the trim, which was reported as not happening. This sound is loud
+      // for two seconds and silent for three, and the trim keeps the SILENT three: a drawing of that
+      // segment is a frame with nothing in it at all. A drawing of the whole source would be a tall line
+      // over its first two seconds, and the untrimmed case below is the same job without the trim, so the
+      // pair proves the measurement discriminates rather than asserting a grey frame means anything.
+      name: 'a trimmed sound drawn to its own segment',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30 },
+      task: {
+        id: 'viz-trim', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [halfway],
+        trimPoints: { [halfway]: { in: 2, out: 5 } },
+        outputDirectory: root, outputFilename: 'viz-trim.mp4', preset,
+      },
+      output: path.join(root, 'viz-trim.mp4'),
+      expectedSeconds: 3,
+      drawn: true,
+      drawnIsSilent: true,
+    },
+    {
+      name: 'the same sound drawn without its trim',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30 },
+      task: {
+        id: 'viz-untrimmed', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [halfway],
+        outputDirectory: root, outputFilename: 'viz-untrimmed.mp4', preset,
+      },
+      output: path.join(root, 'viz-untrimmed.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      drawnIsAudible: true,
+    },
+    {
+      // A drawing over an image the user chose. Two things are being asked: that the picture LASTS — one
+      // still is one frame, and an overlay of a drawing over a single frame ends with that frame, so an
+      // image input that is not looped gives a video one frame long — and that the image is what is under
+      // the drawing rather than the black a colour background would leave.
+      name: 'a sound drawn over an uploaded image',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationBackground: 'image', visualizationBackgroundImage: artwork },
+      task: {
+        id: 'viz-image', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'viz-image.mp4', preset,
+      },
+      output: path.join(root, 'viz-image.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      overImage: true,
+    },
+    {
       // A still going into a container that can hold artwork, as the ARTWORK rather than as a video
       // stream — which is the one way a picture belongs in an MP3.
       name: 'a still attached to an mp3',
@@ -357,7 +459,28 @@ const main = async () => {
       const carried = String(await probeValue(item.output, 'stream=codec_type')).split('\n').map((line) => line.trim()).filter(Boolean)
       check('a drawn picture carries a picture', carried.includes('video'), true)
       check('and the sound it was drawn from', carried.includes('audio'), true)
-      check('and something is drawn on the frame', (await brightestLuma(item.output, 1)) > 60, true)
+      // A drawing of a SILENT segment draws nothing, deliberately — that is the case below — so the
+      // "something is drawn" check is asked of every other drawing and not of that one.
+      if (!item.drawnIsSilent) check('and something is drawn on the frame', (await brightestLuma(item.output, 1)) > 60, true)
+      if (item.fillsTheFrame) {
+        // The spectrum slides past the frame; left on its default it draws into the corner and the rest of
+        // the width stays black for the whole export.
+        check('and it reaches the right-hand edge of the frame', (await columnLuma(item.output, seconds - 0.2, 0.95)) > 60, true)
+      }
+      if (item.overImage) {
+        // The image first, because a picture one frame long is the failure the loop prevents, and then the
+        // image's own colour under the drawing, because an unlooped image would leave the frame black.
+        check('the picture lasts as long as the sound it is drawn from', (await frameCount(item.output)) > 60, true)
+        check('and the image it was given is what the drawing sits on', isPicture(await pixelAt(item.output, 2)), true)
+      }
+      if (item.drawnIsSilent) {
+        // The trimmed segment is silence, and a drawing of silence is nothing at all. A drawing of the
+        // whole source would be the loud half's line, which is the untrimmed case beside this one.
+        check('a drawing of a silent segment has nothing in it', (await contrast(item.output, 0.5)) < 20, true)
+      }
+      if (item.drawnIsAudible) {
+        check('and the same sound untrimmed is drawn as a line, so the check above can tell them apart', (await contrast(item.output, 0.5)) > 60, true)
+      }
       continue
     }
     if (item.coverArt) {

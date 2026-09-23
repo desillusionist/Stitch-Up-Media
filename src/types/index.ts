@@ -73,10 +73,20 @@ export interface EncodingPreset {
   /** What the drawing sits on. Absent means black. */
   visualizationBackgroundColor?: string
   /**
+   * What the drawing sits ON: a colour, the job's own still, or an image the user chose.
+   *
+   * Absent means the colour, unless `visualizationOnStill` is set — see `visualizationBackgroundKind`,
+   * which is what both the editor and the encoder ask so a job saved before this was a choice reads the
+   * same way to both of them.
+   */
+  visualizationBackground?: 'colour' | 'still' | 'image'
+  /** The image a drawing sits on when its background is an uploaded one. */
+  visualizationBackgroundImage?: string
+  /**
    * Whether the drawing is made over the job's own still rather than over a colour.
    *
-   * A separate flag rather than a colour that means "the still": the colour is then still there to come
-   * back to, and a job can be switched onto its cover and off again without losing what was under it.
+   * @deprecated Kept as the way a job saved before `visualizationBackground` existed says "over the still".
+   * New writes use `visualizationBackground`; this is only ever read.
    */
   visualizationOnStill?: boolean
   /**

@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DRAWING_MAX_EDGE, drawingCanvas, visualizationGraph } from '../src/lib/visualization'
+import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, drawingCanvas, drawingPictureFor, stillWarmupSeconds, visualizationBackgroundKind, visualizationGraph, visualizationStillGraph } from '../src/lib/visualization'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -1285,8 +1285,11 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   // Its own two quirks: `showspectrum` has no rate option, so the rate is imposed after it, and its
   // colouring is ffmpeg's own ramp, so the hex this app offers is not passed to it.
   const spectrum = visualizationGraph({ template: 'spectrum', width: 1920, height: 1080, fps: 24, color: '#ff0000', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
-  check('the spectrum is rate-limited by a filter after it', spectrum.includes('showspectrum=s=1280x720:mode=combined:color=intensity:scale=log,fps=24'), true)
+  check('the spectrum is rate-limited by a filter after it', spectrum.includes('showspectrum=s=1280x720:mode=combined:color=intensity:scale=log:slide=scroll,fps=24'), true)
   check('and it is not handed a colour it cannot use', spectrum.includes('colors=#ff0000'), false)
+  // Its third, and the one that was wrong: left on its default slide the spectrogram is drawn into a
+  // corner and its frame is never filled, so the right-hand edge stays black for the whole export.
+  check('the spectrum is told to slide, which is what fills its frame', spectrum.includes('slide=scroll'), true)
 
   // A stitch draws the CONCATENATED stream it writes, named down to its index: `[0:a]` would stand
   // for every audio stream of the joined input, and the two halves of one split must be laid out the
@@ -1294,6 +1297,71 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   const stitched = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a:0'], background: '#000000', rate: 44100, channels: 1 })
   check('a stitch draws the concatenated stream itself', stitched.includes('[0:a:0]asplit=2[mixA][mixV]'), true)
   check('laid out at the rate the stitch writes rather than a fixed one', stitched.includes('aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=mono[aout]'), true)
+}
+
+console.log('\n== what a drawing sits on ==')
+{
+  // One answer from settings that have accumulated: the choice, or — for a job saved before the choice
+  // existed — the flag that used to mean the same thing. The editor and the encoder ask this one function,
+  // which is what keeps a selector and an export from disagreeing about an older job.
+  const on = (preset: Partial<EncodingPreset>) => visualizationBackgroundKind(preset as EncodingPreset)
+  check('a drawing that says nothing sits on its colour', on({}), 'colour')
+  check('a job saved before the choice was one reads as over its still', on({ visualizationOnStill: true }), 'still')
+  check('and one that says both takes the choice', on({ visualizationBackground: 'image', visualizationOnStill: true }), 'image')
+  check('an uploaded image is a choice like any other', on({ visualizationBackground: 'image' }), 'image')
+  check('and switching back to the still is not a flag any more', on({ visualizationBackground: 'still', visualizationOnStill: true }), 'still')
+
+  // The still the editor looks at, built by the same module as the export so the two cannot drift.
+  const wave = visualizationStillGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000' })
+  check('a waveform still is the whole file in one picture', wave.includes('showwavespic=s=1280x720:colors=#9fbf9a'), true)
+  check('laid on the colour it was given', wave.includes('color=c=#000000:s=1920x1080:r=30[bg]'), true)
+  check('drawn at the capped canvas and scaled up', wave.includes('[draw]scale=1920:1080:flags=lanczos[scaled]'), true)
+  check('and flattened into one picture', wave.includes('[bg][scaled]overlay=shortest=1,format=yuv420p[out]'), true)
+  const spec = visualizationStillGraph({ template: 'spectrum', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a'], background: { input: 1 } })
+  check('a spectrum still is a frame of the drawing itself', spec.includes('showspectrum=s=720x1280:mode=combined:color=intensity:scale=log:slide=scroll,fps=25'), true)
+  check('several sources are summed before it', spec.includes('[0:a][1:a]amix=inputs=2:normalize=0'), true)
+  check('and an uploaded image is the background by input', spec.includes('[1:v]scale=1080:1920,setsar=1[bg]'), true)
+
+  // How long a drawing is given to fill first. A waveform needs none — it is one picture of the whole file
+  // — and the others have to be given a moment without being asked for one past the sound they are of.
+  check('a waveform still needs no warm-up', stillWarmupSeconds('waveform', 4), 0)
+  check('a spectrum gets half of a one-second sound', stillWarmupSeconds('spectrum', 1), 0.5)
+  check('never more than a second', stillWarmupSeconds('spectrum', 60), 1)
+  check('and nothing at all from a sound with no length', stillWarmupSeconds('eq', 0), 0)
+  check('the debounce is the 150ms the editor was asked for', DRAWING_STILL_SETTLE_MS, 150)
+}
+
+console.log('\n== whether an export draws its own sound ==')
+{
+  const preset = { id: 'p', name: 'P', container: 'mp4' as const, videoCodec: 'h264' as const, audioCodec: 'aac' as const, resolution: 'source' as const }
+  const job = (task: Partial<QueueTask>) => drawingPictureFor({
+    id: 'v', type: 'transcode', status: 'pending', progress: 0, sourcePaths: [],
+    outputDirectory: '/tmp', outputFilename: 'o.mp4', preset, ...task,
+  } as QueueTask)
+  const drawing = { ...preset, audioPicture: 'visualization' as const }
+
+  const sound = job({ sourcePaths: ['/tmp/a.wav'], preset: drawing })
+  check('a job of sound asked for a drawing draws one', sound.draws, true)
+  check('from its own sound', sound.sources, ['/tmp/a.wav'])
+  check('and it is offered a picture at all', job({ sourcePaths: ['/tmp/a.wav'] }).offersPicture, true)
+  check('a job left alone draws nothing', job({ sourcePaths: ['/tmp/a.wav'] }).draws, false)
+  check('a job with footage keeps its own picture', job({ sourcePaths: ['/tmp/a.mp4'], preset: drawing }).offersPicture, false)
+  check('and so is not drawn for', job({ sourcePaths: ['/tmp/a.mp4'], preset: drawing }).draws, false)
+  check('a container that cannot hold a picture is not offered one', job({ sourcePaths: ['/tmp/a.wav'], preset: { ...preset, container: 'wav', audioCodec: 'pcm' } }).offersPicture, false)
+
+  // A still under a track: the track is what is drawn and the still is what it sits on.
+  const covered = job({ sourcePaths: ['/tmp/cover.png'], additionalAudioTracks: [{ id: 't', path: '/tmp/b.wav', language: 'und' }], preset: drawing })
+  check('a still under a track draws the track', covered.sources, ['/tmp/b.wav'])
+  check('and the still is the picture it could sit on', covered.still, '/tmp/cover.png')
+  check('with no still, there is none to sit on', sound.still, null)
+
+  // The same file can be two places in a job — the main lane and an added track — and it is drawn from once.
+  const twice = job({ sourcePaths: ['/tmp/a.wav'], additionalAudioTracks: [{ id: 't', path: '/tmp/a.wav', language: 'und' }], preset: drawing })
+  check('a file that is in the job twice is drawn from once', twice.sources, ['/tmp/a.wav'])
+  // The order is the export's: the main lane's own sound first, then the added tracks.
+  const many = job({ sourcePaths: ['/tmp/a.wav'], additionalAudioTracks: [{ id: 't1', path: '/tmp/b.wav', language: 'und' }, { id: 't2', path: '/tmp/c.wav', language: 'und' }], preset: drawing })
+  check('and the tracks follow it, in the order they are carried', many.sources, ['/tmp/a.wav', '/tmp/b.wav', '/tmp/c.wav'])
+  check('an audio-only export is not offered a picture', job({ sourcePaths: ['/tmp/a.wav'], preset: { ...preset, outputMode: 'audio' } }).offersPicture, false)
 }
 
 console.log('\n== what a container can carry ==')

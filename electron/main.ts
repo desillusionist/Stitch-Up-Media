@@ -10,6 +10,7 @@ import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { clipFilters } from '../src/lib/sourceFit'
+import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, stillWarmupSeconds, visualizationStillGraph } from '../src/lib/visualization'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { runFfmpeg } from './ffmpeg/run'
 import { spawn, execFileSync } from 'node:child_process'
@@ -399,6 +400,83 @@ app.whenReady().then(() => {
     const files = result.canceled ? [] : result.filePaths
     logEvent('ipc', 'select-files result', { canceled: result.canceled, files })
     return files
+  })
+
+  ipcMain.handle('select-image', async () => {
+    if (!mainWindow) return null
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose an Image to Draw On',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp', 'heic', 'gif'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    })
+    const file = result.canceled ? null : result.filePaths[0] ?? null
+    logEvent('ipc', 'select-image result', { canceled: result.canceled, file })
+    return file
+  })
+
+  /**
+   * The editor's own look at a drawing: one still of the chosen template in the chosen style.
+   *
+   * The same module builds this graph as builds the export's, so what is being judged is what will be
+   * encoded rather than an impression of it. The frame is taken at a fixed quality and handed back as a
+   * data URL, because it is a picture for a monitor rather than a file for anything to keep.
+   */
+  ipcMain.handle('visualization-still', async (_, options: {
+    sources: string[]
+    template: 'waveform' | 'eq' | 'spectrum'
+    color?: string
+    background?: 'colour' | 'still' | 'image'
+    backgroundColor?: string
+    backgroundImage?: string
+    width?: number
+    height?: number
+    fps?: number
+  }) => {
+    const sources = (options.sources ?? []).filter((source) => { try { return fs.statSync(source).isFile() } catch { return false } })
+    // Nothing to draw from is not an error: a job whose sound has not been probed yet simply has no still
+    // to show, and the monitor says as much with its own placeholder.
+    if (!sources.length) return null
+    const width = Math.max(2, Math.round(options.width ?? 1280))
+    const height = Math.max(2, Math.round(options.height ?? 720))
+    const fps = Math.max(1, options.fps ?? 30)
+    const wantsPicture = options.background === 'still' || options.background === 'image'
+    const backgroundImage = wantsPicture && options.backgroundImage && fs.existsSync(options.backgroundImage) ? options.backgroundImage : null
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-viz-'))
+    const stillPath = path.join(dir, 'still.jpg')
+    try {
+      // How long the drawing is given to fill before it is photographed, clamped to the shortest sound it
+      // is drawn from — a frame asked for after a source has ended is a frame that arrives empty.
+      let shortest = Number.POSITIVE_INFINITY
+      for (const source of sources) {
+        try { shortest = Math.min(shortest, Number((await probeFile(source)).duration || 0)) } catch { /* an unreadable length leaves the others */ }
+      }
+      const warmup = Number.isFinite(shortest) && shortest > 0 ? stillWarmupSeconds(options.template, shortest) : 0
+      const args = ['-hide_banner', '-loglevel', 'error', '-y', ...sources.flatMap((source) => ['-i', source])]
+      if (backgroundImage) args.push('-loop', '1', '-framerate', String(fps), '-i', backgroundImage)
+      const background = backgroundImage ? { input: sources.length } : (options.backgroundColor || VISUALIZATION_BACKGROUND)
+      const graph = visualizationStillGraph({
+        template: options.template,
+        width,
+        height,
+        fps,
+        color: options.color || VISUALIZATION_COLOR,
+        sources: sources.map((_, index) => `${index}:a`),
+        background,
+      })
+      args.push('-filter_complex', graph, '-map', '[out]')
+      if (warmup > 0.001) args.push('-ss', warmup.toFixed(3))
+      args.push('-frames:v', '1', '-q:v', '3', stillPath)
+      await runFfmpeg(args, 30000)
+      return `data:image/jpeg;base64,${(await fs.promises.readFile(stillPath)).toString('base64')}`
+    } catch (error) {
+      logEvent('ipc', 'visualization still failed', { sources, error: String(error) })
+      return null
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+    }
   })
 
   ipcMain.handle('expand-media-paths', async (_, inputPaths: string[]) => {

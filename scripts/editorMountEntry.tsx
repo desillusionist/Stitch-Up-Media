@@ -24,6 +24,9 @@ window.addEventListener('error', (event) => { errors.push(String(event.message |
 window.addEventListener('unhandledrejection', (event) => { errors.push('unhandled rejection: ' + String(event.reason)) })
 
 const listeners: Array<(task: unknown) => void> = []
+/** Every still the window has asked for, so a monitor that cannot PLAY a stubbed file is not mistaken for
+ * one that was never asked to draw anything. */
+const stillRequests: unknown[] = []
 const noop = async () => undefined
 /** Every patch the window has sent, so the harness can read what a choice turned into. */
 const applied: unknown[] = []
@@ -49,6 +52,11 @@ const bridge = {
   applySourceTiming: noop, syncEditJobTask: noop, cancelEditJob: noop,
   rememberPreview: noop, openEditJob: noop, quickLook: noop, diagnosticLog: noop,
   applyEditJob: async (patch: unknown) => { applied.push(patch) },
+  // A sentinel rather than a real still: what is being checked is whether the MONITOR asks for one and
+  // draws it, not what ffmpeg would put in it — `check-tail` and the still graph's own assertions are
+  // what answer that.
+  visualizationStill: async (options: unknown) => { stillRequests.push(options); return 'data:image/jpeg;base64,DRAWING-SENTINEL' },
+  selectImage: async () => '/tmp/chosen.png',
 }
 // A cast through `unknown`, because the project declares `window.electronAPI` globally as the real
 // bridge and a stub is deliberately not that: it answers the calls the editor makes on mount and
@@ -117,6 +125,14 @@ const pictureSourceSelect = () => [...document.querySelectorAll('.editor-field')
   .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('PICTURE SOURCE'))
   ?.querySelector('select') as HTMLSelectElement | null
 
+/** And the BACKGROUND one, which is the choice that grew a third option in this pass. */
+const backgroundSelect = () => [...document.querySelectorAll('.editor-field')]
+  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('BACKGROUND'))
+  ?.querySelector('select') as HTMLSelectElement | null
+
+/** Whether the monitor is drawing the still it was handed, found by the name the window gives it. */
+const monitorDrawing = () => Boolean(document.querySelector('img[alt="DRAWING THE SOUND"]'))
+
 const clickTab = (name: string) => {
   const button = [...document.querySelectorAll('.export-tabs button')].find((candidate) => candidate.textContent?.trim() === name)
   ;(button as HTMLButtonElement | undefined)?.click()
@@ -168,6 +184,9 @@ const drive = async () => {
   const soundSelect = pictureSourceSelect()
   const pictureSource = soundSelect ? { value: soundSelect.value, options: [...soundSelect.options].map((option) => option.value) } : null
   if (soundSelect) choose(soundSelect, 'visualization')
+  await wait(120)
+  // The background control only exists once the picture source IS a drawing, so it is read after choosing.
+  const background = backgroundSelect()
   result.audio = {
     gate: {
       containerShown,
@@ -177,7 +196,19 @@ const drive = async () => {
     audioFields: labelsOf('.editor-field'),
     audioToggles: labelsOf('.editor-toggle'),
     pictureSource,
+    background: background ? [...background.options].map((option) => option.value) : null,
     drawnFields: soundSelect ? labelsOf('.editor-field') : null,
+  }
+  // What the monitor DID. The still is asked for over IPC and delayed, so this waits past the debounce;
+  // the request itself is recorded too, because a monitor that could not play a stubbed file would
+  // otherwise be indistinguishable from one that was never asked.
+  await wait(600)
+  result.audio = {
+    ...(result.audio as object),
+    monitorDrawing: monitorDrawing(),
+    screen: document.querySelector('.editor-screen-message')?.textContent ?? null,
+    stillAlts: [...document.querySelectorAll('.editor-still')].map((img) => img.getAttribute('alt')),
+    stillRequests,
   }
   // What the choice becomes: the patch the window hands the queue, which is where the drawing has to
   // arrive for the encoder to be asked for it at all. `check-tail` proves the encoder then draws; this is

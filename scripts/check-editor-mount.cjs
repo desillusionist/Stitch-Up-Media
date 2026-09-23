@@ -82,6 +82,28 @@ app.whenReady().then(async () => {
         }
       }
       if (audio.audioToggles.some((label) => label === 'COVER ART')) problems.push('cover art was offered for a container that holds a picture, not artwork')
+      // What the drawing sits on, which is the choice this pass extended. A job with no still in it must not
+      // be offered the still as a background, and must be offered the uploaded image.
+      if (!audio.background) problems.push('the background control was not drawn for a drawing')
+      else {
+        if (!audio.background.includes('colour')) problems.push('the background offers no flat colour')
+        if (!audio.background.includes('image')) problems.push('the background offers no uploaded image')
+        if (audio.background.includes('still')) problems.push('the background offers the still for a job that has none')
+      }
+      // What the monitor DID ask for. This is the assertion rather than the picture itself on purpose: the
+      // bridge here is a stub with no playable media behind it, so the monitor shows its own decode notice
+      // and the still never gets a chance to be drawn — a window that could not play and one that was never
+      // asked are the same thing to this harness. What CAN be checked is that the monitor asked, and asked
+      // for the right thing; that the drawing is what it draws is `check-tail`'s and `verify`'s business.
+      const asks = Array.isArray(audio.stillRequests) ? audio.stillRequests : []
+      if (!asks.length) problems.push('the monitor never asked for a still of the drawing it was showing')
+      else {
+        const ask = asks[asks.length - 1]
+        if (String(ask.sources) !== '/tmp/track.wav') problems.push(`the monitor's still was drawn from ${JSON.stringify(ask.sources)} rather than the job's own sound`)
+        if (ask.template !== 'waveform') problems.push(`the monitor's still was of ${ask.template} rather than the template chosen`)
+        if (ask.background !== 'colour') problems.push(`the monitor's still sat on ${ask.background} rather than the background chosen`)
+        if (ask.width !== 1920 || ask.height !== 1080) problems.push(`the monitor's still was made at ${ask.width}x${ask.height} rather than the output frame`)
+      }
       if (audio.appliedPicture !== 'visualization') problems.push(`choosing the drawing sent a patch with picture source ${audio.appliedPicture} rather than the drawing, so the encoder is never asked for one`)
       const stitch = result.stitch
       if (!stitch) problems.push('the stitch-of-sounds job reported nothing at all')
