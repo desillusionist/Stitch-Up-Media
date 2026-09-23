@@ -169,7 +169,10 @@ final class FilmstripView: NSView {
     var start = 0.0 { didSet { updateSelection() } }
     var end = 1.0 { didSet { updateSelection() } }
     var playheadValue = 0.0 { didSet { updateSelection() } }
-    var selectedHandle = "in" { didSet { updateSelection() } }
+    /// Which of the three is the active one. It starts as the SKIMMER: opening Quick Look is not a statement
+    /// about which trim bound the user means, so neither handle is picked out until one is taken hold of or a
+    /// hotkey names it.
+    var selectedHandle = "playhead" { didSet { updateSelection() } }
     var onHandleChange: ((String, Double) -> Void)?
     var onHandleSelected: ((String) -> Void)?
     var onPlayheadSelected: (() -> Void)?
@@ -635,6 +638,17 @@ final class FilmstripView: NSView {
         glideZoom(to: restoreZoom, anchorFrame: skimmerFrame, anchorX: Double(bounds.width) / 2)
     }
 
+    /// Slides the strip so the skimmer is back inside it, and repaints.
+    ///
+    /// Moving the skimmer with a key is the same thing as dragging it: the frame it lands on has to be on
+    /// screen, or the arrows move something nobody can see. Dragging and the wheel already do this; this is
+    /// the arrow keys' way in, and it is the same arithmetic.
+    func revealSkimmer() {
+        keepSkimmerVisible()
+        tileStrip(paint: true)
+        updateSelection()
+    }
+
     /**
      * A scroll here scrubs, or pans — the two axes are two gestures.
      *
@@ -652,7 +666,9 @@ final class FilmstripView: NSView {
     override func scrollWheel(with event: NSEvent) {
         let dx = Double(event.scrollingDeltaX), dy = Double(event.scrollingDeltaY)
         if abs(dx) > abs(dy) {
-            offset = stripPannedOffset(offset: offset, deltaPixels: dx, stripWidth: stripWidth, viewportWidth: viewportWidth)
+            // The pan follows the swipe: a hand moving the content one way carries the strip that way. The scroll
+            // delta runs the other way round from a drag, so the offset takes its opposite.
+            offset = stripPannedOffset(offset: offset, deltaPixels: -dx, stripWidth: stripWidth, viewportWidth: viewportWidth)
             tileStrip(paint: true)
             updateSelection()
             return
@@ -794,12 +810,16 @@ final class TimelineScaleView: NSView {
      * The pace and the pivot are the strip's own business; this only says that a scroll over the ruler is a
      * zoom and one over the strip is a scrub. The sign is normalised to the timeline's own — see the strip's
      * `scrollWheel` — so a wheel turned away from the viewer zooms in, exactly as it does over the timeline.
+     *
+     * The delta is passed through `stripWheelDelta` first, so a wheel notch and a trackpad flick are the same
+     * kind of number: this is the one place the zoom is driven from, and a raw notch of 1 would be a hundredth
+     * of a turn.
      */
     override func scrollWheel(with event: NSEvent) {
         guard let filmstrip, filmstrip.bounds.width > 1 else { return }
-        let delta = -(event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX)
-        guard delta != 0 else { return }
-        filmstrip.zoom(byDelta: Double(delta))
+        let raw = -(event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX)
+        guard raw != 0 else { return }
+        filmstrip.zoom(byDelta: stripWheelDelta(raw: Double(raw), precise: event.hasPreciseScrollingDeltas))
     }
 
     /** A press here is a press on a ruler: nothing to drag, and nothing to hand on to the strip. */
@@ -810,7 +830,7 @@ final class PreviewView: NSView {
     let appTitlebar = NSView()
     let appTitle = NSTextField(labelWithString: "STITCH UP MEDIA // QUICK LOOK")
     let doneButton = NSButton(title: "DONE", target: nil, action: nil); let revertButton = NSButton(title: "REVERT", target: nil, action: nil); let cancelButton = NSButton(title: "CANCEL", target: nil, action: nil)
-    let inField = TimecodeField(string: ""); let outField = TimecodeField(string: ""); let screenshotFolderButton = NSButton(title: "↗", target: nil, action: nil); let trimmedDurationLabel = NSTextField(labelWithString: ""); let titleLabel = NSTextField(labelWithString: ""); let toastLabel = NSTextField(labelWithString: ""); let timestampLabel = NSTextField(labelWithString: ""); let sourceStampLabel = NSTextField(labelWithString: ""); let dimsLabel = NSTextField(labelWithString: "")
+    let inField = TimecodeField(string: ""); let outField = TimecodeField(string: ""); let screenshotFolderButton = NSButton(title: "↗", target: nil, action: nil); let trimmedDurationLabel = NSTextField(labelWithString: ""); let titleLabel = NSTextField(labelWithString: ""); let toastLabel = NSTextField(labelWithString: ""); let timestampLabel = NSTextField(labelWithString: ""); let sourceStampLabel = NSTextField(labelWithString: ""); let dimsLabel = NSTextField(labelWithString: ""); let zoomLabel = NSTextField(labelWithString: "")
     private var titleHideWork: DispatchWorkItem?
     private var undoStack: [(Double, Double)] = []
     private var redoStack: [(Double, Double)] = []
@@ -831,13 +851,28 @@ final class PreviewView: NSView {
         dimsLabel.textColor = crtGreen.withAlphaComponent(0.55); dimsLabel.font = NSFont(name: dotoFontName, size: 10) ?? NSFont.monospacedSystemFont(ofSize: 10, weight: .regular); dimsLabel.alignment = .center; dimsLabel.translatesAutoresizingMaskIntoConstraints = false; dimsLabel.wantsLayer = true; addSubview(dimsLabel); if stillMode, let rep = NSImage(contentsOf: url)?.representations.first { dimsLabel.stringValue = "\(rep.pixelsWide) × \(rep.pixelsHigh)" } else if let track = asset.tracks(withMediaType: .video).first { let mapped = track.naturalSize.applying(track.preferredTransform); let fps = max(1, Int(displayFps.rounded())); dimsLabel.stringValue = "\(Int(abs(mapped.width))) × \(Int(abs(mapped.height))) • \(fps) FPS" }
         timestampLabel.textColor = crtGreen; timestampLabel.font = NSFont(name: dotoFontName, size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .medium); timestampLabel.alignment = .center; timestampLabel.translatesAutoresizingMaskIntoConstraints = false; timestampLabel.wantsLayer = true; timestampLabel.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.45).cgColor; timestampLabel.layer?.cornerRadius = 3; addSubview(timestampLabel)
         sourceStampLabel.textColor = crtGreen; sourceStampLabel.font = NSFont(name: dotoFontName, size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .medium); sourceStampLabel.alignment = .center; sourceStampLabel.translatesAutoresizingMaskIntoConstraints = false; sourceStampLabel.wantsLayer = true; sourceStampLabel.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.45).cgColor; sourceStampLabel.layer?.cornerRadius = 3; addSubview(sourceStampLabel)
+        // The zoom's readout, sitting between CUR and SRC along the foot of the monitor. White on the same
+        // dark plate as its neighbours, and live: it is redrawn from the strip's own zoom every time the zoom
+        // or the scroll moves, so a wheel over the ruler counts up as it turns.
+        zoomLabel.textColor = .white; zoomLabel.font = NSFont(name: dotoFontName, size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .medium); zoomLabel.alignment = .center; zoomLabel.translatesAutoresizingMaskIntoConstraints = false; zoomLabel.wantsLayer = true; zoomLabel.layer?.backgroundColor = NSColor(calibratedWhite: 0, alpha: 0.45).cgColor; zoomLabel.layer?.cornerRadius = 3; zoomLabel.isHidden = true; addSubview(zoomLabel)
         trimmedDurationLabel.textColor = crtGreen; trimmedDurationLabel.font = NSFont(name: dotoFontName, size: 11) ?? NSFont.monospacedSystemFont(ofSize: 11, weight: .medium); trimmedDurationLabel.alignment = .center; trimmedDurationLabel.translatesAutoresizingMaskIntoConstraints = false; trimmedDurationLabel.wantsLayer = true; addSubview(trimmedDurationLabel)
         filmstrip.translatesAutoresizingMaskIntoConstraints = false; addSubview(filmstrip)
         // The scale sits in the gap between the monitor and the strip, sharing the strip's own leading and
         // trailing edges so a mark stands over the frame it describes. It is told to redraw whenever the
         // strip's range or playhead moves, which is the whole of how the two stay in step.
         scaleView.translatesAutoresizingMaskIntoConstraints = false; scaleView.filmstrip = filmstrip; addSubview(scaleView)
-        filmstrip.onScaleChange = { [weak self] in self?.scaleView.needsDisplay = true }
+        filmstrip.onScaleChange = { [weak self] in
+            guard let self else { return }
+            self.scaleView.needsDisplay = true
+            // The zoom readout is part of the same publish: whenever the strip says its geometry moved, the
+            // count is re-read from it. The text only changes on a real change of zoom, so this does not
+            // un-hide the readout for a mere pan.
+            let text = self.zoomText()
+            if self.zoomLabel.stringValue != text {
+                self.zoomLabel.stringValue = text
+                if !self.stillMode { self.zoomLabel.isHidden = false; self.scheduleOverlayHide() }
+            }
+        }
         [inField, outField, doneButton, revertButton, cancelButton, screenshotFolderButton].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
         screenshotFolderButton.title = "↗"; screenshotFolderButton.toolTip = "Open screenshot folder"; screenshotFolderButton.isHidden = true; screenshotFolderButton.font = NSFont(name: dotoFontName, size: 13) ?? NSFont.monospacedSystemFont(ofSize: 13, weight: .medium); screenshotFolderButton.contentTintColor = crtGreen; screenshotFolderButton.isBordered = false; screenshotFolderButton.target = self; screenshotFolderButton.action = #selector(openScreenshotFolder)
         addSubview(screenshotFolderButton)
@@ -883,6 +918,7 @@ final class PreviewView: NSView {
                 screenshotFolderButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), screenshotFolderButton.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12), screenshotFolderButton.widthAnchor.constraint(equalToConstant: 28), screenshotFolderButton.heightAnchor.constraint(equalToConstant: 24),
                     timestampLabel.leadingAnchor.constraint(equalTo: playerView.leadingAnchor, constant: 12), timestampLabel.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12),
                     sourceStampLabel.trailingAnchor.constraint(equalTo: playerView.trailingAnchor, constant: -12), sourceStampLabel.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12),
+                    zoomLabel.centerXAnchor.constraint(equalTo: playerView.centerXAnchor), zoomLabel.bottomAnchor.constraint(equalTo: playerView.bottomAnchor, constant: -12),
                 trimmedDurationLabel.centerXAnchor.constraint(equalTo: centerXAnchor), trimmedDurationLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
                 playerView.topAnchor.constraint(equalTo: appTitlebar.bottomAnchor), playerView.leadingAnchor.constraint(equalTo: leadingAnchor), playerView.trailingAnchor.constraint(equalTo: trailingAnchor), playerView.bottomAnchor.constraint(equalTo: scaleView.topAnchor, constant: -10),
                 // The scale and the strip share both edges exactly: this is what makes a mark stand over
@@ -907,8 +943,14 @@ final class PreviewView: NSView {
     override func mouseEntered(with event: NSEvent) { showOverlay() }
     override func mouseMoved(with event: NSEvent) { showOverlay() }
     override func mouseExited(with event: NSEvent) { scheduleOverlayHide() }
-    private func showOverlay() { titleHideWork?.cancel(); titleLabel.isHidden = false; dimsLabel.isHidden = false; if !stillMode { timestampLabel.isHidden = false; sourceStampLabel.isHidden = false }; scheduleOverlayHide() }
-    private func scheduleOverlayHide() { titleHideWork?.cancel(); guard player.rate != 0 else { return }; let work = DispatchWorkItem { [weak self] in self?.titleLabel.isHidden = true; self?.timestampLabel.isHidden = true; self?.sourceStampLabel.isHidden = true; self?.dimsLabel.isHidden = true }; titleHideWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work) }
+    private func showOverlay() { titleHideWork?.cancel(); titleLabel.isHidden = false; dimsLabel.isHidden = false; if !stillMode { timestampLabel.isHidden = false; sourceStampLabel.isHidden = false; zoomLabel.isHidden = false }; scheduleOverlayHide() }
+    private func scheduleOverlayHide() { titleHideWork?.cancel(); guard player.rate != 0 else { return }; let work = DispatchWorkItem { [weak self] in self?.titleLabel.isHidden = true; self?.timestampLabel.isHidden = true; self?.sourceStampLabel.isHidden = true; self?.dimsLabel.isHidden = true; self?.zoomLabel.isHidden = true }; titleHideWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work) }
+    /// The zoom, as the readout between CUR and SRC: how many times the base rate the strip is drawn at.
+    private func zoomText() -> String {
+        let zoom = filmstrip.zoom
+        guard zoom.isFinite, zoom > 0 else { return "ZOOM —" }
+        return String(format: "ZOOM %.2f×", zoom)
+    }
     override func scrollWheel(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
         if playerView.frame.contains(location) {
@@ -934,6 +976,7 @@ final class PreviewView: NSView {
             let value = event.keyCode == 126 ? filmstrip.start : filmstrip.end
             filmstrip.playheadValue = value
             seek(to: value)
+            filmstrip.revealSkimmer()
             return
         }
         if event.keyCode == 123 || event.keyCode == 124 { step(handle: filmstrip.selectedHandle, delta: event.keyCode == 124 ? 1 : -1); return }
@@ -986,6 +1029,9 @@ final class PreviewView: NSView {
             selectionChanged(start: filmstrip.start, end: value, seek: true)
         }
         filmstrip.skimThumbnail(at: filmstrip.selectedHandle == "in" ? filmstrip.start : filmstrip.selectedHandle == "out" ? filmstrip.end : filmstrip.playheadValue)
+        // A key that moved the skimmer has to bring it back on screen, exactly as a drag does: the frame it
+        // landed on is the thing being looked at, and off the edge of the strip is not looked at.
+        filmstrip.revealSkimmer()
     }
     private func parseTimecode(_ raw: String) -> Double? {
         let value = raw.trimmingCharacters(in: .whitespaces)
@@ -1021,7 +1067,15 @@ final class PreviewView: NSView {
     private func selectionChanged(start: Double, end: Double, seek seekPreview: Bool) {
         filmstrip.start = max(0, min(start, end - 0.001)); filmstrip.end = min(1, max(end, filmstrip.start + 0.001))
         inField.stringValue = "IN " + stamp(filmstrip.start * sourceDuration); outField.stringValue = "OUT " + stamp(filmstrip.end * sourceDuration); updateTrimmedDurationLabel()
-        if seekPreview { let value = filmstrip.selectedHandle == "in" ? filmstrip.start : filmstrip.end; filmstrip.playheadValue = value; seek(to: value) }
+        // The skimmer follows whichever element is active: a handle when one is, and the skimmer's own place
+        // when neither is. Falling to the out-point by default would make an undo (which seeks through here)
+        // jump the monitor to the end of the trim for no reason.
+        if seekPreview {
+            let value = filmstrip.selectedHandle == "in" ? filmstrip.start
+                : filmstrip.selectedHandle == "out" ? filmstrip.end
+                : filmstrip.playheadValue
+            filmstrip.playheadValue = value; seek(to: value)
+        }
     }
     private func seek(to value: Double) {
         let bounded = max(filmstrip.start, min(filmstrip.end, value))

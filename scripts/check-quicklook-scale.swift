@@ -229,6 +229,15 @@ enum CheckScale {
         check("a single tick is gentle", stripZoomedBy(2, delta: -1) < 2.1, true)
         check("and a flick is not much more than a tick", stripZoomedBy(2, delta: -200) < 2.13, true)
         check("the two directions are each other's inverse", abs(stripZoomedBy(stripZoomedBy(2, delta: -12), delta: 12) - 2) < 1e-9, true)
+        // A MOUSE WHEEL and a TRACKPAD report the same gesture in different units, so the same raw number is
+        // two different things. A notch of 1 is given a gesture's weight, which is what stops the zoom taking
+        // several notches to budge and then jumping once a fast turn coalesced into a bigger number.
+        check("a precise delta is passed straight through", stripWheelDelta(raw: 12, precise: true), 12)
+        check("a wheel notch is given a gesture's weight", stripWheelDelta(raw: 1, precise: false), 24)
+        check("a double notch twice that", stripWheelDelta(raw: 2, precise: false), 48)
+        check("and nothing is nothing", stripWheelDelta(raw: 0, precise: true), 0)
+        check("the FIRST wheel notch already moves the zoom", stripZoomedBy(2, delta: stripWheelDelta(raw: -1, precise: false)) > 2.05, true)
+        check("and a rapid turn is only a little more", stripZoomedBy(2, delta: stripWheelDelta(raw: -10, precise: false)) < 2.13, true)
         // A scrub is a share of the source rather than a fixed number of seconds, so a wheel over a close-up
         // covers a small stretch of it and one over the overview a large one.
         check("a scrub step is the same at every zoom, as a share of the source", stripScrubSeconds(delta: 30, duration: 10), stripScrubSeconds(delta: 30, duration: 10))

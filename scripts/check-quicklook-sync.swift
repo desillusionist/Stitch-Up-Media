@@ -151,6 +151,10 @@ enum CheckQuickLookSync {
         check("the source is the six seconds it was built as", totalFrames == 60, "\(totalFrames)")
         check("the strip is laid out", filmstrip.bounds.width == width, "\(filmstrip.bounds.width)")
         check("and something was asked to be laid out in it", !filmstrip.tileViews.isEmpty, "no tile views at all")
+        // Opening Quick Look is not a statement about which trim bound the user means, so neither handle is
+        // picked out until one is taken hold of or a hotkey names it — the skimmer is the one in hand.
+        check("neither trim handle is active when the window opens", filmstrip.selectedHandle == "playhead", "\(filmstrip.selectedHandle)")
+        check("so neither is drawn as active", (filmstrip.inHandle.layer?.borderWidth ?? 0) == 0 && (filmstrip.outHandle.layer?.borderWidth ?? 0) == 0, "in \(filmstrip.inHandle.layer?.borderWidth ?? -1), out \(filmstrip.outHandle.layer?.borderWidth ?? -1)")
 
         let overview = tiles(filmstrip)
         let overviewZoom = filmstrip.zoom
@@ -248,6 +252,19 @@ enum CheckQuickLookSync {
         }
         print("  \(matched) of \(shown.count) tiles read back as the frame they name")
         check("every tile in view shows the frame it was given", matched == shown.count && shown.count > 3, "\(matched) of \(shown.count)")
+
+        section("a key that moves the skimmer brings it back on screen")
+        // An arrow key moves the skimmer, and the frame it lands on has to be on screen — the same thing a drag
+        // does. Without this the skimmer moves off the edge of the strip and the monitor shows a frame nobody
+        // can point at.
+        for _ in 0..<24 { filmstrip.zoom(byDelta: -1000) }
+        settle(filmstrip)
+        filmstrip.playheadValue = 0.98
+        filmstrip.revealSkimmer()
+        pump(0.4)
+        let revealedX = filmstrip.screenX(forValue: filmstrip.playheadValue)
+        print("  the skimmer stands at \(Int(revealedX))px of \(Int(width)) after a reveal")
+        check("a reveal brings the skimmer back into the window", revealedX >= 0 && revealedX <= width + 0.5, "\(revealedX) in \(width)")
 
         section("the trim overlay over the pictures")
         // The bounds, the handles and the skimmer are what the strip is FOR. A tile drawn on top of them hides

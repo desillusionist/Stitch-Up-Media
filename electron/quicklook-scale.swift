@@ -69,26 +69,43 @@ func stripFitZoom(duration: Double, availableWidth: Double) -> Double {
 }
 
 ///
-/// A wheel notch's worth of zoom, eased — the timeline's own pace, so a trackpad and a wheel feel alike.
+/// A wheel notch's worth of zoom.
 ///
-/// Held above the floor it is given, so a wheel turned to zoom out settles at the fit rather than opening a
-/// gap wider than the window.
+/// The pace starts moving on the first event and settles at a cap, rather than easing in from nothing: an ease
+/// that is flat near zero is what made the strip take several notches to budge and then jump once a fast turn
+/// coalesced into a larger number. `eased` reaches most of its value within a notch or two of a real wheel, so
+/// the first notch is already a visible step and the tenth is only a little more.
+///
+/// Held above the floor it is given, so a wheel turned to zoom out settles at the fit rather than opening a gap
+/// wider than the window.
 func stripZoomedBy(_ zoom: Double, delta: Double, floor: Double = STRIP_ZOOM_MIN) -> Double {
     guard delta.isFinite, delta != 0 else { return zoom }
-    let eased = tanh(abs(delta) / 40)
+    let eased = tanh(abs(delta) / 24)
     let factor = 1 + 0.06 * eased
     return clampStripZoom(delta < 0 ? zoom * factor : zoom / factor, floor: floor)
 }
 
 ///
+/// A scroll event's delta, normalised so a wheel notch and a trackpad flick are the same kind of number.
+///
+/// AppKit reports a mouse wheel in coarse notches — `hasPreciseScrollingDeltas` false, a delta of 1 or 3 a
+/// notch — and a trackpad in fine points, where the same gesture is dozens of small deltas. Taken raw, one
+/// number means two different things: a notch of 1 barely moves the zoom while a trackpad's many small deltas
+/// add up quickly, and a fast wheel that coalesces into one bigger number jumps. A notch is given the weight
+/// of a real gesture here, so the two devices answer alike and the first notch already moves the strip.
+func stripWheelDelta(raw: Double, precise: Bool) -> Double {
+    guard raw.isFinite, raw != 0 else { return 0 }
+    return precise ? raw : raw * 24
+}
+
+///
 /// Where a horizontal scroll leaves the strip: the offset moved by the scroll, held inside the drawing.
 ///
-/// The two axes over the strip are separate gestures: a wheel turned up or down scrubs the skimmer, and a
-/// swipe left or right PANS. This is the pan's arithmetic, and like the zoom's it is a model question rather
-/// than a drawing one — the offset is pixels of strip scrolled off to the left, so panning is adding to it.
-/// A swipe that scrolls the content leftward (the natural gesture for looking further along) carries a
-/// positive delta and moves the offset the same way. A source already narrower than the room, or a window
-/// that is not scrolled, has nowhere to pan to and stays at its end.
+/// The two axes over the strip are separate gestures: a wheel turned up or down scrubs the skimmer, and a swipe
+/// left or right PANS. This is the pan's arithmetic, and like the zoom's it is a model question rather than a
+/// drawing one — the offset is pixels of strip scrolled off to the left, so panning is adding to it. The sign
+/// of the delta is the caller's: a positive one moves the drawing further along. A source already narrower
+/// than the room, or a window that is not scrolled, has nowhere to pan to and stays at its end.
 func stripPannedOffset(offset: Double, deltaPixels: Double, stripWidth: Double, viewportWidth: Double) -> Double {
     guard stripWidth.isFinite, viewportWidth.isFinite, viewportWidth > 0 else { return 0 }
     let room = stripWidth - viewportWidth
