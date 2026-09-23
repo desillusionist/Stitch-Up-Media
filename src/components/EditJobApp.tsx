@@ -48,7 +48,7 @@ import { DEFAULT_FIT_OFFSET, cropFractionsOf, fitOffsetWithin, hasInsets, innerB
 import { useConsolidatedPlayback } from '../hooks/useConsolidatedPlayback'
 import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 import { placeMenu } from '../lib/menuPlacement'
-import { emptyHistory, DraftHistory, recordChange, stepHistory as stepBack } from '../lib/draftHistory'
+import { emptyHistory, DraftHistory, endGesture, recordChange, stepHistory as stepBack } from '../lib/draftHistory'
 import { NumberField } from './NumberField'
 
 const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
@@ -430,6 +430,15 @@ export const EditJobApp: React.FC = () => {
    * function that is rebuilt on every render.
    */
   const historyRef = useRef<DraftHistory<QueueTask>>(emptyHistory())
+  /**
+   * The drag in progress, as the draft was before it began, or nothing when no drag is running.
+   *
+   * A drag writes the draft on every pointer move, because that is what makes the picture follow the
+   * pointer. Remembered one step per move, a single drag took dozens of presses to walk back — each of
+   * them a twitch rather than the drag. While this is set the writes are made without being remembered,
+   * and the one step the gesture earned is recorded when it ends. See `endGesture`.
+   */
+  const gestureRef = useRef<QueueTask | null>(null)
   const undoRedoRef = useRef<{ undo: () => void; redo: () => void }>({ undo: () => undefined, redo: () => undefined })
   /** Boundary whose transition editor is open, by index of the clip it follows, or a timeline edge. */
   const [openBoundary, setOpenBoundary] = useState<number | 'head' | 'tail' | null>(null)
@@ -1382,14 +1391,29 @@ export const EditJobApp: React.FC = () => {
    */
   const updateDraft = (changes: Partial<QueueTask>) => {
     const current = latest()
-    const history = recordChange(historyRef.current, current, changes)
-    if (history) historyRef.current = history
+    // A gesture is remembered once, when it ends, rather than once per move: see `gestureRef`.
+    if (!gestureRef.current) {
+      const history = recordChange(historyRef.current, current, changes)
+      if (history) historyRef.current = history
+    }
     const next = { ...current, ...changes }
     draftRef.current = next
     setDraft(next)
   }
+  /** Starts treating the writes that follow as one step, from the draft as it stands now. */
+  const beginGesture = () => { if (!gestureRef.current) gestureRef.current = latest() }
+  /** Ends it, remembering the whole gesture as the single step it was. */
+  const finishGesture = () => {
+    const before = gestureRef.current
+    gestureRef.current = null
+    if (!before) return
+    const history = endGesture(historyRef.current, before, latest())
+    if (history) historyRef.current = history
+  }
   /** Steps the draft back or forward one edit, if there is one to step to. */
   const stepHistory = (direction: 'undo' | 'redo') => {
+    // A step taken mid-drag would leave the gesture holding a state it is no longer the one before.
+    gestureRef.current = null
     const moved = stepBack(historyRef.current, latest(), direction)
     if (!moved) return
     historyRef.current = moved.history
@@ -2108,10 +2132,14 @@ export const EditJobApp: React.FC = () => {
    */
   const trackCropDrag = (move: (event: PointerEvent) => void) => {
     setCropDragging(true)
+    // Three handlers funnel through here, which is why the gesture is opened and closed once, here,
+    // rather than in each of them: one drag is one step back, whichever handle ran it.
+    beginGesture()
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       setCropDragging(false)
+      finishGesture()
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -2398,6 +2426,8 @@ export const EditJobApp: React.FC = () => {
    */
   const beginFitDrag = (event: React.PointerEvent) => {
     if (!canPlacePicture || !placement || !frameRect || !outputFrame || !activeFitKey) return
+    // The whole drag is one step back, however many moves it takes to make it.
+    beginGesture()
     const start = { x: event.clientX, y: event.clientY }
     const from = pictureOffset
     const mode = activeFit?.mode ?? 'contain'
@@ -2425,6 +2455,7 @@ export const EditJobApp: React.FC = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       if (moved) pannedAtRef.current = Date.now()
+      finishGesture()
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -2542,12 +2573,12 @@ export const EditJobApp: React.FC = () => {
                   {playback.error
                     ? <span className="editor-screen-message">{playback.error}</span>
                     : stillFrameJob
-                      ? <img className="editor-still" style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} ref={stillFrameRef} />
+                      ? <img className="editor-still" draggable={false} style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} ref={stillFrameRef} />
                       // A picture file is drawn as a picture, whichever branch the timeline took to get
                       // here — the segment's own flag is not consulted, because the target is what would
                       // be decoded and it is the target that decides how to decode it.
                       : monitorShowsImage
-                        ? <img className="editor-still" style={{ ...mediaStyle, opacity: previewGain }} src={elementUrl ?? mediaUrl(playback.segment?.sourcePath ?? '')} alt={sourceName(playback.segment?.sourcePath ?? '')} onLoad={measureNatural} ref={stillFrameRef} />
+                        ? <img className="editor-still" draggable={false} style={{ ...mediaStyle, opacity: previewGain }} src={elementUrl ?? mediaUrl(playback.segment?.sourcePath ?? '')} alt={sourceName(playback.segment?.sourcePath ?? '')} onLoad={measureNatural} ref={stillFrameRef} />
                         // Sound with no picture: a waveform, never a <video>. The element would be
                         // asked for a frame out of a file that has none.
                         : monitorIsAudio

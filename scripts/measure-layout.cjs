@@ -312,7 +312,11 @@ const measure = `(() => {
     const element = document.getElementById(id)
     if (!element) return null
     const style = getComputedStyle(element)
-    return { color: style.borderLeftColor, height: +element.getBoundingClientRect().height.toFixed(2), text: element.textContent }
+    const box = element.getBoundingClientRect()
+    const rule = element.parentElement.getBoundingClientRect()
+    // The mark's own offset from the scale's top edge is what says which edge it hangs from, which is
+    // the half of the reading a height alone cannot give.
+    return { color: style.borderLeftColor, height: +box.height.toFixed(2), top: +(box.top - rule.top).toFixed(2), text: element.textContent }
   }
   // The shade's own colour at rest and while the box is being dragged: what lies outside the crop is
   // the black the export will letterbox with, and it lifts to see-through only for the gesture that is
@@ -617,6 +621,11 @@ app.whenReady().then(async () => {
       if (scale.minorMark.color === scale.majorMark.color) problems.push('the scale\u2019s subdivisions are as loud as its labelled marks')
       if (Math.abs(scale.minorMark.height - scale.rulerHeight / 4) > 0.5) problems.push(`a subdivision is not a quarter the height of the scale: ${scale.minorMark.height} of ${scale.rulerHeight}`)
       if (Math.abs(scale.majorMark.height - scale.rulerHeight) > 0.5) problems.push(`a labelled mark does not stand the height of the scale: ${scale.majorMark.height} of ${scale.rulerHeight}`)
+      // Which EDGE each rank hangs from: the labelled marks start at the scale's top and the
+      // subdivisions stand on its baseline, so a ruler is read by shape rather than by counting. The
+      // scale's own bottom border is not part of the box the marks are laid out in.
+      if (scale.minorMark.top + scale.minorMark.height < scale.rulerHeight - 1) problems.push(`a subdivision does not stand on the scale\u2019s baseline: it ends at ${(scale.minorMark.top + scale.minorMark.height).toFixed(2)} of ${scale.rulerHeight}`)
+      if (Math.abs(scale.majorMark.top) > 0.5) problems.push(`a labelled mark does not start at the scale\u2019s top: ${scale.majorMark.top}`)
       if (!scale.majorMark.text) problems.push('a labelled mark carries no text')
       if (scale.minorMark.text) problems.push(`a subdivision carries text: ${JSON.stringify(scale.minorMark.text)}`)
     }

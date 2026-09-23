@@ -9,7 +9,7 @@ import { DEFAULT_FIT_OFFSET, clipFilters, cropRegion, croppedSize, fitFilters, f
 import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZoom, panSlack, zoomFitMode, zoomedRaster } from '../src/lib/previewZoom'
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, rulerSteps, rulerTicks, secondsAt, zoomedBy } from '../src/lib/timelineScale'
-import { HISTORY_LIMIT, emptyHistory, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
+import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -1173,6 +1173,16 @@ console.log('\n== undo and redo ==')
   check('and the stack is back as it was', redone?.history, first)
   check('nothing to undo at the start', stepHistory(emptyHistory<typeof draft>(), draft, 'undo'), null)
   check('and nothing to redo at the end', stepHistory(first, draft, 'redo'), null)
+
+  // A DRAG is one step back, however many moves it took. The draft is remembered when the gesture
+  // ends, from the state it was in before it began, so walking a drag back is one press rather than
+  // one per twitch — and a drag that ended where it started leaves no step behind at all.
+  const afterTheDrag = { fps: 25, mutedLanes: { main: true } }
+  const gesture = endGesture(emptyHistory<typeof draft>(), draft, afterTheDrag)
+  check('a drag of fifty moves is one step back', gesture?.past, [draft])
+  check('and stepping back from it shows the state before the drag', stepHistory(gesture!, afterTheDrag, 'undo')?.state, draft)
+  check('and it starts no branch ahead of it', gesture?.future, [])
+  check('a gesture that ended where it began is no step at all', endGesture(emptyHistory<typeof draft>(), draft, { ...draft, mutedLanes: { main: true } }), null)
 
   // The cap. It is a limit on how far back a window can step, not a count of edits made.
   let deep = emptyHistory<{ step: number }>()

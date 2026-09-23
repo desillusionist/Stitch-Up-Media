@@ -55,6 +55,19 @@ export const recordChange = <T extends object>(history: DraftHistory<T>, before:
 }
 
 /**
+ * The history after a GESTURE — a drag — has ended, which is one step however many moves it took.
+ *
+ * A drag writes the draft on every pointer move, because that is what makes the picture follow the
+ * pointer. Recorded one step per move, a single drag took dozens of presses to walk back, and the
+ * press that put it back was a twitch rather than the drag. The rule is stated here rather than at
+ * each of the gestures: the draft's state BEFORE the drag is the step, and everything the drag wrote
+ * is what it steps back from. `recordChange` answers with nothing at all for a drag that came back to
+ * where it started, so a gesture that changed nothing leaves no step behind.
+ */
+export const endGesture = <T extends object>(history: DraftHistory<T>, before: T, after: T): DraftHistory<T> | null =>
+  recordChange(history, before, after)
+
+/**
  * One step back or forward, as the history to keep and the state to show — or null at either end.
  *
  * The step itself is not recorded in either direction, so a run of undos followed by a run of redos
