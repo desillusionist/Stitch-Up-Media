@@ -55,13 +55,38 @@ enum CheckScale {
         check("at the bottom too", clampStripZoom(0.0001), STRIP_ZOOM_MIN)
 
         section("the zoom that fits a source to the room it has")
-        // FIT is the one place the viewport is consulted, and only when it is asked for — the first layout —
-        // so a resize never silently re-decides the zoom.
+        // FIT is the one place the viewport is consulted, and only when it is asked for — the first layout,
+        // or a resize — so a resize never silently re-decides a zoom the user chose.
         check("a ten-second source in 240 pixels fits at 1x", stripFitZoom(duration: 10, availableWidth: 240), 1)
         check("in half the room it fits at half a zoom", stripFitZoom(duration: 10, availableWidth: 120), 0.5)
         check("and in twice the room at twice one", stripFitZoom(duration: 10, availableWidth: 480), 2)
         check("a source with no length has no fit", stripFitZoom(duration: 0, availableWidth: 240), 1)
         check("nor has one with no room", stripFitZoom(duration: 10, availableWidth: 0), 1)
+        // The fit is the FLOOR as well as the fit, and it is not held above the old fixed minimum: an hour at
+        // 24 pixels a second in a 900-pixel window genuinely fits at 0.0104, and a floor of 0.05 would put the
+        // whole source permanently out of reach — the opposite of what a fit is for.
+        check("a long source fits far below the old floor", stripFitZoom(duration: 3600, availableWidth: 900), 900.0 / 86400.0)
+        check("a fit is never deeper than the deepest zoom", stripFitZoom(duration: 1, availableWidth: 100000), STRIP_ZOOM_MAX)
+
+        section("the floor the fit puts under the zoom")
+        // A zoom is held above the fit it is given, so the strip can never be drawn narrower than its window.
+        check("a zoom above the floor is left alone", clampStripZoom(0.5, floor: 0.2), 0.5)
+        check("one below it is raised to it", clampStripZoom(0.1, floor: 0.2), 0.2)
+        check("and one exactly on it stays", clampStripZoom(0.2, floor: 0.2), 0.2)
+        check("the old fixed floor still applies with none given", clampStripZoom(0.0001), STRIP_ZOOM_MIN)
+        var wheeledOut = 0.05
+        for _ in 0..<200 { wheeledOut = stripZoomedBy(wheeledOut, delta: 10000, floor: 0.02) }
+        check("a wheel turned out settles at the floor", wheeledOut, 0.02)
+        check("and one turned in is free to leave it", stripZoomedBy(0.05, delta: -10000, floor: 0.02) > 0.05, true)
+
+        section("panning the strip sideways")
+        // The two axes over the strip are two gestures: a wheel up or down scrubs, a swipe left or right pans.
+        // Panning is the offset moved by the swipe and held inside the drawing — it can never open a gap.
+        check("a swipe carries the strip with it", stripPannedOffset(offset: 100, deltaPixels: 50, stripWidth: 1000, viewportWidth: 200), 150)
+        check("a swipe back the other way returns it", stripPannedOffset(offset: 100, deltaPixels: -50, stripWidth: 1000, viewportWidth: 200), 50)
+        check("it cannot be panned before the start", stripPannedOffset(offset: 10, deltaPixels: -500, stripWidth: 1000, viewportWidth: 200), 0)
+        check("nor past the end", stripPannedOffset(offset: 700, deltaPixels: 500, stripWidth: 1000, viewportWidth: 200), 800)
+        check("a source narrower than the room has nowhere to pan", stripPannedOffset(offset: 0, deltaPixels: 500, stripWidth: 100, viewportWidth: 200), 0)
 
         section("how wide the strip is")
         // The strip is the source's whole length at the zoom's rate, so a longer source is wider and a deeper
@@ -145,15 +170,33 @@ enum CheckScale {
         check("a window at the end stops at the last tile", atEnd.last, 29)
 
         section("the marks a scale carries")
-        // From the zoom alone, so the scale reads the same at every zoom: what changes is what the marks say,
-        // not how many of them are across the screen. Where a frame is wide enough to see, it counts frames.
-        let coarse = rulerSteps(zoom: 0.5, fps: fps)
-        check("a coarse zoom counts in whole seconds", coarse.step, 2)
-        check("with the labelled rank a round distance off", coarse.major, 10)
-        check("and four or five subdivisions between them", coarse.divisor, 5)
+        // The notch is a FRAME, and the step is the finest the frame ladder allows before the notches would
+        // crowd. So within a band the pitch GROWS as the strip is stretched — the notches spread apart, which
+        // is the visual cue — and at the crowded end the step coarsens through the 1-2-5 ladder.
         let close = rulerSteps(zoom: 20, fps: fps)
-        check("a close zoom counts in frames", close.step, 1.0 / 30)
-        check("and labels every so many of them", close.divisor, 5)
+        check("a strip with room for a frame counts in frames", close.step, 1.0 / 30)
+        check("and ranks every so many of them", close.divisor, 5)
+        let deepest = rulerSteps(zoom: 32, fps: fps)
+        check("deeper still, the frame is still the notch", deepest.step, 1.0 / 30)
+        // The cue: within a band, a stretched strip carries its notches FURTHER APART than a shrunk one.
+        check("so the notches spread as the strip is stretched", deepest.step * stripPxPerSec(32) > close.step * stripPxPerSec(20), true)
+        check("and pack together as it is shrunk", rulerSteps(zoom: 8, fps: fps).step * stripPxPerSec(8) < rulerSteps(zoom: 14, fps: fps).step * stripPxPerSec(14), true)
+        // At the crowded end a frame would be a fraction of a pixel apart, so the step coarsens — but never
+        // past the point where a notch sits closer than the crowding floor.
+        let coarse = rulerSteps(zoom: 0.5, fps: fps)
+        check("a crowded strip coarsens to whole frames", coarse.step, 50.0 / 30.0)
+        check("to a pitch no closer than the floor", coarse.step * stripPxPerSec(0.5) >= RULER_MINOR_PX - 1e-9, true)
+        check("and its ranks are whole subdivisions, not one", coarse.divisor > 1, true)
+        for zoom in [0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 32] {
+            let steps = rulerSteps(zoom: Double(zoom), fps: fps)
+            check("at \(zoom)x no notch is closer than the floor", steps.step * stripPxPerSec(Double(zoom)) >= RULER_MINOR_PX - 1e-9, true)
+            check("and every rank is a whole number of subdivisions", abs(steps.major / steps.step - (steps.major / steps.step).rounded()) < 1e-9, true)
+            check("and a rank is never fewer than two subdivisions", steps.divisor >= 2, true)
+        }
+        // A source whose rate is unknown still counts in whole seconds.
+        let noFps = rulerSteps(zoom: 0.5, fps: 0)
+        check("with no frame rate it counts in seconds", abs(noFps.step / 0.5 - (noFps.step / 0.5).rounded()) < 1e-9, true)
+        check("and its ranks are too", abs(noFps.major / 0.5 - (noFps.major / 0.5).rounded()) < 1e-9, true)
         let marks = rulerTicks(duration: 10, zoom: 2, from: 0, to: 10, fps: fps)
         check("the marks span the window that was asked for", marks.first?.time ?? -1, 0)
         check("and no further than the source goes", (marks.last?.time ?? .infinity) <= 10, true)

@@ -200,6 +200,9 @@ final class FilmstripView: NSView {
     private var cachedTiling: StripTiling?
     /// Whether the strip has been fitted to the room it has yet, which only the first layout can do.
     private var fitted = false
+    /// The fit the zoom was last held above, so a resize can tell a strip that WAS the whole source — and so
+    /// has to be re-fitted to the new room — from one the user has deliberately zoomed into.
+    private var lastFloor = 0.0
     /// The zoom a hold-to-zoom gesture was made from, to spring back to.
     private var restoreZoom = 1.0
     /// Whether the window was narrowed by a HOLD, which is let go of when the mouse is released.
@@ -272,19 +275,67 @@ final class FilmstripView: NSView {
 
     override func layout() {
         super.layout()
-        fitIfNeeded()
+        adaptToViewport()
         tileStrip(paint: true)
         updateSelection()
     }
 
-    /// The first layout is the only thing that can fit the whole source to the room there is, so it does.
-    private func fitIfNeeded() {
-        guard !fitted, bounds.width > 1, sourceDuration > 0 else { return }
-        fitted = true
-        zoom = stripFitZoom(duration: sourceDuration, availableWidth: viewportWidth)
-        zoomTarget = zoom
-        offset = 0
+    /// A resize changes the room, and the room is both the floor the zoom may not go below and the width the
+    /// strip is fitted to, so the fit is re-taken and the strip re-laid here. A manual-frames view is not
+    /// handed a layout pass just because its frame changed, so this cannot be left to `layout` alone.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        guard newSize.width > 1, sourceDuration > 0 else { return }
+        adaptToViewport()
+        needsLayout = true
+        needsDisplay = true
+        onScaleChange?()
     }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        guard bounds.width > 1, sourceDuration > 0 else { return }
+        adaptToViewport()
+        tileStrip(paint: true)
+        updateSelection()
+    }
+
+    /**
+     * Takes the room there is now, and holds the zoom above the fit it implies.
+     *
+     * The room decides two things: the fit, which is the strip's floor — a strip narrower than its window is
+     * a strip that has been zoomed out past the whole source — and how much of the strip is on screen, which
+     * re-clamps where the window is scrolled to. A resize therefore never changes a zoom the user chose; it
+     * only re-fits a strip that WAS the whole source, so the source is still the whole source in the new
+     * room, and re-clamps the drawing of a strip that has been zoomed into.
+     */
+    private func adaptToViewport() {
+        let width = viewportWidth
+        guard width > 1, sourceDuration > 0 else { return }
+        let floor = fittedZoom
+        if !fitted {
+            fitted = true
+            lastFloor = floor
+            zoom = floor
+            zoomTarget = floor
+            offset = 0
+            return
+        }
+        if zoom <= lastFloor * 1.0001 || zoom < floor {
+            // The strip was the whole source, or the room has outgrown the zoom entirely: it is re-fitted.
+            stopAnimation()
+            zoom = floor
+            zoomTarget = floor
+        } else {
+            zoomTarget = max(floor, zoomTarget)
+        }
+        lastFloor = floor
+        offset = min(offset, max(0, stripWidth - width))
+    }
+
+    /// The zoom the whole source fits the room at, which is what "not zoomed in" means here — and the floor
+    /// below which the strip may not be drawn, since a narrower strip is a source not filling its own room.
+    private var fittedZoom: Double { stripFitZoom(duration: sourceDuration, availableWidth: viewportWidth) }
 
     /// Puts the strip where the model says, and paints the tiles that are on screen.
     ///
@@ -335,7 +386,10 @@ final class FilmstripView: NSView {
             view.layer?.contentsGravity = .resizeAspectFill
             view.layer?.masksToBounds = true
             view.layer?.contentsScale = 2
-            addSubview(view)
+            // Below the trim overlay: the tiles are the BACKDROP, and the bounds, handles and skimmer are
+            // drawn over them. They are inserted below `selectionView`, which was added first and is above
+            // the tiles it is meant to frame.
+            addSubview(view, positioned: .below, relativeTo: selectionView)
             tileViews.append(view)
             tileFrames.append(-1)
             tileShown.append(-1)
@@ -403,9 +457,6 @@ final class FilmstripView: NSView {
         }
     }
 
-    /// The zoom the whole source fits the room at, which is what "not zoomed in" means here.
-    private var fittedZoom: Double { stripFitZoom(duration: sourceDuration, availableWidth: viewportWidth) }
-
     // MARK: zoom, and the glide toward it
 
     /**
@@ -414,23 +465,24 @@ final class FilmstripView: NSView {
      * The skimmer keeps its place on screen while the strip stretches around it, so a zoom is a lens on the
      * frame being looked at rather than a jump. The zoom accumulates on the one being travelled TO rather
      * than the one on screen, so a flick's ticks add up to a single destination, and the move itself is
-     * eased so the strip glides rather than jumping.
+     * eased so the strip glides rather than jumping. It is held above the fit, so a wheel turned out settles
+     * with the whole source on screen rather than opening a gap around it.
      */
     func zoom(byDelta delta: Double) {
         guard bounds.width > 1, sourceDuration > 0 else { return }
-        let target = stripZoomedBy(zoomTarget > 0 ? zoomTarget : zoom, delta: delta)
+        let target = stripZoomedBy(zoomTarget > 0 ? zoomTarget : zoom, delta: delta, floor: fittedZoom)
         glideZoom(to: target, anchorFrame: skimmerFrame, anchorX: Double(screenX(forValue: playheadValue)))
     }
 
     /// Narrows onto a frame, which is what a hold-to-zoom asks for: the frame held, filling the strip.
     private func zoomOnto(frame: Double) {
-        let target = cachedTiling.map { $0.thumbWidth * frameRate / BASE_PX_PER_SECOND } ?? clampStripZoom(zoom * 4)
+        let target = cachedTiling.map { $0.thumbWidth * frameRate / BASE_PX_PER_SECOND } ?? clampStripZoom(zoom * 4, floor: fittedZoom)
         glideZoom(to: target, anchorFrame: frame, anchorX: Double(screenX(forValue: frame / max(sourceDuration * frameRate, 1))))
         onHoverTime?(min(1, max(0, frame / max(sourceDuration * frameRate, 1))))
     }
 
     private func glideZoom(to target: Double, anchorFrame: Double, anchorX: Double) {
-        zoomTarget = clampStripZoom(target)
+        zoomTarget = clampStripZoom(target, floor: fittedZoom)
         zoomFrom = zoom
         animAnchorFrame = anchorFrame
         animAnchorX = anchorX
@@ -443,7 +495,7 @@ final class FilmstripView: NSView {
 
     private func animationTick() {
         let progress = easeInOut((ProcessInfo.processInfo.systemUptime - animStart) / zoomAnimationSeconds)
-        zoom = clampStripZoom(interpolatedZoom(from: zoomFrom, to: zoomTarget, progress: progress))
+        zoom = clampStripZoom(interpolatedZoom(from: zoomFrom, to: zoomTarget, progress: progress), floor: fittedZoom)
         offset = stripOffset(anchorFrame: animAnchorFrame, anchorX: animAnchorX, pxPerFrame: pxPerFrame, stripWidth: stripWidth, viewportWidth: viewportWidth)
         // Every step moves the geometry; the last one is what asks for the pictures.
         tileStrip(paint: progress >= 1)
@@ -507,11 +559,17 @@ final class FilmstripView: NSView {
      * A hover over a tile is no longer anything to do.
      *
      * It used to be: the strip was a fixed set of cells over a window, so the one under the pointer held a
-     * representative frame and had to be re-asked for the frame the pointer was actually over. Now every
-     * tile IS a frame of the source at its own place on the strip, so the picture under the pointer is
-     * already the picture for that point and there is nothing to skim to. The monitor follows the skimmer.
+     * representative frame and had to be re-asked for the frame the pointer was actually over. In this model
+     * every tile IS a frame of the source at its own place on the strip, so the picture under the pointer is
+     * already the picture for that point and there is nothing to re-ask for.
+     *
+     * What is left of the old shape is the MONITOR: whatever moves the SKIMMER — a drag, a wheel, a step from
+     * the arrow keys — has to show the frame it landed on, and this is that call. So a skim is now the skimmer
+     * and only the skimmer: the value is handed on, and the monitor seeks to it, in the stretched space like
+     * everything else. (The wheel and the drag also reach the monitor through `onPlayheadChange`, which is the
+     * model's own channel; this is the one the arrow keys go through.)
      */
-    func skimThumbnail(at norm: Double) { _ = norm }
+    func skimThumbnail(at norm: Double) { onHoverTime?(min(1, max(0, norm))) }
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
@@ -521,7 +579,10 @@ final class FilmstripView: NSView {
         else if abs(p.x - outX) < handleGrab { dragging = "out"; selectedHandle = "out"; onHandleSelected?("out") }
         else { dragging = "playhead"; selectedHandle = "playhead"; onHandleSelected?("playhead"); onPlayheadSelected?() }
         updateSelection()
-        window?.makeFirstResponder(self)
+        // The PREVIEW keeps the keyboard, not this view. The strip is a pointer surface: a hotkey pressed after
+        // clicking it has to reach the view that owns the hotkeys, and if this view held first responder every
+        // arrow key would land here and beep. It also holds the fields' focus rules together — see `keyDown`.
+        window?.makeFirstResponder(superview ?? self)
         if dragging == "playhead" {
             let value = max(start, min(end, value(at: p)))
             playheadValue = value
@@ -575,15 +636,28 @@ final class FilmstripView: NSView {
     }
 
     /**
-     * A scroll here scrubs, in the stretched space.
+     * A scroll here scrubs, or pans — the two axes are two gestures.
      *
-     * The delta is normalised to the one the timeline's own engine is given — the EDIT JOB reads a browser's
-     * `deltaY`, AppKit writes `scrollingDeltaY` with the sign the other way round — so a wheel turned away
-     * from the viewer moves FORWARD through the source and one turned towards it moves back, which is what a
-     * wheel over the timeline does. The step is a share of a second eased by how hard the wheel was turned.
+     * A wheel turned UP or DOWN scrubs, in the stretched space, which is the vertical axis' business. The delta
+     * is normalised to the one the timeline's own engine is given — the EDIT JOB reads a browser's `deltaY`,
+     * AppKit writes `scrollingDeltaY` with the sign the other way round — so a wheel turned away from the
+     * viewer moves FORWARD through the source and one turned towards it moves back, which is what a wheel over
+     * the timeline does. The step is a share of a second eased by how hard the wheel was turned.
+     *
+     * A swipe LEFT or RIGHT PANS instead, which is the horizontal axis' business: the strip slides under the
+     * window while the skimmer stays where it is, both in the same stretched space as the scale, so the ruler
+     * slides with it. Which gesture it is, is decided by which axis moved further, so a trackpad that reports a
+     * little of both does the one that was meant.
      */
     override func scrollWheel(with event: NSEvent) {
-        let delta = -(event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX)
+        let dx = Double(event.scrollingDeltaX), dy = Double(event.scrollingDeltaY)
+        if abs(dx) > abs(dy) {
+            offset = stripPannedOffset(offset: offset, deltaPixels: dx, stripWidth: stripWidth, viewportWidth: viewportWidth)
+            tileStrip(paint: true)
+            updateSelection()
+            return
+        }
+        let delta = -dy
         guard delta != 0 else { return }
         let selected = selectedHandle == "in" ? start : selectedHandle == "out" ? end : playheadValue
         let step = stripScrubSeconds(delta: Double(delta), duration: sourceDuration)
@@ -602,6 +676,16 @@ final class FilmstripView: NSView {
         keepSkimmerVisible()
         updateSelection()
     }
+
+    /**
+     * Keys belong to the preview, not to this view.
+     *
+     * Nothing here moves by a key — the arrow keys and the hotkeys are the preview's, and it is the preview
+     * that holds one element or another as the active one and moves it. A press that landed here (a click on
+     * the strip, then a key) is handed straight on rather than swallowed into a beep, so the focus and the
+     * active element are one thing wherever the pointer last was.
+     */
+    override func keyDown(with event: NSEvent) { nextResponder?.keyDown(with: event) ?? super.keyDown(with: event) }
 
     private func audioFormat(_ track: AVAssetTrack) -> AudioStreamBasicDescription? {
         guard let desc = track.formatDescriptions.first else { return nil }

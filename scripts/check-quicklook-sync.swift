@@ -249,6 +249,64 @@ enum CheckQuickLookSync {
         print("  \(matched) of \(shown.count) tiles read back as the frame they name")
         check("every tile in view shows the frame it was given", matched == shown.count && shown.count > 3, "\(matched) of \(shown.count)")
 
+        section("the trim overlay over the pictures")
+        // The bounds, the handles and the skimmer are what the strip is FOR. A tile drawn on top of them hides
+        // the very thing being moved, so every tile has to sit BEHIND all four — which in a view's back-to-
+        // front subview order means a lower index.
+        let depth = filmstrip.subviews
+        let overlay = [filmstrip.selectionView, filmstrip.inHandle, filmstrip.outHandle, filmstrip.playhead]
+        let tileAt = filmstrip.tileViews.compactMap { tile in depth.firstIndex(where: { $0 === tile }) }
+        let overlayAt = overlay.compactMap { item in depth.firstIndex(where: { $0 === item }) }
+        check("the trim overlay and the tiles are all in the view", overlayAt.count == overlay.count && tileAt.count == filmstrip.tileViews.count, "overlays \(overlayAt.count), tiles \(tileAt.count)")
+        check("every tile is drawn behind the trim overlay", tileAt.allSatisfy { tile in overlayAt.allSatisfy { $0 > tile } }, "a tile sits above a trim control")
+
+        section("a skim reaches the monitor")
+        // The one thing the arithmetic cannot say: that a skim — the arrow keys' own path to the monitor — hands
+        // the frame it landed on to the view that shows it. Every tile is a frame at its own place now, so the
+        // skim's remainder is exactly this hand-off, and it is what the arrows go through.
+        var skimmed: Double = -1
+        filmstrip.onHoverTime = { value in skimmed = value }
+        filmstrip.skimThumbnail(at: 0.42)
+        check("a skim hands the monitor the frame it landed on", abs(skimmed - 0.42) < 1e-9, "\(skimmed)")
+        filmstrip.skimThumbnail(at: 2.0)
+        check("and it is held inside the source", abs(skimmed - 1.0) < 1e-9, "\(skimmed)")
+        filmstrip.onHoverTime = nil
+
+        section("a resize re-fits the strip to the room")
+        // The strip is never narrower than its window — that is what the fit IS — so the room decides the
+        // floor. Widening the window therefore re-fits a strip that was the whole source rather than leaving
+        // it short of the window, and narrowing re-fits it the same way. A zoom the user CHOSE is kept: only
+        // the fit moves.
+        let resized = FilmstripView(asset: asset, duration: duration, sourceAspect: 320.0 / 180.0, isAudio: false, frameRate: rate, frame: NSRect(x: 0, y: 0, width: 700, height: height))
+        container.addSubview(resized)
+        resized.frame = NSRect(x: 0, y: 0, width: 700, height: height)
+        resized.needsLayout = true
+        resized.layoutSubtreeIfNeeded()
+        pump(1.0)
+        check("the strip fills the window it opened in", abs(resized.stripWidth - 700) < 1.5, "strip \(resized.stripWidth) in 700")
+        check("and its zoom is that room's fit", abs(resized.zoom - stripFitZoom(duration: duration, availableWidth: 700)) < 1e-9, "\(resized.zoom)")
+        resized.frame = NSRect(x: 0, y: 0, width: 1100, height: height)
+        resized.needsLayout = true
+        resized.layoutSubtreeIfNeeded()
+        pump(0.8)
+        check("widening the window re-fits the strip to it", abs(resized.stripWidth - 1100) < 1.5, "strip \(resized.stripWidth) in 1100")
+        check("and nothing is scrolled off", resized.offset == 0, "\(resized.offset)")
+        resized.frame = NSRect(x: 0, y: 0, width: 500, height: height)
+        resized.needsLayout = true
+        resized.layoutSubtreeIfNeeded()
+        pump(0.8)
+        check("narrowing it re-fits it too", abs(resized.stripWidth - 500) < 1.5, "strip \(resized.stripWidth) in 500")
+        resized.playheadValue = 0.5
+        for _ in 0..<20 { resized.zoom(byDelta: -1000) }
+        settle(resized)
+        let keptZoom = resized.zoom
+        resized.frame = NSRect(x: 0, y: 0, width: 1000, height: height)
+        resized.needsLayout = true
+        resized.layoutSubtreeIfNeeded()
+        pump(0.5)
+        check("a resize keeps a zoom the user chose", abs(resized.zoom - keptZoom) < 1e-9, "\(resized.zoom) was \(keptZoom)")
+        check("and the drawing is still inside its own strip", resized.offset >= -1e-6 && resized.offset <= max(0, resized.stripWidth - 1000) + 1e-6, "offset \(resized.offset) of strip \(resized.stripWidth)")
+
         try? FileManager.default.removeItem(at: root)
         print(failures == 0 ? "\nTHE STRIP IS DRAWN AT THE ZOOM IT SAYS IT IS\n" : "\n\(failures) SYNC PROBLEM(S)\n")
         exit(failures == 0 ? 0 : 1)

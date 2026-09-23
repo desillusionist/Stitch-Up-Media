@@ -22,7 +22,8 @@ import Foundation
 
 /// Pixels of source per second at 1x. The EDIT JOB timeline's own figure, so the two feel alike.
 let BASE_PX_PER_SECOND = 24.0
-/// The range the zoom may take. Below 1 so a long source can still be taken in at a glance.
+/// The range the zoom may take when no window is in hand to say otherwise. Below 1 so a long source can
+/// still be taken in at a glance.
 let STRIP_ZOOM_MIN = 0.05
 let STRIP_ZOOM_MAX = 32.0
 
@@ -31,9 +32,17 @@ func stripPxPerSec(_ zoom: Double) -> Double {
     BASE_PX_PER_SECOND * (zoom.isFinite && zoom > 0 ? zoom : 1)
 }
 
-/// A zoom held inside the range, with nonsense falling back to 1x.
-func clampStripZoom(_ zoom: Double) -> Double {
-    zoom.isFinite && zoom > 0 ? max(STRIP_ZOOM_MIN, min(STRIP_ZOOM_MAX, zoom)) : 1
+///
+/// A zoom held inside its range, with nonsense falling back to 1x.
+///
+/// The FLOOR is passed in rather than fixed, because the floor is the strip's fit and the fit depends on the
+/// room there is — a strip narrower than its own window is a strip that has been zoomed out past the whole
+/// source, which is not a state this model has. `STRIP_ZOOM_MIN` is the floor only when nothing more is
+/// known: a long source in a wide window fits at a zoom far below it, and the fit has to be able to win.
+func clampStripZoom(_ zoom: Double, floor: Double = STRIP_ZOOM_MIN) -> Double {
+    guard zoom.isFinite, zoom > 0 else { return 1 }
+    let low = floor.isFinite && floor > 0 ? floor : STRIP_ZOOM_MIN
+    return max(low, min(STRIP_ZOOM_MAX, zoom))
 }
 
 /// The pixels one frame takes at a zoom, which is what places every mark on the strip.
@@ -41,22 +50,51 @@ func stripPxPerFrame(_ zoom: Double, fps: Double) -> Double {
     stripPxPerSec(zoom) / (fps.isFinite && fps > 0 ? fps : 30)
 }
 
-/// The zoom at which the whole source is exactly as wide as the room there is for it.
 ///
-/// This is the strip's FIT, and like the timeline's it is taken from the viewport only at the moment it is
-/// asked for — the first layout, or the button — so a resize changes how much is on screen and never
-/// silently re-decides the zoom.
+/// The zoom at which the whole source is exactly as wide as the room there is for it: the strip's FIT.
+///
+/// It is also the strip's FLOOR. "Not zoomed in" means the whole source is on screen, so a zoom shallower
+/// than the fit would draw a strip narrower than the window it is in — the source would not be filling the
+/// room it has, which is the state the fit defines. There is no zoom out past it.
+///
+/// The lower clamp is deliberately NOT applied here. A long source in a wide window fits at a zoom far below
+/// `STRIP_ZOOM_MIN` — an hour at 24 pixels a second in a 900-pixel window fits at 0.01 — and clamping the fit
+/// up to 0.05 would put the whole source permanently out of reach, which is the opposite of what a fit is
+/// for. The upper clamp is, since nothing is gained by a fit beyond the deepest zoom.
 func stripFitZoom(duration: Double, availableWidth: Double) -> Double {
     guard duration.isFinite, duration > 0, availableWidth > 0 else { return 1 }
-    return clampStripZoom(availableWidth / (duration * BASE_PX_PER_SECOND))
+    let raw = availableWidth / (duration * BASE_PX_PER_SECOND)
+    guard raw.isFinite, raw > 0 else { return 1 }
+    return min(STRIP_ZOOM_MAX, raw)
 }
 
+///
 /// A wheel notch's worth of zoom, eased — the timeline's own pace, so a trackpad and a wheel feel alike.
-func stripZoomedBy(_ zoom: Double, delta: Double) -> Double {
+///
+/// Held above the floor it is given, so a wheel turned to zoom out settles at the fit rather than opening a
+/// gap wider than the window.
+func stripZoomedBy(_ zoom: Double, delta: Double, floor: Double = STRIP_ZOOM_MIN) -> Double {
     guard delta.isFinite, delta != 0 else { return zoom }
     let eased = tanh(abs(delta) / 40)
     let factor = 1 + 0.06 * eased
-    return clampStripZoom(delta < 0 ? zoom * factor : zoom / factor)
+    return clampStripZoom(delta < 0 ? zoom * factor : zoom / factor, floor: floor)
+}
+
+///
+/// Where a horizontal scroll leaves the strip: the offset moved by the scroll, held inside the drawing.
+///
+/// The two axes over the strip are separate gestures: a wheel turned up or down scrubs the skimmer, and a
+/// swipe left or right PANS. This is the pan's arithmetic, and like the zoom's it is a model question rather
+/// than a drawing one — the offset is pixels of strip scrolled off to the left, so panning is adding to it.
+/// A swipe that scrolls the content leftward (the natural gesture for looking further along) carries a
+/// positive delta and moves the offset the same way. A source already narrower than the room, or a window
+/// that is not scrolled, has nowhere to pan to and stays at its end.
+func stripPannedOffset(offset: Double, deltaPixels: Double, stripWidth: Double, viewportWidth: Double) -> Double {
+    guard stripWidth.isFinite, viewportWidth.isFinite, viewportWidth > 0 else { return 0 }
+    let room = stripWidth - viewportWidth
+    guard room > 0, deltaPixels.isFinite else { return 0 }
+    let from = offset.isFinite ? offset : 0
+    return max(0, min(room, from + deltaPixels))
 }
 
 /**
@@ -156,11 +194,21 @@ func stripVisibleRange(offset: Double, viewportWidth: Double, cellWidth: Double,
 
 // MARK: - the scale
 
-/// The steps a scale may be drawn at, in seconds — the timeline's own ladder, so the two read alike.
+/// The steps a scale may be drawn at, in seconds — the timeline's own ladder, so the two read alike. Used
+/// only when no frame rate is known, since with one the marks count in frames.
 let RULER_STEPS: [Double] = [0.04, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
-/// How far apart two labelled ranks must stand to be worth drawing, and two subdivisions at all.
+/// The steps a scale may be drawn at counted in FRAMES — the same 1-2-5 ladder, in the unit a frame-accurate
+/// strip is actually read in.
+let RULER_FRAME_STEPS: [Double] = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000]
+/// How far apart a rank must stand before it is drawn taller and brighter than its subdivisions.
 let RULER_MAJOR_PX = 72.0
+/// The pitch at which notches start to crowd. It is a FLOOR, not a setting: the step is chosen so the notches
+/// never come closer than this, and within that bound the pitch is left free to grow with the zoom — which
+/// is the point of it.
 let RULER_MINOR_PX = 12.0
+/// How many subdivisions a rank stands above, smallest first: the first that clears `RULER_MAJOR_PX` is taken,
+/// so a rank is only ever as far above its subdivisions as it has to be.
+let RULER_DIVISORS: [Int] = [2, 4, 5, 10]
 
 /// One mark on the scale: when it stands, and whether it is one of the labelled ranks.
 struct RulerTick {
@@ -171,21 +219,32 @@ struct RulerTick {
 /**
  * The two steps a scale is drawn at, from the ZOOM alone.
  *
- * That is what makes the scale read the same at every zoom: what changes as it is zoomed is what the marks
- * SAY, not how many of them are across the screen. Where a frame is wide enough to see, the scale counts in
- * FRAMES — a mark per frame, and a rank every so many frames — because the arrow keys step by one frame and
- * a scale whose marks are not frames makes a one-frame step land between two marks.
+ * The notch is a FRAME where a frame rate is known, and the step is the FINEST the frame ladder allows
+ * before the notches would crowd — so within that bound the pitch is free to grow as the strip is zoomed in.
+ * That is what makes density a reading rather than a constant: the notches pack together when the strip is
+ * shrunk and spread apart when it is stretched, so how far apart they stand says which way the zoom went.
+ *
+ * The ladder is what keeps the two ends sensible rather than what holds the pitch still: zoomed far out a
+ * frame would be a fraction of a pixel apart, so the step coarsens through 1, 2, 5, 10 frames and so on; it
+ * is only the crowding at the shallow end (and the longest rank at the deep end) that the ladder answers.
+ *
+ * A rank is a whole number of subdivisions above one, so a notched ruler always has its fine and its coarse
+ * ranks rather than being all of one kind.
  */
 func rulerSteps(zoom: Double, fps: Double) -> (major: Double, divisor: Int, step: Double) {
     let rate = stripPxPerSec(zoom)
-    let frame = fps.isFinite && fps > 0 ? 1 / fps.rounded() : 0
-    if frame > 0 && frame * rate >= RULER_MINOR_PX {
-        let divisor = max(1, Int((RULER_MAJOR_PX / (frame * rate)).rounded(.up)))
-        return (frame * Double(divisor), divisor, frame)
+    guard rate > 0 else { return (1, 1, 1) }
+    let frame = fps.isFinite && fps > 0 ? 1 / max(1, fps.rounded()) : 0
+    let step: Double
+    if frame > 0 {
+        let frames = RULER_FRAME_STEPS.first { $0 * frame * rate >= RULER_MINOR_PX } ?? RULER_FRAME_STEPS[RULER_FRAME_STEPS.count - 1]
+        step = frames * frame
+    } else {
+        step = RULER_STEPS.first { $0 * rate >= RULER_MINOR_PX } ?? RULER_STEPS[RULER_STEPS.count - 1]
     }
-    let major = RULER_STEPS.first { $0 * rate >= RULER_MAJOR_PX } ?? RULER_STEPS[RULER_STEPS.count - 1]
-    let divisor = [5, 4, 2, 1].first { (major / Double($0)) * rate >= RULER_MINOR_PX } ?? 1
-    return (major, divisor, major / Double(divisor))
+    let pitch = step * rate
+    let divisor = RULER_DIVISORS.first { pitch * Double($0) >= RULER_MAJOR_PX } ?? RULER_DIVISORS[RULER_DIVISORS.count - 1]
+    return (step * Double(divisor), divisor, step)
 }
 
 /**
