@@ -1268,7 +1268,7 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   // The audio is SPLIT, not read twice: one mix feeds the drawing and the encoder, which is the whole
   // reason the picture is a graph rather than a filter beside the encoder's own. The drawing is made at
   // the bounded canvas and scaled UP to the frame with lanczos.
-  const lone = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000' })
+  const lone = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
   check('a lone sound is split into the drawing and the export', lone.includes('[0:a]asplit=2[mixA][mixV]'), true)
   check('and the export\u2019s audio comes from the mix', lone.includes('[mixA]aresample=48000'), true)
   check('the drawing is made at the capped canvas', lone.includes('showwaves=s=1280x720:mode=cline:rate=30:colors=#9fbf9a'), true)
@@ -1276,7 +1276,7 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   check('over a colour it was given, in the frame\u2019s own shape', lone.includes('color=c=#000000:s=1920x1080:r=30[bg]'), true)
   check('and flattened to the format every path writes', lone.includes('[bg][w]overlay=shortest=1,format=yuv420p[v]'), true)
 
-  const tracks = visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a', '2:a'], background: { input: 0 } })
+  const tracks = visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a', '2:a'], background: { input: 0 }, rate: 48000, channels: 2 })
   check('several tracks are summed into one mix', tracks.includes('[0:a][1:a][2:a]amix=inputs=3:normalize=0'), true)
   check('with the levels as they were set', tracks.includes('normalize=0'), true)
   check('and the drawing sits on the picture input it was given', tracks.includes('[0:v]scale=1080:1920,setsar=1[bg]'), true)
@@ -1284,9 +1284,16 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
 
   // Its own two quirks: `showspectrum` has no rate option, so the rate is imposed after it, and its
   // colouring is ffmpeg's own ramp, so the hex this app offers is not passed to it.
-  const spectrum = visualizationGraph({ template: 'spectrum', width: 1920, height: 1080, fps: 24, color: '#ff0000', sources: ['0:a'], background: '#000000' })
+  const spectrum = visualizationGraph({ template: 'spectrum', width: 1920, height: 1080, fps: 24, color: '#ff0000', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
   check('the spectrum is rate-limited by a filter after it', spectrum.includes('showspectrum=s=1280x720:mode=combined:color=intensity:scale=log,fps=24'), true)
   check('and it is not handed a colour it cannot use', spectrum.includes('colors=#ff0000'), false)
+
+  // A stitch draws the CONCATENATED stream it writes, named down to its index: `[0:a]` would stand
+  // for every audio stream of the joined input, and the two halves of one split must be laid out the
+  // same way or the waveform would be drawn from a stream the export does not carry.
+  const stitched = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a:0'], background: '#000000', rate: 44100, channels: 1 })
+  check('a stitch draws the concatenated stream itself', stitched.includes('[0:a:0]asplit=2[mixA][mixV]'), true)
+  check('laid out at the rate the stitch writes rather than a fixed one', stitched.includes('aresample=44100:async=1,aformat=sample_fmts=fltp:channel_layouts=mono[aout]'), true)
 }
 
 console.log('\n== what a container can carry ==')

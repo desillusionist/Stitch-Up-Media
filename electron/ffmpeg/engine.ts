@@ -230,7 +230,11 @@ export class FFmpegEngine {
     // A drawing takes the picture AND the audio over — it is built from the very mix it writes — so it
     // is asked for ahead of the frame a separate black input would have supplied.
     const draws = soundOnly && task.preset.audioPicture === 'visualization' && task.preset.videoCodec !== 'copy'
-    if (draws) this.applyVisualization(cmd, task.preset, ['0:a'], this.visualizationBackgroundFor(task.preset, undefined))
+    // The stream is named down to its index rather than as `0:a`: a filter label of `[0:a]` stands for
+    // EVERY audio stream of the input, which is fine for a lone sound file and wrong the moment one is
+    // not, while `[0:a:0]` is the one stream this path means. The drawing is laid out to the same rate
+    // and channel count every other path writes, because the two halves of one split cannot differ.
+    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(task.preset, undefined), 48000, 2)
     else if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
@@ -361,14 +365,30 @@ export class FFmpegEngine {
       .input(tmpConcatFile)
       .inputOptions(['-f', 'concat', '-safe', '0'])
 
-    this.applyPresetToCommand(cmd, task.preset, [], { cropsPerClip: clipsConcatenate(task) })
+    // The same rule as the transcode path: a stitch of sound files asked for a picture has none to
+    // join, so the export's own frame is supplied. It takes ONE input rather than one per clip,
+    // because the picture never changes from clip to clip and there is nothing here for a clip's own
+    // picture to differ about. A DRAWING is the sound itself drawn, and it takes the audio over with
+    // it — built from the very joined sound it writes — so it is asked for ahead of the black frame.
+    const carriesMainAudio = !laneIsMuted(task, MAIN_LANE_ID)
+    const soundOnlyStitch = task.sourcePaths.length > 0 && task.sourcePaths.every((source) => mediaKind(source) === 'audio')
+    const stitchPictured = jobExportsPicture(task) && soundOnlyStitch && carriesMainAudio
+    const stitchDraws = stitchPictured && task.preset.audioPicture === 'visualization' && task.preset.videoCodec !== 'copy'
+
+    this.applyPresetToCommand(cmd, task.preset, [], {
+      cropsPerClip: clipsConcatenate(task),
+      // The drawing's graph owns the picture and the audio, so the encoder is not handed a `-vf` for a
+      // picture the graph is already making.
+      ...(stitchDraws ? { graphOwnsPicture: true } : {}),
+    })
     if (targetBitrate > 0 && task.preset.audioCodec === 'copy') cmd.audioCodec('aac')
     // The clips' own audio is what arrives through the concat, so muting the main lane means the
     // joined output carries none of it — and there is then nothing for the audio options below to
     // apply to, which is why they are skipped rather than left to be ignored.
-    const carriesMainAudio = !laneIsMuted(task, MAIN_LANE_ID)
     if (!carriesMainAudio) cmd.outputOptions(['-an'])
-    if (task.preset.container !== 'gif' && task.preset.imageOutputMode !== 'sequence' && carriesMainAudio) {
+    // A drawing's own graph resamples and lays the audio out, so the chain is not written twice: the
+    // graph's half of the split and this one would fight over the same output stream.
+    if (!stitchDraws && task.preset.container !== 'gif' && task.preset.imageOutputMode !== 'sequence' && carriesMainAudio) {
       cmd.outputOptions([
         `-ar ${targetSampleRate}`,
         `-ac ${targetChannels}`,
@@ -377,13 +397,12 @@ export class FFmpegEngine {
       ])
     }
 
-    // The same rule as the transcode path: a stitch of sound files asked for a picture has none to
-    // join, so the export's own frame is supplied — black, for the whole of the joined sound. It
-    // takes ONE input rather than one per clip, because the picture never changes from clip to clip
-    // and there is nothing here for a clip's own picture to differ about.
-    const soundOnlyStitch = task.sourcePaths.length > 0 && task.sourcePaths.every((source) => mediaKind(source) === 'audio')
-    if (jobExportsPicture(task) && soundOnlyStitch && !laneIsMuted(task, MAIN_LANE_ID)) {
-      this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
+    // The joined sound is what the drawing is made from — the concatenated stream, not a sum of the
+    // files, because a stitch plays its sources one after another and the picture has to show that
+    // rather than a mix of them. Black remains the answer when nothing was asked for.
+    if (stitchPictured) {
+      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(task.preset, undefined), targetSampleRate, targetChannels)
+      else this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
     }
 
     cmd
@@ -592,7 +611,7 @@ export class FFmpegEngine {
     ]
     const pictured = drawsSound && audible.length > 0
     if (pictured) {
-      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(task.preset, isStillCover ? 0 : undefined))
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(task.preset, isStillCover ? 0 : undefined), 48000, 2)
     }
     const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
@@ -759,7 +778,7 @@ export class FFmpegEngine {
    * The picture filters live inside this graph, so the caller must not also hand ffmpeg a `-vf`: the two
    * are mutually exclusive for one output, and the refusal is a hard error rather than a precedence.
    */
-  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }): void {
+  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number): void {
     const { width, height } = this.frameBoxFor(preset)
     const graph = visualizationGraph({
       template: preset.visualization ?? 'waveform',
@@ -769,6 +788,8 @@ export class FFmpegEngine {
       color: preset.visualizationColor || VISUALIZATION_COLOR,
       sources,
       background,
+      rate,
+      channels,
     })
     cmd.outputOptions([`-filter_complex ${graph}`, '-map [v]', '-map [aout]', '-shortest'])
   }

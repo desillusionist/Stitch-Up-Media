@@ -59,6 +59,13 @@ export interface VisualizationRequest {
    * the job's own still behind the waveform.
    */
   background: string | { input: number }
+  /**
+   * The layout the export's own audio is written at, which the drawing's half of the mix is laid out to
+   * as well — the two halves of one split cannot be laid out differently, and a stitch writes what its
+   * own sources asked for rather than what another path happens to use.
+   */
+  rate: number
+  channels: number
 }
 
 /**
@@ -92,7 +99,7 @@ const drawingFilters = (template: Visualization, size: string, fps: number, colo
  * own size.
  */
 export const visualizationGraph = (request: VisualizationRequest): string => {
-  const { template, width, height, fps, color, sources, background } = request
+  const { template, width, height, fps, color, sources, background, rate, channels } = request
   const canvas = drawingCanvas(width, height)
   const listened = sources.length === 1
     ? `[${sources[0]}]asplit=2[mixA][mixV]`
@@ -102,9 +109,9 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
     : `[${background.input}:v]scale=${width}:${height},setsar=1[bg]`
   return [
     listened,
-    // The export's own audio, resampled and laid out exactly as every other path writes it, and cut from
-    // the mix rather than from the files.
-    '[mixA]aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo[aout]',
+    // The export's own audio, resampled and laid out exactly as the path that asked for the drawing
+    // writes it, and cut from the mix rather than from the files.
+    `[mixA]aresample=${rate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${channels === 1 ? 'mono' : 'stereo'}[aout]`,
     `[mixV]${drawingFilters(template, `${canvas.width}x${canvas.height}`, fps, color)},scale=${width}:${height}:flags=lanczos[w]`,
     base,
     '[bg][w]overlay=shortest=1,format=yuv420p[v]',

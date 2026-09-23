@@ -206,6 +206,22 @@ const main = async () => {
       soundOnly: true,
     },
     {
+      // The same stitch asked for a DRAWING instead. What is drawn is the CONCATENATED stream the export
+      // carries — the sources one after another, not a sum of them — so the waveform shows the join the
+      // way the sound plays it. It is still one split: one half of the joined sound is drawn, the other
+      // is muxed, which is what keeps the picture and the sound from ever disagreeing.
+      name: 'a stitch of sound files drawn as a waveform',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30 },
+      task: {
+        id: 'viz-sound-stitch', type: 'stitch', status: 'pending', progress: 0,
+        sourcePaths: [audio, audio],
+        outputDirectory: root, outputFilename: 'viz-sound-stitch.mp4', preset,
+      },
+      output: path.join(root, 'viz-sound-stitch.mp4'),
+      expectedSeconds: 10,
+      drawn: true,
+    },
+    {
       // A video codec named with a container that cannot hold a picture, which is the gate this pass is
       // built on. The CONTAINER decides and not the preset: an h264 stream asked for into a WAV is an
       // encode that fails outright, so the export has to come out sound-only whatever codec was named.
