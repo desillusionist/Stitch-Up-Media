@@ -4,7 +4,7 @@ import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, Queu
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
-import { DRAWING_STILL_SETTLE_MS, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATION_COLOR, VISUALIZATIONS, drawingPictureFor, visualizationBackgroundKind } from '../lib/visualization'
+import { DRAWING_STILL_SETTLE_MS, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATION_COLOR, VISUALIZATIONS, drawingPictureFor, templateFor, visualizationBackgroundKind } from '../lib/visualization'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -3225,12 +3225,12 @@ export const EditJobApp: React.FC = () => {
                 </select>
               </EditorField>
               {pictureSource === 'visualization' && <>
-                <EditorField label="TEMPLATE" reason="What kind of drawing: the waveform line, frequency bars, or the spectrum history. Each template is one ffmpeg filter, so they differ in what they show rather than in how they are made.">
+                <EditorField label="TEMPLATE" reason="What kind of drawing. WAVEFORM is the whole sound in one picture, held for the length of the export, which is what the monitor is showing; SPECTRUM is the same idea as a spectrogram. EQ BARS and the two SCROLL templates draw an instant at a time, so they move where the first two do not.">
                   <select value={draft.preset.visualization ?? 'waveform'} onChange={(event) => updatePreset({ visualization: event.target.value as NonNullable<EncodingPreset['visualization']> })}>
                     {VISUALIZATIONS.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
                   </select>
                 </EditorField>
-                {(draft.preset.visualization ?? 'waveform') !== 'spectrum' && <EditorField label="COLOUR" reason="The colour the drawing is made in, as a hex figure. The spectrum colours itself by intensity and takes no colour of its own.">
+                {templateFor(draft.preset.visualization).colour && <EditorField label="COLOUR" reason="The colour the drawing is made in, as a hex figure. The two spectra colour themselves by intensity and take no colour of their own, so they are not offered one.">
                   <input type="text" className="editor-input" value={draft.preset.visualizationColor ?? ''} placeholder={VISUALIZATION_COLOR.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
                 </EditorField>}
                 <EditorField label="BACKGROUND" reason="What the drawing sits on: a flat colour, the still the job already has, or an image of your own. The image is scaled to the frame and the drawing is laid over it.">

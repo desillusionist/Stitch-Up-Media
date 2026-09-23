@@ -426,7 +426,7 @@ app.whenReady().then(() => {
    */
   ipcMain.handle('visualization-still', async (_, options: {
     sources: string[]
-    template: 'waveform' | 'eq' | 'spectrum'
+    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll'
     color?: string
     background?: 'colour' | 'still' | 'image'
     backgroundColor?: string

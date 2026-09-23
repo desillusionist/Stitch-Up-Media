@@ -13,12 +13,40 @@ import { outputCarriesPicture } from './outputKind'
  */
 export type Visualization = NonNullable<EncodingPreset['visualization']>
 
-/** The list the editor offers, in the order it offers it. */
-export const VISUALIZATIONS: Array<{ id: Visualization; name: string }> = [
-  { id: 'waveform', name: 'WAVEFORM' },
-  { id: 'eq', name: 'EQ BARS' },
-  { id: 'spectrum', name: 'SPECTRUM' },
+/** One template, and the two things the editor and the encoder both need to know about it. */
+export interface VisualizationTemplate {
+  id: Visualization
+  name: string
+  /**
+   * Whether the drawing is ONE PICTURE of the whole sound or a drawing that MOVES.
+   *
+   * A picture uses `showwavespic` and `showspectrumpic`, which draw the whole sound into a single image; it
+   * is then held for the length of the export, so the video is a still of the sound rather than a window
+   * scrolling through it. A moving drawing is a filter that emits a frame per instant.
+   */
+  kind: 'picture' | 'moving'
+  /** Whether the template takes a colour of its own. The spectra colour themselves by intensity. */
+  colour: boolean
+}
+
+/**
+ * The list the editor offers, in the order it offers it.
+ *
+ * The two at the top are PICTURES — the look the editor can show a still of and the export then holds for
+ * the whole file — and the rest are moving drawings. The order is deliberate: the first is what a job gets
+ * unless something else is asked for, and a static waveform is what a podcast video is.
+ */
+export const VISUALIZATIONS: VisualizationTemplate[] = [
+  { id: 'waveform', name: 'WAVEFORM', kind: 'picture', colour: true },
+  { id: 'spectrum', name: 'SPECTRUM', kind: 'picture', colour: false },
+  { id: 'eq', name: 'EQ BARS', kind: 'moving', colour: true },
+  { id: 'waveform-scroll', name: 'WAVEFORM \u00b7 SCROLL', kind: 'moving', colour: true },
+  { id: 'spectrum-scroll', name: 'SPECTRUM \u00b7 SCROLL', kind: 'moving', colour: false },
 ]
+
+/** The template table's answer for one id, for a preset that was saved before a template existed. */
+export const templateFor = (id: Visualization | undefined): VisualizationTemplate =>
+  VISUALIZATIONS.find((template) => template.id === id) ?? VISUALIZATIONS[0]
 
 /** What a drawing starts in: the green the app's own waveform is drawn in. */
 export const VISUALIZATION_COLOR = '#9fbf9a'
@@ -105,6 +133,23 @@ export const drawingPictureFor = (task: QueueTask): DrawingPicture => {
 export const DRAWING_MAX_EDGE = 1280
 
 /**
+ * The animated waveform's own cap, which is lower than every other template's.
+ *
+ * Measured rather than preferred, and it is the whole reason a cap is a per-template figure: `showwaves`
+ * with `mode=cline` and this app's own green draws a PURPLE line at exactly 1280 wide — a chroma of U 180
+ * and V 199, against the 115 the green itself has — while the same filter at 320, 640, 960, 1344, 1600 and
+ * 1920 draws the green it was given. It is the one template drawn instant by instant rather than as one
+ * picture, and the one width it goes wrong at is the width this canvas would pick for a 16:9 frame. Below
+ * it the line is also brighter — a maximum luma of 213 to 238 at 960x540 against 58 to 60 at 1920x1080 —
+ * which is what the cap is for in the first place.
+ */
+export const SCROLLING_WAVEFORM_MAX_EDGE = 960
+
+/** The edge a template's drawing is capped at, which is not the same figure for all of them. */
+export const templateMaxEdge = (template: Visualization): number =>
+  template === 'waveform-scroll' ? SCROLLING_WAVEFORM_MAX_EDGE : DRAWING_MAX_EDGE
+
+/**
  * How long the editor waits before redrawing the still of a drawing, in milliseconds.
  *
  * A colour is typed a character at a time and a still is a whole ffmpeg run, so without the wait the field
@@ -121,10 +166,11 @@ export const DRAWING_STILL_SETTLE_MS = 150
  * a canvas whose LONG edge is bounded here and scaled up to the frame afterwards, keeping the frame's
  * own shape: a waveform has no detail that upscaling can lose, and drawing one at 4K loses the drawing.
  */
-export const drawingCanvas = (width: number, height: number): { width: number; height: number } => {
+export const drawingCanvas = (width: number, height: number, maxEdge: number = DRAWING_MAX_EDGE): { width: number; height: number } => {
+  const cap = maxEdge > 0 ? maxEdge : DRAWING_MAX_EDGE
   const longest = Math.max(width, height)
-  if (longest <= DRAWING_MAX_EDGE) return { width, height }
-  const ratio = DRAWING_MAX_EDGE / longest
+  if (longest <= cap) return { width, height }
+  const ratio = cap / longest
   const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
   return { width: even(width * ratio), height: even(height * ratio) }
 }
@@ -139,7 +185,9 @@ export const drawingCanvas = (width: number, height: number): { width: number; h
  * a four-second sound is a filled frame; the same still of a four-TENTH-second sound would be a sliver.
  */
 export const stillWarmupSeconds = (template: Visualization, duration: number): number => {
-  if (template === 'waveform' || !(duration > 0)) return 0
+  // A PICTURE is the whole sound already and is taken at once; a moving drawing has to be given a moment to
+  // fill, unless it is a waveform, whose line is there from its first frame.
+  if (templateFor(template).kind === 'picture' || template === 'waveform-scroll' || !(duration > 0)) return 0
   return Math.min(1, duration / 2)
 }
 
@@ -170,24 +218,38 @@ export interface VisualizationRequest {
 }
 
 /**
- * One template's filter, at the canvas's own size and rate and in the given colour.
+ * One template's filter — the ONE its preview and its export are both made from.
  *
- * `showspectrum` is the odd one twice over. It has no `rate` option of its own, so the rate is imposed by
- * an `fps` filter after it rather than asked for; and its colouring is ffmpeg's own ramp
- * (`color=intensity`), which is why the colour this app offers does not reach it — there is no hex to give
- * that filter.
+ * This is the whole of the "what you see is what you get" rule: the editor's still and the encoder's picture
+ * are built from this same function, with the same parameters, so they cannot be two different drawings. A
+ * picture template draws the whole sound into a single frame here; a moving one draws an instant.
  *
- * It also has to be told to SCROLL, which is not cosmetic. Left on its default the spectrogram is drawn one
- * column per emitted frame into a frame that is never filled, so the drawing occupies a narrow band at the
- * left and the right edge stays black for the whole export — measured on this ffmpeg: a four-second tone
- * reads a maximum luma of 16 (black) in the right-hand column at one second, two seconds and at the end,
- * while `slide=scroll` reads 233 to 235 at every one of them. The spectrogram of a sound should slide past
- * the frame, not creep into its corner.
+ * `showspectrum` and `showspectrumpic` are the odd ones twice over. They have no colour of their own — the
+ * ramp is ffmpeg's `color=intensity`, which is why the editor offers them no colour field — and the
+ * scrolling one has to be told to SLIDE, because left on its default it draws one column per emitted frame
+ * into a frame nothing ever fills: measured, a four-second tone reads a maximum luma of 16 (black) in the
+ * right-hand column at one second, two seconds and at the end, while `slide=scroll` reads 233 to 235 at
+ * every one of them. The picture one needs `legend=0` for the same kind of reason: its legend band occupies
+ * the right-hand edge, so with the default the picture does not reach its own frame.
  */
 const drawingFilters = (template: Visualization, size: string, fps: number, color: string): string => {
   if (template === 'eq') return `showfreqs=s=${size}:mode=bar:ascale=log:rate=${fps}:colors=${color}`
-  if (template === 'spectrum') return `showspectrum=s=${size}:mode=combined:color=intensity:scale=log:slide=scroll,fps=${fps}`
-  return `showwaves=s=${size}:mode=cline:rate=${fps}:colors=${color}`
+  if (template === 'spectrum') return `showspectrumpic=s=${size}:mode=combined:color=intensity:scale=log:legend=0`
+  if (template === 'spectrum-scroll') return `showspectrum=s=${size}:mode=combined:color=intensity:scale=log:slide=scroll,fps=${fps}`
+  if (template === 'waveform-scroll') return `showwaves=s=${size}:mode=cline:rate=${fps}:colors=${color}`
+  return `showwavespic=s=${size}:colors=${color}`
+}
+
+/**
+ * The same drawing, as the export's own picture: a PICTURE is held for the whole sound, a moving one is not.
+ *
+ * A picture is one frame, so on its own it would be one frame of video: `loop` holds it, and the export is
+ * then as long as the sound it is drawn from. This is the only difference between what the editor shows and
+ * what the encoder writes — a loop is not a look, so the still the editor draws is a frame of exactly this.
+ */
+const exportDrawingFilters = (template: Visualization, size: string, fps: number, color: string): string => {
+  const drawn = drawingFilters(template, size, fps, color)
+  return templateFor(template).kind === 'picture' ? `${drawn},loop=loop=-1:size=1` : drawn
 }
 
 /**
@@ -217,11 +279,9 @@ export interface VisualizationStillRequest {
  */
 export const visualizationStillGraph = (request: VisualizationStillRequest): string => {
   const { template, width, height, fps, color, sources, background } = request
-  const canvas = drawingCanvas(width, height)
+  const canvas = drawingCanvas(width, height, templateMaxEdge(template))
   const size = `${canvas.width}x${canvas.height}`
-  const drawn = template === 'waveform'
-    ? `showwavespic=s=${size}:colors=${color}`
-    : drawingFilters(template, size, fps, color)
+  const drawn = drawingFilters(template, size, fps, color)
   const listened = sources.length === 1
     ? `[${sources[0]}]${drawn}[draw]`
     : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0,${drawn}[draw]`
@@ -255,7 +315,7 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
  */
 export const visualizationGraph = (request: VisualizationRequest): string => {
   const { template, width, height, fps, color, sources, background, rate, channels } = request
-  const canvas = drawingCanvas(width, height)
+  const canvas = drawingCanvas(width, height, templateMaxEdge(template))
   const listened = sources.length === 1
     ? `[${sources[0]}]asplit=2[mixA][mixV]`
     : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0,asplit=2[mixA][mixV]`
@@ -267,7 +327,7 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
     // The export's own audio, resampled and laid out exactly as the path that asked for the drawing
     // writes it, and cut from the mix rather than from the files.
     `[mixA]aresample=${rate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${channels === 1 ? 'mono' : 'stereo'}[aout]`,
-    `[mixV]${drawingFilters(template, `${canvas.width}x${canvas.height}`, fps, color)},scale=${width}:${height}:flags=lanczos[w]`,
+    `[mixV]${exportDrawingFilters(template, `${canvas.width}x${canvas.height}`, fps, color)},scale=${width}:${height}:flags=lanczos[w]`,
     base,
     '[bg][w]overlay=shortest=1,format=yuv420p[v]',
   ].join(';')

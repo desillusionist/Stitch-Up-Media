@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, drawingCanvas, drawingPictureFor, stillWarmupSeconds, visualizationBackgroundKind, visualizationGraph, visualizationStillGraph } from '../src/lib/visualization'
+import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, SCROLLING_WAVEFORM_MAX_EDGE, VISUALIZATIONS, drawingCanvas, drawingPictureFor, stillWarmupSeconds, templateFor, templateMaxEdge, visualizationBackgroundKind, visualizationGraph, visualizationStillGraph } from '../src/lib/visualization'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -1271,7 +1271,10 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   const lone = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
   check('a lone sound is split into the drawing and the export', lone.includes('[0:a]asplit=2[mixA][mixV]'), true)
   check('and the export\u2019s audio comes from the mix', lone.includes('[mixA]aresample=48000'), true)
-  check('the drawing is made at the capped canvas', lone.includes('showwaves=s=1280x720:mode=cline:rate=30:colors=#9fbf9a'), true)
+  check('the drawing is made at the capped canvas', lone.includes('showwavespic=s=1280x720:colors=#9fbf9a'), true)
+  // The one difference between the editor's still and the export's picture: a PICTURE is one frame, so it is
+  // held for the sound's length. Without the loop the export would be ONE frame of video, whatever the sound.
+  check('and held for the whole of the sound it is drawn from', lone.includes(',loop=loop=-1:size=1,scale=1920:1080'), true)
   check('and scaled up to the frame with lanczos', lone.includes(',scale=1920:1080:flags=lanczos[w]'), true)
   check('over a colour it was given, in the frame\u2019s own shape', lone.includes('color=c=#000000:s=1920x1080:r=30[bg]'), true)
   check('and flattened to the format every path writes', lone.includes('[bg][w]overlay=shortest=1,format=yuv420p[v]'), true)
@@ -1285,11 +1288,23 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   // Its own two quirks: `showspectrum` has no rate option, so the rate is imposed after it, and its
   // colouring is ffmpeg's own ramp, so the hex this app offers is not passed to it.
   const spectrum = visualizationGraph({ template: 'spectrum', width: 1920, height: 1080, fps: 24, color: '#ff0000', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
-  check('the spectrum is rate-limited by a filter after it', spectrum.includes('showspectrum=s=1280x720:mode=combined:color=intensity:scale=log:slide=scroll,fps=24'), true)
+  check('the spectrum is drawn as a picture of the whole sound', spectrum.includes('showspectrumpic=s=1280x720:mode=combined:color=intensity:scale=log:legend=0'), true)
   check('and it is not handed a colour it cannot use', spectrum.includes('colors=#ff0000'), false)
-  // Its third, and the one that was wrong: left on its default slide the spectrogram is drawn into a
-  // corner and its frame is never filled, so the right-hand edge stays black for the whole export.
-  check('the spectrum is told to slide, which is what fills its frame', spectrum.includes('slide=scroll'), true)
+  // Its legend band occupies the right-hand edge, so with the default the picture does not reach its own
+  // frame: measured, the right-hand column reads black with `legend=1` and 196 with `legend=0`.
+  check('and it is told not to take the edge for a legend', spectrum.includes('legend=0'), true)
+  check('and it is held like every other picture', spectrum.includes(',loop=loop=-1:size=1'), true)
+
+  // The SCROLLING spectrum is the one that has to be told to slide, and the reason is the same kind: left on
+  // its default it draws one column per emitted frame into a frame nothing fills, so its right-hand edge
+  // stays black for the whole export — measured, a maximum luma of 16 there against 233 with `slide=scroll`.
+  const scrolled = visualizationGraph({ template: 'spectrum-scroll', width: 1920, height: 1080, fps: 24, color: '#ff0000', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
+  check('the scrolling spectrum is told to slide, which is what fills its frame', scrolled.includes('slide=scroll'), true)
+  // And the scrolling WAVEFORM is drawn on a smaller canvas than everything else, which is measured too: at
+  // exactly 1280 wide with this app's own green, `showwaves` in `cline` mode draws a PURPLE line.
+  const scrollingWave = visualizationGraph({ template: 'waveform-scroll', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
+  check('the scrolling waveform draws on its own, smaller canvas', scrollingWave.includes('showwaves=s=960x540:mode=cline:rate=30:colors=#9fbf9a'), true)
+  check('and a moving drawing is NOT held, because it moves', scrollingWave.includes('loop='), false)
 
   // A stitch draws the CONCATENATED stream it writes, named down to its index: `[0:a]` would stand
   // for every audio stream of the joined input, and the two halves of one split must be laid out the
@@ -1318,17 +1333,35 @@ console.log('\n== what a drawing sits on ==')
   check('drawn at the capped canvas and scaled up', wave.includes('[draw]scale=1920:1080:flags=lanczos[scaled]'), true)
   check('and flattened into one picture', wave.includes('[bg][scaled]overlay=shortest=1,format=yuv420p[out]'), true)
   const spec = visualizationStillGraph({ template: 'spectrum', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a'], background: { input: 1 } })
-  check('a spectrum still is a frame of the drawing itself', spec.includes('showspectrum=s=720x1280:mode=combined:color=intensity:scale=log:slide=scroll,fps=25'), true)
+  check('a spectrum still is the whole sound in one picture too', spec.includes('showspectrumpic=s=720x1280:mode=combined:color=intensity:scale=log:legend=0'), true)
+  check('and the still has no loop, because a still is one frame', spec.includes('loop='), false)
   check('several sources are summed before it', spec.includes('[0:a][1:a]amix=inputs=2:normalize=0'), true)
   check('and an uploaded image is the background by input', spec.includes('[1:v]scale=1080:1920,setsar=1[bg]'), true)
 
-  // How long a drawing is given to fill first. A waveform needs none — it is one picture of the whole file
-  // — and the others have to be given a moment without being asked for one past the sound they are of.
+  // The template table, which is what keeps "the editor offers a colour" and "the encoder is given one" from
+  // disagreeing: the two spectra colour themselves by intensity and take no colour of their own.
+  check('the waveform is what a job gets unless it asks for something else', templateFor(undefined).id, 'waveform')
+  check('the two pictures come first, then the three that move', VISUALIZATIONS.map((template) => template.kind), ['picture', 'picture', 'moving', 'moving', 'moving'])
+  check('the colour field is offered exactly where a colour does something', VISUALIZATIONS.map((template) => template.colour), [true, false, true, true, false])
+  check('a job saved with a template that is still there keeps it', templateFor('spectrum-scroll').id, 'spectrum-scroll')
+  check('and one naming nothing falls back rather than crashing', templateFor(undefined).id, 'waveform')
+
+  // How long a drawing is given to fill first. A PICTURE is the whole sound already and is taken at once; a
+  // moving drawing has to be given a moment, except the waveform, whose line is there from its first frame.
   check('a waveform still needs no warm-up', stillWarmupSeconds('waveform', 4), 0)
-  check('a spectrum gets half of a one-second sound', stillWarmupSeconds('spectrum', 1), 0.5)
-  check('never more than a second', stillWarmupSeconds('spectrum', 60), 1)
+  check('nor does a spectrum picture, which is the whole sound in one frame', stillWarmupSeconds('spectrum', 4), 0)
+  check('a scrolling spectrum gets half of a one-second sound', stillWarmupSeconds('spectrum-scroll', 1), 0.5)
+  check('never more than a second', stillWarmupSeconds('spectrum-scroll', 60), 1)
+  check('and a scrolling waveform needs none either', stillWarmupSeconds('waveform-scroll', 4), 0)
   check('and nothing at all from a sound with no length', stillWarmupSeconds('eq', 0), 0)
   check('the debounce is the 150ms the editor was asked for', DRAWING_STILL_SETTLE_MS, 150)
+
+  // The canvas each template is drawn on. The scrolling waveform's cap is lower than the rest, and it is a
+  // measurement: at exactly 1280 wide that filter draws the wrong colour.
+  check('every template but one is capped at the same edge', templateMaxEdge('waveform'), DRAWING_MAX_EDGE)
+  check('the scrolling waveform is capped lower', templateMaxEdge('waveform-scroll'), SCROLLING_WAVEFORM_MAX_EDGE)
+  check('a 16:9 frame draws at the scrolling waveform\u2019s own size', drawingCanvas(1920, 1080, templateMaxEdge('waveform-scroll')), { width: 960, height: 540 })
+  check('and at the shared size for everything else', drawingCanvas(1920, 1080, templateMaxEdge('spectrum')), { width: 1280, height: 720 })
 }
 
 console.log('\n== whether an export draws its own sound ==')

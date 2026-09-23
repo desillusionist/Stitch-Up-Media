@@ -95,6 +95,26 @@ const contrast = async (file, time) => {
 /** How many pictures the file holds, which is how a picture kept ONE FRAME long is caught. */
 const frameCount = async (file) => Number(await run('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v', '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1:nokey=1', file]))
 
+/**
+ * The average colour of where a drawing IS: a centre strip for a line, a centre column for bars and bands.
+ *
+ * The whole frame will not do. A waveform is a two-pixel line through a 1080-row picture, so the frame's own
+ * average is black whichever colour the line is; the line's own rows have to be the thing measured.
+ */
+const drawnColour = async (file, time, template) => {
+  const crop = template === 'waveform' || template === 'waveform-scroll' ? 'crop=iw:14:0:ih/2-7' : 'crop=8:ih:iw/2:0'
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `${crop},signalstats,metadata=print:file=-`, '-f', 'null', '-'])
+  const text = String(out)
+  return { u: Math.round(Number(text.match(/UAVG=([\d.]+)/)?.[1] ?? 0)), v: Math.round(Number(text.match(/VAVG=([\d.]+)/)?.[1] ?? 0)) }
+}
+
+/** What the whole frame averages to, which is how two moments are asked whether they are the same picture. */
+const frameAverages = async (file, time) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', 'signalstats,metadata=print:file=-', '-f', 'null', '-'])
+  const text = String(out)
+  return { y: Number(text.match(/YAVG=([\d.]+)/)?.[1] ?? 0), u: Number(text.match(/UAVG=([\d.]+)/)?.[1] ?? 0), v: Number(text.match(/VAVG=([\d.]+)/)?.[1] ?? 0) }
+}
+
 const failures = []
 const check = (label, actual, expected) => {
   const ok = typeof expected === 'number' ? Math.abs(actual - expected) <= 0.25 : actual === expected
@@ -275,7 +295,11 @@ const main = async () => {
     {
       // A sound file EXPORTED AS A PICTURE, drawn from the very mix the file carries: the waveform and
       // the audio are two halves of one stream, which is what the split in the graph is for.
-      name: 'a sound file exported as a waveform',
+      //
+      // The look is the whole point of this case. A waveform used to be drawn instant by instant, so the
+      // export was a window scrolling through the sound while the editor showed one picture of the whole of
+      // it — two different drawings of one job. It is now the picture, held for the length of the export.
+      name: 'a sound file exported as a picture of its waveform',
       preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30 },
       task: {
         id: 'viz-wave', type: 'transcode', status: 'pending', progress: 0,
@@ -285,32 +309,25 @@ const main = async () => {
       output: path.join(root, 'viz-wave.mp4'),
       expectedSeconds: 5,
       drawn: true,
+      pictureTemplate: true,
+      drawnColour: 'green',
     },
     {
-      // The other two templates, on the same file. Each is its own ffmpeg filter with its own
-      // parameters, so each is asked for by name rather than assumed to work from the one above it.
-      name: 'a sound file exported as eq bars',
-      preset: { ...preset, audioPicture: 'visualization', visualization: 'eq', fps: 30 },
+      // The same drawing in a colour that is not the app's own. This is the case that catches a colour going
+      // missing between the editor and the encoder: the green reads neutral in the chroma planes, so a filter
+      // that invented one would pass for it, and a red one cannot be mistaken for either.
+      name: 'a waveform drawn in red',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationColor: '#ff0000' },
       task: {
-        id: 'viz-eq', type: 'transcode', status: 'pending', progress: 0,
+        id: 'viz-red', type: 'transcode', status: 'pending', progress: 0,
         sourcePaths: [audio],
-        outputDirectory: root, outputFilename: 'viz-eq.mp4', preset,
+        outputDirectory: root, outputFilename: 'viz-red.mp4', preset,
       },
-      output: path.join(root, 'viz-eq.mp4'),
+      output: path.join(root, 'viz-red.mp4'),
       expectedSeconds: 5,
       drawn: true,
-    },
-    {
-      name: 'a sound file exported as a spectrum',
-      preset: { ...preset, audioPicture: 'visualization', visualization: 'spectrum', fps: 30 },
-      task: {
-        id: 'viz-spec', type: 'transcode', status: 'pending', progress: 0,
-        sourcePaths: [audio],
-        outputDirectory: root, outputFilename: 'viz-spec.mp4', preset,
-      },
-      output: path.join(root, 'viz-spec.mp4'),
-      expectedSeconds: 5,
-      drawn: true,
+      pictureTemplate: true,
+      drawnColour: 'red',
     },
     {
       // A still standing in for a sound, drawn over by the mix of the track it plays under — the still
@@ -480,6 +497,25 @@ const main = async () => {
       }
       if (item.drawnIsAudible) {
         check('and the same sound untrimmed is drawn as a line, so the check above can tell them apart', (await contrast(item.output, 0.5)) > 60, true)
+      }
+      // WHAT YOU SEE IS WHAT YOU GET, which is the whole of this case for a template that draws one picture:
+      // the editor shows the whole sound as a still, so the export has to BE that still, held for the length
+      // of the sound. A frame that moved between the start and the end would be the old scrolling drawing,
+      // which is a different picture from the one the editor showed of the same job.
+      if (item.pictureTemplate) {
+        const early = await frameAverages(item.output, 0.3)
+        const late = await frameAverages(item.output, Math.max(0.4, seconds - 0.3))
+        const same = Math.abs(early.y - late.y) < 0.5 && Math.abs(early.u - late.u) < 0.5 && Math.abs(early.v - late.v) < 0.5
+        check(`a picture drawing is the same picture throughout (${JSON.stringify(early)} then ${JSON.stringify(late)})`, same, true)
+      }
+      // And the colour that was asked for is the colour that is written. The app's own green reads nearly
+      // neutral in the chroma planes, so a filter that invented a colour could pass for it — which is exactly
+      // how a purple line went unnoticed — so "neutral" is the whole of the green's assertion, and a red one
+      // is asked for separately because it cannot be mistaken for either.
+      if (item.drawnColour) {
+        const drawn = await drawnColour(item.output, 1, item.preset?.visualization)
+        if (item.drawnColour === 'green') check(`and it is drawn in the green it was given, not one ffmpeg invented (U ${drawn.u} V ${drawn.v})`, Math.abs(drawn.u - 128) <= 20 && Math.abs(drawn.v - 128) <= 20, true)
+        if (item.drawnColour === 'red') check(`and a red drawing is red (U ${drawn.u} V ${drawn.v})`, drawn.v - drawn.u > 40, true)
       }
       continue
     }

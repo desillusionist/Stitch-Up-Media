@@ -66,8 +66,14 @@ export interface EncodingPreset {
    * mix — see `visualizationGraph`.
    */
   audioPicture?: 'black' | 'still' | 'visualization'
-  /** Which drawing, when the picture source is a visualization. Absent means the waveform. */
-  visualization?: 'waveform' | 'eq' | 'spectrum'
+  /**
+   * Which drawing, when the picture source is a visualization. Absent means the waveform.
+   *
+   * The first two draw the WHOLE sound into one picture, which the export then holds for its length, so the
+   * editor can show a still of exactly what will be written; the last three draw an instant at a time. See
+   * `VISUALIZATIONS` for the table the editor and the encoder both read.
+   */
+  visualization?: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll'
   /** The drawing's own colour, as ffmpeg takes it. Absent means the app's green. */
   visualizationColor?: string
   /** What the drawing sits on. Absent means black. */
