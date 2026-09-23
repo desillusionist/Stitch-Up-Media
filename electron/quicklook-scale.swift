@@ -1,127 +1,232 @@
 import Foundation
 
 /**
- * A ruler's marks, worked out from the frames a strip is showing.
+ * The strip's geometry: the EDIT JOB timeline's own rules, in place of a window-and-resample model.
  *
- * Pure arithmetic, in a file of its own, because the one thing about a compact scale that cannot be
- * seen when it is wrong is where its notches land: a mark half a frame off looks like a mark, and the
- * scrub it invites feels vaguely wrong rather than broken. Separated it can be asserted on, which is
- * what `scripts/check-quicklook-scale.swift` does.
+ * The timeline's model is that a lane's width is a function of the ZOOM alone — `seconds x
+ * pixelsPerSecond` — so zooming WIDENS the drawing while the source stays the same length, and a stretch of
+ * source is then drawn across more pixels than it was. The strip had the other model: a fixed number of
+ * cells spread across whatever window was covered, so zooming changed which frames the cells showed and
+ * nothing else. Nothing on screen got bigger, which is why zooming did not look like zooming.
  *
- * Two rules carry it. Every notch is at an ABSOLUTE frame — a multiple of the step — so the same marks
- * stand on the same frames however the window moves, and none of them shifts under the picture when the
- * strip is scrolled or zoomed. And the step is chosen from a ladder of round numbers, so a mark is
- * always a round distance from its neighbour rather than whatever the arithmetic happened to give.
+ * So: a zoom gives a rate, the rate gives the strip its width, and the tiles are laid across that width at
+ * a FIXED size. More width therefore means MORE tiles across the same stretch of source, which is the
+ * visible expansion. The window is then a pair of numbers — where the strip is scrolled to, and how much of
+ * it fits — rather than the thing that decides the sampling.
+ *
+ * All of it is arithmetic over a zoom, a width and a frame count, in a file of its own, because the one
+ * thing that cannot be seen when it is wrong is where a tile or a mark lands.
  */
 
-/// The steps a ruler may use, in frames: the 1-2-5 ladder every ruler is built on, up past an hour at
-/// 60fps. A step outside it would read as an arbitrary distance rather than as a round one.
-let scaleSteps: [Int] = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000]
+// MARK: - the rate, which the zoom decides
 
-/// How many subdivisions sit between two labelled marks, which is what makes a scale readable by shape.
-let scaleMajorEvery = 5
+/// Pixels of source per second at 1x. The EDIT JOB timeline's own figure, so the two feel alike.
+let BASE_PX_PER_SECOND = 24.0
+/// The range the zoom may take. Below 1 so a long source can still be taken in at a glance.
+let STRIP_ZOOM_MIN = 0.05
+let STRIP_ZOOM_MAX = 32.0
 
-/// The frames between one subdivision and the next, chosen so they are never closer than `minSpacing`.
-func scaleMinorStep(framesInWindow: Double, width: Double, minSpacing: Double) -> Int {
-    guard framesInWindow > 0, width > 0, minSpacing > 0 else { return 1 }
-    let wanted = framesInWindow * minSpacing / width
-    return scaleSteps.first { Double($0) >= wanted } ?? scaleSteps[scaleSteps.count - 1]
+/// Pixels of strip per second of source. The zoom decides it, and nothing else does.
+func stripPxPerSec(_ zoom: Double) -> Double {
+    BASE_PX_PER_SECOND * (zoom.isFinite && zoom > 0 ? zoom : 1)
 }
 
-/// One mark of the scale: the frame it stands on, and whether it is a labelled rank.
-struct ScaleNotch {
-    let frame: Int
+/// A zoom held inside the range, with nonsense falling back to 1x.
+func clampStripZoom(_ zoom: Double) -> Double {
+    zoom.isFinite && zoom > 0 ? max(STRIP_ZOOM_MIN, min(STRIP_ZOOM_MAX, zoom)) : 1
+}
+
+/// The pixels one frame takes at a zoom, which is what places every mark on the strip.
+func stripPxPerFrame(_ zoom: Double, fps: Double) -> Double {
+    stripPxPerSec(zoom) / (fps.isFinite && fps > 0 ? fps : 30)
+}
+
+/// The zoom at which the whole source is exactly as wide as the room there is for it.
+///
+/// This is the strip's FIT, and like the timeline's it is taken from the viewport only at the moment it is
+/// asked for — the first layout, or the button — so a resize changes how much is on screen and never
+/// silently re-decides the zoom.
+func stripFitZoom(duration: Double, availableWidth: Double) -> Double {
+    guard duration.isFinite, duration > 0, availableWidth > 0 else { return 1 }
+    return clampStripZoom(availableWidth / (duration * BASE_PX_PER_SECOND))
+}
+
+/// A wheel notch's worth of zoom, eased — the timeline's own pace, so a trackpad and a wheel feel alike.
+func stripZoomedBy(_ zoom: Double, delta: Double) -> Double {
+    guard delta.isFinite, delta != 0 else { return zoom }
+    let eased = tanh(abs(delta) / 40)
+    let factor = 1 + 0.06 * eased
+    return clampStripZoom(delta < 0 ? zoom * factor : zoom / factor)
+}
+
+/**
+ * A wheel notch's worth of scrubbing, as a share of the source, eased.
+ *
+ * A share rather than a fixed number of seconds, so the same gesture means the same thing at every zoom:
+ * a wheel over a close-up covers a small stretch of source and over the overview a large one, which is the
+ * other half of what zooming is for. The ease is the same hyperbola the zoom's own pace is squashed
+ * through, so a wheel feels like one thing wherever in this window it is used.
+ */
+func stripScrubSeconds(delta: Double, duration: Double) -> Double {
+    guard delta.isFinite, delta != 0, duration.isFinite, duration > 0 else { return 0 }
+    let eased = tanh(abs(delta) / 6.0)
+    return (1.0 / max(Double(Int(duration * 30.0)), 1)) * (0.35 + 1.65 * eased)
+}
+
+// MARK: - the tiles
+
+/// A strip's tiling: how wide a tile is, how many of them span the strip, and each one's share of it.
+struct StripTiling {
+    let thumbWidth: Double
+    let cellWidth: Double
+    let count: Int
+    let step: Double
+}
+
+/**
+ * Tile a strip at a FIXED tile width, across whatever width it is drawn at.
+ *
+ * The tile is the shape of what is being shown and its size is the strip's own row height, so a tile's
+ * width is a constant — and the count is the strip's width divided by it. That is the whole model: zooming
+ * widens the strip, so the same source is covered by more tiles, so the segment under the pointer is drawn
+ * across more of them. A segment at eleven tiles becomes a segment at forty, and the pictures in them are
+ * four times as finely spaced.
+ *
+ * `cellWidth` is the strip shared out exactly among the tiles, so there is no gap at the end; it is the tile
+ * width to within the rounding that sharing out costs, which is a fraction of a pixel.
+ */
+func stripTiling(frameCount: Int, stripWidth: Double, thumbHeight: Double, outAspect: Double) -> StripTiling {
+    let height = thumbHeight > 0 ? thumbHeight : 48
+    let aspect = outAspect.isFinite && outAspect > 0 ? outAspect : 16.0 / 9.0
+    let width = max(1, (height * aspect).rounded())
+    let frames = max(1, frameCount)
+    let strip = stripWidth.isFinite ? max(0, stripWidth) : 0
+    let count = max(1, min(Int((strip / width).rounded()), frames))
+    let cell = strip / Double(count)
+    return StripTiling(thumbWidth: width, cellWidth: cell, count: count, step: Double(frames) / Double(count))
+}
+
+/**
+ * The source frame a tile shows: its own middle, held inside its own share of the strip.
+ *
+ * The holding is the part that matters, and it is not the same as subtracting a frame from the share's end.
+ * A share narrower than two frames — which is what a deep zoom makes of every tile — has its last frame AT
+ * or before its first, and a bound derived that way lands *before* the share it is meant to hold the frame
+ * inside: the tile would show the frame just outside its own left edge. So the shares are stated in frames
+ * — the first whole frame inside one and the last — and the middle is held between those.
+ */
+func stripTileFrame(_ index: Int, tiling: StripTiling, frameCount: Int) -> Int {
+    let last = max(0, frameCount - 1)
+    let low = Double(index) * tiling.step
+    let high = Double(index + 1) * tiling.step
+    let middle = (Double(index) + 0.5) * tiling.step
+    let firstInside = Int(low.rounded(.up))
+    let lastInside = max(firstInside, Int(high.rounded(.up)) - 1)
+    let held = min(lastInside, max(firstInside, Int(middle.rounded())))
+    return min(last, max(0, held))
+}
+
+// MARK: - the window
+
+/**
+ * The pixel offset of the visible window's left edge, holding an anchored frame where it is on screen.
+ *
+ * The anchored frame is the SKIMMER and `anchorX` is where it is on screen now. Holding that pair fixed
+ * while the zoom changes is what makes a zoom a lens on the frame being looked at: the strip stretches
+ * around the skimmer rather than around the window's own middle. The offset is held inside the strip, so at
+ * either end the drawing settles against the end instead of running off it — the one place the skimmer is
+ * allowed to move on screen, exactly as the timeline's is.
+ */
+func stripOffset(anchorFrame: Double, anchorX: Double, pxPerFrame: Double, stripWidth: Double, viewportWidth: Double) -> Double {
+    guard pxPerFrame > 0, stripWidth > 0, viewportWidth > 0 else { return 0 }
+    let wanted = anchorFrame * pxPerFrame - anchorX
+    return max(0, min(max(0, stripWidth - viewportWidth), wanted))
+}
+
+/**
+ * Which tiles of the strip are on screen, with one either side of the viewport so a partly visible tile at
+ * an edge is drawn rather than appearing only once it is fully inside.
+ */
+func stripVisibleRange(offset: Double, viewportWidth: Double, cellWidth: Double, count: Int) -> (first: Int, last: Int) {
+    guard cellWidth > 0, count > 0, viewportWidth > 0 else { return (0, -1) }
+    let first = max(0, Int((offset / cellWidth).rounded(.down)) - 1)
+    let last = min(count - 1, Int(((offset + viewportWidth) / cellWidth).rounded(.up)) + 1)
+    return (first, max(first - 1, last))
+}
+
+// MARK: - the scale
+
+/// The steps a scale may be drawn at, in seconds — the timeline's own ladder, so the two read alike.
+let RULER_STEPS: [Double] = [0.04, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+/// How far apart two labelled ranks must stand to be worth drawing, and two subdivisions at all.
+let RULER_MAJOR_PX = 72.0
+let RULER_MINOR_PX = 12.0
+
+/// One mark on the scale: when it stands, and whether it is one of the labelled ranks.
+struct RulerTick {
+    let time: Double
     let major: Bool
 }
 
 /**
- * Every mark the window shows, in order.
+ * The two steps a scale is drawn at, from the ZOOM alone.
  *
- * The first mark is the first multiple of the step at or after the window's own first frame, so no mark
- * is drawn for a frame the strip is not showing; the last is the last multiple inside the window. Both
- * ends are therefore exact frame boundaries, which is what lets a mark sit over the cell boundary it
- * describes rather than near it.
+ * That is what makes the scale read the same at every zoom: what changes as it is zoomed is what the marks
+ * SAY, not how many of them are across the screen. Where a frame is wide enough to see, the scale counts in
+ * FRAMES — a mark per frame, and a rank every so many frames — because the arrow keys step by one frame and
+ * a scale whose marks are not frames makes a one-frame step land between two marks.
  */
-func scaleNotches(firstFrame: Int, frameCount: Int, width: Double, minSpacing: Double) -> [ScaleNotch] {
-    guard frameCount > 0 else { return [] }
-    let minor = scaleMinorStep(framesInWindow: Double(frameCount), width: width, minSpacing: minSpacing)
-    let major = minor * scaleMajorEvery
-    let last = firstFrame + frameCount - 1
-    var frame = ((firstFrame + minor - 1) / minor) * minor
-    var notches: [ScaleNotch] = []
-    // A window of ten thousand frames at one frame per mark is ten thousand marks; the bound is the
-    // window's own width in marks, with room to spare, rather than a number picked out of the air.
-    while frame <= last, notches.count <= (frameCount / minor) + 2 {
-        notches.append(ScaleNotch(frame: frame, major: frame % major == 0))
-        frame += minor
+func rulerSteps(zoom: Double, fps: Double) -> (major: Double, divisor: Int, step: Double) {
+    let rate = stripPxPerSec(zoom)
+    let frame = fps.isFinite && fps > 0 ? 1 / fps.rounded() : 0
+    if frame > 0 && frame * rate >= RULER_MINOR_PX {
+        let divisor = max(1, Int((RULER_MAJOR_PX / (frame * rate)).rounded(.up)))
+        return (frame * Double(divisor), divisor, frame)
     }
-    return notches
+    let major = RULER_STEPS.first { $0 * rate >= RULER_MAJOR_PX } ?? RULER_STEPS[RULER_STEPS.count - 1]
+    let divisor = [5, 4, 2, 1].first { (major / Double($0)) * rate >= RULER_MINOR_PX } ?? 1
+    return (major, divisor, major / Double(divisor))
 }
 
 /**
- * The window a zoom gesture asks for, with the frame under the pointer left where it is.
+ * The marks the scale carries over the stretch it is showing.
  *
- * The anchored frame is held at the same fraction of the window, which is what makes zooming feel like
- * a lens rather than a jump: whatever was under the cursor is still under it, at a new closeness. The
- * window is then clamped to the source and to never being narrower than one frame per thumbnail, so a
- * scroll at either end settles against the end rather than running off it.
+ * A WINDOW is what keeps it honest: a close zoom on a long source is an enormous drawing, and a scale drawn
+ * across the whole of it would be tens of thousands of marks of which a hundred are ever visible. The marks
+ * are generated for the stretch on screen — in the STRETCHED space, so they line up with the tiles — and the
+ * mark at the very end is dropped, because it is drawn right-aligned and lands on the mark before it.
  */
-func scaledWindow(firstFrame: Int, frameCount: Int, totalFrames: Int, minFrames: Int, factor: Double, anchorFrame: Double) -> (first: Int, count: Int) {
-    guard totalFrames > 0, factor > 0 else { return (max(0, firstFrame), max(1, frameCount)) }
-    let floorCount = max(1, min(minFrames, totalFrames))
-    let wanted = max(floorCount, min(totalFrames, Int((Double(frameCount) / factor).rounded())))
-    let fraction = (anchorFrame - Double(firstFrame)) / Double(max(frameCount, 1))
-    let raw = Int((anchorFrame - fraction * Double(wanted)).rounded())
-    return (max(0, min(totalFrames - wanted, raw)), wanted)
+func rulerTicks(duration: Double, zoom: Double, from: Double, to: Double, fps: Double) -> [RulerTick] {
+    guard duration.isFinite, duration > 0 else { return [] }
+    let steps = rulerSteps(zoom: zoom, fps: fps)
+    let low = max(0, min(duration, from))
+    let high = max(low, min(duration, to))
+    var ticks: [RulerTick] = []
+    var index = max(0, Int((low / steps.step).rounded(.down)))
+    let last = Int((high / steps.step).rounded(.up))
+    while index <= last {
+        let time = Double(index) * steps.step
+        if time > duration + steps.step / 1000 { break }
+        ticks.append(RulerTick(time: time, major: index % steps.divisor == 0))
+        index += 1
+    }
+    if let tail = ticks.last, duration - tail.time < steps.step / 2 { ticks.removeLast() }
+    return ticks
 }
 
-/// How much one scroll tick zooms, eased so a single notch is gentle and a flick is not.
-///
-/// The same shape the editor's own scale zooms with: the raw delta is squashed through a hyperbola, so
-/// a trackpad's many small deltas and a wheel's few large ones move the zoom by a similar amount.
-func scaleZoomFactor(delta: Double) -> Double {
-    guard delta != 0 else { return 1 }
-    let eased = tanh(abs(delta) / 6.0)
-    let amount = 0.08 + 0.42 * eased
-    return delta > 0 ? 1 + amount : 1 / (1 + amount)
-}
+// MARK: - the glide
 
-/// How long a zoom glides from the window it was on to the window it asked for, in seconds.
-///
-/// Long enough to read as a movement rather than a cut, short enough that a scroll still feels like it
-/// did the thing at once. The strip and the scale are BOTH driven from the window this carries, so they
-/// glide as one rather than one snapping to the destination while the other waits for it.
+/// How long a zoom glides, in seconds. The strip and the scale are read from the same zoom, so they move as one.
 let zoomAnimationSeconds = 0.18
 
-/// The easing a zoom glides with: a smoothstep, so the window leaves where it was and arrives where it
-/// is going at rest rather than at full speed. Both ends are fixed points, which is what makes the first
-/// step of an animation the window it started from and the last the window it asked for, exactly.
+/// The easing a zoom glides with: a smoothstep, so it leaves and arrives at rest. Both ends are fixed points.
 func easeInOut(_ t: Double) -> Double {
     let clamped = max(0, min(1, t))
     return clamped * clamped * (3 - 2 * clamped)
 }
 
-/// The frame a zoom pivots on: the skimmer's own frame.
-///
-/// The zoom is about the frame being LOOKED AT rather than the frame the pointer happens to rest on, so
-/// it is the strip's own playhead fraction of the source that is turned into an absolute frame.
-func skimmerAnchorFrame(playheadValue: Double, totalFrames: Int) -> Double {
-    max(0, min(Double(max(1, totalFrames) - 1), max(0, playheadValue) * Double(max(1, totalFrames))))
-}
-
-/// The window a zoom is passing through part of the way along it.
-///
-/// Both ends of the transition are interpolated — the window's first frame and its length — and that is
-/// deliberate rather than merely easy. `scaledWindow` derives its first frame from the anchored frame, so
-/// a straight path between two windows that each hold the anchor at the same fraction holds the anchor at
-/// that fraction the whole way: the skimmer stands still on screen for the entire glide, which is what
-/// "the zoom is about the skimmer" has to mean to mean anything. Progress is expected to have been eased
-/// already — this is the path, `easeInOut` is the grain of the travel along it.
-func interpolatedWindow(fromFirst: Int, fromCount: Int, toFirst: Int, toCount: Int, totalFrames: Int, minFrames: Int, progress: Double) -> (first: Int, count: Int) {
-    guard totalFrames > 0 else { return (max(0, fromFirst), max(1, fromCount)) }
-    let floorCount = max(1, min(minFrames, totalFrames))
+/// The zoom part-way along a glide: the elapsed shape is the ease's business, this is only the travel.
+func interpolatedZoom(from: Double, to: Double, progress: Double) -> Double {
     let p = max(0, min(1, progress))
-    let count = max(floorCount, min(totalFrames, Int((Double(fromCount) + (Double(toCount) - Double(fromCount)) * p).rounded())))
-    let first = max(0, min(totalFrames - count, Int((Double(fromFirst) + (Double(toFirst) - Double(fromFirst)) * p).rounded())))
-    return (first, count)
+    return from + (to - from) * p
 }

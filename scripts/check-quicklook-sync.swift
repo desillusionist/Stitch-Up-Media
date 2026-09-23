@@ -2,26 +2,17 @@ import AppKit
 import AVFoundation
 
 /**
- * Whether the strip re-renders when the window moves, which no amount of arithmetic can answer.
+ * The strip's spatial zoom, proved at runtime.
  *
- * The arithmetic that carries a zoom — the easing, the anchored window, the glide between them — is
- * asserted in `check-scale`, and it passed while the strip was still reported as not moving. That is the
- * gap this closes: `check-scale` proves what the window SHOULD be, and this proves the strip is actually
- * driven by it. They are different questions and only the second one is the one being complained about.
+ * `check-scale` asserts the arithmetic — that a zoom gives a rate, the rate gives the strip its width, and
+ * fixed-width tiles are laid across it. This asserts that the VIEW is built on it: that the strip is really
+ * as wide as the model says, that zooming really does pack more tiles across the same source rather than
+ * magnifying them, that the skimmer really does keep its place, and that the pictures in the tiles really
+ * are the frames the plan names.
  *
- * So the real `FilmstripView` is built on a real video and driven exactly the way a scroll drives it, and
- * its cells are READ BACK — each visible cell's layer contents, reduced to one average colour. The fixture
- * is built so that frame N is a solid grey of `20 + 3N`, which makes a cell's colour NAME the frame in it:
- * the harness can therefore say which frames the strip is showing, not merely that something changed,
- * which is the difference between "it redrew" and "it redrew the right frames".
- *
- * Both halves of the complaint are tested: a single gentle tick — where the frames move by a few and a
- * strip that is not being driven would look almost unchanged — and a zoom all the way onto the skimmer.
- *
- * The complaint has a second possible cause this cannot see: the app shells out to a compiled Swift
- * program, so an old BINARY looks exactly like old code. The harness prints what it is testing, and
- * `main.ts` names each build of the helper after the contents of its sources, so an old one cannot be run
- * by accident.
+ * The last one is why the fixture is what it is. Every frame of it is a solid grey three levels above the
+ * one before, so a tile's average colour NAMES its frame — the harness can therefore say which frames the
+ * strip is showing rather than merely that something changed.
  *
  * Usage: npm run check-sync
  */
@@ -36,8 +27,7 @@ enum CheckQuickLookSync {
         if !ok { failures += 1 }
     }
 
-    /// A frame, reduced to one average colour: `R,G,B`. Drawn down to a single pixel rather than sampled
-    /// at one, so a frame's identity is not a bet on where the fixture put the interesting pixel.
+    /** A frame, reduced to one average colour: `R,G,B`. Drawn down to a pixel rather than sampled at one. */
     static func signature(_ image: CGImage?) -> String {
         guard let image else { return "none" }
         var pixel = [UInt8](repeating: 0, count: 4)
@@ -49,58 +39,19 @@ enum CheckQuickLookSync {
         return "\(pixel[0]),\(pixel[1]),\(pixel[2])"
     }
 
-    /// The grey level a signature stands for, which for this fixture is a frame number.
+    /** The grey level a signature stands for, which for this fixture is a frame number. */
     static func level(_ signature: String) -> Int? {
         let channels = signature.split(separator: ",").compactMap { Int($0) }
         guard channels.count == 3 else { return nil }
         return (channels[0] + channels[1] + channels[2]) / 3
     }
 
-    /** One frame of the source, read straight from the file, as the answer the strip should be showing. */
     static func frame(at seconds: Double, of asset: AVAsset) -> CGImage? {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
         return try? generator.copyCGImage(at: CMTime(seconds: seconds, preferredTimescale: 600), actualTime: nil)
-    }
-
-    /** What every cell the strip is showing is actually displaying, as the frame it names. */
-    static func cellFrames(_ filmstrip: FilmstripView, levels: [Int]) -> [Int?] {
-        filmstrip.imageViews.filter { !$0.isHidden }.map { view in
-            guard let contents = view.layer?.contents else { return nil }
-            guard let value = level(signature(contents as! CGImage)) else { return nil }
-            // Nearest reference frame: the fixture's levels are three apart, so a match is unambiguous and
-            // this needs no assumption about how the grey survived the encode.
-            var best: Int? = nil
-            var delta = Int.max
-            for (frame, reference) in levels.enumerated() where abs(reference - value) < delta { delta = abs(reference - value); best = frame }
-            return delta <= 2 ? best : nil
-        }
-    }
-
-    /** The frames a window of this shape should be showing, one per cell, at each cell's own middle. */
-    static func expectedFrames(first: Int, count: Int, cells: Int, totalFrames: Int) -> [Int] {
-        let step = Double(count) / Double(max(cells, 1))
-        return (0..<cells).map { min(totalFrames - 1, max(0, Int((Double(first) + (Double($0) + 0.5) * step).rounded()))) }
-    }
-
-    /**
-     * Whether every cell is showing a frame from the stretch of the source that cell stands for.
-     *
-     * The invariant a strip has to keep whatever it is asked for: a cell covers a slice of the window, and
-     * the frame in it has to come from that slice. It is stated as a range rather than as the exact middle
-     * because the middle of a one-frame cell is a half frame, whose rounding is a choice rather than a
-     * truth — what is NOT a choice is that the frame belongs to the cell showing it.
-     */
-    static func everyCellInItsOwnSpan(_ frames: [Int?], window: (first: Int, count: Int), cells: Int, totalFrames: Int) -> Bool {
-        let step = Double(window.count) / Double(max(cells, 1))
-        return zip(frames.indices, frames).allSatisfy { (index, frame) in
-            guard let frame else { return false }
-            let low = window.first + Int((Double(index) * step).rounded(.down))
-            let high = min(totalFrames - 1, window.first + Int((Double(index + 1) * step).rounded(.up)) - 1)
-            return frame >= low && frame <= high
-        }
     }
 
     @discardableResult
@@ -119,23 +70,41 @@ enum CheckQuickLookSync {
         return process.terminationStatus
     }
 
-    /// The window is gliding: the run loop has to run for the timer to fire and the frames to land.
     static func pump(_ seconds: Double) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
     }
 
-    /// Runs until the window has stopped moving for a while, which is a glide having finished.
-    @discardableResult
-    static func settle(_ filmstrip: FilmstripView, timeout: Double = 6) -> Int {
+    /// Runs until the zoom has stopped moving for a while, which is a glide having finished.
+    static func settle(_ filmstrip: FilmstripView, timeout: Double = 8) {
         let deadline = Date().addingTimeInterval(timeout)
-        var last = -1, stable = 0
+        var last = -1.0, stable = 0
         while Date() < deadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-            let count = filmstrip.windowFrameCount
-            if count == last { stable += 1; if stable >= 6 { return count } } else { stable = 0; last = count }
+            if abs(filmstrip.zoom - last) < 1e-9 { stable += 1; if stable >= 8 { return } } else { stable = 0; last = filmstrip.zoom }
         }
-        return filmstrip.windowFrameCount
+    }
+
+    /// What every tile the strip is showing holds: the view it is in, and the frame it is bound to.
+    static func tiles(_ filmstrip: FilmstripView) -> [(view: NSView, frame: Int)] {
+        zip(filmstrip.tileViews, filmstrip.tileFrames).filter { !$0.0.isHidden && $0.1 >= 0 }.map { (view: $0.0, frame: $0.1) }
+    }
+
+    /**
+     * Which tiles are showing a frame that is NOT from their own share of the strip, with the figures.
+     *
+     * The rule the whole strip rests on: a tile covers a stretch of the source, and the picture in it has to
+     * come from that stretch. Stated as a range rather than as the exact middle, because the middle of a
+     * one-frame share is a half frame whose rounding is a choice — what is not a choice is that the frame
+     * belongs to the tile showing it.
+     */
+    static func shareProblems(_ list: [(view: NSView, frame: Int)], pxPerFrame: Double, cell: Double, offset: Double) -> [String] {
+        list.compactMap { tile in
+            let stripX = Double(tile.frame) * pxPerFrame
+            let left = Double(tile.view.frame.minX) + offset
+            if stripX >= left - 1.5 && stripX <= left + cell + 1.5 { return nil }
+            return "frame \(tile.frame) at \(Int(stripX))px where its share is \(Int(left))..\(Int(left + cell))"
+        }
     }
 
     static func main() {
@@ -147,8 +116,7 @@ enum CheckQuickLookSync {
         print("testing binary: \(CommandLine.arguments.first ?? "?")")
 
         // Six seconds at ten frames a second, every frame a solid grey three levels above the last, so a
-        // frame's number can be READ BACK from any cell showing it. Built by ffmpeg's own `geq`, which can
-        // see the frame counter — no shell, so the expression needs no quoting.
+        // frame's number can be READ BACK from any tile showing it.
         let video = root.appendingPathComponent("ramp.mp4")
         let status = run("/usr/bin/env", ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "lavfi", "-i", "color=c=black:s=320x180:r=10:d=6",
@@ -161,25 +129,16 @@ enum CheckQuickLookSync {
         let duration = asset.duration.seconds
         let rate = 10.0
         let totalFrames = max(1, Int((duration * rate).rounded()))
-        // The fixture's own frames, read the same way the cells will be, so the mapping from a colour back
-        // to a frame number is the source's own rather than an assumption about the encode.
         let levels = (0..<totalFrames).map { level(signature(frame(at: Double($0) / rate, of: asset))) ?? -1 }
         print("  the fixture's frames read as: \(levels.prefix(6)) … \(levels.suffix(3))")
 
-        section("the fixture can be read back")
-        check("it is the six seconds it was built as", totalFrames == 60, "\(totalFrames)")
-        check("every frame has a level", levels.allSatisfy { $0 > 0 }, "\(levels)")
-        check("and every frame is distinguishable from the next", zip(levels, levels.dropFirst()).allSatisfy { $1 > $0 }, "\(levels)")
-
         section("the strip as the window opens")
-        let filmstrip = FilmstripView(asset: asset, duration: duration, sourceAspect: 320.0 / 180.0, isAudio: false, frameRate: rate, frame: NSRect(x: 0, y: 0, width: 900, height: 82))
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 82))
+        let width: CGFloat = 900, height: CGFloat = 82
+        let filmstrip = FilmstripView(asset: asset, duration: duration, sourceAspect: 320.0 / 180.0, isAudio: false, frameRate: rate, frame: NSRect(x: 0, y: 0, width: width, height: height))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         container.addSubview(filmstrip)
         filmstrip.frame = container.bounds
-        // A real window, off the screen and invisible: the layout pass is what positions the cells, and it is
-        // the part a headless harness is most likely to leave out — so it is had the ordinary way and then
-        // ASSERTED rather than assumed.
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 82), styleMask: [.borderless], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = container
         window.alphaValue = 0
         window.setFrameOrigin(NSPoint(x: -5000, y: -5000))
@@ -189,56 +148,109 @@ enum CheckQuickLookSync {
         filmstrip.layoutSubtreeIfNeeded()
         pump(1.5)
 
-        let laidOut = filmstrip.imageViews.filter { !$0.isHidden }
-        let cells = laidOut.count
-        check("the strip laid its cells out", laidOut.allSatisfy { $0.frame.width > 1 && $0.frame.height > 1 }, "a cell is still \(laidOut.first?.frame ?? .zero)")
-        check("and hides the cells it has no room for", cells < filmstrip.imageViews.count, "\(cells) of \(filmstrip.imageViews.count) shown")
-        check("the strip is showing more than one cell", cells > 1, "showing \(cells)")
-        check("and the whole source is its window", filmstrip.windowFrameCount == totalFrames, "\(filmstrip.windowFrameCount) of \(totalFrames)")
+        check("the source is the six seconds it was built as", totalFrames == 60, "\(totalFrames)")
+        check("the strip is laid out", filmstrip.bounds.width == width, "\(filmstrip.bounds.width)")
+        check("and something was asked to be laid out in it", !filmstrip.tileViews.isEmpty, "no tile views at all")
 
-        let overviewWindow = (first: filmstrip.windowFirstFrame, count: filmstrip.windowFrameCount)
-        let overview = cellFrames(filmstrip, levels: levels)
-        print("  window \(overviewWindow.first)+\(overviewWindow.count), cells show \(overview)")
-        print("  the frames its cells stand for: \(expectedFrames(first: overviewWindow.first, count: overviewWindow.count, cells: cells, totalFrames: totalFrames))")
-        check("every cell has a frame in it", overview.allSatisfy { $0 != nil }, "\(overview)")
-        check("and every cell shows a frame from its own stretch of the source", everyCellInItsOwnSpan(overview, window: overviewWindow, cells: cells, totalFrames: totalFrames), "\(overview)")
+        let overview = tiles(filmstrip)
+        let overviewZoom = filmstrip.zoom
+        let overviewTileWidth = filmstrip.tiling.thumbWidth
+        let overviewTilingCount = filmstrip.tiling.count
+        let overviewFrameStep = filmstrip.tiling.step
+        print("  at the fit: zoom \(String(format: "%.4f", overviewZoom)), strip \(Int(filmstrip.stripWidth))px of \(Int(width))px, \(overview.count) tiles, tile \(Int(overviewTileWidth))px")
+        // FIT is the whole source in the room there is: the strip IS the viewport, which is what "not zoomed
+        // in" means in this model.
+        check("the whole source fits the window to begin with", abs(filmstrip.stripWidth - Double(width)) < 1.5, "strip \(filmstrip.stripWidth) in \(width)")
+        check("so nothing is scrolled off", filmstrip.offset == 0, "\(filmstrip.offset)")
+        // The tiles span the source, and every one of them shows a frame from its own share of it — which is
+        // the rule that makes a strip read as the source rather than as every nth frame of it.
+        check("the tiles reach the end of the source", (overview.last?.frame ?? -1) > totalFrames - 12, "\(overview.map { $0.frame })")
+        let overviewPx = filmstrip.stripWidth / Double(totalFrames)
+        let overviewCell = filmstrip.tiling.cellWidth
+        let overviewProblems = shareProblems(overview, pxPerFrame: overviewPx, cell: overviewCell, offset: filmstrip.offset)
+        check("and every tile shows a frame from its own share of the strip", overviewProblems.isEmpty, overviewProblems.joined(separator: "; "))
 
-        section("one gentle scroll tick")
-        // The case a strip that is not being driven would pass for broken: the frames move by a few, so the
-        // thumbnails barely differ — but they must differ, and they must be the frames of the NEW window.
+        section("a zoom in")
+        // Pivoted on the skimmer, halfway along, so whether it keeps its place can be measured rather than
+        // assumed. The gesture is repeated so the strip travels a long way: the pace is deliberately gentle, so
+        // one tick is not a test.
         filmstrip.playheadValue = 0.5
-        filmstrip.zoom(by: scaleZoomFactor(delta: 14))
+        let skimmerBefore = filmstrip.screenX(forValue: filmstrip.playheadValue)
+        for _ in 0..<24 { filmstrip.zoom(byDelta: -1000) }
         settle(filmstrip)
-        pump(2.0)
-        let tickWindow = (first: filmstrip.windowFirstFrame, count: filmstrip.windowFrameCount)
-        let tick = cellFrames(filmstrip, levels: levels)
-        print("  window \(tickWindow.first)+\(tickWindow.count), cells show \(tick)")
-        check("the window narrowed, but not to the cells' floor", tickWindow.count < totalFrames && tickWindow.count > cells, "\(tickWindow)")
-        check("and it is still about the skimmer", tickWindow.first <= 30 && 30 < tickWindow.first + tickWindow.count, "\(tickWindow)")
-        check("every cell re-rendered for the new window", everyCellInItsOwnSpan(tick, window: tickWindow, cells: cells, totalFrames: totalFrames), "\(tick)")
-        check("in order, and with no frame shown twice", zip(tick, tick.dropFirst()).allSatisfy { ($0 ?? -1) < ($1 ?? -1) }, "\(tick)")
-        check("which is a change from the overview", tick != overview, "unchanged: \(tick)")
+        pump(2.5)
 
-        section("zoomed all the way onto the skimmer")
-        filmstrip.zoom(by: 8)
+        let zoomedIn = tiles(filmstrip)
+        let zoom = filmstrip.zoom
+        let factor = zoom / overviewZoom
+        let tileWidth = filmstrip.tiling.thumbWidth
+        print("  after the zoom: zoom \(String(format: "%.4f", zoom)), strip \(Int(filmstrip.stripWidth))px, \(zoomedIn.count) tiles, tile \(Int(tileWidth))px")
+        check("the zoom went in", factor > 3.5, "only \(factor)x")
+        check("the strip is that much wider", abs(filmstrip.stripWidth / Double(width) - factor) < 0.05, "\(filmstrip.stripWidth / Double(width))x the window for a \(factor)x zoom")
+        check("and the source is still the same source", totalFrames == 60, "\(totalFrames)")
+        // THE POINT. The tiles are the same size and there are many more of them, so the expansion is
+        // density across the source and not magnification of it — which is what was missing.
+        check("a tile is still a tile", abs(tileWidth - overviewTileWidth) < 0.5, "\(tileWidth) was \(overviewTileWidth)")
+        // The tiles ACROSS THE SOURCE, which is the plan's own count: what is IN the window stays about a
+        // window's worth however far it is zoomed, because a window only ever holds a window's worth.
+        check("so the strip holds far more of them", Double(filmstrip.tiling.count) > Double(overviewTilingCount) * 2.5, "\(filmstrip.tiling.count) was \(overviewTilingCount)")
+        check("and they are packed that much closer", filmstrip.tiling.step < overviewFrameStep / 2.5, "step \(filmstrip.tiling.step) was \(overviewFrameStep)")
+        let zoomedProblems = shareProblems(zoomedIn, pxPerFrame: filmstrip.stripWidth / Double(totalFrames), cell: filmstrip.tiling.cellWidth, offset: filmstrip.offset)
+        check("every tile in the window shows a frame from its own share", zoomedProblems.isEmpty, zoomedProblems.joined(separator: "; "))
+        check("and each of them is a DIFFERENT frame, so the strip is not repeating itself", Set(zoomedIn.map { $0.frame }).count == zoomedIn.count, "\(zoomedIn.map { $0.frame })")
+
+        // The skimmer: the frame it is on keeps its place on screen while the strip stretches around it.
+        let skimmerAfter = filmstrip.screenX(forValue: filmstrip.playheadValue)
+        print("  the skimmer stood at \(Int(skimmerBefore))px and stands at \(Int(skimmerAfter))px")
+        check("the skimmer keeps its place on screen through the zoom", abs(skimmerAfter - skimmerBefore) < 2, "moved from \(skimmerBefore) to \(skimmerAfter)")
+        // And it is in the window, not scrolled away from.
+        check("and it is inside the window", skimmerAfter >= 0 && skimmerAfter <= width, "\(skimmerAfter)")
+
+        section("the trim, in the stretched space")
+        // A trim handle is drawn where its FRAME is, not where a share of the window falls, and is not held
+        // inside the view: at this zoom the in-point is off the left of the window and stays there.
+        filmstrip.start = 0.02
+        filmstrip.end = 0.06
+        pump(0.2)
+        let inX = filmstrip.inHandle.frame.minX
+        let outX = filmstrip.outHandle.frame.maxX
+        print("  in-point at \(Int(inX))px, out-point at \(Int(outX))px, window \(Int(width))px")
+        check("the in-point is drawn where its frame is, off the left of the window", inX < 0, "\(inX)")
+        check("and the out-point follows it in the stretched space", outX > inX + 20, "\(inX) to \(outX)")
+        // Scrolled to the start, both are in the window, which is the same drawing seen from elsewhere.
+        filmstrip.start = 0.02
+        filmstrip.end = 0.06
+        filmstrip.playheadValue = 0.01
+        for _ in 0..<30 { filmstrip.zoom(byDelta: 1000) }
         settle(filmstrip)
-        filmstrip.zoom(by: 8)
+        pump(0.6)
+        print("  after zooming back out: zoom \(String(format: "%.3f", filmstrip.zoom)), strip \(Int(filmstrip.stripWidth))px, in-point at \(Int(filmstrip.inHandle.frame.minX))px")
+        check("zooming back out brings the whole source inside the window again", filmstrip.stripWidth <= Double(width) + 1, "strip \(filmstrip.stripWidth)")
+        check("and the handle is back in it", filmstrip.inHandle.frame.minX >= 0, "\(filmstrip.inHandle.frame.minX)")
+
+        section("the pictures in the tiles")
+        // The one thing the arithmetic cannot say: that what is DRAWN is the frame the plan names. Every tile
+        // in view is read back from its layer, and its colour has to be the fixture's colour for its frame.
+        for _ in 0..<3 { filmstrip.zoom(byDelta: -400); pump(0.05) }
         settle(filmstrip)
-        pump(2.0)
-        let deepWindow = (first: filmstrip.windowFirstFrame, count: filmstrip.windowFrameCount)
-        let deep = cellFrames(filmstrip, levels: levels)
-        print("  window \(deepWindow.first)+\(deepWindow.count), cells show \(deep)")
-        check("the window is one frame per cell", deepWindow.count == cells, "\(deepWindow) with \(cells) cells")
-        check("and the skimmer is inside it", deepWindow.first <= 30 && 30 < deepWindow.first + deepWindow.count, "\(deepWindow)")
-        check("the cell count did not change — density is the strip's, coverage is the window's", filmstrip.imageViews.filter { !$0.isHidden }.count == cells, "was \(cells)")
-        // At one frame per cell the answer is not a choice: the strip is a list of the window's frames, so
-        // cell i IS frame first+i. This is the assertion that caught the half-frame rounding.
-        check("every cell shows the frame it stands for", deep == Array(deepWindow.first..<(deepWindow.first + cells)).map { min(totalFrames - 1, $0) }, "\(deep)")
-        check("and the last one is not past the end of the window", (deep.last.flatMap { $0 } ?? -1) < deepWindow.first + deepWindow.count, "\(deep) in \(deepWindow)")
-        check("which is a change from the overview", deep != overview, "unchanged: \(deep)")
+        pump(3.0)
+        let shown = tiles(filmstrip)
+        var matched = 0
+        var reported = 0
+        for tile in shown {
+            guard let contents = tile.view.layer?.contents else { continue }
+            guard let value = level(signature(contents as! CGImage)) else { continue }
+            let reference = levels[min(max(tile.frame, 0), levels.count - 1)]
+            if abs(value - reference) <= 2 { matched += 1 } else if reported < 4 {
+                reported += 1
+                print("    tile for frame \(tile.frame) reads \(value) where the source reads \(reference)")
+            }
+        }
+        print("  \(matched) of \(shown.count) tiles read back as the frame they name")
+        check("every tile in view shows the frame it was given", matched == shown.count && shown.count > 3, "\(matched) of \(shown.count)")
 
         try? FileManager.default.removeItem(at: root)
-        print(failures == 0 ? "\nTHE STRIP RE-RENDERS FOR EVERY WINDOW IT IS GIVEN\n" : "\n\(failures) SYNC PROBLEM(S)\n")
+        print(failures == 0 ? "\nTHE STRIP IS DRAWN AT THE ZOOM IT SAYS IT IS\n" : "\n\(failures) SYNC PROBLEM(S)\n")
         exit(failures == 0 ? 0 : 1)
     }
 }

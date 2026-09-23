@@ -142,7 +142,28 @@ final class MonitorPlayerView: AVPlayerView {
 }
 
 final class FilmstripView: NSView {
-    let imageViews: [NSView]
+    /**
+     * The tile views, a POOL rather than one per frame of the source.
+     *
+     * The strip used to make a view for every fourth frame of the source and spread them across itself,
+     * which is the model this replaces. Now a tile holds a fixed number of pixels and the strip is as wide
+     * as the zoom makes it, so what changes with the zoom is how many tiles are ACROSS it — and only the
+     * ones on screen need a view at all. The pool grows to whatever the widest window asks for and is
+     * reused as the strip scrolls.
+     */
+    private(set) var tileViews: [NSView] = []
+    /** The source frame each pooled view is showing, or -1 for one that is not in use. */
+    private(set) var tileFrames: [Int] = []
+    /**
+     * The frame each pooled view's PICTURE is of, which is not the same as the frame it is BOUND to.
+     *
+     * They part company for as long as a picture takes to arrive, and that is the whole reason this exists:
+     * a tile bound to a frame whose picture never came back would otherwise look done — the binding is what
+     * it has — and keep whatever it was showing. A glide binds every tile a step before it asks for any of
+     * their pictures, so without this the last step's binding would satisfy the check and the pictures would
+     * never be asked for at all.
+     */
+    private var tileShown: [Int] = []
     let selectionView = NSView()
     let inHandle = NSView(); let outHandle = NSView(); let playhead = NSView()
     var start = 0.0 { didSet { updateSelection() } }
@@ -155,55 +176,51 @@ final class FilmstripView: NSView {
     var onPlayheadChange: ((Double) -> Void)?
     var onHoverTime: ((Double) -> Void)?
     private var dragging: String?
-    private var visibleCount = 24
     private let isAudio: Bool
     private var peaks: [CGFloat] = []
     private let peakResolution = 2000
     private let sourceAspect: CGFloat
     private let sourceAsset: AVAsset
     private let sourceDuration: Double
-    private var lastRenderedCells = -1
     let frameRate: Double
     private var trackingAreaRef: NSTrackingArea?
     private var longPressWork: DispatchWorkItem?
-    /**
-     * The stretch of the source the strip is showing, as frames, and how long the source is in them.
-     *
-     * The overview is a window of the whole source; the hold-to-zoom gesture and a scroll on the scale
-     * above both narrow it to a window inside the source, which is the same request at two degrees. What
-     * used to be a question of "zoomed or not" is a reading of this window, so there is one model rather
-     * than two, and the scale can draw the range the strip is actually showing.
-     */
+
+    // MARK: the model — a zoom, and where the strip is scrolled to
+
+    /// How long the source is, in seconds. The strip is this long, drawn at the zoom's own rate.
+    var sourceSeconds: Double { sourceDuration }
+    /// The zoom the strip is drawn at. Its whole width is the source's length times this rate.
+    private(set) var zoom = 0.0
+    /// The strip pixels scrolled off to the left. 0 is the beginning of the source.
+    private(set) var offset = 0.0
+    /// How many frames the source holds, which is what the strip's width is measured in.
     private(set) var totalFrames = 1
-    private(set) var windowFirstFrame = 0
-    private(set) var windowFrameCount = 1
-    /** Whether the window was narrowed by the HOLD, which is let go of when the mouse is released. */
+    /// The tiles the strip holds at this zoom, and the frame each of them shows.
+    private var cachedTiling: StripTiling?
+    /// Whether the strip has been fitted to the room it has yet, which only the first layout can do.
+    private var fitted = false
+    /// The zoom a hold-to-zoom gesture was made from, to spring back to.
+    private var restoreZoom = 1.0
+    /// Whether the window was narrowed by a HOLD, which is let go of when the mouse is released.
     private var zoomHeld = false
-    /** Told whenever the range or the playhead moves, so the scale above draws the same range. */
-    var onScaleChange: (() -> Void)?
-    /**
-     * The window the zoom is heading to, and the glide toward it.
-     *
-     * A scroll sets the TARGET and the strip glides to it, so a flick's many ticks accumulate into one
-     * destination instead of each fighting the last for the window. `animFrom` is the window at the moment
-     * the current glide began and `animStart` is when, and those two with the target are the whole of the
-     * animation: the window part-way along is the eased interpolation of the two. The GEOMETRY follows every
-     * step, so the strip and the scale never disagree about the range; the thumbnails are asked for at a
-     * coarser cadence, because a seek is not free and the token below keeps only the last set to arrive.
-     */
-    private var targetWindow: (first: Int, count: Int) = (0, 1)
+    /* The glide: a zoom that has been asked for, and the window it is travelling from. */
+    private var zoomTarget = 0.0
+    private var zoomFrom = 0.0
     private var animTimer: Timer?
-    private var animFrom: (first: Int, count: Int) = (0, 1)
     private var animStart = 0.0
-    private var lastAnimRender = 0.0
-    /** How often new thumbnails are asked for while gliding. Not per step, unlike the geometry. */
-    private let animationRenderInterval = 0.05
-    private var hoverRequest = 0
-    private var zoomToken = 0
-    private var pressOrigin: NSPoint = .zero
-    private var skimIndex = -1
-    /** Whether the strip is showing less than the whole source, which is what a zoom means here. */
-    private var zoomed: Bool { windowFrameCount < totalFrames }
+    /// The frame the glide pivots on, and where it stood on screen when the glide began.
+    private var animAnchorFrame = 0.0
+    private var animAnchorX = 0.0
+    private var frameCache: [Int: CGImage] = [:]
+    private var cacheOrder: [Int] = []
+    private var pendingFrames: Set<Int> = []
+    var onScaleChange: (() -> Void)?
+
+    /// The strip's row height and the tile's height with it: the one number its density hangs off.
+    private let tileHeight: CGFloat = 48
+    /// How many tile pictures are kept. A strip's worth and then some, so scrolling back is instant.
+    private let cacheLimit = 600
 
     init(asset: AVAsset, duration: Double, sourceAspect: CGFloat, isAudio: Bool, frameRate: Double = 30, frame: NSRect) {
         self.sourceAsset = asset
@@ -212,109 +229,226 @@ final class FilmstripView: NSView {
         self.isAudio = isAudio
         self.frameRate = max(1, frameRate)
         self.totalFrames = max(1, Int((duration * max(1, frameRate)).rounded()))
-        self.windowFrameCount = self.totalFrames
-        self.targetWindow = (0, self.totalFrames)
-        let frameCount = isAudio ? 0 : max(Int(duration * 4.0), 240)
-        imageViews = (0..<frameCount).map { _ in
-            let view = NSView(frame: .zero); view.wantsLayer = true; view.layer?.backgroundColor = NSColor(calibratedWhite: 0.14, alpha: 1).cgColor; view.layer?.contentsGravity = .resizeAspectFill; view.layer?.masksToBounds = true; view.layer?.contentsScale = 2; return view
-        }
-        super.init(frame: frame); wantsLayer = true; layer?.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1).cgColor
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedWhite: 0.08, alpha: 1).cgColor
+        layer?.masksToBounds = true
         updateTrackingArea()
-        imageViews.forEach(addSubview)
         selectionView.wantsLayer = true; selectionView.layer?.borderColor = crtYellow.cgColor; selectionView.layer?.borderWidth = 2; selectionView.layer?.backgroundColor = crtYellow.withAlphaComponent(0.16).cgColor; addSubview(selectionView)
         for handle in [inHandle, outHandle] { handle.wantsLayer = true; handle.layer?.backgroundColor = crtYellow.cgColor; handle.layer?.borderColor = crtBlack.cgColor; handle.layer?.borderWidth = 1; handle.layer?.cornerRadius = 2; addSubview(handle) }
         playhead.wantsLayer = true; playhead.layer?.backgroundColor = NSColor.systemRed.cgColor; addSubview(playhead)
         if isAudio { loadWaveform(asset: asset) }
     }
     required init?(coder: NSCoder) { fatalError() }
+    deinit { animTimer?.invalidate() }
     override var acceptsFirstResponder: Bool { true }
+
+    // MARK: the strip's own figures
+
+    /// The pixels a frame takes at this zoom. The whole model follows from it.
+    private var pxPerFrame: Double { stripPxPerFrame(zoom, fps: frameRate) }
+    /// How wide the strip is drawn: the source's length at the zoom's rate.
+    var stripWidth: Double { Double(totalFrames) * pxPerFrame }
+    /// The tiles the strip holds at this zoom.
+    var tiling: StripTiling {
+        stripTiling(frameCount: totalFrames, stripWidth: stripWidth, thumbHeight: Double(tileHeight), outAspect: Double(sourceAspect))
+    }
+    /// The room there is for the strip.
+    private var viewportWidth: Double { max(0, Double(bounds.width)) }
+    /// Where a fraction of the source stands on screen, in the stretched space. NOT held inside the view:
+    /// a trim handle outside the window is a handle the user has zoomed away from, and clamping it would
+    /// draw it sitting at an edge it is nowhere near.
+    func screenX(forValue value: Double) -> CGFloat {
+        CGFloat(value * sourceDuration * stripPxPerSec(zoom) - offset)
+    }
+    /// The fraction of the source a point on screen stands for, which is what a drag in this model is.
+    private func value(at point: NSPoint) -> Double {
+        let rate = stripPxPerSec(zoom)
+        guard rate > 0, sourceDuration > 0 else { return 0 }
+        return max(0, min(1, (offset + Double(point.x)) / rate / sourceDuration))
+    }
+    /// The frame the skimmer is on, which is what a zoom pivots on.
+    private var skimmerFrame: Double { playheadValue * sourceDuration * frameRate }
+
     override func layout() {
-        super.layout(); if isAudio { updateSelection(); needsDisplay = true; return }; let content = max(1, bounds.height - 6); let thumbnailWidth = max(1, content * sourceAspect); visibleCount = min(imageViews.count, max(1, Int((bounds.width / thumbnailWidth).rounded())))
-        let scale: CGFloat = 2; let snap: (CGFloat) -> CGFloat = { value in (value * scale).rounded() / scale }
-        for (index, view) in imageViews.enumerated() {
-            view.isHidden = index >= visibleCount
-            if index < visibleCount {
-                let left = snap(bounds.width * CGFloat(index) / CGFloat(max(visibleCount, 1))); let right = snap(bounds.width * CGFloat(index + 1) / CGFloat(max(visibleCount, 1)))
-                view.frame = NSRect(x: left, y: 3, width: right - left, height: content)
-            }
-        }
-        if lastRenderedCells != visibleCount {
-            lastRenderedCells = visibleCount
-            trace("layout cells changed to \(visibleCount), re-laying the window")
-            setWindow(first: windowFirstFrame, count: windowFrameCount)
-        }
+        super.layout()
+        fitIfNeeded()
+        tileStrip(paint: true)
         updateSelection()
     }
 
-    /**
-     * Sets the stretch of the source the strip shows, and asks for its frames.
-     *
-     * The window is clamped to the source and to never being narrower than one frame per cell, so a
-     * gesture at either end settles against the end rather than running off it — and a strip that has room
-     * for more cells than the source has frames shows the whole source rather than repeating one frame.
-     * This is the path a gesture that is over at once takes — a resize finding its room — so it animates
-     * nothing and stops any glide in flight.
-     */
-    func setWindow(first frame: Int, count: Int) {
-        applyWindow(first: frame, count: count)
-        targetWindow = (windowFirstFrame, windowFrameCount)
-        stopAnimation()
-        renderWindow()
+    /// The first layout is the only thing that can fit the whole source to the room there is, so it does.
+    private func fitIfNeeded() {
+        guard !fitted, bounds.width > 1, sourceDuration > 0 else { return }
+        fitted = true
+        zoom = stripFitZoom(duration: sourceDuration, availableWidth: viewportWidth)
+        zoomTarget = zoom
+        offset = 0
     }
 
-    /**
-     * Puts the window where it is asked, with the one clamp every path shares.
-     *
-     * Apart from the clamp this only publishes the change: the strip and the scale both redraw from
-     * `windowFirstFrame` and `windowFrameCount`, so telling them once is the whole of keeping them in step.
-     */
-    private func applyWindow(first frame: Int, count: Int) {
-        let total = max(1, totalFrames)
-        let floorCount = max(1, min(visibleCount, total))
-        windowFrameCount = max(floorCount, min(total, count))
-        windowFirstFrame = max(0, min(total - windowFrameCount, frame))
-        trace("window \(windowFirstFrame)+\(windowFrameCount) of \(totalFrames), \(visibleCount) cells\(animTimer == nil ? "" : " gliding")")
-        onScaleChange?()
+    /// Puts the strip where the model says, and paints the tiles that are on screen.
+    ///
+    /// `paint` is false while a zoom is gliding: the GEOMETRY follows every step, so the strip really does
+    /// stretch under the gesture, but the pictures are not asked for until it settles. Asking on every step
+    /// would put an ffmpeg behind a movement, and the token would throw all but the last set away anyway.
+    private func tileStrip(paint: Bool) {
+        let width = viewportWidth
+        guard width > 1, sourceDuration > 0 else { return }
+        let plan = tiling
+        cachedTiling = plan
+        if isAudio {
+            // A sound has no frames to tile. Its waveform is drawn across the window instead, in `draw`.
+            for view in tileViews { view.isHidden = true }
+            needsDisplay = true
+            onScaleChange?()
+            return
+        }
+        let range = stripVisibleRange(offset: offset, viewportWidth: width, cellWidth: plan.cellWidth, count: plan.count)
+        guard range.last >= range.first else { for view in tileViews { view.isHidden = true }; return }
+        ensurePool(range.last - range.first + 1)
+        var used = 0
+        for index in range.first...range.last {
+            let view = tileViews[used]
+            let x = Double(index) * plan.cellWidth - offset
+            view.isHidden = false
+            // Rounded to the half-pixel the scale rounds its marks to, so a tile's edge and a mark for the
+            // same frame land on the same line rather than a fraction apart.
+            view.frame = NSRect(x: (CGFloat(x) * 2).rounded() / 2, y: 3, width: max(1, plan.cellWidth), height: bounds.height - 6)
+            bind(view, at: used, frame: stripTileFrame(index, tiling: plan, frameCount: totalFrames), paint: paint)
+            used += 1
+        }
+        for index in used..<tileViews.count {
+            tileViews[index].isHidden = true
+            if index < tileFrames.count { tileFrames[index] = -1; tileShown[index] = -1 }
+        }
         needsDisplay = true
+        onScaleChange?()
+    }
+
+    /// Grows the pool to what the window needs. It never shrinks: a pool that grew for one zoom is the
+    /// right size for the next one out.
+    private func ensurePool(_ needed: Int) {
+        while tileViews.count < needed {
+            let view = NSView(frame: .zero)
+            view.wantsLayer = true
+            view.layer?.backgroundColor = NSColor(calibratedWhite: 0.14, alpha: 1).cgColor
+            view.layer?.contentsGravity = .resizeAspectFill
+            view.layer?.masksToBounds = true
+            view.layer?.contentsScale = 2
+            addSubview(view)
+            tileViews.append(view)
+            tileFrames.append(-1)
+            tileShown.append(-1)
+        }
+    }
+
+    /// Hands a pooled view its frame: from the cache if it has been seen, otherwise by asking for it.
+    private func bind(_ view: NSView, at index: Int, frame: Int, paint: Bool) {
+        tileFrames[index] = frame
+        if index < tileShown.count, tileShown[index] == frame { return }
+        if let cached = frameCache[frame] { view.layer?.contents = cached; tileShown[index] = frame; return }
+        // The picture it already has is left in place rather than cleared. A tile whose frame has changed
+        // shows the old one until the new one arrives, which is one frame of staleness; clearing it would
+        // be a strip that flashes empty every time it moves.
+        guard paint else { return }
+        requestTile(frame: frame)
     }
 
     /**
-     * Starts gliding to a window, from wherever the strip is now.
+     * Asks for one source frame, once.
      *
-     * A glide already under way is re-aimed rather than replaced: its clock restarts from the window on
-     * screen, so a tick arriving mid-flight is a fresh gentle step toward the new destination rather than a
-     * jump, and a fast scroll stays smooth without the strip lagging a whole animation behind the gesture.
+     * Keyed by the FRAME rather than by the tile, because the same frame is often wanted by two tiles at
+     * once (a zoomed-out strip has fewer frames than tiles) and by the same tile again after it is scrolled
+     * away and back. A frame already in flight is not asked for a second time, and one already in the cache
+     * is not asked for at all.
      */
-    private func glide(toFirst first: Int, count: Int) {
-        let total = max(1, totalFrames)
-        let floorCount = max(1, min(visibleCount, total))
-        let wantedCount = max(floorCount, min(total, count))
-        targetWindow = (max(0, min(total - wantedCount, first)), wantedCount)
-        animFrom = (windowFirstFrame, windowFrameCount)
+    private func requestTile(frame: Int) {
+        if frameCache[frame] != nil || pendingFrames.contains(frame) { return }
+        pendingFrames.insert(frame)
+        let generator = AVAssetImageGenerator(asset: sourceAsset)
+        generator.appliesPreferredTrackTransform = true
+        // A tile in a zoomed strip names a frame that is worth seeing, so it is asked for exactly; at the
+        // overview a tile stands in for a stretch and is asked for loosely, which is much faster and is not
+        // a lie — it is a representative rather than a stepping stone.
+        let tolerance = zoom > fittedZoom * 1.001 ? CMTime.zero : CMTime(value: 1, timescale: 4)
+        generator.requestedTimeToleranceBefore = tolerance
+        generator.requestedTimeToleranceAfter = tolerance
+        let seconds = Double(frame) / max(1, frameRate)
+        let time = CMTime(seconds: max(0, min(sourceDuration, seconds)), preferredTimescale: 600)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let image = try? generator.copyCGImage(at: time, actualTime: nil)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.pendingFrames.remove(frame)
+                guard let image else { return }
+                self.remember(image, for: frame)
+            }
+        }
+    }
+
+    /// Keeps a picture, and hands it to every tile that is showing its frame.
+    private func remember(_ image: CGImage, for frame: Int) {
+        if frameCache[frame] == nil {
+            cacheOrder.append(frame)
+            if cacheOrder.count > cacheLimit, let oldest = cacheOrder.first {
+                cacheOrder.removeFirst()
+                // Only drop it if it is not on screen: the tiles showing it would otherwise go blank.
+                if !tileFrames.contains(oldest) { frameCache.removeValue(forKey: oldest) }
+            }
+        }
+        frameCache[frame] = image
+        for (index, shown) in tileFrames.enumerated() where shown == frame && index < tileViews.count {
+            tileViews[index].layer?.contents = image
+            tileShown[index] = frame
+        }
+    }
+
+    /// The zoom the whole source fits the room at, which is what "not zoomed in" means here.
+    private var fittedZoom: Double { stripFitZoom(duration: sourceDuration, availableWidth: viewportWidth) }
+
+    // MARK: zoom, and the glide toward it
+
+    /**
+     * Zooms about the SKIMMER, which is the frame the zoom is then about.
+     *
+     * The skimmer keeps its place on screen while the strip stretches around it, so a zoom is a lens on the
+     * frame being looked at rather than a jump. The zoom accumulates on the one being travelled TO rather
+     * than the one on screen, so a flick's ticks add up to a single destination, and the move itself is
+     * eased so the strip glides rather than jumping.
+     */
+    func zoom(byDelta delta: Double) {
+        guard bounds.width > 1, sourceDuration > 0 else { return }
+        let target = stripZoomedBy(zoomTarget > 0 ? zoomTarget : zoom, delta: delta)
+        glideZoom(to: target, anchorFrame: skimmerFrame, anchorX: Double(screenX(forValue: playheadValue)))
+    }
+
+    /// Narrows onto a frame, which is what a hold-to-zoom asks for: the frame held, filling the strip.
+    private func zoomOnto(frame: Double) {
+        let target = cachedTiling.map { $0.thumbWidth * frameRate / BASE_PX_PER_SECOND } ?? clampStripZoom(zoom * 4)
+        glideZoom(to: target, anchorFrame: frame, anchorX: Double(screenX(forValue: frame / max(sourceDuration * frameRate, 1))))
+        onHoverTime?(min(1, max(0, frame / max(sourceDuration * frameRate, 1))))
+    }
+
+    private func glideZoom(to target: Double, anchorFrame: Double, anchorX: Double) {
+        zoomTarget = clampStripZoom(target)
+        zoomFrom = zoom
+        animAnchorFrame = anchorFrame
+        animAnchorX = anchorX
         animStart = ProcessInfo.processInfo.systemUptime
         guard animTimer == nil else { return }
-        lastAnimRender = 0
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.animationTick() }
         RunLoop.main.add(timer, forMode: .common)
         animTimer = timer
     }
 
-    /**
-     * One frame of a glide: the window eased a step closer, the geometry published, and the thumbnails
-     * asked for no more often than they can be wanted.
-     */
     private func animationTick() {
         let progress = easeInOut((ProcessInfo.processInfo.systemUptime - animStart) / zoomAnimationSeconds)
-        let window = interpolatedWindow(fromFirst: animFrom.first, fromCount: animFrom.count, toFirst: targetWindow.first, toCount: targetWindow.count, totalFrames: totalFrames, minFrames: visibleCount, progress: progress)
-        applyWindow(first: window.first, count: window.count)
-        let now = ProcessInfo.processInfo.systemUptime
-        if progress >= 1 {
-            stopAnimation()
-            renderWindow()
-        } else if now - lastAnimRender >= animationRenderInterval {
-            lastAnimRender = now
-            renderWindow()
-        }
+        zoom = clampStripZoom(interpolatedZoom(from: zoomFrom, to: zoomTarget, progress: progress))
+        offset = stripOffset(anchorFrame: animAnchorFrame, anchorX: animAnchorX, pxPerFrame: pxPerFrame, stripWidth: stripWidth, viewportWidth: viewportWidth)
+        // Every step moves the geometry; the last one is what asks for the pictures.
+        tileStrip(paint: progress >= 1)
+        updateSelection()
+        if progress >= 1 { stopAnimation() }
     }
 
     private func stopAnimation() {
@@ -322,70 +456,35 @@ final class FilmstripView: NSView {
         animTimer = nil
     }
 
-    /**
-     * The frames the window is showing, spread across the cells the strip has room for.
-     *
-     * One request for every degree of zoom, because they are the same request: the overview is a window of
-     * the whole source and the closest zoom is one frame per cell, and everything between is spread the
-     * same way. A cell is asked for the frame at its own MIDDLE, which is the frame the playhead shows when
-     * it is over that cell, so the strip and the scale agree about where a frame stands.
-     */
-    private func renderWindow() {
-        guard !isAudio, visibleCount > 0, windowFrameCount > 0 else { return }
-        trace("render \(windowFirstFrame)+\(windowFrameCount), \(visibleCount) cells")
-        zoomToken += 1
-        let token = zoomToken
-        let step = Double(windowFrameCount) / Double(max(visibleCount, 1))
-        // A cell at the OVERVIEW stands for a stretch of the source and is asked for loosely — it is a
-        // representative rather than a stepping stone. A cell inside a ZOOMED window is asked for exactly,
-        // whatever it spans: the whole point of narrowing the window is that the frames named are the frames
-        // shown, and a loose seek there could hand back a frame from outside the range the scale is drawing.
-        let tolerance = windowFrameCount < totalFrames || step <= 1 ? CMTime.zero : CMTime(value: 1, timescale: 4)
-        for index in 0..<visibleCount {
-            // A cell is sampled at its own middle and then held INSIDE the cell. The holding is what matters
-            // where a cell stands for one frame: its middle is a half frame, and rounding that up put every
-            // cell a frame late and the last one past the end of the window — a strip quietly describing a
-            // range the scale was not drawing. Where a cell spans several frames the middle is already well
-            // inside it and the clamp changes nothing.
-            let low = Double(windowFirstFrame) + Double(index) * step
-            let high = Double(windowFirstFrame) + Double(index + 1) * step - 1
-            let middle = Double(windowFirstFrame) + (Double(index) + 0.5) * step
-            let frame = min(totalFrames - 1, max(0, Int(min(high, max(low, middle)).rounded())))
-            requestFrame(at: Double(frame) / frameRate, index: index, tolerance: tolerance, seekMonitor: false, isValid: { [weak self] in self?.zoomToken == token })
-        }
+    private func restoreOverview() {
+        zoomHeld = false
+        glideZoom(to: fittedZoom, anchorFrame: skimmerFrame, anchorX: Double(bounds.width) / 2)
     }
 
-    /**
-     * Narrows onto a point in the source, which is what the hold-to-zoom gesture asks for: the frames
-     * around the point held, one frame per cell, and the monitor taken to that point.
-     */
-    private func zoomOnto(center: Double) {
-        let frame = Int((max(0, min(1, center)) * sourceDuration * frameRate).rounded())
-        glide(toFirst: frame - visibleCount / 2, count: visibleCount)
-        onHoverTime?(min(1, max(0, Double(frame) / max(sourceDuration * frameRate, 1))))
+    /// Scrolls the strip so the skimmer is back inside it, which is what dragging past an edge does.
+    private func keepSkimmerVisible() {
+        let width = viewportWidth
+        guard width > 1, stripWidth > width else { offset = 0; return }
+        let x = Double(screenX(forValue: playheadValue))
+        let margin = 24.0
+        if x < margin { offset = max(0, offset + (x - margin)) }
+        else if x > width - margin { offset = min(stripWidth - width, offset + (x - (width - margin))) }
     }
 
-    /**
-     * Zooms in or out about the SKIMMER, which is the frame the zoom is then about.
-     *
-     * The skimmer keeps its place in the window while the window narrows or widens around it, so a zoom is
-     * a lens on the frame being looked at rather than a jump to wherever the pointer rests. The window the
-     * gesture accumulates on is the one it is already heading to rather than the one on screen, so a flick's
-     * ticks add up to a single destination; the glide itself is what makes the move a movement.
-     */
-    func zoom(by factor: Double) {
-        let anchor = skimmerAnchorFrame(playheadValue: playheadValue, totalFrames: totalFrames)
-        let next = scaledWindow(firstFrame: targetWindow.first, frameCount: targetWindow.count, totalFrames: totalFrames, minFrames: visibleCount, factor: factor, anchorFrame: anchor)
-        glide(toFirst: next.first, count: next.count)
-    }
+    // MARK: the trim, the skimmer, and where they stand
+
     private func updateSelection() {
         onScaleChange?()
         guard bounds.width > 0 else { return }
-        let left = bounds.width * start; let right = bounds.width * end
+        let left = screenX(forValue: start)
+        let right = screenX(forValue: end)
+        // In the strengthened space and NOT held inside the view: at a close zoom the in-point can be off
+        // the left of the window and the out-point off the right, and a handle clamped to an edge would be
+        // drawn where the point is not.
         selectionView.frame = NSRect(x: left, y: 1, width: max(18, right - left), height: bounds.height - 2)
         inHandle.frame = NSRect(x: left - 5, y: 0, width: 10, height: bounds.height)
         outHandle.frame = NSRect(x: right - 5, y: 0, width: 10, height: bounds.height)
-        playhead.frame = NSRect(x: bounds.width * playheadValue - 1, y: -4, width: 2, height: bounds.height + 8)
+        playhead.frame = NSRect(x: screenX(forValue: playheadValue) - 1, y: -4, width: 2, height: bounds.height + 8)
         inHandle.layer?.backgroundColor = (selectedHandle == "in" ? NSColor.white : NSColor.systemYellow).cgColor
         outHandle.layer?.backgroundColor = (selectedHandle == "out" ? NSColor.white : NSColor.systemYellow).cgColor
         inHandle.layer?.borderColor = (selectedHandle == "in" ? NSColor.systemYellow : NSColor.clear).cgColor
@@ -393,95 +492,122 @@ final class FilmstripView: NSView {
         inHandle.layer?.borderWidth = selectedHandle == "in" ? 2 : 0
         outHandle.layer?.borderWidth = selectedHandle == "out" ? 2 : 0
     }
-    private func value(at point: NSPoint) -> Double { max(0, min(1, point.x / max(bounds.width, 1))) }
+
+    /// How close to a handle a press has to be to take hold of it, in pixels.
+    private let handleGrab: CGFloat = 16
+
     private func updateTrackingArea() {
         if let trackingAreaRef { removeTrackingArea(trackingAreaRef) }
         let area = NSTrackingArea(rect: bounds, options: [.activeInKeyWindow, .mouseEnteredAndExited, .inVisibleRect], owner: self, userInfo: nil)
         trackingAreaRef = area; addTrackingArea(area)
     }
     override func updateTrackingAreas() { super.updateTrackingAreas(); updateTrackingArea() }
-    private func frameTime(at point: NSPoint) -> Double { max(0, min(sourceDuration, value(at: point) * sourceDuration)) }
-    private func requestFrame(at seconds: Double, index: Int, tolerance: CMTime, seekMonitor: Bool, isValid: @escaping () -> Bool) {
-        let generator = AVAssetImageGenerator(asset: sourceAsset); generator.appliesPreferredTrackTransform = true; generator.requestedTimeToleranceBefore = tolerance; generator.requestedTimeToleranceAfter = tolerance
-        let time = CMTime(seconds: max(0, min(sourceDuration, seconds)), preferredTimescale: 600)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self, isValid(), let image = try? generator.copyCGImage(at: time, actualTime: nil) else { return }
-            DispatchQueue.main.async { guard isValid(), index >= 0, index < self.imageViews.count else { return }; self.imageViews[index].layer?.contents = image; if seekMonitor { self.onHoverTime?(seconds / max(self.sourceDuration, 0.001)) } }
-        }
-    }
-    func skimThumbnail(at norm: Double) {
-        guard !isAudio, !zoomed, visibleCount > 0 else { return }
-        let index = min(visibleCount - 1, max(0, Int(norm * CGFloat(visibleCount))))
-        if skimIndex >= 0, skimIndex != index, skimIndex < visibleCount {
-            let repNorm = (Double(skimIndex) + 0.5) / Double(visibleCount)
-            requestFrame(at: repNorm * sourceDuration, index: skimIndex, tolerance: CMTime(value: 1, timescale: 4), seekMonitor: false, isValid: { [weak self] in self?.zoomed == false })
-        }
-        skimIndex = index
-        hoverRequest += 1; let token = hoverRequest
-        requestFrame(at: norm * sourceDuration, index: index, tolerance: CMTime(value: 1, timescale: 12), seekMonitor: false, isValid: { [weak self] in self?.hoverRequest == token && self?.zoomed == false })
-    }
-    private func restoreOverview() { zoomHeld = false; glide(toFirst: 0, count: totalFrames) }
-    deinit { animTimer?.invalidate() }
+
+    /**
+     * A hover over a tile is no longer anything to do.
+     *
+     * It used to be: the strip was a fixed set of cells over a window, so the one under the pointer held a
+     * representative frame and had to be re-asked for the frame the pointer was actually over. Now every
+     * tile IS a frame of the source at its own place on the strip, so the picture under the pointer is
+     * already the picture for that point and there is nothing to skim to. The monitor follows the skimmer.
+     */
+    func skimThumbnail(at norm: Double) { _ = norm }
+
     override func mouseDown(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil); let left = bounds.width * start; let right = bounds.width * end
-        pressOrigin = p
-        if abs(p.x - left) < 20 { dragging = "in"; selectedHandle = "in"; onHandleSelected?("in") }
-        else if abs(p.x - right) < 20 { dragging = "out"; selectedHandle = "out"; onHandleSelected?("out") }
+        let p = convert(event.locationInWindow, from: nil)
+        let inX = screenX(forValue: start)
+        let outX = screenX(forValue: end)
+        if abs(p.x - inX) < handleGrab { dragging = "in"; selectedHandle = "in"; onHandleSelected?("in") }
+        else if abs(p.x - outX) < handleGrab { dragging = "out"; selectedHandle = "out"; onHandleSelected?("out") }
         else { dragging = "playhead"; selectedHandle = "playhead"; onHandleSelected?("playhead"); onPlayheadSelected?() }
-        updateSelection(); window?.makeFirstResponder(self)
-        if dragging == "playhead" { let value = max(start, min(end, value(at: p))); playheadValue = value; onPlayheadChange?(value) }
-        guard !isAudio, let held = dragging else { return }
-        let center: Double
-        switch held {
-        case "in": center = start
-        case "out": center = end
-        default: center = frameTime(at: p) / max(sourceDuration, 0.001)
+        updateSelection()
+        window?.makeFirstResponder(self)
+        if dragging == "playhead" {
+            let value = max(start, min(end, value(at: p)))
+            playheadValue = value
+            onPlayheadChange?(value)
         }
-        let work = DispatchWorkItem { [weak self] in guard let self, self.dragging != nil else { return }; self.zoomHeld = true; self.zoomOnto(center: center) }
-        longPressWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        guard !isAudio else { return }
+        // Holding still narrows onto what is held, and letting go springs back. The frame under the press is
+        // what it is about, whether or not a handle was taken hold of.
+        let held = dragging == "in" ? start * sourceDuration * frameRate
+            : dragging == "out" ? end * sourceDuration * frameRate
+            : Double(value(at: p)) * sourceDuration * frameRate
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.dragging != nil else { return }
+            self.zoomHeld = true
+            self.restoreZoom = self.zoom
+            self.zoomOnto(frame: held)
+        }
+        longPressWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
+
     override func mouseDragged(with event: NSEvent) {
-        guard let dragging else { return }; let point = convert(event.locationInWindow, from: nil); let value = value(at: point)
-        if !zoomed, abs(point.x - pressOrigin.x) > 3 { longPressWork?.cancel() }
-        if zoomed {
-            let pixelsPerFrame = 4.0                                             // sensitivity knob: lower = faster, higher = finer
-            let deltaSeconds = Double(event.deltaX) / (pixelsPerFrame * frameRate)
-            switch dragging {
-            case "in":
-                let t = min(end * sourceDuration - 1.0 / frameRate, max(0, start * sourceDuration + deltaSeconds))
-                start = t / max(sourceDuration, 0.001); selectedHandle = "in"; onHandleChange?("in", start); onHoverTime?(start)
-            case "out":
-                let t = max(start * sourceDuration + 1.0 / frameRate, min(sourceDuration, end * sourceDuration + deltaSeconds))
-                end = t / max(sourceDuration, 0.001); selectedHandle = "out"; onHandleChange?("out", end); onHoverTime?(end)
-            default:
-                let t = max(0, min(sourceDuration, playheadValue * sourceDuration + deltaSeconds))
-                playheadValue = t / max(sourceDuration, 0.001); onHoverTime?(playheadValue)
-            }
-            let pos = (dragging == "in" ? start : dragging == "out" ? end : playheadValue) * sourceDuration
-            let winStart = Double(windowFirstFrame) / frameRate
-            let winEnd = Double(windowFirstFrame + windowFrameCount) / frameRate
-            if pos < winStart || pos > winEnd { zoomOnto(center: pos / max(sourceDuration, 0.001)) }  // page only when the skimmer exits the window
-            return
+        guard let dragging else { return }
+        // A hold is abandoned as soon as the pointer MOVES: a press that is going to become a drag is not a
+        // press that means to narrow onto anything.
+        if longPressWork != nil, abs(event.deltaX) > 3 || abs(event.deltaY) > 3 { longPressWork?.cancel(); longPressWork = nil }
+        // A handle is moved by the pixels the pointer has moved, at the rate the strip is drawn at: dragging
+        // it across a second's worth of strip moves it by exactly a second, at any zoom.
+        let rate = stripPxPerSec(zoom)
+        let deltaSeconds = rate > 0 ? Double(event.deltaX) / rate : 0
+        switch dragging {
+        case "in":
+            let t = min(end * sourceDuration - 1.0 / frameRate, max(0, start * sourceDuration + deltaSeconds))
+            start = t / max(sourceDuration, 0.001); selectedHandle = "in"; onHandleChange?("in", start); onHoverTime?(start)
+        case "out":
+            let t = max(start * sourceDuration + 1.0 / frameRate, min(sourceDuration, end * sourceDuration + deltaSeconds))
+            end = t / max(sourceDuration, 0.001); selectedHandle = "out"; onHandleChange?("out", end); onHoverTime?(end)
+        default:
+            let t = max(0, min(sourceDuration, playheadValue * sourceDuration + deltaSeconds))
+            playheadValue = t / max(sourceDuration, 0.001); onPlayheadChange?(playheadValue)
         }
-        if dragging == "in" { start = min(value, end - 0.001); onHandleChange?("in", start); skimThumbnail(at: start) }
-        else if dragging == "out" { end = max(value, start + 0.001); onHandleChange?("out", end); skimThumbnail(at: end) }
-        else { let bounded = max(start, min(end, value)); playheadValue = bounded; onPlayheadChange?(bounded); skimThumbnail(at: bounded) }
+        keepSkimmerVisible()
     }
-    override func mouseUp(with event: NSEvent) { dragging = nil; if zoomHeld { restoreOverview() } else { longPressWork?.cancel(); longPressWork = nil } }
+
+    override func mouseUp(with event: NSEvent) {
+        dragging = nil
+        longPressWork = nil
+        guard zoomHeld else { return }
+        zoomHeld = false
+        glideZoom(to: restoreZoom, anchorFrame: skimmerFrame, anchorX: Double(bounds.width) / 2)
+    }
+
+    /**
+     * A scroll here scrubs, in the stretched space.
+     *
+     * The delta is normalised to the one the timeline's own engine is given — the EDIT JOB reads a browser's
+     * `deltaY`, AppKit writes `scrollingDeltaY` with the sign the other way round — so a wheel turned away
+     * from the viewer moves FORWARD through the source and one turned towards it moves back, which is what a
+     * wheel over the timeline does. The step is a share of a second eased by how hard the wheel was turned.
+     */
     override func scrollWheel(with event: NSEvent) {
         let delta = -(event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX)
         guard delta != 0 else { return }
-        let rawStep = 1.0 / max(Double(Int(sourceDuration * 30.0)), 1)
-        let eased = tanh(abs(delta) / 6.0)
-        let step = rawStep * (0.35 + 1.65 * eased)
-        if selectedHandle == "in" { let value = max(0, min(end - step, start + (delta > 0 ? step : -step))); start = value; onHandleChange?("in", value); skimThumbnail(at: value) }
-        else if selectedHandle == "out" { let value = max(start + step, min(1, end + (delta > 0 ? step : -step))); end = value; onHandleChange?("out", value); skimThumbnail(at: value) }
-        else { let value = max(start, min(end, playheadValue + (delta > 0 ? step : -step))); playheadValue = value; onPlayheadChange?(value); skimThumbnail(at: value) }
+        let selected = selectedHandle == "in" ? start : selectedHandle == "out" ? end : playheadValue
+        let step = stripScrubSeconds(delta: Double(delta), duration: sourceDuration)
+        let raw = selected + (delta < 0 ? step : -step)
+        switch selectedHandle {
+        case "in":
+            let value = max(0, min(end - 0.001, raw))
+            start = value; onHandleChange?("in", value)
+        case "out":
+            let value = max(start + 0.001, min(1, raw))
+            end = value; onHandleChange?("out", value)
+        default:
+            let value = max(start, min(end, raw))
+            playheadValue = value; onPlayheadChange?(value)
+        }
+        keepSkimmerVisible()
+        updateSelection()
     }
+
     private func audioFormat(_ track: AVAssetTrack) -> AudioStreamBasicDescription? {
         guard let desc = track.formatDescriptions.first else { return nil }
         return CMAudioFormatDescriptionGetStreamBasicDescription(desc as! CMFormatDescription)?.pointee
     }
+
     private func loadWaveform(asset: AVAsset) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self, let track = asset.tracks(withMediaType: .audio).first, let reader = try? AVAssetReader(asset: asset) else { return }
@@ -502,30 +628,51 @@ final class FilmstripView: NSView {
             DispatchQueue.main.async { self.peaks = result; self.needsDisplay = true }
         }
     }
+
+    /**
+     * A sound drawn across the window it is showing.
+     *
+     * The peaks are the whole file's, and which of them a column stands for is read from the STRETCHED
+     * space — so zooming in widens the sound exactly as it widens the pictures, which is the point. Bar on
+     * bar with a gap, at a fixed width, so the drawing does not change character with the zoom.
+     */
     override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect); guard isAudio, let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let midY = bounds.height / 2; crtDim.withAlphaComponent(0.45).setFill(); ctx.fill(NSRect(x: 0, y: midY - 0.5, width: bounds.width, height: 1)); guard !peaks.isEmpty else { return }
-        let barWidth: CGFloat = 2, gap: CGFloat = 2, stride = barWidth + gap, barCount = max(1, Int(bounds.width / stride)), half = max(1, (midY - 3) * 0.9); crtGreen.setFill()
-        for i in 0..<barCount { let lo = Int(Double(i) / Double(barCount) * Double(peaks.count)); let hi = max(lo + 1, Int(Double(i + 1) / Double(barCount) * Double(peaks.count))); var peak: CGFloat = 0; for bucket in lo..<min(hi, peaks.count) { peak = max(peak, peaks[bucket]) }; let height = max(1, peak * half); ctx.fill(NSRect(x: CGFloat(i) * stride, y: midY - height, width: barWidth, height: height * 2)) }
+        super.draw(dirtyRect)
+        guard isAudio, bounds.width > 0, sourceDuration > 0 else { return }
+        let midY = bounds.height / 2
+        crtDim.withAlphaComponent(0.45).setFill(); NSRect(x: 0, y: midY - 0.5, width: bounds.width, height: 1).fill()
+        guard !peaks.isEmpty, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let rate = stripPxPerSec(zoom)
+        let barWidth: CGFloat = 2, gap: CGFloat = 2, stride = barWidth + gap
+        let barCount = max(1, Int(bounds.width / stride))
+        let half = max(1, (midY - 3) * 0.9)
+        crtGreen.setFill()
+        for index in 0..<barCount {
+            let from = (offset + Double(index) * Double(stride)) / rate
+            let to = (offset + Double(index + 1) * Double(stride)) / rate
+            let low = max(0, Int(from / sourceDuration * Double(peaks.count)))
+            let high = min(peaks.count, max(low + 1, Int(to / sourceDuration * Double(peaks.count))))
+            var peak: CGFloat = 0
+            for bucket in low..<max(low + 1, high) { peak = max(peak, peaks[min(bucket, peaks.count - 1)]) }
+            let height = max(1, peak * half)
+            ctx.fill(NSRect(x: CGFloat(index) * stride, y: midY - height, width: barWidth, height: height * 2))
+        }
     }
 }
 
 /**
- * The compact scale above the filmstrip: the same range as the strip, drawn as notches and nothing else.
+ * The compact scale above the filmstrip: the same window as the strip, drawn as notches and nothing else.
  *
- * It is a ruler, so it carries no labels — no frame numbers, no timecodes, no units. A scale twenty pixels
- * tall with text on it would be read instead of the picture, and the strip under it is what says which
- * frames these are. Its two jobs are to make the range legible at a glance and to give the zoom a place of
- * its own: a scroll over the STRIP scrubs, a scroll over the SCALE zooms, and neither has to ask the other
- * what it meant, because they are different views.
+ * It is a ruler, so it carries no labels — no frame numbers, no timecodes, no units. Its two jobs are to
+ * make the range legible and to give the zoom a place of its own: a scroll over the STRIP scrubs, a scroll
+ * over the SCALE zooms, and neither has to ask the other what it meant.
  *
- * Everything it draws comes from the filmstrip's window, so its marks cannot describe a range the strip is
- * not showing. The arithmetic is in `quicklook-scale.swift`, where it is asserted without a window.
+ * Everything it draws comes from the strip's zoom and offset, in the SAME stretched space the tiles are laid
+ * in, so a mark stands over the tile it describes at any zoom and whether or not that part of the strip is
+ * the part on screen. The arithmetic is in `quicklook-scale.swift`, where it is asserted without a window.
  */
 final class TimelineScaleView: NSView {
     weak var filmstrip: FilmstripView?
-    /** The closest two subdivisions may stand, in pixels: what keeps a wide range from crowding. */
-    private let minSpacing: CGFloat = 9
     /** How tall a subdivision stands, of the scale's own height. A labelled rank is the whole of it. */
     private let subdivisionHeight: CGFloat = 7
 
@@ -539,42 +686,41 @@ final class TimelineScaleView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard let filmstrip, !filmstrip.isHidden, bounds.width > 1, let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let first = filmstrip.windowFirstFrame
-        let count = filmstrip.windowFrameCount
-        guard count > 0 else { return }
-        // The strip's cell edges are rounded to the half-pixel it draws them at, and a mark rounded the
-        // same way stands ON the boundary it describes rather than a fraction beside it.
+        let rate = stripPxPerSec(filmstrip.zoom)
+        guard rate > 0 else { return }
+        let duration = filmstrip.sourceSeconds
+        let from = filmstrip.offset / rate
+        let to = (filmstrip.offset + Double(bounds.width)) / rate
+        // The strip's own half-pixel rounding, so a mark for a tile's boundary stands ON it.
         let half: (CGFloat) -> CGFloat = { (value) in (value * 2).rounded() / 2 }
-        let x: (Int) -> CGFloat = { (frame) in half(CGFloat(frame - first) / CGFloat(count) * self.bounds.width) }
-        for notch in scaleNotches(firstFrame: first, frameCount: count, width: Double(bounds.width), minSpacing: Double(minSpacing)) {
-            ctx.setFillColor((notch.major ? crtGreen.withAlphaComponent(0.85) : crtDim.withAlphaComponent(0.6)).cgColor)
-            ctx.fill(NSRect(x: x(notch.frame), y: 0, width: 1, height: notch.major ? bounds.height : subdivisionHeight))
+        for tick in rulerTicks(duration: duration, zoom: filmstrip.zoom, from: from, to: to, fps: filmstrip.frameRate) {
+            let x = half(CGFloat(tick.time * rate - filmstrip.offset))
+            ctx.setFillColor((tick.major ? crtGreen.withAlphaComponent(0.85) : crtDim.withAlphaComponent(0.6)).cgColor)
+            ctx.fill(NSRect(x: x, y: 0, width: 1, height: tick.major ? bounds.height : subdivisionHeight))
         }
-        // The playhead, drawn where the strip draws its own: the same share of the whole source.
+        // The skimmer, in the strip's stretched space rather than as a share of the width — so it stands
+        // where the playhead is and not where a fraction of the window happens to fall.
         ctx.setFillColor(NSColor.systemRed.withAlphaComponent(0.85).cgColor)
-        ctx.fill(NSRect(x: half(bounds.width * CGFloat(filmstrip.playheadValue)), y: 0, width: 1, height: bounds.height))
+        ctx.fill(NSRect(x: half(CGFloat(filmstrip.playheadValue * duration * rate - filmstrip.offset)), y: 0, width: 1, height: bounds.height))
     }
 
     /**
-     * A scroll here zooms the strip, about the SKIMMER.
+     * A scroll here zooms the strip, about the skimmer.
      *
-     * The anchor is the point of the whole gesture: the frame under the playhead keeps its place while the
-     * window narrows or widens around it, so a zoom is a lens on the frame being looked at rather than a
-     * jump to wherever the pointer happens to rest. The pace is the editor's own — a hyperbola-eased
-     * fraction per tick — and the move itself is eased where the window is applied, so the strip and the
-     * scale glide together instead of one arriving before the other.
+     * The pace and the pivot are the strip's own business; this only says that a scroll over the ruler is a
+     * zoom and one over the strip is a scrub. The sign is normalised to the timeline's own — see the strip's
+     * `scrollWheel` — so a wheel turned away from the viewer zooms in, exactly as it does over the timeline.
      */
     override func scrollWheel(with event: NSEvent) {
-        guard let filmstrip, filmstrip.windowFrameCount > 0 else { return }
+        guard let filmstrip, filmstrip.bounds.width > 1 else { return }
         let delta = -(event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX)
         guard delta != 0 else { return }
-        filmstrip.zoom(by: scaleZoomFactor(delta: Double(delta)))
+        filmstrip.zoom(byDelta: Double(delta))
     }
 
     /** A press here is a press on a ruler: nothing to drag, and nothing to hand on to the strip. */
     override func mouseDown(with event: NSEvent) {}
 }
-
 final class PreviewView: NSView {
     let playerView: MonitorPlayerView; let imageView = NSImageView(frame: .zero); let player: AVPlayer; let asset: AVAsset; let sourceURL: URL; let screenshotDirectory: URL?; let audioArtwork: Bool; let filmstrip: FilmstripView; let scaleView = TimelineScaleView(frame: .zero); let frameRate: Double; let displayFps: Double; let sourceDuration: Double; let stampMode: String
     let appTitlebar = NSView()
