@@ -55,6 +55,9 @@ const pixelAt = async (file, time) => {
   return [raw[0], raw[1], raw[2]]
 }
 
+/** What the file says about a stream's disposition, read from the video streams alone. */
+const attachedPicture = async (file) => String(await run('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_entries', 'stream_disposition=attached_pic', '-of', 'default=noprint_wrappers=1:nokey=1', file])).trim()
+
 const failures = []
 const check = (label, actual, expected) => {
   const ok = typeof expected === 'number' ? Math.abs(actual - expected) <= 0.25 : actual === expected
@@ -204,6 +207,36 @@ const main = async () => {
       expectedSeconds: 5,
       noPicture: true,
     },
+    {
+      // A still going into a container that can hold artwork, as the ARTWORK rather than as a video
+      // stream — which is the one way a picture belongs in an MP3.
+      name: 'a still attached to an mp3',
+      preset: { ...preset, container: 'mp3', audioCodec: 'mp3', videoCodec: 'copy' },
+      task: {
+        id: 'art-mp3', type: 'multitrack', status: 'pending', progress: 0,
+        sourcePaths: [still],
+        additionalAudioTracks: [{ id: 't1', path: audio, language: 'eng' }],
+        outputDirectory: root, outputFilename: 'art.mp3', preset,
+      },
+      output: path.join(root, 'art.mp3'),
+      expectedSeconds: 5,
+      coverArt: true,
+    },
+    {
+      // And the same job in a container that cannot: the still is dropped rather than smuggled in, and
+      // the export is the sound alone.
+      name: 'a still dropped by a wav',
+      preset: { ...preset, container: 'wav', audioCodec: 'pcm' },
+      task: {
+        id: 'art-wav', type: 'multitrack', status: 'pending', progress: 0,
+        sourcePaths: [still],
+        additionalAudioTracks: [{ id: 't1', path: audio, language: 'eng' }],
+        outputDirectory: root, outputFilename: 'art.wav', preset,
+      },
+      output: path.join(root, 'art.wav'),
+      expectedSeconds: 5,
+      noPicture: true,
+    },
   ]
 
   for (const item of cases) {
@@ -233,9 +266,15 @@ const main = async () => {
       check('and it carries the sound it was given', carried.includes('audio'), true)
       continue
     }
-    const picture = await pixelAt(item.output, item.pictureSeconds)
-    check('the visual is still a picture where it plays', isPicture(picture), true)
-    if (item.cover) {
+    if (item.coverArt) {
+      // Artwork, which is a video stream in name only: a still stored as the file's picture rather than
+      // played as a frame. The sound is the export, and the picture is the file's face.
+      const carried = String(await probeValue(item.output, 'stream=codec_type')).split('\n').map((line) => line.trim()).filter(Boolean)
+      check('an artwork-capable container keeps the sound', carried.includes('audio'), true)
+      check('and holds the still as its artwork', await attachedPicture(item.output), '1')
+      continue
+    }
+    if (item.coverArt) {
       // The language the track asked for has to be ON the one audio stream the job has, which is the
       // index the tags are written against: the visual here is a still, so it brings no audio of its
       // own and the first added track is the output's first audio stream.

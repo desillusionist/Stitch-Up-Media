@@ -58,6 +58,13 @@ export interface EncodingPreset {
   audioSampleRate?: number
   imageOutputMode?: 'sequence' | 'still'
   gifMode?: 'regular' | 'loop' | 'bounce'
+  /**
+   * Whether a still is attached to a sound container that can hold one.
+   *
+   * On unless switched off, and only ever asked of a container that can carry artwork: a WAV has no
+   * room for it, and says so rather than being handed a stream it cannot hold.
+   */
+  coverArt?: boolean
 }
 
 export interface AudioTrackItem {

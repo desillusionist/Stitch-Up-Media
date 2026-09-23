@@ -8,7 +8,7 @@ import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, j
 import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
-import { outputCarriesPicture } from '../../src/lib/outputKind'
+import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
@@ -222,12 +222,11 @@ export class FFmpegEngine {
     }
     if (!isSequence) this.applyTrimInput(cmd, trim)
     // A sound file has no frame to give, so a preset that asks for video would write a container
-    // holding a sound stream and no picture at all — a video file in name only. The export's own
-    // frame is supplied instead. It is skipped for a muted lane, where the audio is dropped and
-    // there would be nothing left for a picture to accompany.
-    if (jobExportsPicture(task) && mediaKind(source) === 'audio' && !laneIsMuted(task, MAIN_LANE_ID)) {
-      this.addBlackPicture(cmd, task.preset, expectedSeconds)
-    }
+    // holding a sound stream and no picture at all — a video file in name only. The export's own frame
+    // is supplied instead. It is skipped for a muted lane, where the audio is dropped and there would be
+    // nothing left for a picture to accompany.
+    const soundOnly = jobExportsPicture(task) && mediaKind(source) === 'audio' && !laneIsMuted(task, MAIN_LANE_ID) && task.preset.audioEnabled !== false
+    if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
     // the picture is not normalized first: a single visual has no other clip to be joined to, so
@@ -565,13 +564,24 @@ export class FFmpegEngine {
       this.applyTrimInput(cmd, this.trimPoint(task, track.path, 0))
     })
 
+    // What the export does with the picture. An ATTACHED COVER is a still going into a sound container
+    // that can hold artwork, which is the one way a picture belongs in an MP3; otherwise the visual IS
+    // the picture and is mapped below.
+    const carriesMainAudio = !laneIsMuted(task, MAIN_LANE_ID)
+    const attachCover = isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
+
     // Video stream mapping
-    const outputOptions = ['-map 0:v:0']
+    const outputOptions: string[] = ['-map 0:v:0']
+    if (attachCover) {
+      // The still, stored rather than re-encoded, and marked as the file's artwork. `-c:v copy` comes
+      // after the preset's own video codec so it is the codec that stands, and the still is never
+      // scaled: an attached picture is not a rendered frame.
+      cmd.outputOptions(['-c:v copy', '-disposition:v:0 attached_pic'])
+    }
 
     // The video's own audio belongs to the main lane, so a muted main lane is not mapped at all; and
     // a job left with no audio anywhere says so, rather than being handed one by ffmpeg's own
     // default mapping of the first stream it found.
-    const carriesMainAudio = !laneIsMuted(task, MAIN_LANE_ID)
     if (carriesMainAudio) outputOptions.push('-map 0:a?')
     else if (extraAudios.length === 0) outputOptions.push('-an')
 
@@ -602,7 +612,10 @@ export class FFmpegEngine {
     const tailFilter = tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
       ? [`tpad=stop_mode=add:color=black:stop_duration=${tailDuration.toFixed(3)}`]
       : []
-    this.applyPresetToCommand(cmd, task.preset, tailFilter, clipChain ? { clipChain } : {})
+    this.applyPresetToCommand(cmd, task.preset, tailFilter, {
+      ...(clipChain ? { clipChain } : {}),
+      ...(attachCover ? { keepsArtwork: true } : {}),
+    })
     if (isStillCover && extraAudios.length > 0) {
       cmd.outputOptions(['-r 2', '-tune stillimage', '-pix_fmt yuv420p', '-shortest'])
     }
@@ -680,14 +693,29 @@ export class FFmpegEngine {
    * picture neither outlasts the track it accompanies nor holds the encode open when it is endless.
    */
   private addBlackPicture(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, seconds: number): void {
+    const { width, height } = this.frameBoxFor(preset)
+    const length = seconds > 0 ? `:d=${seconds.toFixed(3)}` : ''
+    cmd.input(`color=c=black:s=${width}x${height}:r=${this.pictureRateFor(preset)}${length}`).inputOptions(['-f', 'lavfi'])
+    cmd.outputOptions(['-shortest'])
+  }
+
+  /**
+   * The frame a job with no picture of its own is given, and the rate it is written at.
+   *
+   * A source with no picture cannot say how big one should be, so the export's own resolution answers
+   * and a job that asks for "source" falls back to 1080p rather than inventing a size out of nothing.
+   * Even, because 4:2:0 encoders refuse an odd frame.
+   */
+  private frameBoxFor(preset: EncodingPreset): { width: number; height: number } {
     const box = preset.width && preset.height
       ? { width: preset.width, height: preset.height }
       : resolutionBox(preset.resolution) ?? { width: 1920, height: 1080 }
-    const evenSize = (value: number) => Math.max(2, Math.floor(value / 2) * 2)
-    const rate = preset.fps && preset.fps > 0 ? preset.fps : 30
-    const length = seconds > 0 ? `:d=${seconds.toFixed(3)}` : ''
-    cmd.input(`color=c=black:s=${evenSize(box.width)}x${evenSize(box.height)}:r=${rate}${length}`).inputOptions(['-f', 'lavfi'])
-    cmd.outputOptions(['-shortest'])
+    const even = (value: number) => Math.max(2, Math.floor(value / 2) * 2)
+    return { width: even(box.width), height: even(box.height) }
+  }
+
+  private pictureRateFor(preset: EncodingPreset): number {
+    return preset.fps && preset.fps > 0 ? preset.fps : 30
   }
 
   /**
@@ -716,7 +744,7 @@ export class FFmpegEngine {
   }
 
   // Helper to configure video/audio encoders with macOS VideoToolbox optimizations
-  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = [], options: { cropsPerClip?: boolean; clipChain?: string[] } = {}) {
+  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = [], options: { cropsPerClip?: boolean; clipChain?: string[]; keepsArtwork?: boolean } = {}) {
     // 1. Video Codec
     if (preset.videoCodec === 'copy') {
       cmd.videoCodec('copy')
@@ -761,7 +789,10 @@ export class FFmpegEngine {
     // codec attached is an encode that FAILS rather than a file with a stream the container could not
     // carry, which is the whole reason this question is asked of the container and not of `outputMode`.
     const pictureless = !outputCarriesPicture(preset.container) || preset.outputMode === 'audio'
-    if (pictureless) cmd.outputOptions(['-vn'])
+    // A sound container that holds a still as ARTWORK is not pictureless for this purpose: `-vn` takes
+    // the cover with it, and an attached picture is the one kind of stream such a container is for. That
+    // stream is mapped by the caller, which also says `-c:v copy` so the still is stored, not re-encoded.
+    if (pictureless && !options.keepsArtwork) cmd.outputOptions(['-vn'])
     if (preset.imageOutputMode === 'still') cmd.outputOptions(['-frames:v 1'])
     if (preset.imageOutputMode === 'sequence') cmd.outputOptions(['-vsync 0', '-an'])
     else if (preset.audioEnabled === false) cmd.outputOptions(['-an'])
@@ -810,7 +841,7 @@ export class FFmpegEngine {
         videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2')
       }
     }
-    videoFilters.push(...extraFilters)
+    videoFilters.push(...(wantsVideo ? extraFilters : []))
     if (videoFilters.length) cmd.outputOptions([`-vf ${videoFilters.join(',')}`])
 
     // 3. Bitrates & FPS
