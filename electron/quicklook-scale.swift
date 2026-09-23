@@ -85,3 +85,43 @@ func scaleZoomFactor(delta: Double) -> Double {
     let amount = 0.08 + 0.42 * eased
     return delta > 0 ? 1 + amount : 1 / (1 + amount)
 }
+
+/// How long a zoom glides from the window it was on to the window it asked for, in seconds.
+///
+/// Long enough to read as a movement rather than a cut, short enough that a scroll still feels like it
+/// did the thing at once. The strip and the scale are BOTH driven from the window this carries, so they
+/// glide as one rather than one snapping to the destination while the other waits for it.
+let zoomAnimationSeconds = 0.18
+
+/// The easing a zoom glides with: a smoothstep, so the window leaves where it was and arrives where it
+/// is going at rest rather than at full speed. Both ends are fixed points, which is what makes the first
+/// step of an animation the window it started from and the last the window it asked for, exactly.
+func easeInOut(_ t: Double) -> Double {
+    let clamped = max(0, min(1, t))
+    return clamped * clamped * (3 - 2 * clamped)
+}
+
+/// The frame a zoom pivots on: the skimmer's own frame.
+///
+/// The zoom is about the frame being LOOKED AT rather than the frame the pointer happens to rest on, so
+/// it is the strip's own playhead fraction of the source that is turned into an absolute frame.
+func skimmerAnchorFrame(playheadValue: Double, totalFrames: Int) -> Double {
+    max(0, min(Double(max(1, totalFrames) - 1), max(0, playheadValue) * Double(max(1, totalFrames))))
+}
+
+/// The window a zoom is passing through part of the way along it.
+///
+/// Both ends of the transition are interpolated — the window's first frame and its length — and that is
+/// deliberate rather than merely easy. `scaledWindow` derives its first frame from the anchored frame, so
+/// a straight path between two windows that each hold the anchor at the same fraction holds the anchor at
+/// that fraction the whole way: the skimmer stands still on screen for the entire glide, which is what
+/// "the zoom is about the skimmer" has to mean to mean anything. Progress is expected to have been eased
+/// already — this is the path, `easeInOut` is the grain of the travel along it.
+func interpolatedWindow(fromFirst: Int, fromCount: Int, toFirst: Int, toCount: Int, totalFrames: Int, minFrames: Int, progress: Double) -> (first: Int, count: Int) {
+    guard totalFrames > 0 else { return (max(0, fromFirst), max(1, fromCount)) }
+    let floorCount = max(1, min(minFrames, totalFrames))
+    let p = max(0, min(1, progress))
+    let count = max(floorCount, min(totalFrames, Int((Double(fromCount) + (Double(toCount) - Double(fromCount)) * p).rounded())))
+    let first = max(0, min(totalFrames - count, Int((Double(fromFirst) + (Double(toFirst) - Double(fromFirst)) * p).rounded())))
+    return (first, count)
+}

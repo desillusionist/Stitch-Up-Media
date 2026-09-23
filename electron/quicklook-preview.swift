@@ -165,6 +165,23 @@ final class FilmstripView: NSView {
     private var zoomHeld = false
     /** Told whenever the range or the playhead moves, so the scale above draws the same range. */
     var onScaleChange: (() -> Void)?
+    /**
+     * The window the zoom is heading to, and the glide toward it.
+     *
+     * A scroll sets the TARGET and the strip glides to it, so a flick's many ticks accumulate into one
+     * destination instead of each fighting the last for the window. `animFrom` is the window at the moment
+     * the current glide began and `animStart` is when, and those two with the target are the whole of the
+     * animation: the window part-way along is the eased interpolation of the two. The GEOMETRY follows every
+     * step, so the strip and the scale never disagree about the range; the thumbnails are asked for at a
+     * coarser cadence, because a seek is not free and the token below keeps only the last set to arrive.
+     */
+    private var targetWindow: (first: Int, count: Int) = (0, 1)
+    private var animTimer: Timer?
+    private var animFrom: (first: Int, count: Int) = (0, 1)
+    private var animStart = 0.0
+    private var lastAnimRender = 0.0
+    /** How often new thumbnails are asked for while gliding. Not per step, unlike the geometry. */
+    private let animationRenderInterval = 0.05
     private var hoverRequest = 0
     private var zoomToken = 0
     private var pressOrigin: NSPoint = .zero
@@ -180,6 +197,7 @@ final class FilmstripView: NSView {
         self.frameRate = max(1, frameRate)
         self.totalFrames = max(1, Int((duration * max(1, frameRate)).rounded()))
         self.windowFrameCount = self.totalFrames
+        self.targetWindow = (0, self.totalFrames)
         let frameCount = isAudio ? 0 : max(Int(duration * 4.0), 240)
         imageViews = (0..<frameCount).map { _ in
             let view = NSView(frame: .zero); view.wantsLayer = true; view.layer?.backgroundColor = NSColor(calibratedWhite: 0.14, alpha: 1).cgColor; view.layer?.contentsGravity = .resizeAspectFill; view.layer?.masksToBounds = true; view.layer?.contentsScale = 2; return view
@@ -217,14 +235,73 @@ final class FilmstripView: NSView {
      * The window is clamped to the source and to never being narrower than one frame per cell, so a
      * gesture at either end settles against the end rather than running off it — and a strip that has room
      * for more cells than the source has frames shows the whole source rather than repeating one frame.
+     * This is the path a gesture that is over at once takes — a resize finding its room — so it animates
+     * nothing and stops any glide in flight.
      */
     func setWindow(first frame: Int, count: Int) {
+        applyWindow(first: frame, count: count)
+        targetWindow = (windowFirstFrame, windowFrameCount)
+        stopAnimation()
+        renderWindow()
+    }
+
+    /**
+     * Puts the window where it is asked, with the one clamp every path shares.
+     *
+     * Apart from the clamp this only publishes the change: the strip and the scale both redraw from
+     * `windowFirstFrame` and `windowFrameCount`, so telling them once is the whole of keeping them in step.
+     */
+    private func applyWindow(first frame: Int, count: Int) {
         let total = max(1, totalFrames)
         let floorCount = max(1, min(visibleCount, total))
         windowFrameCount = max(floorCount, min(total, count))
         windowFirstFrame = max(0, min(total - windowFrameCount, frame))
         onScaleChange?()
-        renderWindow()
+        needsDisplay = true
+    }
+
+    /**
+     * Starts gliding to a window, from wherever the strip is now.
+     *
+     * A glide already under way is re-aimed rather than replaced: its clock restarts from the window on
+     * screen, so a tick arriving mid-flight is a fresh gentle step toward the new destination rather than a
+     * jump, and a fast scroll stays smooth without the strip lagging a whole animation behind the gesture.
+     */
+    private func glide(toFirst first: Int, count: Int) {
+        let total = max(1, totalFrames)
+        let floorCount = max(1, min(visibleCount, total))
+        let wantedCount = max(floorCount, min(total, count))
+        targetWindow = (max(0, min(total - wantedCount, first)), wantedCount)
+        animFrom = (windowFirstFrame, windowFrameCount)
+        animStart = ProcessInfo.processInfo.systemUptime
+        guard animTimer == nil else { return }
+        lastAnimRender = 0
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.animationTick() }
+        RunLoop.main.add(timer, forMode: .common)
+        animTimer = timer
+    }
+
+    /**
+     * One frame of a glide: the window eased a step closer, the geometry published, and the thumbnails
+     * asked for no more often than they can be wanted.
+     */
+    private func animationTick() {
+        let progress = easeInOut((ProcessInfo.processInfo.systemUptime - animStart) / zoomAnimationSeconds)
+        let window = interpolatedWindow(fromFirst: animFrom.first, fromCount: animFrom.count, toFirst: targetWindow.first, toCount: targetWindow.count, totalFrames: totalFrames, minFrames: visibleCount, progress: progress)
+        applyWindow(first: window.first, count: window.count)
+        let now = ProcessInfo.processInfo.systemUptime
+        if progress >= 1 {
+            stopAnimation()
+            renderWindow()
+        } else if now - lastAnimRender >= animationRenderInterval {
+            lastAnimRender = now
+            renderWindow()
+        }
+    }
+
+    private func stopAnimation() {
+        animTimer?.invalidate()
+        animTimer = nil
     }
 
     /**
@@ -240,12 +317,13 @@ final class FilmstripView: NSView {
         zoomToken += 1
         let token = zoomToken
         let step = Double(windowFrameCount) / Double(max(visibleCount, 1))
+        // A cell at the OVERVIEW stands for a stretch of the source and is asked for loosely — it is a
+        // representative rather than a stepping stone. A cell inside a ZOOMED window is asked for exactly,
+        // whatever it spans: the whole point of narrowing the window is that the frames named are the frames
+        // shown, and a loose seek there could hand back a frame from outside the range the scale is drawing.
+        let tolerance = windowFrameCount < totalFrames || step <= 1 ? CMTime.zero : CMTime(value: 1, timescale: 4)
         for index in 0..<visibleCount {
             let frame = min(totalFrames - 1, max(0, Int((Double(windowFirstFrame) + (Double(index) + 0.5) * step).rounded())))
-            // A cell standing for a stretch of the source is asked for loosely — the frame in it is a
-            // representative rather than a stepping stone — and a cell standing for one frame is asked for
-            // exactly, because it is the frame the picture is about.
-            let tolerance = step <= 1 ? CMTime.zero : CMTime(value: 1, timescale: 4)
             requestFrame(at: Double(frame) / frameRate, index: index, tolerance: tolerance, seekMonitor: false, isValid: { [weak self] in self?.zoomToken == token })
         }
     }
@@ -256,17 +334,22 @@ final class FilmstripView: NSView {
      */
     private func zoomOnto(center: Double) {
         let frame = Int((max(0, min(1, center)) * sourceDuration * frameRate).rounded())
-        setWindow(first: frame - visibleCount / 2, count: visibleCount)
+        glide(toFirst: frame - visibleCount / 2, count: visibleCount)
         onHoverTime?(min(1, max(0, Double(frame) / max(sourceDuration * frameRate, 1))))
     }
 
     /**
-     * Zooms by a factor about a frame, which is what a scroll on the scale asks for, holding that frame
-     * where it is. The arithmetic — and the anchor it keeps — is in `scaledWindow`.
+     * Zooms in or out about the SKIMMER, which is the frame the zoom is then about.
+     *
+     * The skimmer keeps its place in the window while the window narrows or widens around it, so a zoom is
+     * a lens on the frame being looked at rather than a jump to wherever the pointer rests. The window the
+     * gesture accumulates on is the one it is already heading to rather than the one on screen, so a flick's
+     * ticks add up to a single destination; the glide itself is what makes the move a movement.
      */
-    func zoom(by factor: Double, anchoredAt anchor: Double) {
-        let next = scaledWindow(firstFrame: windowFirstFrame, frameCount: windowFrameCount, totalFrames: totalFrames, minFrames: visibleCount, factor: factor, anchorFrame: anchor)
-        setWindow(first: next.first, count: next.count)
+    func zoom(by factor: Double) {
+        let anchor = skimmerAnchorFrame(playheadValue: playheadValue, totalFrames: totalFrames)
+        let next = scaledWindow(firstFrame: targetWindow.first, frameCount: targetWindow.count, totalFrames: totalFrames, minFrames: visibleCount, factor: factor, anchorFrame: anchor)
+        glide(toFirst: next.first, count: next.count)
     }
     private func updateSelection() {
         onScaleChange?()
@@ -310,7 +393,8 @@ final class FilmstripView: NSView {
         hoverRequest += 1; let token = hoverRequest
         requestFrame(at: norm * sourceDuration, index: index, tolerance: CMTime(value: 1, timescale: 12), seekMonitor: false, isValid: { [weak self] in self?.hoverRequest == token && self?.zoomed == false })
     }
-    private func restoreOverview() { zoomHeld = false; setWindow(first: 0, count: totalFrames) }
+    private func restoreOverview() { zoomHeld = false; glide(toFirst: 0, count: totalFrames) }
+    deinit { animTimer?.invalidate() }
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil); let left = bounds.width * start; let right = bounds.width * end
         pressOrigin = p
@@ -445,20 +529,19 @@ final class TimelineScaleView: NSView {
     }
 
     /**
-     * A scroll here zooms the strip, about whatever frame is under the pointer.
+     * A scroll here zooms the strip, about the SKIMMER.
      *
-     * The anchor is the point of the whole gesture: the frame under the cursor stays under it, so a zoom
-     * reads as a lens on the part being looked at rather than as a jump to somewhere else. The pace is the
-     * editor's own — a hyperbola-eased fraction per tick — so a trackpad and a wheel feel alike.
+     * The anchor is the point of the whole gesture: the frame under the playhead keeps its place while the
+     * window narrows or widens around it, so a zoom is a lens on the frame being looked at rather than a
+     * jump to wherever the pointer happens to rest. The pace is the editor's own — a hyperbola-eased
+     * fraction per tick — and the move itself is eased where the window is applied, so the strip and the
+     * scale glide together instead of one arriving before the other.
      */
     override func scrollWheel(with event: NSEvent) {
         guard let filmstrip, filmstrip.windowFrameCount > 0 else { return }
         let delta = -(event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX)
         guard delta != 0 else { return }
-        let location = convert(event.locationInWindow, from: nil)
-        let fraction = max(0, min(1, location.x / max(bounds.width, 1)))
-        let anchor = Double(filmstrip.windowFirstFrame) + Double(fraction) * Double(filmstrip.windowFrameCount)
-        filmstrip.zoom(by: scaleZoomFactor(delta: Double(delta)), anchoredAt: anchor)
+        filmstrip.zoom(by: scaleZoomFactor(delta: Double(delta)))
     }
 
     /** A press here is a press on a ruler: nothing to drag, and nothing to hand on to the strip. */
