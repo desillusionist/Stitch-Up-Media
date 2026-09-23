@@ -260,6 +260,18 @@ export interface EditJobPatch {
    * the length of a still's clip. Keyed by source path.
    */
   sourceTiming?: Record<string, { fps?: number; seconds?: number }>
+  /**
+   * The job's sources, sent only when the WINDOW changed the list.
+   *
+   * A removal is the one edit that moves every other clip's place, so the queue does the removing and
+   * re-keying rather than the window: it names the list the job now has, and what that took out — and
+   * what that moves — is worked out where every other change to a job's sources is. Absent when the
+   * window did not touch the list, so a reorder made in the queue is not overwritten by a snapshot
+   * that never knew about it.
+   */
+  sourcePaths?: string[]
+  /** Carried with the sources for the same reason, and absent on the same terms. */
+  additionalAudioTracks?: NonNullable<QueueTask['additionalAudioTracks']>
 }
 
 export interface PresetRule {

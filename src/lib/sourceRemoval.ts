@@ -2,6 +2,9 @@ import { QueueTask } from '../types'
 import { mediaKind } from './mediaKind'
 import { rekeyClipMap } from './timelineModel'
 
+/** The tracks a job carries, in the form the editor hands them over. */
+type SourceTracks = NonNullable<QueueTask['additionalAudioTracks']>
+
 /**
  * The mode a job's remaining sources and tracks make it.
  *
@@ -78,4 +81,48 @@ export const removeSourceFromTask = (item: QueueTask, sourcePath: string, source
     type: inferredMode(sourcePaths, additionalAudioTracks),
     status: item.status === 'done' ? 'pending' : item.status,
   }
+}
+
+/**
+ * One job with the source and track list an editor is showing, or null when there would be nothing to
+ * encode.
+ *
+ * The same work as the single removal above, for the whole list rather than for one source out of it:
+ * the editor owns the list while it is open, so what arrives is the list it shows — with sources gone,
+ * possibly in another order. The removals are worked out here, from the end backwards, so each older
+ * index is still valid as its neighbours go: that is what lets the single removal do the re-keying
+ * for us, and every clip's trim, fade, fit and crop follow their clip onto the place it now has.
+ *
+ * An ORDER is the one thing a removal cannot express. Reordering moves no clip in or out of the job,
+ * so it is carried by re-keying the same records across the two orders — which is the helper trims
+ * and transitions are already re-keyed with, and by the same rule of matching occurrences in order,
+ * so a job holding one file twice keeps each copy's own records.
+ *
+ * A track has no place in the list and nothing filed against one, so a track the editor took out
+ * simply goes; the mode is then re-read from what is left, exactly as a removal re-reads it.
+ */
+export const withSourceList = (item: QueueTask, sourcePaths: string[], tracks: SourceTracks = []): QueueTask | null => {
+  const goneFrom: number[] = []
+  const stillWanted = [...sourcePaths]
+  item.sourcePaths.forEach((sourcePath, index) => {
+    const at = stillWanted.indexOf(sourcePath)
+    if (at >= 0) stillWanted.splice(at, 1)
+    else goneFrom.push(index)
+  })
+  let next: QueueTask | null = item
+  goneFrom.sort((earlier, later) => later - earlier).forEach((index) => {
+    if (next) next = removeSourceFromTask(next, next.sourcePaths[index], index)
+  })
+  if (!next || !next.sourcePaths.length) return null
+  const ordered = JSON.stringify(next.sourcePaths) === JSON.stringify(sourcePaths)
+    ? next
+    : {
+        ...next,
+        sourcePaths,
+        trimPoints: rekeyClipMap(next.trimPoints, next.sourcePaths, sourcePaths),
+        transitions: rekeyClipMap(next.transitions, next.sourcePaths, sourcePaths),
+        sourceFit: rekeyClipMap(next.sourceFit, next.sourcePaths, sourcePaths),
+        sourceCrop: rekeyClipMap(next.sourceCrop, next.sourcePaths, sourcePaths),
+      }
+  return { ...ordered, additionalAudioTracks: tracks.length ? tracks : undefined, type: inferredMode(sourcePaths, tracks) }
 }

@@ -12,7 +12,7 @@ import { DEFAULT_PRESETS } from './constants/presets'
 import { detectSequences, isImagePath } from './lib/detectSequences'
 import { deriveOutputFilename } from './lib/outputNaming'
 import { mediaKind } from './lib/mediaKind'
-import { removeSourceFromTask } from './lib/sourceRemoval'
+import { removeSourceFromTask, withSourceList } from './lib/sourceRemoval'
 import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
 import { rekeyClipMap } from './lib/timelineModel'
 
@@ -70,8 +70,15 @@ const rememberPreview = (task: QueueTask, sourceKey: string, previewPath: string
  * speed and eta, so replacing the whole object would clobber live encoding state.
  */
 const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
+  // The editor's own source list is taken FIRST, because it is the one edit that moves every other
+  // clip's place: the re-keying it does is what the per-clip maps below are then filed against. It is
+  // only carried when the window changed the list, so a patch that never knew about a reorder made in
+  // the queue cannot overwrite it.
+  const listed = patch.sourcePaths?.length
+    ? (withSourceList(task, patch.sourcePaths, patch.additionalAudioTracks ?? []) ?? task)
+    : task
   const next: QueueTask = {
-    ...task,
+    ...listed,
     preset: patch.preset,
     outputFilename: patch.outputFilename,
     outputFilenameManuallySet: patch.outputFilenameManuallySet,

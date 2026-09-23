@@ -7,6 +7,7 @@ import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { buildTimeline, canApplyClipFit, clipIndexOf, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
+import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
@@ -90,6 +91,28 @@ const FPS_CHOICES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]
 
 const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
 const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft) !== sliceSignature(baseline)
+
+/**
+ * Whether the window itself has taken a source out of the job, or a track with it.
+ *
+ * The source list is the queue's, and the window adopts the queue's version of it — with every clip's
+ * records re-keyed to their new places — whenever the queue changes it. What this reports is the
+ * window's OWN change to that list, which has to survive until the window applies: the queue
+ * confirming the list the window started from is not an edit of its own arriving, and must not take
+ * the removal back.
+ */
+const sourceListMoved = (draft: QueueTask, baseline: QueueTask) =>
+  JSON.stringify(draft.sourcePaths) !== JSON.stringify(baseline.sourcePaths)
+  || JSON.stringify(draft.additionalAudioTracks ?? []) !== JSON.stringify(baseline.additionalAudioTracks ?? [])
+
+/**
+ * Whether the window has unsaved edits: the slice the queue is compared on, plus the source list.
+ *
+ * The list is deliberately not part of that slice — the queue owns it, and a change to it arriving
+ * from there is adopted rather than announced as a clash. It IS an edit the window made, though, so
+ * APPLY and OK have something to send and CANCEL has something to discard.
+ */
+const windowDirty = (draft: QueueTask, baseline: QueueTask) => isDirty(draft, baseline) || sourceListMoved(draft, baseline)
 
 /**
  * What a right-click on the timeline was on.
@@ -526,7 +549,7 @@ export const EditJobApp: React.FC = () => {
         setDraft(incoming)
         return
       }
-      const userDirty = sliceSignature(currentDraft) !== sliceSignature(currentBaseline)
+      const userDirty = windowDirty(currentDraft, currentBaseline)
       // Only the fields this window owns can conflict; trim points, probe results
       // and source order arrive from the queue and should just be adopted.
       if (userDirty && JSON.stringify(editableSlice(incoming)) !== JSON.stringify(editableSlice(currentBaseline))) {
@@ -539,12 +562,22 @@ export const EditJobApp: React.FC = () => {
       // and would leave the removed clip's record behind with nothing to be about.
       const clipsMoved = JSON.stringify(incoming.sourcePaths) !== JSON.stringify(currentBaseline.sourcePaths)
         || JSON.stringify(incoming.additionalAudioTracks ?? []) !== JSON.stringify(currentBaseline.additionalAudioTracks ?? [])
+      // ...unless the move is the WINDOW's own. A list this window edited is kept with the records it
+      // re-keyed to match, so the queue confirming the list the window started from cannot put the
+      // sources back. The queue's list is still the one everything else is taken from.
+      const mine = sourceListMoved(currentDraft, currentBaseline)
       const kept = editableSlice(currentDraft)
-      const merged = userDirty
-        ? { ...incoming, ...(clipsMoved
-          ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop }
-          : kept) }
-        : incoming
+      const merged = !userDirty
+        ? incoming
+        : {
+            ...incoming,
+            ...(clipsMoved && !mine
+              ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop }
+              : kept),
+            ...(mine
+              ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
+              : {}),
+          }
       baselineRef.current = incoming
       draftRef.current = merged
       setBaseline(incoming)
@@ -1070,7 +1103,7 @@ export const EditJobApp: React.FC = () => {
       // Nothing to lose and nothing to ask about: a window that has not been handed a task yet has no
       // edits to discard.
       if (!task) { void window.electronAPI?.cancelEditJob(); return }
-      if (isDirty(task, baselineRef.current ?? task)) setConfirmingDiscard(true)
+      if (windowDirty(task, baselineRef.current ?? task)) setConfirmingDiscard(true)
       else void window.electronAPI?.cancelEditJob()
     })
   }, [])
@@ -1944,7 +1977,7 @@ export const EditJobApp: React.FC = () => {
     || draft.sourceMetadata?.[focusedSource ?? '']?.resolution
     || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
 
-  const dirty = isDirty(draft, baseline ?? draft)
+  const dirty = windowDirty(draft, baseline ?? draft)
   // A preset is only worth its name while it still describes the job. Once any of its own
   // fields is edited it no longer does, so it becomes CUSTOM: shown here as soon as an edit
   // lands, and written into the applied patch so the queue's badge agrees. Renaming an output
@@ -1962,6 +1995,11 @@ export const EditJobApp: React.FC = () => {
     sourceCrop: latest().sourceCrop,
     mutedLanes: latest().mutedLanes,
     sourceTiming: sourceTimingOverrides(latest()),
+    // Only when the window changed it: an untouched list is the queue's, and sending the window's
+    // snapshot of it back would overwrite a reorder made in the queue while this window was open.
+    ...(sourceListMoved(latest(), baselineRef.current ?? latest())
+      ? { sourcePaths: latest().sourcePaths, additionalAudioTracks: latest().additionalAudioTracks }
+      : {}),
   })
   /**
    * Sends the edits, and closes only when asked to.
@@ -3152,7 +3190,12 @@ export const EditJobApp: React.FC = () => {
             onClick={() => {
               const { sourcePath, sourceIndex } = timelineMenu
               setTimelineMenu(null)
-              void window.electronAPI?.removeEditJobSource(draft.id, sourcePath, sourceIndex)
+              // The removal is the window's own edit until it applies, so it can be stepped back or
+              // discarded like any other. A job left with nothing at all to encode cannot be held in
+              // a draft, so that one stays the queue's to do — and it takes the job with it.
+              const without = removeSourceFromTask(draft, sourcePath, sourceIndex)
+              if (without) updateDraft(without)
+              else void window.electronAPI?.removeEditJobSource(draft.id, sourcePath, sourceIndex)
             }}
           >REMOVE</button>
         </div>

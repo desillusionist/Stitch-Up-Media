@@ -14,7 +14,7 @@ import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, QueueTask, SourceFit } from '../src/types'
-import { inferredMode, removeSourceFromTask } from '../src/lib/sourceRemoval'
+import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -1088,6 +1088,51 @@ console.log('\n== taking a source out of a job ==')
   check('one picture and one track is a multi-track job', inferredMode(['a.mp4'], [{ path: 's.wav' }]), 'multitrack')
   check('two pictures and a track is a combo', inferredMode(['a.mp4', 'b.mp4'], [{ path: 's.wav' }]), 'combo')
   check('tracks alone are joined if there are two of them', [inferredMode(['s.wav']), inferredMode(['s.wav', 't.wav'])], ['transcode', 'stitch'])
+}
+
+console.log('\n== the list an editor is showing ==')
+{
+  // The same three-clip job the removal above is read on, so the two routes can be read against each
+  // other: a list the editor sends is a removal or several, and it has to land where they land.
+  const job = (over: Partial<QueueTask> = {}) => ({
+    id: 'j', type: 'stitch', sourcePaths: ['a.mp4', 'b.mp4', 'c.mp4'], outputDirectory: '/o', outputFilename: 'o.mp4',
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    status: 'pending', progress: 0,
+    trimPoints: { 'a.mp4#0': { in: 1, out: 2 }, 'c.mp4#2': { in: 3, out: 4 } },
+    transitions: { 'a.mp4#0': { type: 'fade', duration: 0.5 } },
+    sourceFit: { 'c.mp4#2': { mode: 'width', offset: 0.5 } },
+    sourceCrop: { 'b.mp4#1': { x: 0, y: 0, w: 1, h: 1 } },
+    ...over,
+  }) as QueueTask
+
+  const dropped = withSourceList(job(), ['a.mp4', 'c.mp4'])
+  const byRemoval = removeSourceFromTask(job(), 'b.mp4', 1)
+  check('a list without b leaves the same records a removal of b would',
+    [dropped?.trimPoints, dropped?.sourceFit, dropped?.sourceCrop, dropped?.transitions],
+    [byRemoval?.trimPoints, byRemoval?.sourceFit, byRemoval?.sourceCrop, byRemoval?.transitions])
+  check('so the clip that went left no records behind', [dropped?.sourceFit?.['b.mp4#1'], dropped?.trimPoints?.['b.mp4#1']], [undefined, undefined])
+
+  // An ORDER is the one thing a removal cannot express, so it is carried by re-keying the records
+  // across the two orders — matching occurrences in order, so a job holding one file twice keeps
+  // each copy's own records rather than filing both under the first index.
+  const reversed = withSourceList(job(), ['c.mp4', 'b.mp4', 'a.mp4'])
+  check('a list in another order keeps each clip\u2019s own trim', reversed?.trimPoints, { 'c.mp4#0': { in: 3, out: 4 }, 'a.mp4#2': { in: 1, out: 2 } })
+  check('and each clip\u2019s own fit', reversed?.sourceFit, { 'c.mp4#0': { mode: 'width', offset: 0.5 } })
+  check('and each clip\u2019s own crop', reversed?.sourceCrop, { 'b.mp4#1': { x: 0, y: 0, w: 1, h: 1 } })
+  const twice = job({ sourcePaths: ['a.mp4', 'a.mp4'], trimPoints: { 'a.mp4#1': { in: 5, out: 6 } } })
+  check('two copies of one file keep their own trims when the order turns round', withSourceList(twice, ['a.mp4', 'a.mp4'])?.trimPoints, { 'a.mp4#1': { in: 5, out: 6 } })
+
+  // A track has no place and nothing filed against one, so it simply goes; the mode is then re-read
+  // from what is left, exactly as a removal re-reads it.
+  const withTrack = job({ sourcePaths: ['a.mp4'], additionalAudioTracks: [{ id: 't', path: 's.wav', language: 'und' }] })
+  check('a track the editor took out is not carried', withSourceList(withTrack, ['a.mp4'], [])?.additionalAudioTracks, undefined)
+  check('and the job reads as what is left', withSourceList(withTrack, ['a.mp4'], [])?.type, 'transcode')
+  check('while a track that stayed is carried', withSourceList(withTrack, ['a.mp4'], [{ id: 't', path: 's.wav', language: 'und' }])?.additionalAudioTracks, [{ id: 't', path: 's.wav', language: 'und' }])
+
+  // A list the queue already has changes nothing, and a list with nothing left in it is no job at all.
+  const same = withSourceList(job(), ['a.mp4', 'b.mp4', 'c.mp4'])
+  check('the list the job already has leaves every record where it was', [same?.trimPoints, same?.sourceFit, same?.sourceCrop], [job().trimPoints, job().sourceFit, job().sourceCrop])
+  check('and a list with nothing left in it is no job', withSourceList(job(), []), null)
 }
 
 console.log('\n== where a sequence picture is without asking ==')
