@@ -1,6 +1,7 @@
 import { ClipTransition, EncodingPreset, QueueTask, SequenceInput } from '../types'
 import { CropFractions } from './outputFrame'
 import { mediaKind } from './mediaKind'
+import { outputCarriesPicture } from './outputKind'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
 const DEFAULT_STILL_SECONDS = 10
@@ -230,7 +231,7 @@ export const clipsConcatenate = (task: Pick<QueueTask, 'type' | 'sourcePaths'>):
  * that can be clicked and does nothing, which reads as the editor having lost the choice.
  */
 export const canApplyClipFit = (preset: EncodingPreset): boolean =>
-  preset.outputMode !== 'audio' && preset.videoCodec !== 'copy' && preset.container !== 'gif'
+  preset.outputMode !== 'audio' && outputCarriesPicture(preset.container) && preset.videoCodec !== 'copy' && preset.container !== 'gif'
 
 /**
  * Whether a job's export carries a picture of its own.
@@ -241,8 +242,12 @@ export const canApplyClipFit = (preset: EncodingPreset): boolean =>
  * frame of its own would otherwise leave a container that is a video file in name only. The lane's
  * NAME follows the export; what the lane holds does not, because the file still has no frames and is
  * still drawn as what it is.
+ *
+ * A container that cannot hold a picture at all is not a video job however the preset is set: a WAV
+ * asked for one is still a WAV, so its lane says sound and no picture is supplied for it.
  */
-export const jobExportsPicture = (task: Pick<QueueTask, 'preset'>): boolean => task.preset.outputMode !== 'audio'
+export const jobExportsPicture = (task: Pick<QueueTask, 'preset'>): boolean =>
+  task.preset.outputMode !== 'audio' && outputCarriesPicture(task.preset.container)
 
 /**
  * Whether a clip's own framing is what the encoder must run, on a job whose clips are NOT joined.

@@ -8,6 +8,7 @@ import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, j
 import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
+import { outputCarriesPicture } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
@@ -511,9 +512,15 @@ export class FFmpegEngine {
     // transcode path reads it: a fit is worked out from the clip's shape and the frame.
     let videoSize: { width: number; height: number } | null = null
     let probedDuration = 0
+    // Whether the visual brings an audio stream of its own, which is what decides how the added tracks
+    // are NUMBERED in the output. A still cover and an image sequence have none by construction, and a
+    // video's own answer comes from the probe below. Guessed at rather than probed, the tags that name
+    // each track's language would be written against a stream that may not exist.
+    let videoHasAudio = !isStillCover && !isSequenceVideo
     try {
       const videoProbe = await probeFile(videoSource)
       probedDuration = Number(videoProbe.duration || 0)
+      videoHasAudio = videoProbe.audioStreams.length > 0
       const resolution = videoProbe.videoStreams[0]?.resolution?.split('x').map(Number)
       if (resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
         videoSize = { width: resolution[0], height: resolution[1] }
@@ -571,8 +578,12 @@ export class FFmpegEngine {
     extraAudios.forEach((track, idx) => {
       const inputIdx = idx + 1
       outputOptions.push(`-map ${inputIdx}:a:0`)
-      // Metadata tags for language and title
-      const audioStreamOutIdx = idx + 1 // assuming 0:a is stream 0
+      // Metadata tags for language and title, written against the index the stream has in the OUTPUT
+      // rather than its place in this list. The visual's own audio is mapped first when the job carries
+      // it and the visual HAS one; a still cover or an image sequence has none, so a job whose only
+      // audio is its added tracks numbers them from zero. Naming `s:a:1` where one audio stream exists
+      // names nothing at all, which is how a language the job was told to write went missing.
+      const audioStreamOutIdx = (carriesMainAudio && videoHasAudio ? 1 : 0) + idx
       outputOptions.push(`-metadata:s:a:${audioStreamOutIdx} language=${track.language}`)
       if (track.title) {
         outputOptions.push(`-metadata:s:a:${audioStreamOutIdx} title="${track.title}"`)
@@ -745,8 +756,12 @@ export class FFmpegEngine {
       cmd.outputOptions(['-an', '-f gif', '-loop ' + (preset.gifMode === 'regular' ? '1' : '0')])
       if (preset.gifMode === 'bounce') cmd.outputOptions(['-filter_complex [0:v]split[a][b];[b]reverse[rev];[a][rev]concat=n=2:v=1:a=0[v]', '-map [v]'])
     }
-    // Custom stream selection and exact dimensions
-    if (preset.outputMode === 'audio') cmd.outputOptions(['-vn'])
+    // Custom stream selection and exact dimensions. A container that cannot hold a picture is told so
+    // outright, whatever the rest of the preset says: a WAV or an MP3 with a video filter and a video
+    // codec attached is an encode that FAILS rather than a file with a stream the container could not
+    // carry, which is the whole reason this question is asked of the container and not of `outputMode`.
+    const pictureless = !outputCarriesPicture(preset.container) || preset.outputMode === 'audio'
+    if (pictureless) cmd.outputOptions(['-vn'])
     if (preset.imageOutputMode === 'still') cmd.outputOptions(['-frames:v 1'])
     if (preset.imageOutputMode === 'sequence') cmd.outputOptions(['-vsync 0', '-an'])
     else if (preset.audioEnabled === false) cmd.outputOptions(['-an'])
@@ -756,8 +771,9 @@ export class FFmpegEngine {
     // filter of its own.
     const videoFilters: string[] = []
     // An audio-only export has no picture to filter, and handing ffmpeg a filter chain
-    // alongside -vn is an error rather than a harmless extra.
-    const wantsVideo = preset.outputMode !== 'audio'
+    // alongside -vn is an error rather than a harmless extra. Neither has any other container that
+    // cannot hold a picture: the files that are sound-only are the same files everywhere below.
+    const wantsVideo = !pictureless
     // A crop goes first: everything downstream then works on what was kept, which is what
     // makes cropping to an output shape a crop followed by a fit rather than two unrelated
     // operations. Its smallest side is floored, since an encoder rejects an empty frame.

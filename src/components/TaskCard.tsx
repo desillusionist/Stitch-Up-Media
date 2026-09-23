@@ -4,6 +4,7 @@ import { FileVideo, FileAudio, FileImage, Film, Layers, CheckCircle2, AlertCircl
 import { QueueTask } from '../types'
 import { sourceFps, stillSecondsFor } from '../lib/timelineModel'
 import { sequenceLabel } from '../lib/sequenceLabel'
+import { presetSummary } from '../lib/presetSummary'
 import { NumberField } from './NumberField'
 
 const AUDIO_EXT = ['mp3', 'wav', 'aac', 'm4a', 'ogg', 'oga', 'aiff', 'aif', 'flac']
@@ -337,6 +338,9 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         <div className="preset-controls flex flex-col items-end space-y-1.5 flex-shrink-0">
           <button
             onClick={(event) => { event.stopPropagation(); onOpenPresetPicker(task) }}
+            // A preset that has stopped describing the job is one whose NAME says nothing about the
+            // output, so the CUSTOM badge is the one place the figures themselves are worth showing.
+            title={task.preset.name === 'CUSTOM' ? presetSummary(task.preset).join('\n') : undefined}
             className="px-3 py-1 rounded-md text-xs font-medium bg-white/5 hover:bg-white/10 text-neutral-300 border border-white/10 hover:border-mac-accent/40 transition-all flex items-center space-x-1.5"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-mac-accent" />

@@ -11,6 +11,13 @@
  * shapes are tried, because a visual is a clip in one job and an image sequence in the next, and the
  * sequence is the one whose length the probe cannot tell it (its first frame is a still).
  *
+ * Three more questions are asked of the same encoder, because they are the other ways a sound-only
+ * source meets a picture: whether a sound file asked for video is GIVEN a picture at all, whether a
+ * container that cannot hold one is spared the attempt (an h264 stream asked for into a WAV is a failed
+ * encode, not a WAV with a picture in it), and whether the language a track asks for reaches the stream
+ * it is — which is an index into the OUTPUT, where a still cover's silent visual shifts every added
+ * track down a place.
+ *
  * Usage: node scripts/check-audio-tail.cjs
  */
 const path = require('node:path')
@@ -32,6 +39,15 @@ const probeValue = async (file, entries) => {
   const out = await run('ffprobe', ['-v', 'error', '-show_entries', entries, '-of', 'default=noprint_wrappers=1:nokey=1', file])
   return String(out).trim()
 }
+
+/**
+ * The language tag on the file's first AUDIO stream.
+ *
+ * Asked of the audio streams by name rather than read off the front of the list: the mp4 muxer writes
+ * `und` on the video stream of a file nothing was said about, so the first tag in the file belongs to
+ * the picture and says nothing at all about the track under test.
+ */
+const audioLanguage = async (file) => String(await run('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream_tags=language', '-of', 'default=noprint_wrappers=1:nokey=1', file])).trim()
 
 /** One pixel of the frame at a time, as three numbers: what the picture there actually is. */
 const pixelAt = async (file, time) => {
@@ -110,11 +126,15 @@ const main = async () => {
       // The case the fix must NOT swallow. A lone still has no length of its own to run out of, so it
       // plays under its track for as long as the track runs: there is no tail to pad, and the export is
       // the cover for the whole of it. Rectangles of black here would be the same mistake the other way.
+      //
+      // Its track's language is not `und`, deliberately: the mp4 muxer writes `und` for a stream nothing
+      // was said about, so a track that asked to be `eng` and came out `und` is the only way to see that
+      // the tag was written against a stream that does not exist.
       name: 'a still cover under a longer track',
       task: {
         id: 'tail-still', type: 'multitrack', status: 'pending', progress: 0,
         sourcePaths: [still],
-        additionalAudioTracks: [{ id: 't1', path: audio, language: 'und' }],
+        additionalAudioTracks: [{ id: 't1', path: audio, language: 'eng' }],
         outputDirectory: root, outputFilename: 'still-out.mp4', preset,
       },
       output: path.join(root, 'still-out.mp4'),
@@ -169,12 +189,27 @@ const main = async () => {
       expectedSeconds: 10,
       soundOnly: true,
     },
+    {
+      // A video codec named with a container that cannot hold a picture, which is the gate this pass is
+      // built on. The CONTAINER decides and not the preset: an h264 stream asked for into a WAV is an
+      // encode that fails outright, so the export has to come out sound-only whatever codec was named.
+      name: 'a sound file asked for video by a wav',
+      preset: { ...preset, container: 'wav', audioCodec: 'pcm' },
+      task: {
+        id: 'tail-wav', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'sound-wav.wav', preset,
+      },
+      output: path.join(root, 'sound-wav.wav'),
+      expectedSeconds: 5,
+      noPicture: true,
+    },
   ]
 
   for (const item of cases) {
     console.log(`\n== ${item.name} ==`)
     try {
-      await encode(item.task)
+      await encode({ ...item.task, preset: item.preset ?? preset })
     } catch (error) {
       console.log(`  FAIL the encode failed: ${String(error.message).split('\n')[0]}`)
       failures.push(item.name)
@@ -191,8 +226,21 @@ const main = async () => {
       if (kinds.includes('video')) check('and the picture it was given is black', isBlack(await pixelAt(item.output, 2)), true)
       continue
     }
+    if (item.noPicture) {
+      // A container that cannot hold a picture: the sound it came from, and no video stream at all.
+      const carried = String(await probeValue(item.output, 'stream=codec_type')).split('\n').map((line) => line.trim()).filter(Boolean)
+      check('a container that cannot hold a picture carries none', carried.includes('video'), false)
+      check('and it carries the sound it was given', carried.includes('audio'), true)
+      continue
+    }
     const picture = await pixelAt(item.output, item.pictureSeconds)
     check('the visual is still a picture where it plays', isPicture(picture), true)
+    if (item.cover) {
+      // The language the track asked for has to be ON the one audio stream the job has, which is the
+      // index the tags are written against: the visual here is a still, so it brings no audio of its
+      // own and the first added track is the output's first audio stream.
+      check('and the track\u2019s own language reaches the stream it is', await audioLanguage(item.output), 'eng')
+    }
     if (item.muted) continue
     const tail = await pixelAt(item.output, item.tailSeconds)
     if (item.cover) check('and a still cover is still showing under its track', isPicture(tail), true)

@@ -10,6 +10,8 @@ import { PREVIEW_ZOOM_STEPS, PreviewZoom, clampPan, clampPreviewZoom, isPresetZo
 import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, rulerSteps, rulerTicks, secondsAt, zoomedBy } from '../src/lib/timelineScale'
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
+import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
+import { presetSummary } from '../src/lib/presetSummary'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -155,6 +157,11 @@ console.log('\n== what a lone sound file is named ==')
 
   const stitchOfSounds = job({ type: 'stitch', sourcePaths: ['/a.wav', '/b.wav'] })
   check('a stitch of sound files asked for video is named VIDEO', buildTimeline(stitchOfSounds, { resolveTiming: () => ({ duration: 5 }) }).lanes[0].label, 'VIDEO')
+  // A container that cannot hold a picture at all is not a video job however the preset is set, so the
+  // lane keeps its own name and nothing is supplied for it to hold.
+  const intoWav = job({ preset: { id: 'p', name: 'P', container: 'wav', videoCodec: 'h264', audioCodec: 'pcm', resolution: 'source' } })
+  check('a wav asked for video is still named for its sound', buildTimeline(intoWav, timing).lanes[0].label, 'AUDIO 1')
+  check('and its export carries no picture', jobExportsPicture(intoWav), false)
   const pictureJob = job({ sourcePaths: ['/clip.mp4'] })
   check('and a picture job is named VIDEO as it always was', buildTimeline(pictureJob, { resolveTiming: () => ({ duration: 10 }) }).lanes[0].label, 'VIDEO')
 }
@@ -1238,6 +1245,46 @@ console.log('\n== undo and redo ==')
   check('the history stops growing at its limit', deep.past.length, HISTORY_LIMIT)
   check('and the oldest states are the ones let go', deep.past[0], { step: 10 })
 }
+console.log('\n== what a container can carry ==')
+{
+  // The gate the encoder and the editor both ask. A fact about the CONTAINER rather than about any other
+  // field on the preset: a WAV asked for video is still a WAV, so the answer cannot be read off a codec.
+  const carries = (...names: Array<EncodingPreset['container']>) => names.map(outputCarriesPicture)
+  const takesArt = (...names: Array<EncodingPreset['container']>) => names.map(outputTakesArt)
+  check('a movie container carries a picture', carries('mp4', 'mov', 'mkv', 'webm'), [true, true, true, true])
+  check('an image container carries one too', carries('png', 'jpg', 'gif'), [true, true, true])
+  check('an artwork-capable sound container carries none', carries('mp3', 'm4a', 'flac'), [false, false, false])
+  check('and a wav carries none either', outputCarriesPicture('wav'), false)
+  check('but it takes no artwork', outputTakesArt('wav'), false)
+  check('while the ones that do are named', takesArt('mp3', 'm4a', 'flac'), [true, true, true])
+  check('and a wav is a sound kind and nothing more', outputKind('wav'), 'sound')
+  check('a container the app does not offer is not assumed to carry a picture', outputCarriesPicture('ogg' as EncodingPreset['container']), false)
+}
+
+console.log('\n== what a custom preset will actually produce ==')
+{
+  // Read only when the preset has stopped being the preset it started from, which is the one case a
+  // name says nothing about the output. Every figure comes from the preset alone, and one it does not
+  // carry is named as the source's rather than guessed at.
+  const preset = (over: Partial<EncodingPreset> = {}): EncodingPreset => ({
+    id: 'p', name: 'CUSTOM', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source',
+    ...over,
+  } as EncodingPreset)
+  check('a video preset names its container and codec', presetSummary(preset())[0], 'MP4 // H264')
+  check('and says the frame follows the source while it does', presetSummary(preset())[1], 'SOURCE SIZE // SOURCE FPS')
+  check('an exact size is shown as the figure it is', presetSummary(preset({ width: 1920, height: 1080, fps: 30 }))[1], '1920×1080 // 30 FPS')
+  const cropped = presetSummary(preset({ crop: { left: 0.1, top: 0, right: 0, bottom: 0 } }))
+  check('a cropped source says so rather than showing the figures', cropped.includes('SOURCE CROPPED'), true)
+  check('a bitrate is the quality line', presetSummary(preset({ videoBitrate: '8M' })).some((line) => line === 'QUALITY 8M'), true)
+  check('a copied stream has no quality to name', presetSummary(preset({ videoCodec: 'copy' })).includes('QUALITY COPIED'), true)
+  check('and a sound-only container says it has no picture', presetSummary(preset({ container: 'mp3', videoCodec: 'copy' }))[0], 'MP3 // NO PICTURE')
+  check('an audio-only export says so too', presetSummary(preset({ outputMode: 'audio' }))[0], 'MP4 // NO PICTURE')
+  check('a dropped audio track is said outright', presetSummary(preset({ audioEnabled: false })).includes('AUDIO DROPPED'), true)
+  check('and an audio bitrate rides with the codec', presetSummary(preset({ audioBitrate: '320k' })).some((line) => line === 'AUDIO AAC 320K'), true)
+  check('a still frame is named before the container', presetSummary(preset({ imageOutputMode: 'still' }))[0], 'SINGLE FRAME')
+  check('and a sequence likewise', presetSummary(preset({ imageOutputMode: 'sequence' }))[0], 'IMAGE SEQUENCE')
+}
+
 console.log('\n== the timeline scale ==')
 {
   const span = 137.5
