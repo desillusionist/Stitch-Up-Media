@@ -52,6 +52,22 @@ export const templateFor = (id: Visualization | undefined): VisualizationTemplat
 export const VISUALIZATION_COLOR = '#9fbf9a'
 /** And what it starts on: the black the export letterboxes with. */
 export const VISUALIZATION_BACKGROUND = '#000000'
+/**
+ * What a drawing's progress line is drawn in: the app's action accent, amber.
+ *
+ * Amber rather than the app's other green, and deliberately: the drawing's own default colour IS that green,
+ * so a line in it would be invisible on a default waveform. The accent the app gives its actions is the one
+ * that reads against whatever the drawing is made in, which is what a playhead has to do.
+ */
+export const VISUALIZATION_PROGRESS_COLOR = '#c5b879'
+
+/**
+ * Whether a job's drawing carries the sweeping progress line. Absent means ON — it is the podcast look.
+ *
+ * A preference saved before the line existed says nothing about it, and the answer for those is the same as
+ * the answer for a new job, so only an explicit OFF turns it off.
+ */
+export const visualizationProgressLine = (preset: EncodingPreset): boolean => preset.visualizationProgressLine !== false
 
 /** The three things a drawing can sit on. */
 export type VisualizationBackgroundKind = 'colour' | 'still' | 'image'
@@ -131,6 +147,35 @@ export const drawingPictureFor = (task: QueueTask): DrawingPicture => {
 
 /** The longest edge a drawing is made at. */
 export const DRAWING_MAX_EDGE = 1280
+
+/**
+ * How wide the progress line is, as a share of the frame's height — a few pixels at any size.
+ *
+ * A share rather than a fixed count so the line reads the same shape at 720p and at 4K: a bar that is a few
+ * pixels in a 1080-row frame is a few pixels in a 2160-row one, in proportion.
+ */
+export const progressLineWidth = (height: number): number => Math.max(2, Math.round(height * 0.006))
+
+/**
+ * The sweeping progress line, as the bar it is made of and the overlay that moves it.
+ *
+ * A drawing that MOVES is its own progress, so the line is only ever laid over a PICTURE — one frame of the
+ * whole sound, held for its length, which would otherwise sit motionless. The bar is a colour source a few
+ * pixels wide and the height of the frame, laid over the plate at a time-driven x, so it travels from the
+ * left edge at t=0 to the right edge at t=duration and reads exactly as playback progress across the whole
+ * waveform. `atStart` pins it to the left, which is what the editor's own still shows: the sweep is a
+ * playback affordance, not a design, so the still shows that the bar EXISTS rather than guessing at a moment.
+ *
+ * Nothing is returned when there is no line to draw — a moving template, the line turned off, or a sound with
+ * no known length to sweep across.
+ */
+const progressLineGraph = (template: Visualization, height: number, fps: number, duration: number, atStart: boolean): { bar: string; overlay: string } | null => {
+  if (templateFor(template).kind !== 'picture') return null
+  if (!atStart && !(duration > 0)) return null
+  const bar = `color=c=${VISUALIZATION_PROGRESS_COLOR}:s=${progressLineWidth(height)}x${height}:r=${fps}`
+  const x = atStart ? '0' : `(t/${duration.toFixed(3)})*(main_w-overlay_w)`
+  return { bar, overlay: `overlay=x='${x}':y=0` }
+}
 
 /**
  * The animated waveform's own cap, which is lower than every other template's.
@@ -215,6 +260,17 @@ export interface VisualizationRequest {
    */
   rate: number
   channels: number
+  /**
+   * The length the export's sound runs for, in seconds — what the progress line sweeps across. A sweep needs
+   * a beginning and an end, so a sound with no known length gets no line.
+   */
+  duration?: number
+  /**
+   * Whether the picture carries the sweeping progress line. Off unless asked for: the CALLER reads the job's
+   * own default from the preset (see `visualizationProgressLine`), so the graph takes an answer rather than a
+   * preference.
+   */
+  progressLine?: boolean
 }
 
 /**
@@ -267,6 +323,8 @@ export interface VisualizationStillRequest {
   sources: string[]
   /** What the still sits on: a colour, or a picture INPUT by index. */
   background: string | { input: number }
+  /** Whether the still shows the progress line, pinned at the left. Off unless asked for — see the export. */
+  progressLine?: boolean
 }
 
 /**
@@ -278,7 +336,7 @@ export interface VisualizationStillRequest {
  * draws the whole file as one picture, which is a truer thing to look at than one frame of a line.
  */
 export const visualizationStillGraph = (request: VisualizationStillRequest): string => {
-  const { template, width, height, fps, color, sources, background } = request
+  const { template, width, height, fps, color, sources, background, progressLine } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
   const size = `${canvas.width}x${canvas.height}`
   const drawn = drawingFilters(template, size, fps, color)
@@ -288,11 +346,17 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
   const base = typeof background === 'string'
     ? `color=c=${background}:s=${width}x${height}:r=${fps}[bg]`
     : `[${background.input}:v]scale=${width}:${height},setsar=1[bg]`
+  // The line is shown at x=0 rather than hidden: the sweep is what the export does, and the still's job is to
+  // show that the design has a bar in it. Pinned left is also the one moment the export's own picture shares.
+  const line = progressLine ? progressLineGraph(template, height, fps, 0, true) : null
   return [
     listened,
     `[draw]scale=${width}:${height}:flags=lanczos[scaled]`,
     base,
-    '[bg][scaled]overlay=shortest=1,format=yuv420p[out]',
+    '[bg][scaled]overlay=shortest=1[plate]',
+    ...(line
+      ? [`${line.bar}[bar]`, `[plate][bar]${line.overlay},format=yuv420p[out]`]
+      : ['[plate]format=yuv420p[out]']),
   ].join(';')
 }
 
@@ -314,7 +378,7 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
  * own size.
  */
 export const visualizationGraph = (request: VisualizationRequest): string => {
-  const { template, width, height, fps, color, sources, background, rate, channels } = request
+  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
   const listened = sources.length === 1
     ? `[${sources[0]}]asplit=2[mixA][mixV]`
@@ -322,6 +386,9 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
   const base = typeof background === 'string'
     ? `color=c=${background}:s=${width}x${height}:r=${fps}[bg]`
     : `[${background.input}:v]scale=${width}:${height},setsar=1[bg]`
+  // The progress line, over the assembled plate: see `progressLineGraph`. It is the LAST thing drawn, so it
+  // sits over the drawing rather than under it, and it sweeps the sound's own length.
+  const line = progressLine ? progressLineGraph(template, height, fps, duration ?? 0, false) : null
   return [
     listened,
     // The export's own audio, resampled and laid out exactly as the path that asked for the drawing
@@ -329,6 +396,9 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
     `[mixA]aresample=${rate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${channels === 1 ? 'mono' : 'stereo'}[aout]`,
     `[mixV]${exportDrawingFilters(template, `${canvas.width}x${canvas.height}`, fps, color)},scale=${width}:${height}:flags=lanczos[w]`,
     base,
-    '[bg][w]overlay=shortest=1,format=yuv420p[v]',
+    '[bg][w]overlay=shortest=1[plate]',
+    ...(line
+      ? [`${line.bar}[bar]`, `[plate][bar]${line.overlay},format=yuv420p[v]`]
+      : ['[plate]format=yuv420p[v]']),
   ].join(';')
 }

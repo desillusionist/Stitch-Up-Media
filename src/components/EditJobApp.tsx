@@ -4,7 +4,7 @@ import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, Queu
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
-import { DRAWING_STILL_SETTLE_MS, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATION_COLOR, VISUALIZATIONS, drawingPictureFor, templateFor, visualizationBackgroundKind } from '../lib/visualization'
+import { DRAWING_STILL_SETTLE_MS, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATION_COLOR, VISUALIZATIONS, drawingPictureFor, templateFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -1425,10 +1425,14 @@ export const EditJobApp: React.FC = () => {
    */
   const [drawingStill, setDrawingStill] = useState<string | null>(null)
   const drawingBackground = draft ? visualizationBackgroundKind(draft.preset) : 'colour'
+  // Whether the drawing being judged is a PICTURE with the sweeping line on it. Only a picture takes one — a
+  // drawing that moves is its own progress — and only the preset decides whether it is on.
+  const drawingLine = Boolean(draft && templateFor(draft.preset.visualization).kind === 'picture' && visualizationProgressLine(draft.preset))
   const drawingStillKey = JSON.stringify([
     drawingPicture.draws ? drawingPicture.sources : [],
     draft?.preset.visualization ?? 'waveform',
     draft?.preset.visualizationColor ?? '',
+    drawingLine,
     drawingBackground,
     draft?.preset.visualizationBackgroundColor ?? '',
     drawingBackground === 'image' ? draft?.preset.visualizationBackgroundImage ?? '' : '',
@@ -1446,6 +1450,7 @@ export const EditJobApp: React.FC = () => {
         background: drawingBackground,
         backgroundColor: draft?.preset.visualizationBackgroundColor,
         backgroundImage: drawingBackground === 'image' ? draft?.preset.visualizationBackgroundImage : drawingPicture.still ?? undefined,
+        progressLine: drawingLine,
         ...(outputFrame ? { width: outputFrame.width, height: outputFrame.height } : {}),
         fps: draft?.preset.fps ?? 30,
       }).then((url) => { if (!cancelled) setDrawingStill(url) }).catch(() => { if (!cancelled) setDrawingStill(null) })
@@ -3244,6 +3249,9 @@ export const EditJobApp: React.FC = () => {
                 {/* A ROW rather than a FIELD: a field is a label, and a button inside a label is a button
                     that is pressed twice. */}
                 {backgroundKind === 'image' && <EditorRow label="IMAGE" value={<button className="editor-pick" onClick={() => { void chooseBackgroundImage() }}>{backgroundImageName || 'CHOOSE\u2026'}</button>} reason="The image the drawing sits on. It is scaled to the frame's own shape and the drawing is laid over it." />}
+                {/* Only the PICTURES get a line: a drawing that moves is already showing where the sound is,
+                    and a bar over one would be a second answer to the same question. */}
+                {templateFor(draft.preset.visualization).kind === 'picture' && <EditorToggle label="PROGRESS LINE" checked={visualizationProgressLine(draft.preset)} onChange={(checked) => updatePreset({ visualizationProgressLine: checked })} reason="A bar that sweeps across the picture from the left edge to the right as the sound plays, which is what a podcast video looks like. The two pictures are one frame held for the length of the sound, so without it the video sits motionless; it is off where the drawing already moves." />}
               </>}
             </>}
             {artCoverOffered && <EditorToggle label="COVER ART" checked={draft.preset.coverArt !== false} onChange={(checked) => updatePreset({ coverArt: checked })} reason="Attach the still to the file as its artwork. It is stored as a picture rather than played as a frame, which is what an MP3, M4A or FLAC can hold." />}

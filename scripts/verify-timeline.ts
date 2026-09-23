@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, SCROLLING_WAVEFORM_MAX_EDGE, VISUALIZATIONS, drawingCanvas, drawingPictureFor, stillWarmupSeconds, templateFor, templateMaxEdge, visualizationBackgroundKind, visualizationGraph, visualizationStillGraph } from '../src/lib/visualization'
+import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, SCROLLING_WAVEFORM_MAX_EDGE, VISUALIZATIONS, VISUALIZATION_PROGRESS_COLOR, drawingCanvas, drawingPictureFor, progressLineWidth, stillWarmupSeconds, templateFor, templateMaxEdge, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -1277,7 +1277,27 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   check('and held for the whole of the sound it is drawn from', lone.includes(',loop=loop=-1:size=1,scale=1920:1080'), true)
   check('and scaled up to the frame with lanczos', lone.includes(',scale=1920:1080:flags=lanczos[w]'), true)
   check('over a colour it was given, in the frame\u2019s own shape', lone.includes('color=c=#000000:s=1920x1080:r=30[bg]'), true)
-  check('and flattened to the format every path writes', lone.includes('[bg][w]overlay=shortest=1,format=yuv420p[v]'), true)
+  check('and flattened to the format every path writes', lone.includes('[plate]format=yuv420p[v]'), true)
+  check('the drawing and the plate are brought together before that', lone.includes('[bg][w]overlay=shortest=1[plate]'), true)
+  // A drawing with no progress line asked for is the drawing alone: the plate goes straight to the format, with
+  // no bar source in the graph at all.
+  check('and without the line there is no bar to overlay', lone.includes(`${VISUALIZATION_PROGRESS_COLOR}`), false)
+
+  // The progress line, which is what makes a PICTURE a progress readout rather than a still: a bar a few pixels
+  // wide, the height of the frame, laid over the assembled plate at a time-driven x. The expression is the whole
+  // of it — the bar travels from the left edge at t=0 to the right edge at the sound's own end.
+  const swept = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2, duration: 5, progressLine: true })
+  check('a picture asked for a progress line is given a bar', swept.includes(`color=c=${VISUALIZATION_PROGRESS_COLOR}:s=`), true)
+  check('the bar is the height of the frame and a few pixels wide', swept.includes(`:s=6x1080:r=30[bar]`), true)
+  check('and it is laid over the plate rather than under it', swept.includes('[plate][bar]overlay=x='), true)
+  check('the bar sweeps the sound\u2019s own length', swept.includes(`x='(t/5.000)*(main_w-overlay_w)'`), true)
+  check('and the result is flattened like everything else', swept.includes(`format=yuv420p[v]`), true)
+  // A drawing that MOVES is its own progress, so the line is never laid over one, even when it is asked for.
+  const sweptMoving = visualizationGraph({ template: 'eq', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2, duration: 5, progressLine: true })
+  check('a moving drawing is given no bar even when a line is asked for', sweptMoving.includes('[bar]'), false)
+  // And a sound with no known length has nothing to sweep across, so the bar is not drawn at all.
+  const sweptUnknown = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2, duration: 0, progressLine: true })
+  check('and a sound of no known length gets no bar either', sweptUnknown.includes('[bar]'), false)
 
   const tracks = visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a', '2:a'], background: { input: 0 }, rate: 48000, channels: 2 })
   check('several tracks are summed into one mix', tracks.includes('[0:a][1:a][2:a]amix=inputs=3:normalize=0'), true)
@@ -1331,7 +1351,21 @@ console.log('\n== what a drawing sits on ==')
   check('a waveform still is the whole file in one picture', wave.includes('showwavespic=s=1280x720:colors=#9fbf9a'), true)
   check('laid on the colour it was given', wave.includes('color=c=#000000:s=1920x1080:r=30[bg]'), true)
   check('drawn at the capped canvas and scaled up', wave.includes('[draw]scale=1920:1080:flags=lanczos[scaled]'), true)
-  check('and flattened into one picture', wave.includes('[bg][scaled]overlay=shortest=1,format=yuv420p[out]'), true)
+  check('and flattened into one picture', wave.includes('[plate]format=yuv420p[out]'), true)
+  check('with the drawing and the plate brought together first', wave.includes('[bg][scaled]overlay=shortest=1[plate]'), true)
+  // The still shows the bar PINNED AT THE LEFT rather than guessing at a moment: the sweep is what playback
+  // does, and the still's job is to show that the design has a bar in it.
+  const sweptStill = visualizationStillGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', progressLine: true })
+  check('a still asked for a progress line shows the bar', sweptStill.includes(`color=c=${VISUALIZATION_PROGRESS_COLOR}:s=`), true)
+  check('pinned at the left, because a still is not a moment of playback', sweptStill.includes(`[plate][bar]overlay=x='0':y=0,format=yuv420p[out]`), true)
+  // The line is a per-job choice with ON as the default: a job saved before it existed says nothing about it
+  // and gets one, and only an explicit off turns it off. The bar is a share of the frame's height, so it reads
+  // the same at any output size, and never disappears on a tiny frame.
+  check('a job that says nothing about the line gets one', visualizationProgressLine({} as EncodingPreset), true)
+  check('and only an explicit off turns it off', visualizationProgressLine({ visualizationProgressLine: false } as EncodingPreset), false)
+  check('the bar is a few pixels at 1080p', progressLineWidth(1080), 6)
+  check('and wider at 4K, in proportion', progressLineWidth(2160), 13)
+  check('never thinner than two pixels, even on a tiny frame', progressLineWidth(10) >= 2, true)
   const spec = visualizationStillGraph({ template: 'spectrum', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a'], background: { input: 1 } })
   check('a spectrum still is the whole sound in one picture too', spec.includes('showspectrumpic=s=720x1280:mode=combined:color=intensity:scale=log:legend=0'), true)
   check('and the still has no loop, because a still is one frame', spec.includes('loop='), false)

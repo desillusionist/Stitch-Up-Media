@@ -434,6 +434,8 @@ app.whenReady().then(() => {
     width?: number
     height?: number
     fps?: number
+    /** Whether the design carries the sweeping progress line, pinned at the left in a still. */
+    progressLine?: boolean
   }) => {
     const sources = (options.sources ?? []).filter((source) => { try { return fs.statSync(source).isFile() } catch { return false } })
     // Nothing to draw from is not an error: a job whose sound has not been probed yet simply has no still
@@ -465,6 +467,7 @@ app.whenReady().then(() => {
         color: options.color || VISUALIZATION_COLOR,
         sources: sources.map((_, index) => `${index}:a`),
         background,
+        progressLine: options.progressLine,
       })
       args.push('-filter_complex', graph, '-map', '[out]')
       if (warmup > 0.001) args.push('-ss', warmup.toFixed(3))

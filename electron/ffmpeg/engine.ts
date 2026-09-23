@@ -10,7 +10,7 @@ import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, visualizationBackgroundKind, visualizationGraph } from '../../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -234,7 +234,7 @@ export class FFmpegEngine {
     // EVERY audio stream of the input, which is fine for a lone sound file and wrong the moment one is
     // not, while `[0:a:0]` is the one stream this path means. The drawing is laid out to the same rate
     // and channel count every other path writes, because the two halves of one split cannot differ.
-    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, 2)
+    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, 2, expectedSeconds)
     else if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
@@ -401,7 +401,7 @@ export class FFmpegEngine {
     // files, because a stitch plays its sources one after another and the picture has to show that
     // rather than a mix of them. Black remains the answer when nothing was asked for.
     if (stitchPictured) {
-      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, targetChannels)
+      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, targetChannels, clipDurations.reduce((total, clip) => total + clip, 0))
       else this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
     }
 
@@ -611,7 +611,7 @@ export class FFmpegEngine {
     ]
     const pictured = drawsSound && audible.length > 0
     if (pictured) {
-      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, 2)
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, 2, expectedSeconds)
     }
     const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
@@ -777,8 +777,11 @@ export class FFmpegEngine {
    *
    * The picture filters live inside this graph, so the caller must not also hand ffmpeg a `-vf`: the two
    * are mutually exclusive for one output, and the refusal is a hard error rather than a precedence.
+   *
+   * `duration` is how long the export's sound runs — what the progress line sweeps across — and the line's
+   * own on/off comes from the preset, so the default lives in one place rather than at each call site.
    */
-  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number): void {
+  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number): void {
     const { width, height } = this.frameBoxFor(preset)
     const graph = visualizationGraph({
       template: preset.visualization ?? 'waveform',
@@ -790,6 +793,8 @@ export class FFmpegEngine {
       background,
       rate,
       channels,
+      duration,
+      progressLine: visualizationProgressLine(preset),
     })
     cmd.outputOptions([`-filter_complex ${graph}`, '-map [v]', '-map [aout]', '-shortest'])
   }

@@ -89,6 +89,13 @@ export interface EncodingPreset {
   /** The image a drawing sits on when its background is an uploaded one. */
   visualizationBackgroundImage?: string
   /**
+   * Whether a PICTURE drawing is given the sweeping progress line across it.
+   *
+   * Absent means ON — the podcast look — so only an explicit false turns it off. See
+   * `visualizationProgressLine`, which is what the editor and the encoder both read so they cannot disagree.
+   */
+  visualizationProgressLine?: boolean
+  /**
    * Whether the drawing is made over the job's own still rather than over a colour.
    *
    * @deprecated Kept as the way a job saved before `visualizationBackground` existed says "over the still".

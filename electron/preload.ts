@@ -21,6 +21,8 @@ export interface IElectronAPI {
     width?: number
     height?: number
     fps?: number
+    /** Whether the design carries the sweeping progress line, pinned at the left in a still. */
+    progressLine?: boolean
   }) => Promise<string | null>
   expandMediaPaths: (paths: string[]) => Promise<string[]>
   createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>

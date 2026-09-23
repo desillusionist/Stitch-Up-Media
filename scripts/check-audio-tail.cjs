@@ -300,7 +300,9 @@ const main = async () => {
       // export was a window scrolling through the sound while the editor showed one picture of the whole of
       // it — two different drawings of one job. It is now the picture, held for the length of the export.
       name: 'a sound file exported as a picture of its waveform',
-      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30 },
+      // The progress line is turned OFF here on purpose: this case is about the DRAWING being one held picture,
+      // and a bar that moves is a different thing being measured. The line has its own case below.
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationProgressLine: false },
       task: {
         id: 'viz-wave', type: 'transcode', status: 'pending', progress: 0,
         sourcePaths: [audio],
@@ -317,7 +319,7 @@ const main = async () => {
       // missing between the editor and the encoder: the green reads neutral in the chroma planes, so a filter
       // that invented one would pass for it, and a red one cannot be mistaken for either.
       name: 'a waveform drawn in red',
-      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationColor: '#ff0000' },
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationColor: '#ff0000', visualizationProgressLine: false },
       task: {
         id: 'viz-red', type: 'transcode', status: 'pending', progress: 0,
         sourcePaths: [audio],
@@ -350,7 +352,9 @@ const main = async () => {
       // BLACK for the whole export. What is asserted is the thing a listener would notice — at the end of
       // the sound the drawing is still reaching the right-hand edge.
       name: 'a sound file exported as a spectrum that fills its frame',
-      preset: { ...preset, audioPicture: 'visualization', visualization: 'spectrum', fps: 30 },
+      // The line is off for the same reason as the waveform's: its own case must not be able to pass on the
+      // brightness of a bar that happens to be over the edge it is asking about.
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'spectrum', fps: 30, visualizationProgressLine: false },
       task: {
         id: 'viz-spectrum-fill', type: 'transcode', status: 'pending', progress: 0,
         sourcePaths: [audio],
@@ -368,7 +372,9 @@ const main = async () => {
       // over its first two seconds, and the untrimmed case below is the same job without the trim, so the
       // pair proves the measurement discriminates rather than asserting a grey frame means anything.
       name: 'a trimmed sound drawn to its own segment',
-      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30 },
+      // No line: a silent drawing is the thing being measured, and a full-height bright bar would fill the
+      // frame's contrast whether the drawing was empty or not.
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationProgressLine: false },
       task: {
         id: 'viz-trim', type: 'transcode', status: 'pending', progress: 0,
         sourcePaths: [halfway],
@@ -381,8 +387,27 @@ const main = async () => {
       drawnIsSilent: true,
     },
     {
+      // THE PROGRESS LINE, and the case for it is a measurement rather than a claim. The fixture is a sound
+      // that is LOUD for its first two seconds and SILENT for the last three, so the right-hand stretch of the
+      // drawing is black — which makes the bar the only thing there that can be bright. Where the bar stands is
+      // therefore readable off the picture, and asking twice says whether it moved.
+      name: 'a waveform with a progress line that sweeps it',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationProgressLine: true },
+      task: {
+        id: 'viz-sweep', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [halfway],
+        outputDirectory: root, outputFilename: 'viz-sweep.mp4', preset,
+      },
+      output: path.join(root, 'viz-sweep.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      sweeps: true,
+    },
+    {
       name: 'the same sound drawn without its trim',
-      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30 },
+      // No line, so the pair with the trimmed case above differs in the TRIM alone and the comparison is
+      // between two drawings of the same kind.
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationProgressLine: false },
       task: {
         id: 'viz-untrimmed', type: 'transcode', status: 'pending', progress: 0,
         sourcePaths: [halfway],
@@ -497,6 +522,17 @@ const main = async () => {
       }
       if (item.drawnIsAudible) {
         check('and the same sound untrimmed is drawn as a line, so the check above can tell them apart', (await contrast(item.output, 0.5)) > 60, true)
+      }
+      if (item.sweeps) {
+        // The bar travels from the left edge at t=0 to the right edge at t=sound length. Three seconds into
+        // this five-second sound it stands past the loud half, in the BLACK stretch; at four-and-a-half it is
+        // near the end. Neither moment is bright where the other one is, which is what "it moves" means.
+        const startsAt = await columnLuma(item.output, 3.0, 0.60)
+        const thereAtStart = await columnLuma(item.output, 3.0, 0.90)
+        const endsAt = await columnLuma(item.output, 4.6, 0.90)
+        const thereAtEnd = await columnLuma(item.output, 4.6, 0.60)
+        check(`the bar stands over the black stretch at 3s (${startsAt}) and further along at 4.6s (${endsAt})`, startsAt > 60 && endsAt > 60, true)
+        check(`and it is nowhere near where it was, so the line really sweeps (${thereAtStart} and ${thereAtEnd})`, thereAtStart < 40 && thereAtEnd < 40, true)
       }
       // WHAT YOU SEE IS WHAT YOU GET, which is the whole of this case for a template that draws one picture:
       // the editor shows the whole sound as a still, so the export has to BE that still, held for the length
