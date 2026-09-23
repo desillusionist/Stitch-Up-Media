@@ -58,6 +58,19 @@ const pixelAt = async (file, time) => {
 /** What the file says about a stream's disposition, read from the video streams alone. */
 const attachedPicture = async (file) => String(await run('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_entries', 'stream_disposition=attached_pic', '-of', 'default=noprint_wrappers=1:nokey=1', file])).trim()
 
+/**
+ * The brightest pixel in a frame, as its luma.
+ *
+ * A drawing has to be read this way rather than by sampling a point, or by averaging the frame: where a
+ * waveform's line falls depends on the sound, so a point check would be a check on the fixture's
+ * frequency, and a line two pixels thick averages away to nothing. The brightest luma separates the two
+ * answers that matter — a drawing on black reads 150 and up, a black frame reads 16.
+ */
+const brightestLuma = async (file, time) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', 'signalstats,metadata=print:file=-', '-f', 'null', '-'])
+  return Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0)
+}
+
 const failures = []
 const check = (label, actual, expected) => {
   const ok = typeof expected === 'number' ? Math.abs(actual - expected) <= 0.25 : actual === expected
@@ -208,6 +221,61 @@ const main = async () => {
       noPicture: true,
     },
     {
+      // A sound file EXPORTED AS A PICTURE, drawn from the very mix the file carries: the waveform and
+      // the audio are two halves of one stream, which is what the split in the graph is for.
+      name: 'a sound file exported as a waveform',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30 },
+      task: {
+        id: 'viz-wave', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'viz-wave.mp4', preset,
+      },
+      output: path.join(root, 'viz-wave.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+    },
+    {
+      // The other two templates, on the same file. Each is its own ffmpeg filter with its own
+      // parameters, so each is asked for by name rather than assumed to work from the one above it.
+      name: 'a sound file exported as eq bars',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'eq', fps: 30 },
+      task: {
+        id: 'viz-eq', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'viz-eq.mp4', preset,
+      },
+      output: path.join(root, 'viz-eq.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+    },
+    {
+      name: 'a sound file exported as a spectrum',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'spectrum', fps: 30 },
+      task: {
+        id: 'viz-spec', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'viz-spec.mp4', preset,
+      },
+      output: path.join(root, 'viz-spec.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+    },
+    {
+      // A still standing in for a sound, drawn over by the mix of the track it plays under — the still
+      // is what the drawing sits ON, so the background is a picture input rather than a colour.
+      name: 'a still cover drawn over by its track',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', visualizationOnStill: true, fps: 30 },
+      task: {
+        id: 'viz-cover', type: 'multitrack', status: 'pending', progress: 0,
+        sourcePaths: [still],
+        additionalAudioTracks: [{ id: 't1', path: audio, language: 'eng' }],
+        outputDirectory: root, outputFilename: 'viz-cover.mp4', preset,
+      },
+      output: path.join(root, 'viz-cover.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+    },
+    {
       // A still going into a container that can hold artwork, as the ARTWORK rather than as a video
       // stream — which is the one way a picture belongs in an MP3.
       name: 'a still attached to an mp3',
@@ -266,6 +334,16 @@ const main = async () => {
       check('and it carries the sound it was given', carried.includes('audio'), true)
       continue
     }
+    if (item.drawn) {
+      // A picture made from the sound. What matters is that there IS one, that the sound it was drawn
+      // from is still there beside it, and that the frame is not blank: the black frame the same job
+      // produces when it is given no picture reads 16, and a drawing reads well above that.
+      const carried = String(await probeValue(item.output, 'stream=codec_type')).split('\n').map((line) => line.trim()).filter(Boolean)
+      check('a drawn picture carries a picture', carried.includes('video'), true)
+      check('and the sound it was drawn from', carried.includes('audio'), true)
+      check('and something is drawn on the frame', (await brightestLuma(item.output, 1)) > 60, true)
+      continue
+    }
     if (item.coverArt) {
       // Artwork, which is a video stream in name only: a still stored as the file's picture rather than
       // played as a frame. The sound is the export, and the picture is the file's face.
@@ -274,7 +352,7 @@ const main = async () => {
       check('and holds the still as its artwork', await attachedPicture(item.output), '1')
       continue
     }
-    if (item.coverArt) {
+    if (item.cover) {
       // The language the track asked for has to be ON the one audio stream the job has, which is the
       // index the tags are written against: the visual here is a still, so it brings no audio of its
       // own and the first added track is the output's first audio stream.

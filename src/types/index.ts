@@ -59,6 +59,27 @@ export interface EncodingPreset {
   imageOutputMode?: 'sequence' | 'still'
   gifMode?: 'regular' | 'loop' | 'bounce'
   /**
+   * The picture an audio job is given when the export can hold one.
+   *
+   * Absent is the job's own default: the still it already has, if its visual IS a still, and black
+   * otherwise. `still` is never chosen where there is none, and `visualization` draws the export's own
+   * mix — see `visualizationGraph`.
+   */
+  audioPicture?: 'black' | 'still' | 'visualization'
+  /** Which drawing, when the picture source is a visualization. Absent means the waveform. */
+  visualization?: 'waveform' | 'eq' | 'spectrum'
+  /** The drawing's own colour, as ffmpeg takes it. Absent means the app's green. */
+  visualizationColor?: string
+  /** What the drawing sits on. Absent means black. */
+  visualizationBackgroundColor?: string
+  /**
+   * Whether the drawing is made over the job's own still rather than over a colour.
+   *
+   * A separate flag rather than a colour that means "the still": the colour is then still there to come
+   * back to, and a job can be switched onto its cover and off again without losing what was under it.
+   */
+  visualizationOnStill?: boolean
+  /**
    * Whether a still is attached to a sound container that can hold one.
    *
    * On unless switched off, and only ever asked of a container that can carry artwork: a WAV has no

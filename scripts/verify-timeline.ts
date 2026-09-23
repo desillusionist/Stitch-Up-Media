@@ -12,6 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
+import { DRAWING_MAX_EDGE, drawingCanvas, visualizationGraph } from '../src/lib/visualization'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -1245,6 +1246,49 @@ console.log('\n== undo and redo ==')
   check('the history stops growing at its limit', deep.past.length, HISTORY_LIMIT)
   check('and the oldest states are the ones let go', deep.past[0], { step: 10 })
 }
+console.log('\n== the canvas a drawing is made on ==')
+{
+  // The drawings are made on a bounded canvas and scaled up, which is not a preference: drawn natively at
+  // the frame's own size these filters come out dim and colourless on this ffmpeg, and correct at or
+  // below 1280. So the canvas follows the FRAME's shape and its long edge stops at the cap — a portrait
+  // frame draws portrait, a landscape frame landscape, and both are even, because an encoder refuses an
+  // odd one.
+  check('a frame inside the cap is drawn at its own size', drawingCanvas(1280, 720), { width: 1280, height: 720 })
+  check('a small frame likewise', drawingCanvas(640, 360), { width: 640, height: 360 })
+  check('a landscape frame is capped on its width', drawingCanvas(1920, 1080), { width: 1280, height: 720 })
+  check('a portrait frame is capped on its height', drawingCanvas(1080, 1920), { width: 720, height: 1280 })
+  check('a square frame keeps its square', drawingCanvas(2160, 2160), { width: 1280, height: 1280 })
+  check('4K is capped the same as 1080p', drawingCanvas(3840, 2160), { width: 1280, height: 720 })
+  check('an odd frame is rounded to an even canvas', drawingCanvas(1921, 1081), { width: 1280, height: 720 })
+  check('and the long edge never exceeds the cap', Object.values(drawingCanvas(6000, 4000)).every((side) => side <= DRAWING_MAX_EDGE), true)
+}
+
+console.log('\n== the graph that draws the export\u2019s own mix ==')
+{
+  // The audio is SPLIT, not read twice: one mix feeds the drawing and the encoder, which is the whole
+  // reason the picture is a graph rather than a filter beside the encoder's own. The drawing is made at
+  // the bounded canvas and scaled UP to the frame with lanczos.
+  const lone = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000' })
+  check('a lone sound is split into the drawing and the export', lone.includes('[0:a]asplit=2[mixA][mixV]'), true)
+  check('and the export\u2019s audio comes from the mix', lone.includes('[mixA]aresample=48000'), true)
+  check('the drawing is made at the capped canvas', lone.includes('showwaves=s=1280x720:mode=cline:rate=30:colors=#9fbf9a'), true)
+  check('and scaled up to the frame with lanczos', lone.includes(',scale=1920:1080:flags=lanczos[w]'), true)
+  check('over a colour it was given, in the frame\u2019s own shape', lone.includes('color=c=#000000:s=1920x1080:r=30[bg]'), true)
+  check('and flattened to the format every path writes', lone.includes('[bg][w]overlay=shortest=1,format=yuv420p[v]'), true)
+
+  const tracks = visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a', '2:a'], background: { input: 0 } })
+  check('several tracks are summed into one mix', tracks.includes('[0:a][1:a][2:a]amix=inputs=3:normalize=0'), true)
+  check('with the levels as they were set', tracks.includes('normalize=0'), true)
+  check('and the drawing sits on the picture input it was given', tracks.includes('[0:v]scale=1080:1920,setsar=1[bg]'), true)
+  check('a portrait frame draws portrait', tracks.includes('showfreqs=s=720x1280'), true)
+
+  // Its own two quirks: `showspectrum` has no rate option, so the rate is imposed after it, and its
+  // colouring is ffmpeg's own ramp, so the hex this app offers is not passed to it.
+  const spectrum = visualizationGraph({ template: 'spectrum', width: 1920, height: 1080, fps: 24, color: '#ff0000', sources: ['0:a'], background: '#000000' })
+  check('the spectrum is rate-limited by a filter after it', spectrum.includes('showspectrum=s=1280x720:mode=combined:color=intensity:scale=log,fps=24'), true)
+  check('and it is not handed a colour it cannot use', spectrum.includes('colors=#ff0000'), false)
+}
+
 console.log('\n== what a container can carry ==')
 {
   // The gate the encoder and the editor both ask. A fact about the CONTAINER rather than about any other

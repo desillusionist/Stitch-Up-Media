@@ -10,6 +10,7 @@ import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
+import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, visualizationGraph } from '../../src/lib/visualization'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -226,14 +227,21 @@ export class FFmpegEngine {
     // is supplied instead. It is skipped for a muted lane, where the audio is dropped and there would be
     // nothing left for a picture to accompany.
     const soundOnly = jobExportsPicture(task) && mediaKind(source) === 'audio' && !laneIsMuted(task, MAIN_LANE_ID) && task.preset.audioEnabled !== false
-    if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
+    // A drawing takes the picture AND the audio over — it is built from the very mix it writes — so it
+    // is asked for ahead of the frame a separate black input would have supplied.
+    const draws = soundOnly && task.preset.audioPicture === 'visualization' && task.preset.videoCodec !== 'copy'
+    if (draws) this.applyVisualization(cmd, task.preset, ['0:a'], this.visualizationBackgroundFor(task.preset, undefined))
+    else if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
     // the picture is not normalized first: a single visual has no other clip to be joined to, so
     // there is nothing to normalize it against. The chain STANDS IN for the job's own crop, scale
     // and pad rather than being added after them, so the clip is not framed twice.
     const clipChain = this.clipFraming(task, source, sourceSize)
-    this.applyPresetToCommand(cmd, task.preset, [], clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) })
+    this.applyPresetToCommand(cmd, task.preset, [], {
+      ...(clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) }),
+      ...(draws ? { graphOwnsPicture: true } : {}),
+    })
     // A muted lane is one the export does not carry, so its audio is dropped outright rather than
     // encoded and left silent: a file with no audio stream says so without being listened to.
     if (laneIsMuted(task, MAIN_LANE_ID)) cmd.outputOptions(['-an'])
@@ -564,14 +572,32 @@ export class FFmpegEngine {
       this.applyTrimInput(cmd, this.trimPoint(task, track.path, 0))
     })
 
-    // What the export does with the picture. An ATTACHED COVER is a still going into a sound container
-    // that can hold artwork, which is the one way a picture belongs in an MP3; otherwise the visual IS
-    // the picture and is mapped below.
+    // What the export does with the picture, which is three different things. A DRAWING takes the place
+    // of the visual and is built from the mix the export writes, so it needs a visual that was only
+    // standing in for one; a still the job was covered with becomes the drawing's background unless a
+    // colour was asked for instead. An ATTACHED COVER is the still going into a sound container that can
+    // hold artwork, which is the one way a picture belongs in an MP3. And otherwise the visual is the
+    // picture and is mapped below.
+    const drawsSound = isStillCover
+      && task.preset.audioPicture === 'visualization'
+      && task.preset.videoCodec !== 'copy'
+      && task.preset.audioEnabled !== false
+    // The audible inputs, in the order ffmpeg has them: the visual's own sound when the job carries it
+    // and the visual HAS one, then each added track. A muted track is not here at all, which is what
+    // keeps the drawing honest about what is heard.
     const carriesMainAudio = !laneIsMuted(task, MAIN_LANE_ID)
-    const attachCover = isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
+    const audible = [
+      ...(carriesMainAudio && videoHasAudio ? ['0:a'] : []),
+      ...extraAudios.map((_, idx) => `${idx + 1}:a`),
+    ]
+    const pictured = drawsSound && audible.length > 0
+    if (pictured) {
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(task.preset, isStillCover ? 0 : undefined))
+    }
+    const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
     // Video stream mapping
-    const outputOptions: string[] = ['-map 0:v:0']
+    const outputOptions: string[] = pictured ? [] : ['-map 0:v:0']
     if (attachCover) {
       // The still, stored rather than re-encoded, and marked as the file's artwork. `-c:v copy` comes
       // after the preset's own video codec so it is the codec that stands, and the still is never
@@ -581,11 +607,12 @@ export class FFmpegEngine {
 
     // The video's own audio belongs to the main lane, so a muted main lane is not mapped at all; and
     // a job left with no audio anywhere says so, rather than being handed one by ffmpeg's own
-    // default mapping of the first stream it found.
-    if (carriesMainAudio) outputOptions.push('-map 0:a?')
-    else if (extraAudios.length === 0) outputOptions.push('-an')
+    // default mapping of the first stream it found. A drawing's own graph carries the audio, so neither
+    // is mapped here at all — mapping it twice would mux it twice.
+    if (!pictured && carriesMainAudio) outputOptions.push('-map 0:a?')
+    else if (!pictured && extraAudios.length === 0) outputOptions.push('-an')
 
-    extraAudios.forEach((track, idx) => {
+    if (!pictured) extraAudios.forEach((track, idx) => {
       const inputIdx = idx + 1
       outputOptions.push(`-map ${inputIdx}:a:0`)
       // Metadata tags for language and title, written against the index the stream has in the OUTPUT
@@ -612,15 +639,17 @@ export class FFmpegEngine {
     const tailFilter = tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
       ? [`tpad=stop_mode=add:color=black:stop_duration=${tailDuration.toFixed(3)}`]
       : []
-    this.applyPresetToCommand(cmd, task.preset, tailFilter, {
+    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : tailFilter, {
       ...(clipChain ? { clipChain } : {}),
+      ...(pictured ? { graphOwnsPicture: true } : {}),
       ...(attachCover ? { keepsArtwork: true } : {}),
     })
-    if (isStillCover && extraAudios.length > 0) {
+    if (isStillCover && extraAudios.length > 0 && !pictured) {
       cmd.outputOptions(['-r 2', '-tune stillimage', '-pix_fmt yuv420p', '-shortest'])
     }
     if (task.preset.audioCodec === 'copy') cmd.audioCodec('aac')
-    cmd.outputOptions(['-ar 48000', '-ac 2', '-af aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo'])
+    // The drawing's own graph resamples and lays the audio out, so the chain is not written twice.
+    if (!pictured) cmd.outputOptions(['-ar 48000', '-ac 2', '-af aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo'])
     cmd.outputOptions(outputOptions)
 
     cmd
@@ -719,6 +748,41 @@ export class FFmpegEngine {
   }
 
   /**
+   * Draws the export's own mix, as one graph whose picture and whose audio come from the same stream.
+   *
+   * `sources` are the audible inputs by label — a lone sound file's own stream, or the tracks that
+   * survive the job's mutes — and they are summed into one mix. What is drawn is that mix and what is
+   * muxed is that mix, split rather than read twice, which is why the picture is built as a graph rather
+   * than as a filter beside the encoder's own: a waveform that agreed with the sound only by coincidence
+   * would be worse than no waveform at all.
+   *
+   * The picture filters live inside this graph, so the caller must not also hand ffmpeg a `-vf`: the two
+   * are mutually exclusive for one output, and the refusal is a hard error rather than a precedence.
+   */
+  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }): void {
+    const { width, height } = this.frameBoxFor(preset)
+    const graph = visualizationGraph({
+      template: preset.visualization ?? 'waveform',
+      width,
+      height,
+      fps: this.pictureRateFor(preset),
+      color: preset.visualizationColor || VISUALIZATION_COLOR,
+      sources,
+      background,
+    })
+    cmd.outputOptions([`-filter_complex ${graph}`, '-map [v]', '-map [aout]', '-shortest'])
+  }
+
+  /**
+   * What the drawing sits on: the job's own still where that was asked for and there is one to use, and
+   * the colour it was given otherwise.
+   */
+  private visualizationBackgroundFor(preset: EncodingPreset, stillInput: number | undefined): string | { input: number } {
+    if (preset.visualizationOnStill && stillInput !== undefined) return { input: stillInput }
+    return preset.visualizationBackgroundColor || VISUALIZATION_BACKGROUND
+  }
+
+  /**
    * A clip's own crop and fit, as a filter chain, for a job whose clips are NOT joined.
    *
    * A job that concatenates normalizes every clip through its own chain, so a fit is a fit there by
@@ -744,7 +808,7 @@ export class FFmpegEngine {
   }
 
   // Helper to configure video/audio encoders with macOS VideoToolbox optimizations
-  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = [], options: { cropsPerClip?: boolean; clipChain?: string[]; keepsArtwork?: boolean } = {}) {
+  private applyPresetToCommand(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, extraFilters: string[] = [], options: { cropsPerClip?: boolean; clipChain?: string[]; graphOwnsPicture?: boolean; keepsArtwork?: boolean } = {}) {
     // 1. Video Codec
     if (preset.videoCodec === 'copy') {
       cmd.videoCodec('copy')
@@ -803,8 +867,10 @@ export class FFmpegEngine {
     const videoFilters: string[] = []
     // An audio-only export has no picture to filter, and handing ffmpeg a filter chain
     // alongside -vn is an error rather than a harmless extra. Neither has any other container that
-    // cannot hold a picture: the files that are sound-only are the same files everywhere below.
-    const wantsVideo = !pictureless
+    // cannot hold a picture: the files that are sound-only are the same files everywhere below. A graph
+    // that owns the picture owns the filters too — `-filter_complex` and `-vf` cannot both be given for
+    // one output, and a drawing is scaled up to the frame inside its own graph.
+    const wantsVideo = !pictureless && !options.graphOwnsPicture
     // A crop goes first: everything downstream then works on what was kept, which is what
     // makes cropping to an output shape a crop followed by a fit rather than two unrelated
     // operations. Its smallest side is floored, since an encoder rejects an empty frame.

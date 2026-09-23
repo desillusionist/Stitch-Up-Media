@@ -3,6 +3,8 @@ import { Link, Lock, RotateCcw, Unlink, Unlock, ZoomIn, ZoomOut } from 'lucide-r
 import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
+import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
+import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, VISUALIZATIONS } from '../lib/visualization'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -2563,6 +2565,23 @@ export const EditJobApp: React.FC = () => {
   const audioDisabled = audioOnly || isGif || isImageContainer
   const videoReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : isGif ? 'GIF OUTPUT FORCES THE GIF ENCODER AND DROPS AUDIO.' : undefined
   const audioReason = audioOnly ? undefined : isGif ? 'GIF OUTPUT CARRIES NO AUDIO.' : isImageContainer ? 'IMAGE OUTPUT CARRIES NO AUDIO TRACK.' : undefined
+  /**
+   * What the job's own sources are made of, which is what decides whether a picture has to be supplied
+   * for it at all.
+   *
+   * A job with any footage keeps its own picture, and a job whose visuals are an interpreted sequence is
+   * footage too — its frames ARE the picture, however still each one is on its own. What is left is a job
+   * of sound, or of a still with sound beside it, and that is the only kind these settings are about.
+   */
+  const visuals = draft.sourcePaths.map(mediaKind)
+  const hasFootage = visuals.some((kind) => kind === 'video') || Boolean(draft.sequenceInput) || Object.keys(draft.sequenceInputs ?? {}).length > 0
+  const hasStill = visuals.includes('image')
+  const jobSound = visuals.includes('audio') || Boolean(draft.additionalAudioTracks?.length)
+  const offersPicture = outputCarriesPicture(container) && !isImageContainer && !isGif && draft.preset.outputMode !== 'audio' && !hasFootage && jobSound
+  /** What the export would show: what was chosen, or the job's own default of its still and then black. */
+  const pictureSource = draft.preset.audioPicture ?? (hasStill ? 'still' : 'black')
+  const artCoverOffered = outputTakesArt(container) && hasStill && !hasFootage
+  const stillIntoWav = container === 'wav' && hasStill
 
   return <div className="edit-job-shell">
     <header className="editor-header">
@@ -3131,6 +3150,33 @@ export const EditJobApp: React.FC = () => {
             <EditorField label="SAMPLE RATE" reason={audioReason}><select value={draft.preset.audioSampleRate ?? 0} disabled={audioDisabled} onChange={(event) => updatePreset({ audioSampleRate: Number(event.target.value) || undefined })}><option value={0}>SOURCE</option><option value={44100}>44.1 KHZ</option><option value={48000}>48 KHZ</option><option value={96000}>96 KHZ</option></select></EditorField>
             <EditorRow label="TRACKS" value={draft.additionalAudioTracks?.length ? `${draft.additionalAudioTracks.length + 1} (EMBEDDED + ${draft.additionalAudioTracks.length})` : '1 EMBEDDED'} />
             <div className="editor-note">&gt; ADDING AND REORDERING TRACKS ARRIVES WITH THE TRACK EDITOR.</div>
+            {/* What a sound-only job is given to show. Every setting below it only exists while the
+                picture is being drawn, so the section reads as one decision and its consequences. */}
+            {offersPicture && <>
+              <EditorField label="PICTURE SOURCE" reason="What the export is given to show when the job is nothing but sound: a black frame, the still the job already has, or a drawing made from the very mix that is written, so the picture cannot disagree with the sound.">
+                <select value={pictureSource} onChange={(event) => updatePreset({ audioPicture: event.target.value as NonNullable<EncodingPreset['audioPicture']> })}>
+                  <option value="black">BLACK</option>
+                  {hasStill && <option value="still">STILL IMAGE</option>}
+                  <option value="visualization">DRAW THE SOUND</option>
+                </select>
+              </EditorField>
+              {pictureSource === 'visualization' && <>
+                <EditorField label="TEMPLATE" reason="What kind of drawing: the waveform line, frequency bars, or the spectrum history. Each template is one ffmpeg filter, so they differ in what they show rather than in how they are made.">
+                  <select value={draft.preset.visualization ?? 'waveform'} onChange={(event) => updatePreset({ visualization: event.target.value as NonNullable<EncodingPreset['visualization']> })}>
+                    {VISUALIZATIONS.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                  </select>
+                </EditorField>
+                {(draft.preset.visualization ?? 'waveform') !== 'spectrum' && <EditorField label="COLOUR" reason="The colour the drawing is made in, as a hex figure. The spectrum colours itself by intensity and takes no colour of its own.">
+                  <input type="text" className="editor-input" value={draft.preset.visualizationColor ?? ''} placeholder={VISUALIZATION_COLOR.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
+                </EditorField>}
+                <EditorField label="BACKGROUND" reason="What the drawing sits on: black, or any other colour, as a hex figure.">
+                  <input type="text" className="editor-input" value={draft.preset.visualizationBackgroundColor ?? ''} placeholder={VISUALIZATION_BACKGROUND.toUpperCase()} onChange={(event) => updatePreset({ visualizationBackgroundColor: event.target.value.trim() || undefined })} />
+                </EditorField>
+                {hasStill && <EditorToggle label="DRAW OVER THE STILL" checked={Boolean(draft.preset.visualizationOnStill)} onChange={(checked) => updatePreset({ visualizationOnStill: checked || undefined })} />}
+              </>}
+            </>}
+            {artCoverOffered && <EditorToggle label="COVER ART" checked={draft.preset.coverArt !== false} onChange={(checked) => updatePreset({ coverArt: checked })} reason="Attach the still to the file as its artwork. It is stored as a picture rather than played as a frame, which is what an MP3, M4A or FLAC can hold." />}
+            {stillIntoWav && <div className="editor-note">&gt; A WAV CANNOT CARRY ARTWORK. THE STILL IS DROPPED; MP3, M4A OR FLAC WOULD KEEP IT.</div>}
           </>}
 
           {tab === 'EFFECTS' && <>
