@@ -91,6 +91,16 @@ app.whenReady().then(async () => {
         if (!stitch.pictureSource) problems.push('the picture source control was not drawn for a stitch of sounds')
         else if (!stitch.pictureSource.options.includes('visualization')) problems.push('a stitch of sounds is offered no drawing, so it can only ever export black')
       }
+      // And the opposite side of the gate. A container that holds artwork rather than frames must offer
+      // COVER ART and must NOT offer a picture source; if it offered both, or neither, the two gates are
+      // not actually the mirror they are meant to be.
+      const cover = result.cover
+      if (!cover) problems.push('the still-under-a-track job reported nothing at all')
+      else {
+        if (!cover.gate.takesArt) problems.push(`mp3 was judged unable to hold artwork: ${JSON.stringify(cover.gate)}`)
+        if (!cover.audioToggles.includes('COVER ART')) problems.push('cover art was not offered for a still in a container that can hold it')
+        if (cover.pictureSource) problems.push('a picture source was offered by a container that holds artwork rather than frames')
+      }
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

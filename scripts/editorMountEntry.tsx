@@ -2,7 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { EditJobApp } from '../src/components/EditJobApp'
 import { mediaKind } from '../src/lib/mediaKind'
-import { outputKind } from '../src/lib/outputKind'
+import { outputKind, outputTakesArt } from '../src/lib/outputKind'
 
 /**
  * Renders the EDIT JOB window for real, in a page, and reports what it drew.
@@ -86,11 +86,25 @@ const stitchTask = {
   preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
 }
 
+/**
+ * The job the OTHER conditional control is for: a still standing under a track, into a container that
+ * can hold artwork. COVER ART and PICTURE SOURCE are opposite sides of the same question — a file that
+ * holds a picture as a FRAME versus one that holds it as its FACE — so the report that both were missing
+ * needs both asked. This job's container cannot hold a frame, so it must offer cover art and must NOT
+ * offer a picture source; the sound-only jobs above are the mirror of exactly that.
+ */
+const coverTask = {
+  id: 'mount-check-cover', type: 'multitrack', sourcePaths: ['/tmp/cover.png'],
+  additionalAudioTracks: [{ id: 't1', path: '/tmp/track.wav', language: 'und' }],
+  outputDirectory: '/tmp', outputFilename: 'out.mp3', status: 'pending', progress: 0,
+  preset: { id: 'p', name: 'P', container: 'mp3', videoCodec: 'h264', audioCodec: 'mp3', resolution: '1080p' },
+}
+
 const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -114,73 +128,96 @@ const choose = (select: HTMLSelectElement, value: string) => {
   select.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
-setTimeout(() => {
-  result.waiting = Boolean(document.querySelector('.editor-loading'))
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Handing the window a job, which is how a task arrives in the real app too. */
+const arrive = (job: unknown, what: string) => {
   listeners.forEach((listener) => {
-    try { listener(task) } catch (error) { errors.push('threw on the task: ' + String(error)) }
+    try { listener(job) } catch (error) { errors.push(`threw on the ${what} job: ` + String(error)) }
   })
-  // Long enough for the effects the arrival starts — a probe, a resolution, a layout — to have run
-  // and for anything they threw to have been reported.
-  setTimeout(() => {
-    result.rendered = {
-      header: Boolean(document.querySelector('.editor-header')),
-      timeline: Boolean(document.querySelector('.timeline-lanes')),
-      monitor: Boolean(document.querySelector('.editor-stage')),
-      settings: Boolean(document.querySelector('.export-sidebar')),
-      laneLabels: document.querySelectorAll('.timeline-lane-head').length,
-      clips: document.querySelectorAll('.timeline-clip').length,
-    }
-    // The audio job, and the AUDIO tab its picture settings live on. The container the window is on is
-    // read first, because switching tabs unmounts the FORMAT field that shows it.
-    listeners.forEach((listener) => {
-      try { listener(audioTask) } catch (error) { errors.push('threw on the audio task: ' + String(error)) }
-    })
-    setTimeout(() => {
-      const containerShown = (document.querySelector('.export-content .editor-field select') as HTMLSelectElement | null)?.value
-      clickTab('AUDIO')
-      setTimeout(() => {
-        const select = pictureSourceSelect()
-        const pictureSource = select ? { value: select.value, options: [...select.options].map((option) => option.value) } : null
-        if (select) choose(select, 'visualization')
-        result.audio = {
-          gate: {
-            containerShown,
-            containerKind: outputKind(audioTask.preset.container as never),
-            visuals: audioTask.sourcePaths.map(mediaKind),
-          },
-          audioFields: labelsOf('.editor-field'),
-          audioToggles: labelsOf('.editor-toggle'),
-          pictureSource,
-          drawnFields: select ? labelsOf('.editor-field') : null,
-        }
-        // And what the choice becomes: the patch the window hands the queue, which is where the drawing
-        // has to arrive for the encoder to be asked for it at all. `check-tail` is what proves the encoder
-        // then draws; this is the half a window can be wrong about on its own.
-        setTimeout(() => {
-          const apply = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
-          ;(apply as HTMLButtonElement | undefined)?.click()
-          setTimeout(() => {
-            const patch = applied[applied.length - 1] as { preset?: { audioPicture?: string } } | undefined
-            result.audio = { ...(result.audio as object), appliedPicture: patch?.preset?.audioPicture ?? null }
-            // Now the JOINED job asks the same question. The tab is already on AUDIO, so its picture
-            // settings are the ones on screen once the new job's draft has arrived.
-            listeners.forEach((listener) => {
-              try { listener(stitchTask) } catch (error) { errors.push('threw on the stitch task: ' + String(error)) }
-            })
-            setTimeout(() => {
-              const joined = pictureSourceSelect()
-              result.stitch = {
-                gate: {
-                  containerKind: outputKind(stitchTask.preset.container as never),
-                  visuals: stitchTask.sourcePaths.map(mediaKind),
-                },
-                pictureSource: joined ? { value: joined.value, options: [...joined.options].map((option) => option.value) } : null,
-              }
-              ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
-            }, 400)
-          }, 150)
-        }, 150)
-      }, 120)
-    }, 400)
-  }, 500)
-}, 60)
+}
+
+/**
+ * The drives, in order. Written as one awaited sequence rather than a nest of timers, because there are
+ * four jobs to put through the window now and the depth of the nesting was becoming the harder thing to
+ * read than the assertions it was feeding.
+ */
+const drive = async () => {
+  await wait(60)
+  result.waiting = Boolean(document.querySelector('.editor-loading'))
+  arrive(task, 'plain')
+  // Long enough for the effects the arrival starts — a probe, a resolution, a layout — to have run and
+  // for anything they threw to have been reported.
+  await wait(500)
+  result.rendered = {
+    header: Boolean(document.querySelector('.editor-header')),
+    timeline: Boolean(document.querySelector('.timeline-lanes')),
+    monitor: Boolean(document.querySelector('.editor-stage')),
+    settings: Boolean(document.querySelector('.export-sidebar')),
+    laneLabels: document.querySelectorAll('.timeline-lane-head').length,
+    clips: document.querySelectorAll('.timeline-clip').length,
+  }
+
+  // The lone-sound job. The container the window is on is read BEFORE switching tabs, because the tab
+  // switch unmounts the FORMAT field that shows it.
+  arrive(audioTask, 'audio')
+  await wait(400)
+  const containerShown = (document.querySelector('.export-content .editor-field select') as HTMLSelectElement | null)?.value
+  clickTab('AUDIO')
+  await wait(120)
+  const soundSelect = pictureSourceSelect()
+  const pictureSource = soundSelect ? { value: soundSelect.value, options: [...soundSelect.options].map((option) => option.value) } : null
+  if (soundSelect) choose(soundSelect, 'visualization')
+  result.audio = {
+    gate: {
+      containerShown,
+      containerKind: outputKind(audioTask.preset.container as never),
+      visuals: audioTask.sourcePaths.map(mediaKind),
+    },
+    audioFields: labelsOf('.editor-field'),
+    audioToggles: labelsOf('.editor-toggle'),
+    pictureSource,
+    drawnFields: soundSelect ? labelsOf('.editor-field') : null,
+  }
+  // What the choice becomes: the patch the window hands the queue, which is where the drawing has to
+  // arrive for the encoder to be asked for it at all. `check-tail` proves the encoder then draws; this is
+  // the half a window can be wrong about on its own.
+  await wait(150)
+  const apply = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
+  ;(apply as HTMLButtonElement | undefined)?.click()
+  await wait(150)
+  const patch = applied[applied.length - 1] as { preset?: { audioPicture?: string } } | undefined
+  result.audio = { ...(result.audio as object), appliedPicture: patch?.preset?.audioPicture ?? null }
+
+  // The JOINED job. The tab is already on AUDIO, so its picture settings are what is on screen once the
+  // new draft has arrived.
+  arrive(stitchTask, 'stitch')
+  await wait(400)
+  const joinedSelect = pictureSourceSelect()
+  result.stitch = {
+    gate: {
+      containerKind: outputKind(stitchTask.preset.container as never),
+      visuals: stitchTask.sourcePaths.map(mediaKind),
+    },
+    pictureSource: joinedSelect ? { value: joinedSelect.value, options: [...joinedSelect.options].map((option) => option.value) } : null,
+  }
+
+  // And the other side of the same gate: a still under a track, into a container that holds artwork
+  // rather than frames. COVER ART belongs here and PICTURE SOURCE must not, which is the mirror of the
+  // two sound-only jobs above.
+  arrive(coverTask, 'cover')
+  await wait(400)
+  result.cover = {
+    gate: {
+      containerKind: outputKind(coverTask.preset.container as never),
+      visuals: coverTask.sourcePaths.map(mediaKind),
+      takesArt: outputTakesArt(coverTask.preset.container as never),
+    },
+    audioToggles: labelsOf('.editor-toggle'),
+    pictureSource: pictureSourceSelect() ? 'drawn' : null,
+  }
+
+  ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
+}
+
+void drive().catch((error) => { errors.push('the drive threw: ' + String(error)); ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true })
