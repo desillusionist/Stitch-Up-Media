@@ -45,6 +45,7 @@ app.whenReady().then(async () => {
   }
   const result = await win.webContents.executeJavaScript('window.__MOUNT_RESULT')
   const rendered = result && result.rendered
+  const audio = result && result.audio
   const problems = []
   if (!result) problems.push('the page never reported anything')
   else {
@@ -55,6 +56,42 @@ app.whenReady().then(async () => {
     if (!rendered || !rendered.monitor) problems.push('the monitor was not drawn')
     if (!rendered || !rendered.settings) problems.push('the export settings were not drawn')
     if (!rendered || rendered.clips < 1) problems.push('the timeline drew no clip for its one source')
+    // The picture settings, which are the one part of the settings that is CONDITIONAL. A section that
+    // is gated has two ways to be missing and they need different answers, so what is asserted here is
+    // both sides of the gate: the inputs the window derived, and what the tab drew with them. If the
+    // gate says a picture container and sound-only visuals and the control is still not there, the
+    // condition is not what is hiding it.
+    if (!audio) problems.push('the audio job reported nothing at all')
+    else {
+      if (audio.gate.containerShown !== 'mp4') problems.push(`the window was on container ${audio.gate.containerShown} rather than mp4`)
+      if (audio.gate.containerKind !== 'picture') problems.push(`mp4 was classified as ${audio.gate.containerKind} rather than a picture container`)
+      if (String(audio.gate.visuals) !== 'audio') problems.push(`the job's visuals were classified as ${audio.gate.visuals} rather than sound`)
+      if (!audio.pictureSource) problems.push('the picture source control was not drawn for a sound-only job')
+      else {
+        if (!audio.pictureSource.options.includes('black')) problems.push('the picture source offers no black frame')
+        if (!audio.pictureSource.options.includes('visualization')) problems.push('the picture source offers no drawing')
+        if (audio.pictureSource.options.includes('still')) problems.push('the picture source offers a still for a job that has none')
+        if (audio.pictureSource.value !== 'black') problems.push(`a job that asks for nothing starts on ${audio.pictureSource.value} rather than a black frame`)
+      }
+      // Choosing the drawing has to bring its own settings out: state without a control is exactly the
+      // fault this is here to catch, and it is the SAME fault one level down.
+      if (!audio.drawnFields) problems.push('choosing the drawing changed nothing at all')
+      else {
+        for (const expected of ['TEMPLATE', 'COLOUR', 'BACKGROUND']) {
+          if (!audio.drawnFields.some((label) => label.startsWith(expected))) problems.push(`choosing the drawing drew no ${expected} control`)
+        }
+      }
+      if (audio.audioToggles.some((label) => label === 'COVER ART')) problems.push('cover art was offered for a container that holds a picture, not artwork')
+      if (audio.appliedPicture !== 'visualization') problems.push(`choosing the drawing sent a patch with picture source ${audio.appliedPicture} rather than the drawing, so the encoder is never asked for one`)
+      const stitch = result.stitch
+      if (!stitch) problems.push('the stitch-of-sounds job reported nothing at all')
+      else {
+        if (stitch.gate.containerKind !== 'picture') problems.push(`mp4 was classified as ${stitch.gate.containerKind} for a stitch of sounds`)
+        if (String(stitch.gate.visuals) !== 'audio,audio') problems.push(`the stitch's visuals were classified as ${stitch.gate.visuals} rather than two sounds`)
+        if (!stitch.pictureSource) problems.push('the picture source control was not drawn for a stitch of sounds')
+        else if (!stitch.pictureSource.options.includes('visualization')) problems.push('a stitch of sounds is offered no drawing, so it can only ever export black')
+      }
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))
