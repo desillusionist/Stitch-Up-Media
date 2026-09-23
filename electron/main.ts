@@ -13,8 +13,16 @@ import { clipFilters } from '../src/lib/sourceFit'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { runFfmpeg } from './ffmpeg/run'
 import { spawn, execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import fs from 'node:fs'
+
+/**
+ * How much of the source hash names a helper build.
+ *
+ * Long enough that two revisions colliding is not a thing that happens, short enough to read in a log line.
+ */
+const HELPER_STAMP_LENGTH = 12
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -559,13 +567,34 @@ app.whenReady().then(() => {
     const sourceNames = stillMode ? [helperSourceName] : [helperSourceName, 'quicklook-scale.swift']
     const sources = sourceRoots.map((root) => sourceNames.map((name) => path.join(root, name))).find((group) => group.every((file) => fs.existsSync(file)))
     const source = sources?.[0]
-    const helper = path.join(os.tmpdir(), stillMode ? 'stitch-up-quicklook-lite' : 'stitch-up-quicklook')
     try {
       if (!source || !sources) throw new Error(`Quick Look helper source not found. Checked: ${sourceRoots.map((root) => path.join(root, helperSourceName)).join(', ')}`)
+      // The helper binary is named after the CONTENTS of the sources that make it, not after their
+      // timestamps. This is the one place the app shells out to a compiled program, and a stale binary is
+      // indistinguishable from stale code when it happens: the window opens, everything looks right, and
+      // the change that was just made is simply not in it. That has cost real time here more than once. A
+      // name that follows the source makes running an old one impossible rather than merely unlikely, and
+      // it means the rebuild question is answered by the name rather than by a comparison of clocks.
+      const base = stillMode ? 'stitch-up-quicklook-lite' : 'stitch-up-quicklook'
+      const stamp = createHash('sha1')
+        .update(sources.map((file) => fs.readFileSync(file)).reduce((all, contents) => Buffer.concat([all, contents]), Buffer.alloc(0)))
+        .digest('hex')
+        .slice(0, HELPER_STAMP_LENGTH)
+      const helper = path.join(os.tmpdir(), `${base}-${stamp}`)
       logEvent('quick-look', 'starting native helper', { source, helper, targetPath, stillMode })
-      const newest = Math.max(...sources.map((file) => fs.statSync(file).mtimeMs))
-      if (!fs.existsSync(helper) || newest > fs.statSync(helper).mtimeMs) {
+      if (!fs.existsSync(helper)) {
         execFileSync('swiftc', [...sources, '-o', helper, '-framework', 'AppKit', '-framework', 'AVKit', '-framework', 'AVFoundation'])
+        // Every build from an earlier revision is dead weight AND a trap, since the stamped name is only worth
+        // anything while the old names are gone. Swept here, where the directory is already being touched,
+        // rather than on every open.
+        try {
+          const current = path.basename(helper)
+          const stamped = new RegExp(`^${base}-[0-9a-f]{${HELPER_STAMP_LENGTH}}$`)
+          for (const entry of fs.readdirSync(os.tmpdir())) {
+            if (entry === current || !(stamped.test(entry) || entry === base)) continue
+            try { fs.rmSync(path.join(os.tmpdir(), entry), { force: true }) } catch { /* another session may hold it */ }
+          }
+        } catch { /* a temp directory that cannot be listed is not a reason to refuse to open a window */ }
       }
       fs.chmodSync(helper, 0o755)
       const child = spawn(helper, [targetPath, taskId || '', trimStart == null ? '' : String(trimStart), trimEnd == null ? '' : String(trimEnd), sourceIndex == null ? '0' : String(sourceIndex), stillMode ? 'still' : '', screenshotDirectory || '', timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp', sequenceFps == null ? '' : String(sequenceFps), sequenceFrameCount == null ? '' : String(sequenceFrameCount)], {

@@ -23,6 +23,22 @@ private let crtGreen = NSColor(calibratedRed: 0.49, green: 1, blue: 0.46, alpha:
 private let crtDim = NSColor(calibratedRed: 0.24, green: 0.61, blue: 0.31, alpha: 1)
 private let crtYellow = NSColor(calibratedRed: 1, green: 0.72, blue: 0.12, alpha: 1)
 
+/**
+ * Whether the strip narrates what it is doing, which is off unless the environment asks for it.
+ *
+ * The one fault here that cannot be seen when it happens is the difference between a window that MOVES and
+ * a strip that is ASKED FOR its frames: they are two lines of code in the same function, and on screen one
+ * is "the strip zooms" and the other is "it does nothing at all". A report of the second has to be told
+ * apart from a report about a stale binary some other way than by arguing, so `QUICKLOOK_TRACE=1` prints
+ * every publish of the window and every ask for frames. `npm run check-sync` proves the same thing without
+ * a person watching, and this is how to see it in the real window.
+ */
+private let quickLookTrace = ProcessInfo.processInfo.environment["QUICKLOOK_TRACE"] == "1"
+private func trace(_ message: @autoclosure () -> String) {
+    guard quickLookTrace else { return }
+    FileHandle.standardError.write(Data(("[quicklook] " + message() + "\n").utf8))
+}
+
 final class PreviewWindow: NSWindow {
     var onCloseRequest: (() -> Void)?
     override var canBecomeKey: Bool { true }
@@ -224,6 +240,7 @@ final class FilmstripView: NSView {
         }
         if lastRenderedCells != visibleCount {
             lastRenderedCells = visibleCount
+            trace("layout cells changed to \(visibleCount), re-laying the window")
             setWindow(first: windowFirstFrame, count: windowFrameCount)
         }
         updateSelection()
@@ -256,6 +273,7 @@ final class FilmstripView: NSView {
         let floorCount = max(1, min(visibleCount, total))
         windowFrameCount = max(floorCount, min(total, count))
         windowFirstFrame = max(0, min(total - windowFrameCount, frame))
+        trace("window \(windowFirstFrame)+\(windowFrameCount) of \(totalFrames), \(visibleCount) cells\(animTimer == nil ? "" : " gliding")")
         onScaleChange?()
         needsDisplay = true
     }
@@ -314,6 +332,7 @@ final class FilmstripView: NSView {
      */
     private func renderWindow() {
         guard !isAudio, visibleCount > 0, windowFrameCount > 0 else { return }
+        trace("render \(windowFirstFrame)+\(windowFrameCount), \(visibleCount) cells")
         zoomToken += 1
         let token = zoomToken
         let step = Double(windowFrameCount) / Double(max(visibleCount, 1))
@@ -323,7 +342,15 @@ final class FilmstripView: NSView {
         // shown, and a loose seek there could hand back a frame from outside the range the scale is drawing.
         let tolerance = windowFrameCount < totalFrames || step <= 1 ? CMTime.zero : CMTime(value: 1, timescale: 4)
         for index in 0..<visibleCount {
-            let frame = min(totalFrames - 1, max(0, Int((Double(windowFirstFrame) + (Double(index) + 0.5) * step).rounded())))
+            // A cell is sampled at its own middle and then held INSIDE the cell. The holding is what matters
+            // where a cell stands for one frame: its middle is a half frame, and rounding that up put every
+            // cell a frame late and the last one past the end of the window — a strip quietly describing a
+            // range the scale was not drawing. Where a cell spans several frames the middle is already well
+            // inside it and the clamp changes nothing.
+            let low = Double(windowFirstFrame) + Double(index) * step
+            let high = Double(windowFirstFrame) + Double(index + 1) * step - 1
+            let middle = Double(windowFirstFrame) + (Double(index) + 0.5) * step
+            let frame = min(totalFrames - 1, max(0, Int(min(high, max(low, middle)).rounded())))
             requestFrame(at: Double(frame) / frameRate, index: index, tolerance: tolerance, seekMonitor: false, isValid: { [weak self] in self?.zoomToken == token })
         }
     }
@@ -806,7 +833,12 @@ final class PreviewController: NSObject, NSApplicationDelegate, NSWindowDelegate
  * In a `main` type rather than as statements at the top of the file, because the ruler's arithmetic lives in
  * a file of its own — so it can be asserted without a window — and Swift allows top-level statements only in
  * a file named `main.swift`. What was here is the whole of its body; nothing else moved.
+ *
+ * The entry point is left out of a harness build (`-D QUICKLOOK_SCALE_HARNESS`), which compiles this file's
+ * views and drives them itself: whether the strip re-renders when the window moves is a RUNTIME question,
+ * and a harness cannot answer it while this file insists on owning `main`.
  */
+#if !QUICKLOOK_SCALE_HARNESS
 @main
 enum QuickLookPreview {
     static func main() {
@@ -822,3 +854,4 @@ enum QuickLookPreview {
         application.run()
     }
 }
+#endif

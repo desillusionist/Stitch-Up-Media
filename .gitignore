@@ -20,6 +20,8 @@ scripts/.monitor-repro.html
 scripts/.engine.cjs
 # The compact scale's arithmetic harness (see `npm run check-scale`)
 scripts/.check-scale
+# The strip's runtime harness (see `npm run check-sync`)
+scripts/.check-sync
 
 # Logs
 *.log
