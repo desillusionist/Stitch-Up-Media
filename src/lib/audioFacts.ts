@@ -51,7 +51,7 @@ export const audioFacts = (info: MediaProbeInfo | undefined): string | null => {
     stream.bitDepth ? `${stream.bitDepth} BIT` : null,
     channelFacts(stream),
   ]
-  const line = parts.filter(Boolean).join(' · ')
+  const line = parts.filter(Boolean).join(' | ')
   return line || null
 }
 
@@ -59,7 +59,7 @@ export const audioFacts = (info: MediaProbeInfo | undefined): string | null => {
 export const audioCodecFacts = (info: MediaProbeInfo | undefined): string | null => {
   const stream = audioStreamOf(info)
   if (!stream) return null
-  const line = [stream.codec ? stream.codec.toUpperCase() : null, stream.bitrate ? stream.bitrate.toUpperCase() : null].filter(Boolean).join(' · ')
+  const line = [stream.codec ? stream.codec.toUpperCase() : null, stream.bitrate ? stream.bitrate.toUpperCase() : null].filter(Boolean).join(' | ')
   return line || null
 }
 

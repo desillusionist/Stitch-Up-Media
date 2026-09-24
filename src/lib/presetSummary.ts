@@ -21,7 +21,7 @@ export const presetSummary = (preset: EncodingPreset): string[] => {
     : `${preset.container.toUpperCase()} // ${preset.videoCodec.toUpperCase()}${preset.hardwareAccelerated ? ' HW' : ''}`)
   if (!pictureless) {
     const size = preset.width && preset.height
-      ? `${preset.width}×${preset.height}`
+      ? `${preset.width}x${preset.height}`
       : preset.resolution === 'source' ? 'SOURCE SIZE' : preset.resolution.toUpperCase()
     lines.push(`${size} // ${preset.fps ? `${preset.fps} FPS` : 'SOURCE FPS'}`)
     if (preset.aspectRatio && preset.aspectRatio !== 'source') lines.push(`ASPECT ${preset.aspectRatio.toUpperCase()}`)

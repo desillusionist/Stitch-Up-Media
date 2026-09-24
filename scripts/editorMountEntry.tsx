@@ -120,47 +120,50 @@ carries.__MOUNT_DONE = false
 /** The label text of every settings field or toggle on screen, which is what "did it render" means. */
 const labelsOf = (selector: string) => [...document.querySelectorAll(selector)].map((element) => element.querySelector('span')?.textContent?.trim() ?? '')
 
+/** The settings field a label belongs to, found by its name rather than by position. */
+const fieldFor = (label: string) => [...document.querySelectorAll('.editor-field')]
+  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith(label)) ?? null
+
+/** The window's own dropdown inside a field: the control that replaced every platform `<select>` in it. */
+const selectIn = (label: string) => fieldFor(label)?.querySelector('.editor-select') as HTMLElement | null
+
+/** What a dropdown is showing, and what it offers, read off the DOM the same way a reader would. */
+const valueOf = (control: HTMLElement | null) => control?.querySelector('.editor-select-trigger')?.getAttribute('data-value') ?? null
+const optionsOf = (control: HTMLElement | null) => control ? [...control.querySelectorAll('.editor-select-option')].map((option) => option.getAttribute('data-value')) : []
+
+/** Choosing an option the way a user does: pressing the entry itself, so React sees the change. */
+const chooseOption = (control: HTMLElement | null, value: string) => {
+  const option = [...(control?.querySelectorAll('.editor-select-option') ?? [])].find((candidate) => candidate.getAttribute('data-value') === value) as HTMLButtonElement | undefined
+  option?.click()
+}
+
 /** The TEMPLATE control, found by the option only it offers rather than by position. */
-const templateSelect = () => [...document.querySelectorAll('select')]
-  .find((select) => [...(select as HTMLSelectElement).options].some((option) => option.value === 'eq')) as HTMLSelectElement | undefined
+const templateSelect = () => [...document.querySelectorAll('.editor-select')]
+  .find((control) => [...control.querySelectorAll('.editor-select-option')].some((option) => option.getAttribute('data-value') === 'eq')) as HTMLElement | undefined
 
 /** The PICTURE SOURCE control, found by the label the window gives it rather than by position. */
-const pictureSourceSelect = () => [...document.querySelectorAll('.editor-field')]
-  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('PICTURE SOURCE'))
-  ?.querySelector('select') as HTMLSelectElement | null
+const pictureSourceSelect = () => selectIn('PICTURE SOURCE')
 
 /** And the BACKGROUND one, which is the choice that grew a third option in this pass. */
-const backgroundSelect = () => [...document.querySelectorAll('.editor-field')]
-  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('BACKGROUND'))
-  ?.querySelector('select') as HTMLSelectElement | null
+const backgroundSelect = () => selectIn('BACKGROUND')
 
 /** The AUDIO tab's channel count, which is the one audio setting about the stream's SHAPE. */
-const channelsSelect = () => [...document.querySelectorAll('.editor-field')]
-  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('CHANNELS'))
-  ?.querySelector('select') as HTMLSelectElement | null
+const channelsSelect = () => selectIn('CHANNELS')
 
 /** The AUDIO tab's bitrate, which is a rung of a ladder rather than a free field. */
-const bitrateSelect = () => [...document.querySelectorAll('.editor-field')]
-  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('BITRATE'))
-  ?.querySelector('select') as HTMLSelectElement | null
+const bitrateSelect = () => selectIn('BITRATE')
 
 /** The bitrate's own typed field, which only appears once CUSTOM is chosen. */
-const bitrateCustomField = () => [...document.querySelectorAll('.editor-field')]
-  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('BITRATE'))
-  ?.querySelector('.field-pair input[type="text"]') as HTMLInputElement | null
+const bitrateCustomField = () => fieldFor('BITRATE')?.querySelector('.field-pair input[type="text"]') as HTMLInputElement | null
 
-/** The drawing's colour SWATCH, which is the system picker drawn as a filled box. */
-const colourSwatch = () => [...document.querySelectorAll('.editor-field')]
-  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('COLOUR'))
-  ?.querySelector('.editor-swatch') as HTMLInputElement | null
+/** The drawing's colour swatch: the compact square that opens the system picker. */
+const colourSwatch = () => fieldFor('COLOUR')?.querySelector('.editor-swatch') as HTMLButtonElement | null
 
 /** The waveform templates' WAVEFORMS count. */
-const waveformsSelect = () => [...document.querySelectorAll('.editor-field')]
-  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('WAVEFORMS'))
-  ?.querySelector('select') as HTMLSelectElement | null
+const waveformsSelect = () => selectIn('WAVEFORMS')
 
 /** The speeds the monitor is watched at, which the wheel over it climbs. */
-const speedSelect = () => document.querySelector('.transport-speed select') as HTMLSelectElement | null
+const speedSelect = () => document.querySelector('.transport-speed .editor-select') as HTMLElement | null
 
 /** Whether the monitor is drawing the still it was handed, found by the name the window gives it. */
 const monitorDrawing = () => Boolean(document.querySelector('img[alt="DRAWING THE SOUND"]'))
@@ -188,12 +191,6 @@ const cssRule = (selector: string) => {
 const clickTab = (name: string) => {
   const button = [...document.querySelectorAll('.export-tabs button')].find((candidate) => candidate.textContent?.trim() === name)
   ;(button as HTMLButtonElement | undefined)?.click()
-}
-
-/** Choosing an option the way a user does, so React sees the change rather than a property assignment. */
-const choose = (select: HTMLSelectElement, value: string) => {
-  select.value = value
-  select.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -224,13 +221,18 @@ const drive = async () => {
     settings: Boolean(document.querySelector('.export-sidebar')),
     laneLabels: document.querySelectorAll('.timeline-lane-head').length,
     clips: document.querySelectorAll('.timeline-clip').length,
+    // THEMED DROPDOWNS. The window must offer no platform <select> at all: its open list is drawn by the OS
+    // and cannot be themed, which is what put the system's blue highlight under a themed border. The count is
+    // the whole of the fix, so it is read as a count.
+    nativeSelects: document.querySelectorAll('select').length,
+    dropdowns: document.querySelectorAll('.editor-select').length,
     // WHAT THE TRANSPORT SAYS. Two halves of one question: the state has to be stated somewhere — the readout
     // under the monitor — and it must NOT be said a second time by a pause glyph among the buttons. The rate
     // readout is read as its own text so that an idle transport saying NOTHING is what is asserted.
     transport: {
       state: document.querySelector('.transport-state')?.textContent ?? null,
       rate: document.querySelector('.transport-rate')?.textContent ?? null,
-      speeds: [...(speedSelect()?.options ?? [])].map((option) => option.value),
+      speeds: optionsOf(speedSelect()),
     },
   }
 
@@ -238,13 +240,13 @@ const drive = async () => {
   // switch unmounts the FORMAT field that shows it.
   arrive(audioTask, 'audio')
   await wait(400)
-  const containerShown = (document.querySelector('.export-content .editor-field select') as HTMLSelectElement | null)?.value
+  const containerShown = valueOf(document.querySelector('.export-content .editor-field .editor-select') as HTMLElement | null)
   clickTab('AUDIO')
   await wait(120)
   const soundSelect = pictureSourceSelect()
-  const pictureSource = soundSelect ? { value: soundSelect.value, options: [...soundSelect.options].map((option) => option.value) } : null
+  const pictureSource = soundSelect ? { value: valueOf(soundSelect), options: optionsOf(soundSelect) } : null
   const bitrate = bitrateSelect()
-  if (soundSelect) choose(soundSelect, 'visualization')
+  if (soundSelect) chooseOption(soundSelect, 'visualization')
   await wait(120)
   // The background control only exists once the picture source IS a drawing, so it is read after choosing.
   const background = backgroundSelect()
@@ -258,20 +260,24 @@ const drive = async () => {
     // The ROWS, which are a different shape: the source's own facts are one, and TRACKS is the other.
     audioRows: labelsOf('.editor-row'),
     audioToggles: labelsOf('.editor-toggle'),
-    channels: channelsSelect() ? { value: channelsSelect()?.value, options: [...(channelsSelect()?.options ?? [])].map((option) => option.value) } : null,
+    channels: channelsSelect() ? { value: valueOf(channelsSelect()), options: optionsOf(channelsSelect()) } : null,
     pictureSource,
-    background: background ? [...background.options].map((option) => option.value) : null,
+    background: background ? optionsOf(background) : null,
     drawnFields: soundSelect ? labelsOf('.editor-field') : null,
     // The toggles the drawing brings with it, which are the one control that is not a FIELD: the progress
     // line, which only a picture takes, and the waveform's own count — which is a field, and read as one below.
     drawnToggles: soundSelect ? labelsOf('.editor-toggle') : null,
     // The colour SWATCH, which is what the theme's own green is read off: a job that has named no colour has to
     // show the colour it will be drawn in rather than an empty box, and the swatch is where that is visible.
-    colourSwatch: colourSwatch()?.value ?? null,
+    colourSwatch: colourSwatch()?.getAttribute('data-colour') ?? null,
+    // The swatch is the window's own button and the picker is a hidden colour input behind it — not the wide
+    // native colour box it used to be, which is what the tag and the hidden-input count settle.
+    colourSwatchTag: colourSwatch()?.tagName ?? null,
+    hiddenColourInputs: document.querySelectorAll('.editor-swatch-input').length,
     // The bitrate's own ladder, and the typed field that only CUSTOM brings out.
-    bitrate: bitrate ? { value: bitrate.value, options: [...bitrate.options].map((option) => option.value) } : null,
+    bitrate: bitrate ? { value: valueOf(bitrate), options: optionsOf(bitrate) } : null,
     bitrateCustomFieldBefore: Boolean(bitrateCustomField()),
-    waveforms: waveformsSelect() ? { value: waveformsSelect()?.value, options: [...(waveformsSelect()?.options ?? [])].map((option) => option.value) } : null,
+    waveforms: waveformsSelect() ? { value: valueOf(waveformsSelect()), options: optionsOf(waveformsSelect()) } : null,
   }
   // What the monitor DID. The still is asked for over IPC and delayed, so this waits past the debounce;
   // the request itself is recorded too, because a monitor that could not play a stubbed file would
@@ -300,7 +306,7 @@ const drive = async () => {
   // fault this harness exists to catch — so choosing the EQ has to bring its four controls out AND reach the
   // encoder as four figures, which the still request is where a window can be wrong on its own.
   const templates = templateSelect()
-  if (templates) choose(templates, 'eq')
+  if (templates) chooseOption(templates, 'eq')
   await wait(600)
   result.audio = {
     ...(result.audio as object),
@@ -310,13 +316,13 @@ const drive = async () => {
   }
   // The palette, which every template reads, and which is the one control that settles a colour the job may
   // not have named itself — so it has to be there for every template, not only the ones with a colour field.
-  const themes = [...document.querySelectorAll('select')]
-    .find((select) => [...(select as HTMLSelectElement).options].some((option) => option.value === 'amber')) as HTMLSelectElement | undefined
-  result.audio = { ...(result.audio as object), themeOptions: themes ? [...themes.options].map((option) => option.value) : null }
+  const themes = [...document.querySelectorAll('.editor-select')]
+    .find((control) => [...control.querySelectorAll('.editor-select-option')].some((option) => option.getAttribute('data-value') === 'amber')) as HTMLElement | undefined
+  result.audio = { ...(result.audio as object), themeOptions: themes ? [...themes.querySelectorAll('.editor-select-option')].map((option) => option.getAttribute('data-value')) : null }
 
   // The SCOPE, whose three knobs are its own and whose canvas is a SQUARE — the one drawing that is a
   // different shape inside the frame, so the one most likely to be drawn by a path of its own.
-  if (templates) choose(templates, 'scope')
+  if (templates) chooseOption(templates, 'scope')
   await wait(600)
   result.audio = {
     ...(result.audio as object),
@@ -329,7 +335,7 @@ const drive = async () => {
 
   // And MIRRORED BARS, which is the same geometry as the EQ with the mirror applied to it: if the two did not
   // share their knobs, this is where the pair would come apart.
-  if (templates) choose(templates, 'mirrored-bars')
+  if (templates) chooseOption(templates, 'mirrored-bars')
   await wait(600)
   result.audio = {
     ...(result.audio as object),
@@ -342,7 +348,7 @@ const drive = async () => {
   // knobs the family shares, the two the LED looks add — the peak hold and the block gap — and the template's
   // own density: the LED EQ opens at sixteen bars where the plain bars open at sixty-four, so a still asked for
   // at sixty-four would be a drawing nobody chose.
-  if (templates) choose(templates, 'led-eq')
+  if (templates) chooseOption(templates, 'led-eq')
   await wait(600)
   result.audio = {
     ...(result.audio as object),
@@ -350,7 +356,7 @@ const drive = async () => {
     ledToggles: templates ? labelsOf('.editor-toggle') : null,
     ledStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
   }
-  if (templates) choose(templates, 'matrix-panel')
+  if (templates) chooseOption(templates, 'matrix-panel')
   await wait(600)
   result.audio = {
     ...(result.audio as object),
@@ -359,15 +365,15 @@ const drive = async () => {
   // The bitrate's CUSTOM rung, which has to bring its own field out: a ladder that offers a typed figure has to
   // have somewhere to type it.
   const chooseBitrate = bitrateSelect()
-  if (chooseBitrate) choose(chooseBitrate, 'custom')
+  if (chooseBitrate) chooseOption(chooseBitrate, 'custom')
   await wait(120)
-  result.audio = { ...(result.audio as object), bitrateAfterCustom: bitrateSelect()?.value ?? null, bitrateCustomField: Boolean(bitrateCustomField()) }
+  result.audio = { ...(result.audio as object), bitrateAfterCustom: valueOf(bitrateSelect()), bitrateCustomField: Boolean(bitrateCustomField()) }
 
   // And the picture a sound-only job can be GIVEN: choosing it has to bring the picker out, and picking has to
   // record the path the export will read. The stub picker answers with a path rather than opening a dialog, which
   // is the half of it a page can drive.
   const pictureForImage = pictureSourceSelect()
-  if (pictureForImage) choose(pictureForImage, 'custom')
+  if (pictureForImage) chooseOption(pictureForImage, 'custom')
   await wait(120)
   const pickButton = [...document.querySelectorAll('.editor-pick')].find((button) => button.textContent?.includes('CHOOSE')) as HTMLButtonElement | undefined
   pickButton?.click()
@@ -382,9 +388,9 @@ const drive = async () => {
   // encoder rather than merely rendering. A stereo source asked for MONO is the case the encoder harness
   // reads off the finished file; this is the half a window can be wrong about on its own.
   const channels = channelsSelect()
-  if (channels) choose(channels, '1')
+  if (channels) chooseOption(channels, '1')
   await wait(120)
-  result.audio = { ...(result.audio as object), channelsAfterChoosing: channelsSelect()?.value ?? null }
+  result.audio = { ...(result.audio as object), channelsAfterChoosing: valueOf(channelsSelect()) }
 
   // What the choice becomes: the patch the window hands the queue, which is where the drawing has to
   // arrive for the encoder to be asked for it at all. `check-tail` proves the encoder then draws; this is
@@ -414,7 +420,7 @@ const drive = async () => {
       containerKind: outputKind(stitchTask.preset.container as never),
       visuals: stitchTask.sourcePaths.map(mediaKind),
     },
-    pictureSource: joinedSelect ? { value: joinedSelect.value, options: [...joinedSelect.options].map((option) => option.value) } : null,
+    pictureSource: joinedSelect ? { value: valueOf(joinedSelect), options: optionsOf(joinedSelect) } : null,
   }
 
   // And the other side of the same gate: a still under a track, into a container that holds artwork

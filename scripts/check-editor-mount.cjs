@@ -63,7 +63,7 @@ app.whenReady().then(async () => {
     const transport = rendered && rendered.transport
     if (!transport) problems.push('the monitor said nothing about what the transport was doing')
     else {
-      if (transport.state !== '\u25a0 PAUSED') problems.push(`an idle monitor reads ${JSON.stringify(transport.state)} rather than a pause`)
+      if (transport.state !== '|| PAUSED') problems.push(`an idle monitor reads ${JSON.stringify(transport.state)} rather than a pause`)
       if (String(transport.rate).trim() !== '') problems.push(`an idle transport still shows a rate of ${JSON.stringify(transport.rate)}, which is the pause glyph over again`)
       if (String(transport.speeds) !== '0.5,1,1.5,2,3,4') problems.push(`the speed selector offers ${JSON.stringify(transport.speeds)} rather than the ladder the wheel climbs`)
     }
@@ -95,6 +95,15 @@ app.whenReady().then(async () => {
       // The COLOUR SWATCH, which is where a job that has named no colour shows the one it will be drawn in: the
       // swatch's value is the RESOLVED colour, so an empty box here would mean the theme were not behind it.
       if (audio.colourSwatch !== '#9fbf9a') problems.push(`the colour swatch shows ${String(audio.colourSwatch)} rather than the theme's own green`)
+      // THE THEMED DROPDOWNS, which is the whole of the first fix: the window's settings must offer no platform
+      // <select> at all, because that is the control whose OPEN list the stylesheet cannot reach — a themed
+      // border over the OS's own blue highlight. The count is the fix, so it is asserted as a count.
+      if (rendered.nativeSelects !== 0) problems.push(`${rendered.nativeSelects} platform <select> element(s) are still in the window, whose open list cannot be themed`)
+      if (!rendered.dropdowns) problems.push('the window drew no themed dropdown at all')
+      // And the swatch is the window's own BUTTON with the picker kept out of sight behind it, rather than the
+      // wide native colour box it was — the tag and the hidden-input count are what tell the two apart.
+      if (audio.colourSwatchTag !== 'BUTTON') problems.push(`the colour swatch is a <${String(audio.colourSwatchTag)}> rather than the window's own button`)
+      if (!audio.hiddenColourInputs) problems.push('the colour swatch has no picker behind it to open')
       // The waveform's own count, which defaults to ONE — the downmix that makes the drawing one shape.
       if (!audio.waveforms) problems.push('the waveform was offered no count of how many waveforms it draws')
       else {

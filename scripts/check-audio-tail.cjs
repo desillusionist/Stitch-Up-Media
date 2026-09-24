@@ -239,6 +239,20 @@ const inkedBands = async (file, time, bands = 20) => {
   return probes.filter((luma) => luma > 60).length
 }
 
+/**
+ * How much of the frame is MAGENTA — blue and red both leading green — as a luma of a mask over it.
+ *
+ * The polar scope's stray purple is exactly this: a trace whose colour lost a channel leaves the near-black
+ * rounding of its edges leaning blue and red at once, which is what a green trace must never do. The measure
+ * is the mean of a mask that is white only where both lead green, so a green drawing reads the yuv black
+ * floor (about 16) and a drawing with the specks reads a little above it. Measured on this fixture: 16.15
+ * with a contrast left at zero and 16.00 with every channel set.
+ */
+const magenta = async (file, time) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', "format=rgb24,geq=r='gt(r(X,Y),g(X,Y)+6)*gt(b(X,Y),g(X,Y)+6)*255':g=0:b=0,signalstats,metadata=print:file=-", '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YAVG=([\d.]+)/)?.[1] ?? 0) * 100) / 100
+}
+
 const failures = []
 const check = (label, actual, expected) => {
   const ok = typeof expected === 'number' ? Math.abs(actual - expected) <= 0.25 : actual === expected
@@ -1113,6 +1127,10 @@ const main = async () => {
         // with the quadrature off, eight with it on — so four is the floor and the figure is printed beside it.
         const bands = await inkedBands(item.output, 2)
         check(`a mono sound is opened into a ring rather than drawn as a spoke (${bands} of 20 bands inked)`, bands >= 4, true)
+        // And NO MAGENTA, which is the stray purple: the trace's colour is the whole of the fix, and a
+        // contrast left at zero carries only the near-black rounding of its edges as blue-and-red specks.
+        const purple = await magenta(item.output, 2)
+        check(`and it is green throughout, with no magenta specks (${purple}, the black floor being 16)`, purple <= 16.05, true)
       }
       if (item.segmented) {
         // The dividers fall on a height the frame divides exactly into, so they sit at multiples of eight — and

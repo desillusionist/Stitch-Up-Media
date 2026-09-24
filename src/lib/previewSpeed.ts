@@ -47,7 +47,7 @@ export const playbackRateFor = (shuttleRate: number, speed: number): number => {
 }
 
 /** The label a speed is shown by: `1×`, `1.5×`, `0.5×`. */
-export const speedLabel = (rate: number): string => `${rate}\u00d7`
+export const speedLabel = (rate: number): string => `${rate}x`
 
 /**
  * The next speed up or down the ladder, for a wheel over the monitor.

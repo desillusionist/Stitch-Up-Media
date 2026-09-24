@@ -47,8 +47,8 @@ export const VISUALIZATIONS: VisualizationTemplate[] = [
   { id: 'matrix-panel', name: 'MATRIX PANEL', kind: 'moving', colour: true },
   { id: 'peak-pills', name: 'PEAK PILLS', kind: 'moving', colour: true },
   { id: 'scope', name: 'RADIAL SCOPE', kind: 'moving', colour: false },
-  { id: 'waveform-scroll', name: 'WAVEFORM \u00b7 SCROLL', kind: 'moving', colour: true },
-  { id: 'spectrum-scroll', name: 'SPECTRUM \u00b7 SCROLL', kind: 'moving', colour: false },
+  { id: 'waveform-scroll', name: 'WAVEFORM - SCROLL', kind: 'moving', colour: true },
+  { id: 'spectrum-scroll', name: 'SPECTRUM - SCROLL', kind: 'moving', colour: false },
 ]
 
 /**
@@ -106,13 +106,11 @@ export interface DrawingThemeOption {
   color: string
   /** The ramp the spectra colour themselves with. */
   ramp: string
-  /** The scope's own colouring, which is three channel contrasts rather than a hex. */
-  scopeChannels: { red: number; green: number; blue: number }
 }
 
 export const DRAWING_THEMES: DrawingThemeOption[] = [
-  { id: 'green', name: 'MONO GREEN', color: VISUALIZATION_COLOR, ramp: 'green', scopeChannels: { red: 0, green: 200, blue: 0 } },
-  { id: 'amber', name: 'AMBER CRT', color: '#c5b879', ramp: 'fiery', scopeChannels: { red: 220, green: 150, blue: 0 } },
+  { id: 'green', name: 'MONO GREEN', color: VISUALIZATION_COLOR, ramp: 'green' },
+  { id: 'amber', name: 'AMBER CRT', color: '#c5b879', ramp: 'fiery' },
 ]
 
 /** The theme's own answer for an id, for a preset that was saved before themes existed. */
@@ -145,7 +143,7 @@ export type VisualizationBackgroundKind = 'colour' | 'still' | 'image'
 /** The list the editor offers, in the order it offers it. The still and the image come and go with the job. */
 export const VISUALIZATION_BACKGROUNDS: Array<{ id: VisualizationBackgroundKind; name: string }> = [
   { id: 'colour', name: 'SOLID COLOUR' },
-  { id: 'still', name: 'SOUND\u2019S STILL' },
+  { id: 'still', name: "SOUND'S STILL" },
   { id: 'image', name: 'UPLOAD IMAGE' },
 ]
 
@@ -513,6 +511,28 @@ export const COLOUR_LIST_LENGTH = 8
 export const colourList = (colour: string, count: number = COLOUR_LIST_LENGTH): string =>
   new Array(Math.max(1, count)).fill(colour).join('|')
 
+/** A hex colour as three 0-255 channels, or nothing where it cannot be read. Six- and three-digit forms. */
+export const parseHexColour = (colour: string): { red: number; green: number; blue: number } | null => {
+  const hex = String(colour).trim().replace(/^#/, '')
+  const full = hex.length === 3 ? hex.split('').map((part) => part + part).join('') : hex
+  if (!/^[0-9a-f]{6}$/i.test(full)) return null
+  return { red: parseInt(full.slice(0, 2), 16), green: parseInt(full.slice(2, 4), 16), blue: parseInt(full.slice(4, 6), 16) }
+}
+
+/**
+ * The polar scope's three channel CONTRASTS, taken from the colour the drawing is made in.
+ *
+ * The scope has no colour option of its own — its output is a per-pixel contrast applied to each channel — so
+ * the drawing's colour is what decides it, which is also what makes it follow the COLOUR field rather than a
+ * table fixed per theme. All three are set, and none to zero, and that is the whole of the fix for the stray
+ * purple: measured, a contrast of zero leaves the channel it belongs to carrying only the near-black rounding
+ * of the trace, which lands as magenta specks at (2,0,3) where the same scope with every channel set is green
+ * throughout. An unreadable colour falls back to the app's own green, which is the one trace that cannot be
+ * wrong; a colour the filters refuse would have failed the drawing a line later anyway.
+ */
+export const scopeChannelsOf = (colour: string): { red: number; green: number; blue: number } =>
+  parseHexColour(colour) ?? parseHexColour(VISUALIZATION_COLOR)!
+
 /**
  * One colour, dimmed: the theme's own green taken down to a share of itself.
  *
@@ -524,12 +544,11 @@ export const colourList = (colour: string, count: number = COLOUR_LIST_LENGTH): 
  * that cannot be wrong; an unreadable colour would have failed the drawing's own filters a line later anyway.
  */
 export const dimmedColour = (colour: string, share: number): string => {
-  const hex = String(colour).trim().replace(/^#/, '')
-  const full = hex.length === 3 ? hex.split('').map((part) => part + part).join('') : hex
-  if (!/^[0-9a-f]{6}$/i.test(full)) return '#000000'
+  const channels = parseHexColour(colour)
+  if (!channels) return '#000000'
   const factor = Math.max(0, Math.min(1, share))
-  const channel = (offset: number) => Math.round(parseInt(full.slice(offset, offset + 2), 16) * factor)
-  return `#${[0, 2, 4].map((offset) => channel(offset).toString(16).padStart(2, '0')).join('')}`
+  const scaled = (value: number) => Math.round(value * factor).toString(16).padStart(2, '0')
+  return `#${scaled(channels.red)}${scaled(channels.green)}${scaled(channels.blue)}`
 }
 
 export const SCOPE_MIN_ZOOM = 0.2
@@ -850,10 +869,10 @@ const drawingFilters = (request: DrawingRequest): string => {
   const colors = colourList(color)
   if (isBarsTemplate(template)) return `showfreqs=s=${size}:mode=bar:ascale=${eq.amplitude}:fscale=${eq.frequency}:minamp=${eq.sensitivity}:rate=${fps}:colors=${colors}`
   if (template === 'scope') {
-    // The scope's colour is three channel CONTRASTS rather than a hex — it has no colour option — so the theme
-    // is what decides it, and the fade is the inverse of the persistence.
+    // The scope's colour is three channel CONTRASTS rather than a hex — it has no colour option — so the
+    // drawing's own colour is what decides it, and the fade is the inverse of the persistence.
     const fade = scopeFade(tune.scopePersist)
-    const channels = theme.scopeChannels
+    const channels = scopeChannelsOf(color)
     return `avectorscope=mode=polar:rate=${fps}:draw=${tune.scopeDraw}:zoom=${tune.scopeZoom}:rc=${channels.red}:gc=${channels.green}:bc=${channels.blue}:rf=${fade}:gf=${fade}:bf=${fade}:s=${size}`
   }
   if (template === 'spectrum') return `showspectrumpic=s=${size}:mode=combined:color=${theme.ramp}:saturation=${tune.spectrumSaturation}:scale=${tune.spectrumScale}:legend=0`

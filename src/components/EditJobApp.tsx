@@ -10,6 +10,7 @@ import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApp
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
+import { EditorSelect } from './EditorSelect'
 import { buildTimeline, canApplyClipFit, clipIndexOf, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
@@ -204,9 +205,9 @@ const EditorField: React.FC<{ label: string; hint?: string; reason?: string; chi
  * the way of the two fields they are about.
  */
 const INSETS_HELP = 'The margin this clip leaves around itself: the box its fit scales it into. The picture is centred in the box, and the OFFSET slides it from there. All four at 0 is the whole frame, which is what the clip is given until it is inset. The figures are per cent of the output frame, so they mean the same at any resolution.'
-const OFFSET_HELP = 'Where the picture sits on the output canvas. 0 and 0 is centred, which is where it sits until it is moved. The figures are the output frame\u2019s own, so they mean the same at any resolution, and they are not held in: a picture moved past an edge is clipped by the frame, and one that leaves a gap is filled with the background. The monitor\u2019s dragger writes the same two figures.'
+const OFFSET_HELP = 'Where the picture sits on the output canvas. 0 and 0 is centred, which is where it sits until it is moved. The figures are the output frame\'s own, so they mean the same at any resolution, and they are not held in: a picture moved past an edge is clipped by the frame, and one that leaves a gap is filled with the background. The monitor\'s dragger writes the same two figures.'
 const QUALITY_HELP = 'BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.'
-const CROP_HELP = 'What part of the SOURCE this clip keeps, in the source\u2019s own terms, so a change of output size or shape never invalidates it. The shape list centres the region on a named shape; FREEFORM holds no shape at all, so a corner follows the pointer on both axes and the region keeps whatever shape it has. It is taken before any scaling, so cropping to a shape is a crop then a fit. Drag the edges on the preview, or set the four figures here.'
+const CROP_HELP = 'What part of the SOURCE this clip keeps, in the source\'s own terms, so a change of output size or shape never invalidates it. The shape list centres the region on a named shape; FREEFORM holds no shape at all, so a corner follows the pointer on both axes and the region keeps whatever shape it has. It is taken before any scaling, so cropping to a shape is a crop then a fit. Drag the edges on the preview, or set the four figures here.'
 
 /**
  * A group of settings that can be folded away, with its own heading acting as the disclosure.
@@ -231,7 +232,7 @@ const EditorGroup: React.FC<{ id: string; label: string; hint?: string; reason?:
         {hint ? <span className="editor-group-hint">{'// '}{hint}</span> : null}
       </button>
       {actions ? <div className="editor-group-actions">{actions}</div> : null}
-      <button type="button" className="editor-group-mark" onClick={() => onToggle(id)} aria-expanded={!collapsed} aria-label={collapsed ? 'Expand this section' : 'Collapse this section'}>{collapsed ? '+' : '\u2212'}</button>
+      <button type="button" className="editor-group-mark" onClick={() => onToggle(id)} aria-expanded={!collapsed} aria-label={collapsed ? 'Expand this section' : 'Collapse this section'}>{collapsed ? '+' : '-'}</button>
     </div>
     {collapsed ? null : <div className="editor-group-body">{children}</div>}
   </section>
@@ -1225,6 +1226,8 @@ export const EditJobApp: React.FC = () => {
   playbackRef.current = playback
   const stepFpsRef = useRef(fps)
   stepFpsRef.current = Math.max(1, fps)
+  /** The colour input behind the drawing's swatch: the square is the button, and this is what it clicks. */
+  const colourInputRef = useRef<HTMLInputElement | null>(null)
 
   // The stage the picture sits in, and the picture's own pixel size. Together they place the
   // output frame outline, which is drawn around the picture rather than guessed at.
@@ -1906,7 +1909,7 @@ export const EditJobApp: React.FC = () => {
     const sequence = draft ? sequenceFor(draft, segment.sourcePath) : undefined
     return sequence ? sequenceLabel(sequence) : sourceName(segment.sourcePath)
   }
-  const clipTitle = (segment: TimelineSegment) => `${segmentLabel(segment)} \u2014 ${clipSummary({
+  const clipTitle = (segment: TimelineSegment) => `${segmentLabel(segment)} - ${clipSummary({
     // The SOURCE's whole length, which is what the clip is a piece of — the sequence's own length for
     // an image sequence, the still's chosen length for a still, and the probe's for anything else.
     totalSeconds: sourceDuration(draft, segment.sourcePath, undefined, resolveTiming),
@@ -2166,7 +2169,7 @@ export const EditJobApp: React.FC = () => {
   const resolutionLabel = focusedProbe?.videoStreams?.[0]?.resolution
     || draft.sourceInfo?.videoStreams?.[0]?.resolution
     || draft.sourceMetadata?.[focusedSource ?? '']?.resolution
-    || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
+    || (draft.preset.width && draft.preset.height ? `${draft.preset.width}x${draft.preset.height}` : 'SOURCE')
 
   const dirty = windowDirty(draft, baseline ?? draft)
   // A preset is only worth its name while it still describes the job. Once any of its own
@@ -2913,7 +2916,7 @@ export const EditJobApp: React.FC = () => {
                             />
                             : <span className="editor-screen-message">{screenMessage}</span>}
                 </div>
-                {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}×{outputFrame?.height}</b></div>}
+                {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}x{outputFrame?.height}</b></div>}
                 {/* The box the clip's own margins leave inside the frame. The background the export
                     will fill them with is already what shows through — the window is the output's own
                     black — so this only says where the box IS: the picture is scaled into it and
@@ -2929,36 +2932,40 @@ export const EditJobApp: React.FC = () => {
                 </div>}
               </div>
             </div>
-            <small>{focusedLabel} • {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS` : ''}</small>
-            <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` · USED ${stamp(activeSegment.sourceIn)} → ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} · OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
+            <small>{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
+            <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` | USED ${stamp(activeSegment.sourceIn)} -> ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} | OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
             {/* What the transport is doing. A single line, and the one place it is said: the pause glyph that
                 used to sit among the buttons said the same thing a second time, next to a PLAY toggle that
                 already carries the state. */}
-            <b className="transport-state">{playback.playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>
+            <b className="transport-state">{playback.playing ? '> PLAYING' : '|| PAUSED'}</b>
           </div>
           <div className="transport">
             <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
-            <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playback.playing ? '||' : '\u25b6'}] PLAY</button>
+            <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playback.playing ? '||' : '>'}] PLAY</button>
             <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
             <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 ? ' is-fast' : ''}`}>
               {/* The SHUTTLE's own rate, and nothing at all when there is no shuttle: the readout is about the
                   transport being driven, and an idle transport is already saying so under the monitor. A
                   preview being WATCHED at another speed is not a shuttle, so that branch shows the speed the
                   element is actually running at rather than a flat 1x. */}
-              {playback.shuttleRate > 0 ? `\u25b6 ${playback.shuttleRate}\u00d7`
-                : playback.shuttleRate < 0 ? `\u25c0 ${Math.abs(playback.shuttleRate)}\u00d7`
-                  : playback.playing ? `\u25b6 ${speedLabel(playback.speed)}`
+              {playback.shuttleRate > 0 ? `> ${playback.shuttleRate}x`
+                : playback.shuttleRate < 0 ? `< ${Math.abs(playback.shuttleRate)}x`
+                  : playback.playing ? `> ${speedLabel(playback.speed)}`
                     : null}
             </span>
             {/* The speed the monitor is WATCHED at, which is not the shuttle and never the export. It is a
                 property set on the element (pitch-corrected) and a multiplier on the fallback clock, so both
                 the picture and the sound of a preview follow it. */}
-            <label className="transport-speed" title="PREVIEW SPEED — THIS NEVER CHANGES THE EXPORT.">
+            <div className="transport-speed" title="PREVIEW SPEED - THIS NEVER CHANGES THE EXPORT.">
               <span>SPEED</span>
-              <select value={playback.speed} onChange={(event) => playback.setSpeed(Number(event.target.value))} disabled={!playable}>
-                {PREVIEW_SPEEDS.map((rate) => <option key={rate} value={rate}>{speedLabel(rate)}</option>)}
-              </select>
-            </label>
+              <EditorSelect
+                value={String(playback.speed)}
+                options={PREVIEW_SPEEDS.map((rate) => ({ value: String(rate), label: speedLabel(rate) }))}
+                onChange={(next) => playback.setSpeed(Number(next))}
+                disabled={!playable}
+                ariaLabel="The speed the preview is watched at"
+              />
+            </div>
             <span>{stampPair(playback.position, duration, fps, timestampMode)}</span>
             <input
               type="range"
@@ -2973,21 +2980,22 @@ export const EditJobApp: React.FC = () => {
           </div>
           <div className="editor-preview-actions">
             <span className="preview-divider" aria-hidden="true" />
-            <label className="preview-zoom">
+            <div className="preview-zoom">
               <span>ZOOM</span>
-              <select
+              <EditorSelect
                 value={zoomOption}
-                onChange={(event) => chooseZoom(event.target.value)}
+                options={[
+                  ...PREVIEW_ZOOM_STEPS.map((step) => ({ value: String(step), label: `${step}%` })),
+                  { value: 'fitWidth', label: 'FIT WIDTH' },
+                  { value: 'fitHeight', label: 'FIT HEIGHT' },
+                  { value: 'fit', label: 'FIT' },
+                  { value: 'custom', label: 'CUSTOM...' },
+                ]}
+                onChange={chooseZoom}
                 title="How large the monitor draws the output frame. The export is not affected, and neither is a clip's own fit."
-                aria-label="Zoom the preview monitor"
-              >
-                {PREVIEW_ZOOM_STEPS.map((step) => <option key={step} value={String(step)}>{step}%</option>)}
-                <option value="fitWidth">FIT WIDTH</option>
-                <option value="fitHeight">FIT HEIGHT</option>
-                <option value="fit">FIT</option>
-                <option value="custom">CUSTOM...</option>
-              </select>
-            </label>
+                ariaLabel="Zoom the preview monitor"
+              />
+            </div>
             {zoomOption === 'custom' && <label className="mini-field preview-zoom-field">
               <input
                 type="number"
@@ -3002,7 +3010,7 @@ export const EditJobApp: React.FC = () => {
           </div>
           {inspectorOpen && inspectedSource && (
             <div className="media-inspector">
-              <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the media info inspector" title="Close">&times;</button>
+              <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the media info inspector" title="Close">x</button>
               <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
               <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
               {/* What the sound IS, which an inspector of an audio file had nothing to say about: the rate,
@@ -3016,9 +3024,12 @@ export const EditJobApp: React.FC = () => {
               />
               <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
                 inspectedEditable
-                  ? <select value={String(inspectedFps)} onChange={(event) => setSourceTiming(inspectedSource, { fps: Number(event.target.value) })}>
-                    {[...new Set([...FPS_CHOICES, inspectedFps])].sort((a, b) => a - b).map((rate) => <option key={rate} value={String(rate)}>{rate}{FPS_CHOICES.includes(rate) ? '' : ' (CURRENT)'} FPS</option>)}
-                  </select>
+                  ? <EditorSelect
+                    value={String(inspectedFps)}
+                    options={[...new Set([...FPS_CHOICES, inspectedFps])].sort((a, b) => a - b).map((rate) => ({ value: String(rate), label: `${rate}${FPS_CHOICES.includes(rate) ? '' : ' (CURRENT)'} FPS` }))}
+                    onChange={(next) => setSourceTiming(inspectedSource, { fps: Number(next) })}
+                    ariaLabel="The frame rate this source is read at"
+                  />
                   : <input className="editor-input" type="text" value={`${inspectedFps} FPS`} readOnly />
               }</EditorField>
               {inspectedSegment?.still && (() => {
@@ -3048,7 +3059,7 @@ export const EditJobApp: React.FC = () => {
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
-          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. \u2190 / \u2192 STEP ONE FRAME; J / L SHUTTLE AND SPEED UP ON REPEAT, K+J OR K+L IS SLOW MOTION. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
+          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. &lt;- / -&gt; STEP ONE FRAME; J / L SHUTTLE AND SPEED UP ON REPEAT, K+J OR K+L IS SLOW MOTION. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
         </section>
 
         <section className="timeline-panel">
@@ -3060,7 +3071,7 @@ export const EditJobApp: React.FC = () => {
             <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
             <div className="timeline-zoom">
               <button onClick={() => setZoom((current) => clampZoom(current / 2))} disabled={zoom <= ZOOM_MIN} aria-label="Make the timeline shorter" title="Magnify out"><ZoomOut size={11} /></button>
-              <span className="timeline-zoom-value">{Math.round(zoom * 100) / 100}×</span>
+              <span className="timeline-zoom-value">{Math.round(zoom * 100) / 100}x</span>
               <button onClick={() => setZoom((current) => clampZoom(current * 2))} disabled={zoom >= ZOOM_MAX} aria-label="Make the timeline longer" title="Magnify in"><ZoomIn size={11} /></button>
               <button
                 onClick={() => {
@@ -3223,13 +3234,13 @@ export const EditJobApp: React.FC = () => {
               </div>
               {selectedBoundary.requested > 0 && (
                 <div className="boundary-duration" title={`Longest fade that fits here: ${selectedBoundary.maxFade.toFixed(2)}s`}>
-                  <button onClick={() => set('fade', Math.max(0.25, selectedBoundary.requested - 0.25))} disabled={selectedBoundary.requested <= 0.25} aria-label="Shorter fade">−</button>
+                  <button onClick={() => set('fade', Math.max(0.25, selectedBoundary.requested - 0.25))} disabled={selectedBoundary.requested <= 0.25} aria-label="Shorter fade">-</button>
                   <span className="boundary-duration-value">{selectedBoundary.requested.toFixed(2)}s</span>
                   <button onClick={() => set('fade', selectedBoundary.requested + 0.25)} aria-label="Longer fade">+</button>
                   {selectedBoundary.fade < selectedBoundary.requested && <small className="boundary-clamped">RENDERS {selectedBoundary.fade.toFixed(2)}s</small>}
                 </div>
               )}
-              <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close transition editor">×</button>
+              <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close transition editor">x</button>
             </div>
           })()}
           {model.unusedVideoSources.length > 0 && <div className="editor-note">&gt; {model.unusedVideoSources.length} EXTRA VIDEO SOURCE(S) ({model.unusedVideoSources.map(sourceName).join(', ')}) ARE NOT USED HERE: THIS JOB MAPS ONE VIDEO STREAM. A STITCH JOB CONCATENATES THEM.</div>}
@@ -3244,8 +3255,8 @@ export const EditJobApp: React.FC = () => {
         <div className="export-tabs">{tabs.map((name) => <button key={name} className={tab === name ? 'active' : ''} onClick={() => setTab(name)}>{name}</button>)}</div>
         <div className="export-content">
           {tab === 'EXPORT' && <>
-            <EditorField label="FORMAT"><select value={container} onChange={(event) => changeContainer(event.target.value as EncodingPreset['container'])}>{CONTAINERS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
-            <EditorField label="VIDEO CODEC" reason={videoReason}><select value={draft.preset.videoCodec} disabled={audioOnly || isGif} onChange={(event) => updatePreset({ videoCodec: event.target.value as EncodingPreset['videoCodec'] })}>{VIDEO_CODECS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
+            <EditorField label="FORMAT"><EditorSelect value={container} options={CONTAINERS.map((name) => ({ value: name, label: name.toUpperCase() }))} onChange={(next) => changeContainer(next as EncodingPreset['container'])} /></EditorField>
+            <EditorField label="VIDEO CODEC" reason={videoReason}><EditorSelect value={draft.preset.videoCodec} options={VIDEO_CODECS.map((name) => ({ value: name, label: name.toUpperCase() }))} disabled={audioOnly || isGif} onChange={(next) => updatePreset({ videoCodec: next as EncodingPreset['videoCodec'] })} /></EditorField>
             <EditorField label="OUTPUT NAME"><input type="text" className="editor-input" value={draft.outputFilename} onChange={(event) => updateDraft({ outputFilename: event.target.value, outputFilenameManuallySet: true })} /></EditorField>
             <EditorRow label="PRESET" value={presetEdited ? 'CUSTOM' : draft.preset.name} reason={presetEdited ? presetSummary(draft.preset).join('\n') : undefined} />
             <EditorToggle label="EXPORT VIDEO" checked={draft.preset.outputMode !== 'audio'} onChange={(checked) => updatePreset({ outputMode: checked ? undefined : 'audio' })} />
@@ -3267,11 +3278,11 @@ export const EditJobApp: React.FC = () => {
                 <button className={matchSource || matchSourceChosen ? 'is-selected' : ''} onClick={applyMatchSource} title="Match the frame to the picture in hand: its shape and its own pixel size">MS</button>
               </div>
             </div>
-            <EditorField label="RESOLUTION" reason={videoReason}><select value={draft.preset.resolution} disabled={audioOnly || isGif} onChange={(event) => changeResolution(event.target.value as EncodingPreset['resolution'])}>{RESOLUTIONS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
+            <EditorField label="RESOLUTION" reason={videoReason}><EditorSelect value={draft.preset.resolution} options={RESOLUTIONS.map((name) => ({ value: name, label: name.toUpperCase() }))} disabled={audioOnly || isGif} onChange={(next) => changeResolution(next as EncodingPreset['resolution'])} /></EditorField>
             <div className="editor-field"><span>EXACT SIZE<em>OVERRIDES RESOLUTION</em></span>
               <div className="exact-row">
-                <label className="mini-field"><span>W</span><NumberField min={2} step={2} className="editor-input" value={draft.preset.width} placeholder={outputFrame ? String(outputFrame.width) : '\u2014'} disabled={audioOnly || isGif} onValue={(value) => setExactEdge('width', value)} title="Output width in pixels" /></label>
-                <label className="mini-field"><span>H</span><NumberField min={2} step={2} className="editor-input" value={draft.preset.height} placeholder={outputFrame ? String(outputFrame.height) : '\u2014'} disabled={audioOnly || isGif} onValue={(value) => setExactEdge('height', value)} title="Output height in pixels" /></label>
+                <label className="mini-field"><span>W</span><NumberField min={2} step={2} className="editor-input" value={draft.preset.width} placeholder={outputFrame ? String(outputFrame.width) : '-'} disabled={audioOnly || isGif} onValue={(value) => setExactEdge('width', value)} title="Output width in pixels" /></label>
+                <label className="mini-field"><span>H</span><NumberField min={2} step={2} className="editor-input" value={draft.preset.height} placeholder={outputFrame ? String(outputFrame.height) : '-'} disabled={audioOnly || isGif} onValue={(value) => setExactEdge('height', value)} title="Output height in pixels" /></label>
                 <button className={`exact-icon${lockProportion ? ' is-on' : ''}`} aria-pressed={lockProportion} onClick={() => setLockProportion((on) => !on)} title={lockProportion ? 'Proportions locked' : 'Keep proportions'}>{lockProportion ? <Link size={12} /> : <Unlink size={12} />}</button>
                 <button className="exact-icon" disabled={!exactSet} onClick={clearExactSize} title="Clear exact size" aria-label="Clear exact size"><RotateCcw size={12} /></button>
               </div>
@@ -3300,11 +3311,18 @@ export const EditJobApp: React.FC = () => {
                 {/* The shape list is the switch as well: NONE is one of its entries, so choosing to
                     have no crop is the same gesture as choosing its shape rather than a control of its
                     own that had to ask before it could make its mind up. */}
-                <select value={cropShape} disabled={!naturalAspect && cropShape !== NO_CROP} onChange={(event) => applyCropProportion(event.target.value)} title={!naturalAspect ? 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.' : 'NONE leaves the source whole; FREEFORM holds no shape at all, so a corner follows the pointer on both axes; a named shape centres the region on it.'}>
-                  <option value={NO_CROP}>{NO_CROP}</option>
-                  <option value={FREEFORM}>{FREEFORM}</option>
-                  {ASPECTS.map((candidate) => <option key={candidate.label} value={candidate.label}>{candidate.label}</option>)}
-                </select>
+                <EditorSelect
+                  value={cropShape}
+                  disabled={!naturalAspect && cropShape !== NO_CROP}
+                  options={[
+                    { value: NO_CROP, label: NO_CROP },
+                    { value: FREEFORM, label: FREEFORM },
+                    ...ASPECTS.map((candidate) => ({ value: candidate.label, label: candidate.label })),
+                  ]}
+                  onChange={applyCropProportion}
+                  title={!naturalAspect ? 'THE PICTURE HAS NOT LOADED, SO ITS SHAPE IS UNKNOWN.' : 'NONE leaves the source whole; FREEFORM holds no shape at all, so a corner follows the pointer on both axes; a named shape centres the region on it.'}
+                  ariaLabel="The shape the crop holds"
+                />
                 {/* A padlock rather than a checkbox, and next to the list it holds: what it locks is the
                     SHAPE being chosen, so it belongs where the shape is chosen rather than on a line of
                     its own below the four figures. */}
@@ -3340,7 +3358,7 @@ export const EditJobApp: React.FC = () => {
                 {perClipFraming && (
                   <div className="crop-actions">
                     <span>THIS CLIP</span>
-                    <button className="crop-apply" onClick={applyCropToAll} title="Put this clip's crop on every clip in the job — or, with NONE chosen, leave every clip whole">APPLY TO ALL</button>
+                    <button className="crop-apply" onClick={applyCropToAll} title="Put this clip's crop on every clip in the job - or, with NONE chosen, leave every clip whole">APPLY TO ALL</button>
                   </div>
                 )}
               </>}
@@ -3349,7 +3367,7 @@ export const EditJobApp: React.FC = () => {
                   question that used to ask about it did. */}
               {!cropEnabled && perClipFraming && (
                 <div className="crop-actions">
-                  <span>THIS CLIP{' \u2014 UNCROPPED'}</span>
+                  <span>THIS CLIP{' - UNCROPPED'}</span>
                   <button className="crop-apply" onClick={applyCropToAll} title="Leave every clip whole">APPLY TO ALL</button>
                 </div>
               )}
@@ -3411,10 +3429,10 @@ export const EditJobApp: React.FC = () => {
             {/* The two micro-labels this section carried are in the fields now: what a blank FPS means,
                 and what a quality figure looks like. A label beside a field is read as a title for it;
                 a placeholder is read as what to put in it. */}
-            <EditorField label="FPS" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={`SOURCE \u00b7 ${defaultFps}`} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
+            <EditorField label="FPS" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={`SOURCE | ${defaultFps}`} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
             <div className="editor-field">
               <span><span className="editor-label">QUALITY</span><EditorInfo text={QUALITY_HELP} /></span>
-              <input type="text" className="editor-input" aria-label="Video bitrate" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE \u00b7 E.G. 8M" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} />
+              <input type="text" className="editor-input" aria-label="Video bitrate" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE | E.G. 8M" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} />
             </div>
             </EditorGroup>
           </>}
@@ -3425,29 +3443,33 @@ export const EditJobApp: React.FC = () => {
             <EditorRow
               label="SOURCE AUDIO"
               value={tabAudioSource ? (tabAudioFacts ?? 'NO SOUND') : 'PROBING...'}
-              reason={tabAudioSource && tabAudioCodec ? `${sourceName(tabAudioSource)} — ${tabAudioCodec}.` : undefined}
+              reason={tabAudioSource && tabAudioCodec ? `${sourceName(tabAudioSource)} - ${tabAudioCodec}.` : undefined}
             />
-            <EditorField label="CODEC" reason={audioReason}><select value={draft.preset.audioCodec} disabled={audioDisabled} onChange={(event) => updatePreset({ audioCodec: event.target.value as EncodingPreset['audioCodec'] })}>{AUDIO_CODECS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
+            <EditorField label="CODEC" reason={audioReason}><EditorSelect value={draft.preset.audioCodec} options={AUDIO_CODECS.map((name) => ({ value: name, label: name.toUpperCase() }))} disabled={audioDisabled} onChange={(next) => updatePreset({ audioCodec: next as EncodingPreset['audioCodec'] })} /></EditorField>
             {/* A rung of the encoder's own ladder, or a figure of the user's — and NOTHING AT ALL where the codec
                 has no bitrate to set, because a lossless encoder writes what the samples are. */}
             {bitrateApplies(draft.preset.audioCodec) && <EditorField label="BITRATE" hint={bitrateCustom ? 'IN KBPS' : undefined} reason={audioReason ?? 'How many bits a second the sound is written at. A lossless codec has no such figure and is not offered one.'}>
               <span className="field-pair">
-                <select value={bitrateCustom ? 'custom' : String(bitrateRung ?? 0)} disabled={audioDisabled} onChange={(event) => bitrateValueForChoice(event.target.value)}>
-                  <option value="0">SOURCE</option>
-                  {AUDIO_BITRATES.map((kbps) => <option key={kbps} value={String(kbps)}>{kbps} KBPS</option>)}
-                  <option value="custom">CUSTOM\u2026</option>
-                </select>
+                <EditorSelect
+                  value={bitrateCustom ? 'custom' : String(bitrateRung ?? 0)}
+                  options={[
+                    { value: '0', label: 'SOURCE' },
+                    ...AUDIO_BITRATES.map((kbps) => ({ value: String(kbps), label: `${kbps} KBPS` })),
+                    { value: 'custom', label: 'CUSTOM...' },
+                  ]}
+                  disabled={audioDisabled}
+                  onChange={bitrateValueForChoice}
+                  ariaLabel="The bitrate the sound is written at"
+                />
                 {bitrateCustom && <input type="text" className="editor-input" aria-label="Bitrate" value={draft.preset.audioBitrate ?? ''} placeholder="E.G. 320K" disabled={audioDisabled} onChange={(event) => updatePreset({ audioBitrate: event.target.value.trim() })} />}
               </span>
             </EditorField>}
-            <EditorField label="SAMPLE RATE" reason={audioReason}><select value={draft.preset.audioSampleRate ?? 0} disabled={audioDisabled} onChange={(event) => updatePreset({ audioSampleRate: Number(event.target.value) || undefined })}><option value={0}>SOURCE</option><option value={44100}>44.1 KHZ</option><option value={48000}>48 KHZ</option><option value={96000}>96 KHZ</option></select></EditorField>
+            <EditorField label="SAMPLE RATE" reason={audioReason}><EditorSelect value={String(draft.preset.audioSampleRate ?? 0)} options={[{ value: '0', label: 'SOURCE' }, { value: '44100', label: '44.1 KHZ' }, { value: '48000', label: '48 KHZ' }, { value: '96000', label: '96 KHZ' }]} disabled={audioDisabled} onChange={(next) => updatePreset({ audioSampleRate: Number(next) || undefined })} /></EditorField>
             {/* The one audio setting about the SHAPE of the stream rather than its quality, and the only one
                 offered for a job that has sound in it: a job with none has nothing to lay out, and the field
                 would be a choice about a stream that is never written. */}
-            {jobSound && <EditorField label="CHANNELS" hint={draft.preset.audioChannels ? undefined : 'FROM THE SOURCE'} reason="How many channels the export writes. SOURCE keeps the path's own answer \u2014 a stitch follows the widest source it was given \u2014 and MONO or STEREO folds the mix down without a second encode. Two is the most this can ask for, because the drawing's own graph lays the stream it writes out as mono or stereo and the two halves of one split cannot be laid out differently.">
-              <select value={String(clampAudioChannels(draft.preset.audioChannels))} disabled={audioDisabled} onChange={(event) => chooseAudioChannels(event.target.value)}>
-                {AUDIO_CHANNELS.map((option) => <option key={option.value} value={String(option.value)}>{option.name}</option>)}
-              </select>
+            {jobSound && <EditorField label="CHANNELS" hint={draft.preset.audioChannels ? undefined : 'FROM THE SOURCE'} reason="How many channels the export writes. SOURCE keeps the path's own answer - a stitch follows the widest source it was given - and MONO or STEREO folds the mix down without a second encode. Two is the most this can ask for, because the drawing's own graph lays the stream it writes out as mono or stereo and the two halves of one split cannot be laid out differently.">
+              <EditorSelect value={String(clampAudioChannels(draft.preset.audioChannels))} options={AUDIO_CHANNELS.map((option) => ({ value: String(option.value), label: option.name }))} disabled={audioDisabled} onChange={chooseAudioChannels} ariaLabel="How many channels the export writes" />
             </EditorField>}
             <EditorRow label="TRACKS" value={draft.additionalAudioTracks?.length ? `${draft.additionalAudioTracks.length + 1} (EMBEDDED + ${draft.additionalAudioTracks.length})` : '1 EMBEDDED'} />
             <div className="editor-note">&gt; ADDING AND REORDERING TRACKS ARRIVES WITH THE TRACK EDITOR.</div>
@@ -3455,54 +3477,64 @@ export const EditJobApp: React.FC = () => {
                 picture is being drawn, so the section reads as one decision and its consequences. */}
             {offersPicture && <>
               <EditorField label="PICTURE SOURCE" reason="What the export is given to show when the job is nothing but sound: a black frame, the still the job already has, an image of your own with nothing drawn over it, or a drawing made from the very mix that is written, so the picture cannot disagree with the sound.">
-                <select value={pictureSource} onChange={(event) => updatePreset({ audioPicture: event.target.value as NonNullable<EncodingPreset['audioPicture']> })}>
-                  <option value="black">BLACK</option>
-                  {hasStill && <option value="still">STILL IMAGE</option>}
-                  <option value="custom">CUSTOM IMAGE\u2026</option>
-                  <option value="visualization">DRAW THE SOUND</option>
-                </select>
+                <EditorSelect
+                  value={pictureSource}
+                  options={[
+                    { value: 'black', label: 'BLACK' },
+                    ...(hasStill ? [{ value: 'still', label: 'STILL IMAGE' }] : []),
+                    { value: 'custom', label: 'CUSTOM IMAGE...' },
+                    { value: 'visualization', label: 'DRAW THE SOUND' },
+                  ]}
+                  onChange={(next) => updatePreset({ audioPicture: next as NonNullable<EncodingPreset['audioPicture']> })}
+                  ariaLabel="What the export is given to show"
+                />
               </EditorField>
               {/* A ROW rather than a FIELD, like the drawing's own IMAGE row: a field is a label, and a button
                   inside a label is a button that is pressed twice. */}
-              {pictureSource === 'custom' && <EditorRow label="IMAGE" value={<button className="editor-pick" onClick={() => { void choosePictureImage() }}>{pictureImageName || 'CHOOSE\u2026'}</button>} reason="The image the export is shown. It is held for the length of the sound and scaled into the frame with its shape kept, letterboxed on black — the same rule a drawing's uploaded background follows, with nothing drawn over it." />}
+              {pictureSource === 'custom' && <EditorRow label="IMAGE" value={<button className="editor-pick" onClick={() => { void choosePictureImage() }}>{pictureImageName || 'CHOOSE...'}</button>} reason="The image the export is shown. It is held for the length of the sound and scaled into the frame with its shape kept, letterboxed on black - the same rule a drawing's uploaded background follows, with nothing drawn over it." />}
               {pictureSource === 'visualization' && <>
                 <EditorField label="TEMPLATE" reason="What kind of drawing. WAVEFORM is the whole sound in one picture, held for the length of the export, which is what the monitor is showing; SPECTRUM is the same idea as a spectrogram. EQ BARS and the two SCROLL templates draw an instant at a time, so they move where the first two do not.">
-                  <select value={draft.preset.visualization ?? 'waveform'} onChange={(event) => updatePreset({ visualization: event.target.value as NonNullable<EncodingPreset['visualization']> })}>
-                    {VISUALIZATIONS.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                  </select>
+                  <EditorSelect value={draft.preset.visualization ?? 'waveform'} options={VISUALIZATIONS.map((template) => ({ value: template.id, label: template.name }))} onChange={(next) => updatePreset({ visualization: next as NonNullable<EncodingPreset['visualization']> })} ariaLabel="The drawing" />
                 </EditorField>
-                <EditorField label="THEME" reason="The palette the drawing is made in: the app's own green, or the amber of a CRT. It settles the colour the drawing is drawn in unless the job names one of its own, and the ramp the two spectra colour themselves with — which is why those two are offered no colour field.">
-                  <select value={drawingTune.theme} onChange={(event) => updatePreset({ drawingTheme: event.target.value as NonNullable<EncodingPreset['drawingTheme']> })}>
-                    {DRAWING_THEMES.map((theme) => <option key={theme.id} value={theme.id}>{theme.name}</option>)}
-                  </select>
+                <EditorField label="THEME" reason="The palette the drawing is made in: the app's own green, or the amber of a CRT. It settles the colour the drawing is drawn in unless the job names one of its own, and the ramp the two spectra colour themselves with - which is why those two are offered no colour field.">
+                  <EditorSelect value={drawingTune.theme} options={DRAWING_THEMES.map((theme) => ({ value: theme.id, label: theme.name }))} onChange={(next) => updatePreset({ drawingTheme: next as NonNullable<EncodingPreset['drawingTheme']> })} ariaLabel="The palette the drawing is made in" />
                 </EditorField>
-                {templateFor(draft.preset.visualization).colour && <EditorField label="COLOUR" reason="The colour the drawing is made in. The SWATCH is the colour that will be used — the theme's own until one is picked — and clicking it opens the system picker; the field beside it takes the same colour as a hex figure, and clearing it hands the drawing back to the theme.">
+                {templateFor(draft.preset.visualization).colour && <EditorField label="COLOUR" reason="The colour the drawing is made in. The SWATCH is the colour that will be used - the theme's own until one is picked - and clicking it opens the system picker; the field beside it takes the same colour as a hex figure, and clearing it hands the drawing back to the theme.">
                   <span className="field-pair">
-                    {/* The swatch IS the picker: a colour input drawn as a filled box, which is what the
-                        system's own dialog hangs off. Its value is the RESOLVED colour, so a job that has
-                        named none shows the theme's green rather than an empty black. */}
-                    <input
-                      type="color"
+                    {/* The hex field is what is TYPED and the square beside it is what is CLICKED: the square
+                        shows the colour that will actually be used — the theme's own until one is picked — and
+                        it opens the system picker. The picker itself is a colour input kept out of sight rather
+                        than drawn as the wide native box it used to be. */}
+                    <input type="text" className="editor-input" aria-label="The colour the drawing is made in, as a hex figure" value={draft.preset.visualizationColor ?? ''} placeholder={themeFor(draft.preset.drawingTheme).color.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
+                    <button
+                      type="button"
                       className="editor-swatch"
-                      value={drawingColour}
+                      style={{ background: drawingColour }}
+                      data-colour={drawingColour}
                       aria-label="Pick the colour the drawing is made in"
                       title="Pick the colour the drawing is made in"
+                      onClick={() => colourInputRef.current?.click()}
+                    />
+                    <input
+                      ref={colourInputRef}
+                      type="color"
+                      className="editor-swatch-input"
+                      value={drawingColour}
+                      tabIndex={-1}
+                      aria-hidden="true"
                       onChange={(event) => updatePreset({ visualizationColor: event.target.value })}
                     />
-                    <input type="text" className="editor-input" value={draft.preset.visualizationColor ?? ''} placeholder={themeFor(draft.preset.drawingTheme).color.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
                   </span>
                 </EditorField>}
                 <EditorField label="BACKGROUND" reason="What the drawing sits on: a flat colour, the still the job already has, or an image of your own. The image is scaled to the frame and the drawing is laid over it.">
-                  <select value={backgroundKind} onChange={(event) => updatePreset({ visualizationBackground: event.target.value as NonNullable<EncodingPreset['visualizationBackground']> })}>
-                    {VISUALIZATION_BACKGROUNDS.filter((option) => option.id !== 'still' || hasStill).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
-                  </select>
+                  <EditorSelect value={backgroundKind} options={VISUALIZATION_BACKGROUNDS.filter((option) => option.id !== 'still' || hasStill).map((option) => ({ value: option.id, label: option.name }))} onChange={(next) => updatePreset({ visualizationBackground: next as NonNullable<EncodingPreset['visualizationBackground']> })} ariaLabel="What the drawing sits on" />
                 </EditorField>
                 {backgroundKind === 'colour' && <EditorField label="UNDER THE DRAWING" reason="The colour the drawing sits on, as a hex figure.">
                   <input type="text" className="editor-input" value={draft.preset.visualizationBackgroundColor ?? ''} placeholder={VISUALIZATION_BACKGROUND.toUpperCase()} onChange={(event) => updatePreset({ visualizationBackgroundColor: event.target.value.trim() || undefined })} />
                 </EditorField>}
                 {/* A ROW rather than a FIELD: a field is a label, and a button inside a label is a button
                     that is pressed twice. */}
-                {backgroundKind === 'image' && <EditorRow label="IMAGE" value={<button className="editor-pick" onClick={() => { void chooseBackgroundImage() }}>{backgroundImageName || 'CHOOSE\u2026'}</button>} reason="The image the drawing sits on. It is scaled to the frame's own shape and the drawing is laid over it." />}
+                {backgroundKind === 'image' && <EditorRow label="IMAGE" value={<button className="editor-pick" onClick={() => { void chooseBackgroundImage() }}>{backgroundImageName || 'CHOOSE...'}</button>} reason="The image the drawing sits on. It is scaled to the frame's own shape and the drawing is laid over it." />}
                 {/* Only the PICTURES get a line: a drawing that moves is already showing where the sound is,
                     and a bar over one would be a second answer to the same question. */}
                 {templateFor(draft.preset.visualization).kind === 'picture' && <EditorToggle label="PROGRESS LINE" checked={visualizationProgressLine(draft.preset)} onChange={(checked) => updatePreset({ visualizationProgressLine: checked })} reason="A bar that sweeps across the picture from the left edge to the right as the sound plays, which is what a podcast video looks like. The two pictures are one frame held for the length of the sound, so without it the video sits motionless; it is off where the drawing already moves." />}
@@ -3511,27 +3543,19 @@ export const EditJobApp: React.FC = () => {
                     a stereo sound fills the frame with a row per channel however the filter is told to split. */}
                 {isWaveTemplate(drawingTemplate.id) && <>
                   <EditorField label="AMPLITUDE" reason="How the sound's own level is turned into the height of the drawing. Logarithmic makes the quiet end visible, which is what a waveform of speech is normally read with; linear draws the levels as they are.">
-                    <select value={drawingTune.waveScale} onChange={(event) => updatePreset({ waveScale: event.target.value as NonNullable<EncodingPreset['waveScale']> })}>
-                      {WAVE_SCALES.map((scale) => <option key={scale} value={scale}>{scale.toUpperCase()}</option>)}
-                    </select>
+                    <EditorSelect value={drawingTune.waveScale} options={WAVE_SCALES.map((scale) => ({ value: scale, label: scale.toUpperCase() }))} onChange={(next) => updatePreset({ waveScale: next as NonNullable<EncodingPreset['waveScale']> })} ariaLabel="How the sound's own level is turned into the height of the drawing" />
                   </EditorField>
                   <EditorField label="WEIGHT" reason="How much of the drawing is inked. FILLED is the whole envelope and is what the monitor shows and what the static waveform already draws; LINE is the lighter stroke, which covers about a fifth of what the filled drawing does at a 1080-row frame.">
-                    <select value={drawingTune.waveWeight} onChange={(event) => updatePreset({ waveWeight: event.target.value as NonNullable<EncodingPreset['waveWeight']> })}>
-                      {WAVE_WEIGHTS.map((weight) => <option key={weight} value={weight}>{weight === 'fill' ? 'FILLED' : 'LINE'}</option>)}
-                    </select>
+                    <EditorSelect value={drawingTune.waveWeight} options={WAVE_WEIGHTS.map((weight) => ({ value: weight, label: weight === 'fill' ? 'FILLED' : 'LINE' }))} onChange={(next) => updatePreset({ waveWeight: next as NonNullable<EncodingPreset['waveWeight']> })} ariaLabel="How much of the drawing is inked" />
                   </EditorField>
                   <EditorField label="WAVEFORMS" reason="How many waveforms the drawing shows. ONE mixes the sound to a single channel first, which is what makes the drawing one shape and what the static waveform draws; TWO keeps the sound's own pair, each channel in its own row, which is the look for a sound whose channels differ.">
-                    <select value={String(drawingTune.waveChannels)} onChange={(event) => updatePreset({ waveChannels: Number(event.target.value) === 2 ? 2 : 1 })}>
-                      {WAVE_CHANNELS.map((count) => <option key={count} value={String(count)}>{count === 1 ? 'ONE' : 'TWO'}</option>)}
-                    </select>
+                    <EditorSelect value={String(drawingTune.waveChannels)} options={WAVE_CHANNELS.map((count) => ({ value: String(count), label: count === 1 ? 'ONE' : 'TWO' }))} onChange={(next) => updatePreset({ waveChannels: Number(next) === 2 ? 2 : 1 })} ariaLabel="How many waveforms the drawing shows" />
                   </EditorField>
                 </>}
                 {/* The spectra's own two. Their ramp comes from the theme, so they are given no colour field. */}
                 {isSpectrumTemplate(drawingTemplate.id) && <>
                   <EditorField label="AMPLITUDE" reason="How a band's level is turned into its colour. Logarithmic is what a spectrogram is normally read with, because it makes the quiet bands visible; linear shows the levels as they are.">
-                    <select value={drawingTune.spectrumScale} onChange={(event) => updatePreset({ spectrumScale: event.target.value as NonNullable<EncodingPreset['spectrumScale']> })}>
-                      {SPECTRUM_SCALES.map((scale) => <option key={scale} value={scale}>{scale.toUpperCase()}</option>)}
-                    </select>
+                    <EditorSelect value={drawingTune.spectrumScale} options={SPECTRUM_SCALES.map((scale) => ({ value: scale, label: scale.toUpperCase() }))} onChange={(next) => updatePreset({ spectrumScale: next as NonNullable<EncodingPreset['spectrumScale']> })} ariaLabel="How a band's level is turned into its colour" />
                   </EditorField>
                   <div className="editor-field">
                     <span><span className="editor-label">SATURATION</span></span>
@@ -3551,17 +3575,13 @@ export const EditJobApp: React.FC = () => {
                       <label className="mini-field"><span>GAP PX</span><NumberField min={0} max={EQ_MAX_GAP} step={1} className="editor-input" value={eqStyle.gap} onValue={(value) => updatePreset({ eqGap: clampEqGap(value) })} title="The gap between bars, in pixels of the output frame. 0 is solid." /></label>
                     </div>
                   </div>
-                  <EditorField label="AMPLITUDE" reason="How a frequency's level is turned into the height of its bar. Logarithmic is what a spectrum normally wants — it makes the quiet end visible — and linear shows the levels as they are.">
-                    <select value={draft.preset.eqAmplitude ?? 'log'} onChange={(event) => updatePreset({ eqAmplitude: event.target.value as NonNullable<EncodingPreset['eqAmplitude']> })}>
-                      {EQ_AMPLITUDE_SCALES.map((scale) => <option key={scale} value={scale}>{scale.toUpperCase()}</option>)}
-                    </select>
+                  <EditorField label="AMPLITUDE" reason="How a frequency's level is turned into the height of its bar. Logarithmic is what a spectrum normally wants - it makes the quiet end visible - and linear shows the levels as they are.">
+                    <EditorSelect value={draft.preset.eqAmplitude ?? 'log'} options={EQ_AMPLITUDE_SCALES.map((scale) => ({ value: scale, label: scale.toUpperCase() }))} onChange={(next) => updatePreset({ eqAmplitude: next as NonNullable<EncodingPreset['eqAmplitude']> })} ariaLabel="How a frequency's level is turned into the height of its bar" />
                   </EditorField>
                   <EditorField label="FREQUENCY" reason="How the frequencies are laid out across the frame: linear is even per hertz, logarithmic is even per octave and reads the way music is heard.">
-                    <select value={draft.preset.eqFrequency ?? 'lin'} onChange={(event) => updatePreset({ eqFrequency: event.target.value as NonNullable<EncodingPreset['eqFrequency']> })}>
-                      {EQ_FREQUENCY_SCALES.map((scale) => <option key={scale} value={scale}>{scale.toUpperCase()}</option>)}
-                    </select>
+                    <EditorSelect value={draft.preset.eqFrequency ?? 'lin'} options={EQ_FREQUENCY_SCALES.map((scale) => ({ value: scale, label: scale.toUpperCase() }))} onChange={(next) => updatePreset({ eqFrequency: next as NonNullable<EncodingPreset['eqFrequency']> })} ariaLabel="How the frequencies are laid out across the frame" />
                   </EditorField>
-                  <EditorField label="SENSITIVITY" reason="The floor below which a frequency is not drawn: the smaller the figure, the more of the quiet detail is shown. It is a fraction of full scale, so the useful figures are small — 0.000001 is ffmpeg's own floor and the least sensitive this can be asked to be.">
+                  <EditorField label="SENSITIVITY" reason="The floor below which a frequency is not drawn: the smaller the figure, the more of the quiet detail is shown. It is a fraction of full scale, so the useful figures are small - 0.000001 is ffmpeg's own floor and the least sensitive this can be asked to be.">
                     <NumberField min={EQ_MIN_SENSITIVITY} max={EQ_MAX_SENSITIVITY} step={0.0000001} className="editor-input" value={draft.preset.eqSensitivity ?? EQ_MAX_SENSITIVITY} onValue={(value) => updatePreset({ eqSensitivity: clampEqSensitivity(value) })} title="The minimum amplitude a frequency must reach to be drawn" />
                   </EditorField>
                   <EditorToggle label="SEGMENTED" checked={drawingTune.segmented} onChange={(checked) => updatePreset({ eqSegmented: checked })} reason="Break each bar into a stack of blocks with thin dark lines between them, so the drawing reads as a panel of lamps rather than a solid column. The lines are aligned from the top so no block is cut off." />
@@ -3591,11 +3611,9 @@ export const EditJobApp: React.FC = () => {
                     </div>
                   </div>
                   <EditorField label="DRAW" reason="A continuous trace, or a trail of dots with the samples' own spacing in it.">
-                    <select value={drawingTune.scopeDraw} onChange={(event) => updatePreset({ scopeDraw: event.target.value as NonNullable<EncodingPreset['scopeDraw']> })}>
-                      {SCOPE_DRAWS.map((draw) => <option key={draw} value={draw}>{draw.toUpperCase()}</option>)}
-                    </select>
+                    <EditorSelect value={drawingTune.scopeDraw} options={SCOPE_DRAWS.map((draw) => ({ value: draw, label: draw.toUpperCase() }))} onChange={(next) => updatePreset({ scopeDraw: next as NonNullable<EncodingPreset['scopeDraw']> })} ariaLabel="A continuous trace, or a trail of dots" />
                   </EditorField>
-                  <EditorToggle label="TRUE STEREO" checked={drawingTune.trueStereo} onChange={(checked) => updatePreset({ scopeTrueStereo: checked })} reason="Plot the sound's own two channels against each other. Off — the default — the scope is drawn from a single mixed-down channel, opened into a ring with a quarter-cycle of phase, because a polar scope on a sound whose two channels are the same draws a spoke rather than a ring, and a mono file stored as stereo is the commonest case of that. Turn it on for genuinely wide music." />
+                  <EditorToggle label="TRUE STEREO" checked={drawingTune.trueStereo} onChange={(checked) => updatePreset({ scopeTrueStereo: checked })} reason="Plot the sound's own two channels against each other. Off - the default - the scope is drawn from a single mixed-down channel, opened into a ring with a quarter-cycle of phase, because a polar scope on a sound whose two channels are the same draws a spoke rather than a ring, and a mono file stored as stereo is the commonest case of that. Turn it on for genuinely wide music." />
                 </>}
               </>}
             </>}
@@ -3611,7 +3629,7 @@ export const EditJobApp: React.FC = () => {
           </>}
 
           {tab === 'CAPTIONS' && <>
-            <EditorField label="MODE" reason="CAPTIONS ARE NOT WIRED TO THE ENCODER YET."><select value="embedded" disabled onChange={() => undefined}><option value="embedded">EMBEDDED</option><option value="sidecar">SIDECAR SRT</option><option value="burn-in">BURN-IN</option></select></EditorField>
+            <EditorField label="MODE" reason="CAPTIONS ARE NOT WIRED TO THE ENCODER YET."><EditorSelect value="embedded" options={[{ value: 'embedded', label: 'EMBEDDED' }, { value: 'sidecar', label: 'SIDECAR SRT' }, { value: 'burn-in', label: 'BURN-IN' }]} disabled onChange={() => undefined} ariaLabel="Caption mode" /></EditorField>
             <div className="editor-note">&gt; CAPTION MODE HAS NO BACKING FIELD YET, SO NOTHING IS SENT BACK ON APPLY.</div>
           </>}
         </div>
@@ -3619,7 +3637,7 @@ export const EditJobApp: React.FC = () => {
         <div className="export-summary">
           <span className="panel-kicker">SUMMARY</span>
           <strong>{draft.outputFilename}</strong>
-          <span>{stillFrameJob ? 'SINGLE FRAME OUTPUT — NO TIMELINE' : duration > 0 ? `ASSEMBLED ${stamp(duration)} ACROSS ${model.lanes.length} LANE(S)` : 'LENGTH UNKNOWN — PROBE ON START'}</span>
+          <span>{stillFrameJob ? 'SINGLE FRAME OUTPUT - NO TIMELINE' : duration > 0 ? `ASSEMBLED ${stamp(duration)} ACROSS ${model.lanes.length} LANE(S)` : 'LENGTH UNKNOWN - PROBE ON START'}</span>
           <span>{dirty ? 'UNSAVED CHANGES' : 'NO CHANGES'}</span>
         </div>
 
@@ -3651,8 +3669,8 @@ export const EditJobApp: React.FC = () => {
             first. A source that is the job's last takes the job with it, and says so outright. */}
         <span className="timeline-menu-head">REMOVE {sourceName(timelineMenu.sourcePath)}?</span>
         <p className="timeline-menu-note">{draft.sourcePaths.length <= 1 && !draft.additionalAudioTracks?.length
-          ? 'THIS IS THE JOB\u2019S LAST SOURCE, SO REMOVING IT REMOVES THE JOB.'
-          : 'THE CLIP GOES FROM THE TIMELINE AND FROM THE JOB\u2019S SOURCE LIST.'}</p>
+          ? 'THIS IS THE JOB\'S LAST SOURCE, SO REMOVING IT REMOVES THE JOB.'
+          : 'THE CLIP GOES FROM THE TIMELINE AND FROM THE JOB\'S SOURCE LIST.'}</p>
         <div className="timeline-menu-actions">
           <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: undefined })}>KEEP IT</button>
           <button

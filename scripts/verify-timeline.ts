@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
+import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeChannelsOf, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
 import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
@@ -1638,7 +1638,13 @@ console.log('\n== the polar scope ==')
   check('as a polar trace at the frame\u2019s rate and draw mode', scope.includes('avectorscope=mode=polar:rate=30:draw=line:zoom=1'), true)
   check('on a square canvas the frame\u2019s short side gives it', scope.includes(':s=1080x1080'), true)
   check('padded either side, so a ring stays a ring', scope.includes(',pad=1920:1080:420:0:color=black[w]'), true)
-  check('coloured by the theme\u2019s own channel contrasts, because a scope has no colour option', scope.includes('rc=0:gc=200:bc=0'), true)
+  check('coloured by the drawing own colour, because a scope has no colour option of its own', scope.includes('rc=159:gc=191:bc=154'), true)
+  // Where the colour comes from: the drawing's own, so a scope follows the COLOUR field as every other
+  // template does. All three channels are set, and that is the whole of the stray-purple fix — a contrast left
+  // at zero carries only the near-black rounding of the trace, which lands as magenta specks.
+  check('the contrasts are the colour own three channels', scopeChannelsOf('#9fbf9a'), { red: 159, green: 191, blue: 154 })
+  check('and a custom colour is what the trace is drawn in', visualizationGraph({ ...settings, template: 'scope', color: '#00ff00', tune: DEFAULT_TUNE }).includes('rc=0:gc=255:bc=0'), true)
+  check('while an unreadable colour falls back to the app own green', scopeChannelsOf('nonsense'), { red: 159, green: 191, blue: 154 })
   check('and faded by the inverse of the persistence', scope.includes('rf=31:gf=31:bf=31'), true)
   check('the default persistence is a long trail', scopeFade(SCOPE_DEFAULT_PERSIST), 31)
   check('full persistence is no fade at all, which is an endless trail', scopeFade(1), 0)
@@ -1770,13 +1776,13 @@ console.log('\n== what a sound is, and what the export will make of it ==')
   })
   const silent: MediaProbeInfo = { format: 'png', duration: 0, size: 0, bitrate: 0, videoStreams: [], audioStreams: [] }
 
-  check('a 16-bit stereo wav reads as its rate, its sample size and its layout', audioFacts(sound({ channels: 2, sampleRate: 48000, bitDepth: 16 })), '48 KHZ \u00b7 16 BIT \u00b7 STEREO')
-  check('a 24-bit one at 44.1 reads as that', audioFacts(sound({ channels: 2, sampleRate: 44100, bitDepth: 24 })), '44.1 KHZ \u00b7 24 BIT \u00b7 STEREO')
-  check('a file that names its layout is believed over its count', audioFacts(sound({ channels: 6, sampleRate: 48000, bitDepth: 16, channelLayout: '5.1' })), '48 KHZ \u00b7 16 BIT \u00b7 5.1')
-  check('and one that names none has its count spoken for it', audioFacts(sound({ channels: 6, sampleRate: 48000 })), '48 KHZ \u00b7 6 CH')
+  check('a 16-bit stereo wav reads as its rate, its sample size and its layout', audioFacts(sound({ channels: 2, sampleRate: 48000, bitDepth: 16 })), '48 KHZ | 16 BIT | STEREO')
+  check('a 24-bit one at 44.1 reads as that', audioFacts(sound({ channels: 2, sampleRate: 44100, bitDepth: 24 })), '44.1 KHZ | 24 BIT | STEREO')
+  check('a file that names its layout is believed over its count', audioFacts(sound({ channels: 6, sampleRate: 48000, bitDepth: 16, channelLayout: '5.1' })), '48 KHZ | 16 BIT | 5.1')
+  check('and one that names none has its count spoken for it', audioFacts(sound({ channels: 6, sampleRate: 48000 })), '48 KHZ | 6 CH')
   // A lossy file has no sample size, and the line leaves it out rather than claiming zero bits of one.
-  check('a lossy file loses the part the container does not carry', audioFacts(sound({ codec: 'mp3', channels: 2, sampleRate: 48000 })), '48 KHZ \u00b7 STEREO')
-  check('and its codec and bitrate read on their own line', audioCodecFacts(sound({ codec: 'mp3', channels: 2, bitrate: '320k' })), 'MP3 \u00b7 320K')
+  check('a lossy file loses the part the container does not carry', audioFacts(sound({ codec: 'mp3', channels: 2, sampleRate: 48000 })), '48 KHZ | STEREO')
+  check('and its codec and bitrate read on their own line', audioCodecFacts(sound({ codec: 'mp3', channels: 2, bitrate: '320k' })), 'MP3 | 320K')
   check('one and two channels are spelled out rather than counted', [channelFacts({ codec: 'x', channels: 1 }), channelFacts({ codec: 'x', channels: 2 })], ['MONO', 'STEREO'])
   check('and a rate reads in kHz without a trailing zero', [kilohertz(48000), kilohertz(44100)], ['48', '44.1'])
   check('a source with no sound in it has no facts to show', [audioFacts(silent), audioCodecFacts(silent), probeHasAudio(silent)], [null, null, false])
@@ -1856,7 +1862,7 @@ console.log('\n== what a custom preset will actually produce ==')
   } as EncodingPreset)
   check('a video preset names its container and codec', presetSummary(preset())[0], 'MP4 // H264')
   check('and says the frame follows the source while it does', presetSummary(preset())[1], 'SOURCE SIZE // SOURCE FPS')
-  check('an exact size is shown as the figure it is', presetSummary(preset({ width: 1920, height: 1080, fps: 30 }))[1], '1920×1080 // 30 FPS')
+  check('an exact size is shown as the figure it is', presetSummary(preset({ width: 1920, height: 1080, fps: 30 }))[1], '1920x1080 // 30 FPS')
   const cropped = presetSummary(preset({ crop: { left: 0.1, top: 0, right: 0, bottom: 0 } }))
   check('a cropped source says so rather than showing the figures', cropped.includes('SOURCE CROPPED'), true)
   check('a bitrate is the quality line', presetSummary(preset({ videoBitrate: '8M' })).some((line) => line === 'QUALITY 8M'), true)
@@ -1915,33 +1921,33 @@ console.log('\n== what a clip says it is ==')
   const frames = { fps: 30, mode: 'framestamp' as const }
   check('a trimmed clip in frames',
     clipSummary({ ...frames, totalSeconds: 4306 / 30, usedSeconds: 2160 / 30, sourceIn: 0, trimmed: true }),
-    '4306 frames at 30 fps \u2022 2160 trimmed frames [0000-2160]')
+    '4306 frames at 30 fps | 2160 trimmed frames [0000-2160]')
   check('an untrimmed clip in frames',
     clipSummary({ ...frames, totalSeconds: 4306 / 30, usedSeconds: 4306 / 30, sourceIn: 0, trimmed: false }),
-    '4306 frames at 30 fps \u2022 source')
+    '4306 frames at 30 fps | source')
   check('a trimmed clip in timecodes',
     clipSummary({ totalSeconds: 4306 / 30, usedSeconds: 72, sourceIn: 0, trimmed: true, fps: 30, mode: 'timestamp' }),
-    '00:02:23.16 at 30 fps \u2022 00:01:12.00 trimmed [00:00:00.00-00:01:12.00]')
+    '00:02:23.16 at 30 fps | 00:01:12.00 trimmed [00:00:00.00-00:01:12.00]')
   check('an untrimmed clip in timecodes',
     clipSummary({ totalSeconds: 4306 / 30, usedSeconds: 4306 / 30, sourceIn: 0, trimmed: false, fps: 30, mode: 'timestamp' }),
-    '00:02:23.16 at 30 fps \u2022 source')
+    '00:02:23.16 at 30 fps | source')
   check('a track is counted at the project rate',
     clipSummary({ ...frames, totalSeconds: 90, usedSeconds: 90, sourceIn: 0, trimmed: false }),
-    '2700 frames at 30 fps \u2022 source')
+    '2700 frames at 30 fps | source')
   check('and a trimmed track says what was taken',
     clipSummary({ ...frames, totalSeconds: 90, usedSeconds: 30, sourceIn: 60, trimmed: true }),
-    '2700 frames at 30 fps \u2022 900 trimmed frames [1800-2700]')
+    '2700 frames at 30 fps | 900 trimmed frames [1800-2700]')
   check('and reads as time when that is the setting',
     clipSummary({ totalSeconds: 90, usedSeconds: 30, sourceIn: 60, trimmed: true, fps: 30, mode: 'timestamp' }),
-    '00:01:30.00 at 30 fps \u2022 00:00:30.00 trimmed [00:01:00.00-00:01:30.00]')
+    '00:01:30.00 at 30 fps | 00:00:30.00 trimmed [00:01:00.00-00:01:30.00]')
   // A trim that takes nothing away is not a trim: a range around the whole of the source IS the source,
   // and a still's chosen length is the whole of it in the same way.
   check('a trim of the whole source is the source',
     clipSummary({ ...frames, totalSeconds: 72, usedSeconds: 72, sourceIn: 0, trimmed: true }),
-    '2160 frames at 30 fps \u2022 source')
+    '2160 frames at 30 fps | source')
   check('and so is a still, whose length is the whole of it',
     clipSummary({ ...frames, totalSeconds: 10, usedSeconds: 10, sourceIn: 0, trimmed: true }),
-    '300 frames at 30 fps \u2022 source')
+    '300 frames at 30 fps | source')
   // The playhead's own line: the unit said once, and the two figures joined by "of".
   check('the playhead line in frames', stampPair(0, 123456 / 30, 30, 'framestamp'), 'FRAME 000000 of 123456')
   check('the playhead line in timecodes', stampPair(1, 60, 30, 'timestamp'), '00:00:01.00 of 00:01:00.00')

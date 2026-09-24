@@ -487,14 +487,14 @@ export const clipSummary = ({ totalSeconds, fps, usedSeconds, sourceIn, trimmed,
   // A trim that takes NOTHING away is not a trim: a range that spans the whole source IS the source, and
   // "2160 trimmed frames [0000-2160]" about a clip that uses all of it is a range drawn around everything.
   // A still is the same case — its chosen length is the whole of it — so it says source too.
-  if (!trimmed || usesAllSource({ duration: usedSeconds, sourceIn }, totalSeconds)) return `${whole} at ${rate} fps \u2022 source`
+  if (!trimmed || usesAllSource({ duration: usedSeconds, sourceIn }, totalSeconds)) return `${whole} at ${rate} fps | source`
   const used = mode === 'framestamp' ? `${frames(usedSeconds)} trimmed frames` : `${timecode(usedSeconds, rate)} trimmed`
   // The range is padded to four digits in frames, because a range is read as a box of digits rather
   // than as two numbers, and a ragged box is read twice.
   const range = mode === 'framestamp'
     ? `[${stamp(sourceIn).padStart(4, '0')}-${stamp(sourceIn + usedSeconds).padStart(4, '0')}]`
     : `[${stamp(sourceIn)}-${stamp(sourceIn + usedSeconds)}]`
-  return `${whole} at ${rate} fps \u2022 ${used} ${range}`
+  return `${whole} at ${rate} fps | ${used} ${range}`
 }
 
 /**
