@@ -214,6 +214,20 @@ app.whenReady().then(async () => {
       }
       const mirrorAsk = audio.mirrorStill
       if (!mirrorAsk || mirrorAsk.template !== 'mirrored-bars') problems.push('the monitor asked for no still of the mirrored bars')
+      // THE LED TEMPLATES, which are the bars with settings of their own. Choosing one has to bring the family's
+      // knobs out AND the two the LED looks add, and it has to send the template's OWN density: the LED EQ opens
+      // at sixteen bars where the plain bars open at sixty-four, so a still asked for at sixty-four would be a
+      // drawing nobody chose — which is exactly the fault a defaults table can introduce.
+      if (!audio.ledStill) problems.push('the monitor asked for no still once the LED EQ was chosen')
+      else {
+        if (audio.ledStill.template !== 'led-eq') problems.push(`the still asked for once the LED EQ was chosen was of ${String(audio.ledStill.template)}`)
+        if (audio.ledStill.bars !== 16) problems.push(`the LED EQ's still was asked for ${String(audio.ledStill.bars)} bars rather than its own density`)
+        if (audio.ledStill.segmented !== true || audio.ledStill.peakHold !== true) problems.push(`the LED EQ's still was asked for blocks ${String(audio.ledStill.segmented)} and hold ${String(audio.ledStill.peakHold)} rather than the LED look`)
+      }
+      if (!audio.ledToggles || !audio.ledToggles.includes('PEAK HOLD')) problems.push('the LED EQ was offered no peak hold switch')
+      if (!audio.ledFields || !audio.ledFields.some((label) => label.startsWith('BLOCKS'))) problems.push('the LED EQ drew no control for the block gap')
+      if (!audio.panelStill || audio.panelStill.template !== 'matrix-panel') problems.push('the monitor asked for no still of the matrix panel')
+      else if (audio.panelStill.bars !== 24 || audio.panelStill.peakHold !== true) problems.push(`the matrix panel's still was asked for ${String(audio.panelStill.bars)} bars and hold ${String(audio.panelStill.peakHold)} rather than the panel's look`)
       const eqAsk = audio.eqStill
       if (!eqAsk) problems.push('the monitor asked for no still once the EQ was chosen')
       else {

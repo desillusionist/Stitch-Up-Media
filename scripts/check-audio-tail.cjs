@@ -312,7 +312,11 @@ const main = async () => {
   // drawing's own frames keep their position, so the overlay's first frame has nothing to composite and the
   // still comes out black — which is the same symptom from a different cause.
   const stillGraph = (template, seconds) => viz.visualizationStillGraph({
-    template, width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', tune: viz.drawingTuneOf({}),
+    // The template is named to the resolvers as well as to the graph, so the still is drawn with the same
+    // defaults the export would use — the LED templates' own hold, blocks and bar count included.
+    template, width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000',
+    tune: viz.drawingTuneOf({ visualization: template }),
+    eq: viz.eqStyleOf({ visualization: template }),
   }).replace('$SECONDS', String(seconds))
   for (const template of viz.VISUALIZATIONS.map((entry) => entry.id)) {
     const canvas = viz.drawingCanvas(1920, 1080, viz.templateMaxEdge(template))
@@ -652,6 +656,86 @@ const main = async () => {
       expectedSeconds: 5,
       drawn: true,
       eqSolid: { bar: 4 },
+    },
+    {
+      // THE PEAK HOLD, and it is a measurement rather than a claim. The fixture is LOUD for two seconds and
+      // SILENT for three, so a drawing that merely draws the sound is BLACK past the loud half while one that
+      // holds its peaks still has the bar's ghost standing: measured, the top band reads 16 without the hold
+      // and 151 with it, and the ghost then falls 151 to 99 to 44 across the silent stretch — which is the hold
+      // decaying rather than a static image that never lets go.
+      name: 'a loud-then-quiet sound drawn with a peak hold',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'led-eq', fps: 30, visualizationProgressLine: false },
+      task: {
+        id: 'viz-hold', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [halfway],
+        outputDirectory: root, outputFilename: 'viz-hold.mp4', preset,
+      },
+      output: path.join(root, 'viz-hold.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      // Read just past the loud half, then again deep in the silence.
+      holdsPeaks: { early: 2.1, late: 3.0 },
+    },
+    {
+      // The control for the case above: the SAME sound, the same LED EQ, the hold turned OFF — so what the pair
+      // proves is the hold and not the drawing happening to be bright at that moment.
+      name: 'the same sound drawn with the hold turned off',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'led-eq', fps: 30, visualizationProgressLine: false, eqPeakHold: false },
+      task: {
+        id: 'viz-hold-off', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [halfway],
+        outputDirectory: root, outputFilename: 'viz-hold-off.mp4', preset,
+      },
+      output: path.join(root, 'viz-hold-off.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      noHold: { at: 2.1 },
+    },
+    {
+      // MATRIX PANEL's lit field, which is the whole difference between a panel and a bar chart, measured on a
+      // SILENT sound — because that is the case where there is nothing to draw and the field is all there is. A
+      // plain drawing of silence is black; the panel is its own colour at a share of itself, which is the point
+      // of a panel of unlit cells. The pair of cases is what makes it a measurement.
+      name: 'the same silence drawn as plain bars, for the panel to be measured against',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'eq', fps: 30, visualizationProgressLine: false },
+      task: {
+        id: 'viz-matrix-plain', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [quietHalf],
+        outputDirectory: root, outputFilename: 'viz-matrix-plain.mp4', preset,
+      },
+      output: path.join(root, 'viz-matrix-plain.mp4'),
+      expectedSeconds: 3,
+      drawn: true,
+    },
+    {
+      name: 'a silent sound drawn as a matrix panel',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'matrix-panel', fps: 30, visualizationProgressLine: false },
+      task: {
+        id: 'viz-matrix', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [quietHalf],
+        outputDirectory: root, outputFilename: 'viz-matrix.mp4', preset,
+      },
+      output: path.join(root, 'viz-matrix.mp4'),
+      expectedSeconds: 3,
+      drawn: true,
+      matrixField: { against: path.join(root, 'viz-matrix-plain.mp4') },
+    },
+    {
+      // PEAK PILLS' wide block gap, read as three consecutive dark rows where the ordinary stack has one: the
+      // dividers fall on multiples of eight, so with a three-pixel gap rows 896, 897 and 898 are dark and 899 —
+      // the block below them — is drawn. Measured, the hairline's own drawing has row 897 drawn at 169, so the
+      // three dark rows are the gap and not the drawing happening to be dark there.
+      name: 'a sound file drawn as peak pills',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'peak-pills', fps: 30, visualizationProgressLine: false },
+      task: {
+        id: 'viz-pills', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [broadband],
+        outputDirectory: root, outputFilename: 'viz-pills.mp4', preset,
+      },
+      output: path.join(root, 'viz-pills.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      segmentGap: { divider: 896, gap: 897, block: 899 },
     },
     {
       name: 'the same sound drawn without its trim',
@@ -1038,6 +1122,34 @@ const main = async () => {
         const atDivider = await rowStripLuma(item.output, 2, 896)
         const inBlock = await rowStripLuma(item.output, 2, 900)
         check(`a segmented drawing has a dark divider across the bars (${atDivider}) with a drawn block between them (${inBlock})`, atDivider < 40 && inBlock > 60, true)
+      }
+      if (item.holdsPeaks) {
+        // The ghost standing where the loud half left it, and then the same ghost lower down: the pair says the
+        // hold is holding AND that it is decaying, rather than a picture that simply never changes.
+        const early = await bandLuma(item.output, item.holdsPeaks.early, 0.1, 0.25)
+        const late = await bandLuma(item.output, item.holdsPeaks.late, 0.1, 0.25)
+        check(`the peak still stands past the sound that made it (top band ${early} at ${item.holdsPeaks.early}s)`, early > 60, true)
+        check(`and it falls away rather than sitting there (${late} at ${item.holdsPeaks.late}s, against ${early})`, late < early && late > 15, true)
+      }
+      if (item.noHold) {
+        const top = await bandLuma(item.output, item.noHold.at, 0.1, 0.25)
+        check(`with the hold off the same sound has nothing there (top band ${top})`, top < 40, true)
+      }
+      if (item.matrixField) {
+        // A band above the baseline, which is where the bars are NOT: on silence a plain drawing leaves it black
+        // (16, the yuv black the rest of the harness calls black) while the panel lights it faintly. Measured, 41
+        // against 16, so the floor sits above black and the ceiling well below a lit bar.
+        const field = await bandLuma(item.output, 1, 0.05, 0.4)
+        const plain = await bandLuma(item.matrixField.against, 1, 0.05, 0.4)
+        check(`a panel of unlit cells is lit faintly (${field}) where the plain bars leave it black (${plain})`, field > 26 && field < 90 && plain < 24, true)
+      }
+      if (item.segmentGap) {
+        // Three rows of divider and then a block: the gap is WIDER than the hairline, which is what makes the
+        // stack read as separated pills rather than as one column with lines across it.
+        const atDivider = await rowStripLuma(item.output, 2, item.segmentGap.divider)
+        const inGap = await rowStripLuma(item.output, 2, item.segmentGap.gap)
+        const inBlock = await rowStripLuma(item.output, 2, item.segmentGap.block)
+        check(`the pills' divider is three rows thick (${atDivider}, ${inGap}) with a drawn block below it (${inBlock})`, atDivider < 40 && inGap < 40 && inBlock > 60, true)
       }
       if (item.sweepsAgainst) {
         // The line's column at one time, and the column it will have left by the other. Both are in the BLACK

@@ -34,20 +34,42 @@ export interface VisualizationTemplate {
  *
  * The two at the top are PICTURES — the look the editor can show a still of and the export then holds for
  * the whole file — and the rest are moving drawings. The order is deliberate: the first is what a job gets
- * unless something else is asked for, and a static waveform is what a podcast video is.
+ * unless something else is asked for, and a static waveform is what a podcast video is. The three LED
+ * templates sit together at the end of the bars family, because they ARE the bars drawn another way — see
+ * `VISUALIZATION_DEFAULTS`, where each one's panel, pills and peak hold are set up.
  */
 export const VISUALIZATIONS: VisualizationTemplate[] = [
   { id: 'waveform', name: 'WAVEFORM', kind: 'picture', colour: true },
   { id: 'spectrum', name: 'SPECTRUM', kind: 'picture', colour: false },
   { id: 'eq', name: 'EQ BARS', kind: 'moving', colour: true },
   { id: 'mirrored-bars', name: 'MIRRORED BARS', kind: 'moving', colour: true },
+  { id: 'led-eq', name: 'LED EQ', kind: 'moving', colour: true },
+  { id: 'matrix-panel', name: 'MATRIX PANEL', kind: 'moving', colour: true },
+  { id: 'peak-pills', name: 'PEAK PILLS', kind: 'moving', colour: true },
   { id: 'scope', name: 'RADIAL SCOPE', kind: 'moving', colour: false },
   { id: 'waveform-scroll', name: 'WAVEFORM \u00b7 SCROLL', kind: 'moving', colour: true },
   { id: 'spectrum-scroll', name: 'SPECTRUM \u00b7 SCROLL', kind: 'moving', colour: false },
 ]
 
-/** The two templates built out of EQ bars, which share every one of their knobs and their geometry. */
-export const isBarsTemplate = (template: Visualization): boolean => template === 'eq' || template === 'mirrored-bars'
+/**
+ * The templates built out of EQ bars, which share every one of their knobs and their geometry.
+ *
+ * The three LED ones are in the family rather than beside it: LED EQ is the bars with a peak hold, PEAK
+ * PILLS is the bars with a wider block gap, and MATRIX PANEL is the bars mirrored over a lit panel — one
+ * drawing with three sets of defaults, not three drawings.
+ */
+export const isBarsTemplate = (template: Visualization): boolean =>
+  template === 'eq' || template === 'mirrored-bars' || template === 'led-eq' || template === 'matrix-panel' || template === 'peak-pills'
+
+/**
+ * The bar templates drawn as two halves about the centre line.
+ *
+ * The mirror is arithmetic rather than taste: the bars are made at HALF the frame's height, one copy is
+ * flipped, and the two are stacked, so the drawing grows both ways from the middle. MATRIX PANEL is in here
+ * because its ACTIVE layer is the mirrored bars — the lit panel underneath is not mirrored, it is a field.
+ */
+export const isMirroredTemplate = (template: Visualization): boolean =>
+  template === 'mirrored-bars' || template === 'matrix-panel'
 
 /** The two waveforms, which share the amplitude scale, the weight and how many waveforms they draw. */
 export const isWaveTemplate = (template: Visualization): boolean => template === 'waveform' || template === 'waveform-scroll'
@@ -418,9 +440,15 @@ export const clampEqSensitivity = (value: unknown): number => {
   return Math.max(EQ_MIN_SENSITIVITY, Math.min(EQ_MAX_SENSITIVITY, sensitivity))
 }
 
-/** The EQ's knobs, read off a preset with the defaults filled in and every figure held to what ffmpeg takes. */
-export const eqStyleOf = (preset: Pick<EncodingPreset, 'eqBars' | 'eqGap' | 'eqAmplitude' | 'eqFrequency' | 'eqSensitivity'>): EqStyle => ({
-  bars: clampEqBars(preset.eqBars ?? EQ_DEFAULT_BARS),
+/**
+ * The EQ's knobs, read off a preset with the defaults filled in and every figure held to what ffmpeg takes.
+ *
+ * The BAR COUNT's default is the template's own — see `drawingDefaultsFor` — which is what lets the LED EQ
+ * open at sixteen bars while the plain bars still open at `EQ_DEFAULT_BARS`. Everything else is the job's
+ * figure or the family's, the same for every bar template.
+ */
+export const eqStyleOf = (preset: Pick<EncodingPreset, 'visualization' | 'eqBars' | 'eqGap' | 'eqAmplitude' | 'eqFrequency' | 'eqSensitivity'>): EqStyle => ({
+  bars: clampEqBars(preset.eqBars ?? drawingDefaultsFor(preset.visualization).bars ?? EQ_DEFAULT_BARS),
   gap: clampEqGap(preset.eqGap ?? EQ_DEFAULT_GAP),
   amplitude: EQ_AMPLITUDE_SCALES.includes(preset.eqAmplitude as EqAmplitudeScale) ? (preset.eqAmplitude as EqAmplitudeScale) : DEFAULT_EQ_STYLE.amplitude,
   frequency: EQ_FREQUENCY_SCALES.includes(preset.eqFrequency as EqFrequencyScale) ? (preset.eqFrequency as EqFrequencyScale) : DEFAULT_EQ_STYLE.frequency,
@@ -484,6 +512,26 @@ export const COLOUR_LIST_LENGTH = 8
 /** One colour, repeated for as many channels as a filter may be handed — see `COLOUR_LIST_LENGTH`. */
 export const colourList = (colour: string, count: number = COLOUR_LIST_LENGTH): string =>
   new Array(Math.max(1, count)).fill(colour).join('|')
+
+/**
+ * One colour, dimmed: the theme's own green taken down to a share of itself.
+ *
+ * The comment inside `colourList` explains why a colour has to be walked out per channel; this one explains
+ * why a colour has to be DARKENED in TypeScript at all, and the reason is the same shape. MATRIX PANEL's
+ * unlit cells are not a filter option — ffmpeg has no "draw a bar at 15%" — so the dim panel is a flat source
+ * of a colour that has to be computed here, where the hex is known, rather than asked for downstream. It
+ * parses the six- and three-digit forms and gives black for anything it cannot read, which is the one dim
+ * that cannot be wrong; an unreadable colour would have failed the drawing's own filters a line later anyway.
+ */
+export const dimmedColour = (colour: string, share: number): string => {
+  const hex = String(colour).trim().replace(/^#/, '')
+  const full = hex.length === 3 ? hex.split('').map((part) => part + part).join('') : hex
+  if (!/^[0-9a-f]{6}$/i.test(full)) return '#000000'
+  const factor = Math.max(0, Math.min(1, share))
+  const channel = (offset: number) => Math.round(parseInt(full.slice(offset, offset + 2), 16) * factor)
+  return `#${[0, 2, 4].map((offset) => channel(offset).toString(16).padStart(2, '0')).join('')}`
+}
+
 export const SCOPE_MIN_ZOOM = 0.2
 export const SCOPE_MAX_ZOOM = 10
 export const SCOPE_DEFAULT_ZOOM = 1
@@ -504,6 +552,103 @@ export const SEGMENT_DIVIDER = 1
  * comb. Past this the gaps are turned off rather than drawn, so a dense spectrum reads as a spectrum.
  */
 export const EQ_MIN_BAR_PX = 3
+
+/**
+ * How long a held peak lasts: the share of its height it keeps each frame, and the range it may be set in.
+ *
+ * The upper bound stops short of one on purpose. `lagfun` with a decay of one holds every peak forever, so
+ * the ghost would never clear and the drawing would be a single image that only ever grows — the bar chart
+ * would stop being about the sound. Just below one is a long trail that still lets go.
+ */
+export const EQ_PEAK_DECAY_MIN = 0
+export const EQ_PEAK_DECAY_MAX = 0.999
+/** The decay a hold starts at, and the longer one the pills are given — their whole look is a slower fall. */
+export const EQ_DEFAULT_PEAK_DECAY = 0.95
+export const EQ_PILL_PEAK_DECAY = 0.985
+/**
+ * How thick a segment divider is by default, and how far it may be opened.
+ *
+ * The default is the hairline the ordinary block drawing has always used, and the range stops at half a
+ * block: past that the blocks are mostly gap and the drawing stops reading as a stack of anything.
+ */
+export const EQ_SEGMENT_GAP_MAX = Math.max(1, Math.floor(SEGMENT_PX / 2))
+/**
+ * The share of the drawing's colour MATRIX PANEL lights its unlit cells at.
+ *
+ * Dim enough to be unmistakably OFF — measured, the theme's green at this share reads a luma around 27, so
+ * the field is visible without ever being mistaken for a lit bar — and high enough not to be black, which
+ * would make the panel a plain background rather than a panel of unlit lamps.
+ */
+export const MATRIX_DIM_SHARE = 0.15
+/**
+ * The frequencies the LED EQ labels its bands with, low to high.
+ *
+ * The seven of a graphic equaliser rather than one per bar, because a label per bar is unreadable past a
+ * handful: the bands are placed evenly across the width, which is the one layout that holds whatever the
+ * bar count, and the figures are the shorthands a reader recognises rather than exact centre frequencies.
+ */
+export const EQ_LABEL_FREQUENCIES = ['63', '160', '400', '1k', '2.5k', '6.3k', '16k']
+
+/**
+ * A peak hold's decay, held to what `lagfun` can be asked for: nothing at all, or a trail just short of
+ * forever. Nonsense — a typed figure, an absent one — falls back to the default rather than to off, because
+ * a job that says nothing about a hold wants the ordinary one, not none.
+ */
+export const clampPeakDecay = (value: unknown): number => {
+  const decay = Number(value)
+  if (!Number.isFinite(decay)) return EQ_DEFAULT_PEAK_DECAY
+  return Math.max(EQ_PEAK_DECAY_MIN, Math.min(EQ_PEAK_DECAY_MAX, decay))
+}
+
+/** A block gap, held to a whole number of pixels between a hairline and half a block. */
+export const clampSegmentGap = (value: unknown): number => {
+  const gap = Math.round(Number(value))
+  if (!Number.isFinite(gap)) return SEGMENT_DIVIDER
+  return Math.max(1, Math.min(EQ_SEGMENT_GAP_MAX, gap))
+}
+
+/**
+ * What a bar template does unless the job says otherwise.
+ *
+ * A template's own defaults, rather than one set for the whole family, because the three LED looks ARE the
+ * bars with different settings: LED EQ is a sparse panel that holds its peaks, PEAK PILLS is the block
+ * drawing with a wide gap and a slow fall, and MATRIX PANEL is the lit field. Keeping them here means a job
+ * that picks one gets its look without having to be told six figures, while an absent field still reads the
+ * same as it always did for the templates that declare none — a job saved before any of this, asking for the
+ * plain bars, gets exactly the drawing it did.
+ */
+export interface DrawingDefaults {
+  bars?: number
+  segmented?: boolean
+  segmentGap?: number
+  peakHold?: boolean
+  peakDecay?: number
+  labels?: boolean
+}
+
+export const VISUALIZATION_DEFAULTS: Record<Visualization, DrawingDefaults> = {
+  waveform: {},
+  spectrum: {},
+  eq: {},
+  'mirrored-bars': {},
+  scope: {},
+  'waveform-scroll': {},
+  'spectrum-scroll': {},
+  // A sparse panel that holds its peaks: sixteen bars is what an LED spectrum has room for, and the blocks
+  // and the hold are what make it read as lamps rather than as a bar chart.
+  'led-eq': { bars: 16, segmented: true, peakHold: true },
+  // The lit field. More bars than the LED EQ, because a panel wants cells rather than bars, and its active
+  // layer is the mirrored, segmented bars over that field — see `drawingChains`.
+  'matrix-panel': { bars: 24, segmented: true, peakHold: true },
+  // The blocks with a wide gap and a slow fall: `segmented` plus a divider several pixels thick is what turns
+  // a stack of blocks into a column of separated pills, and the longer decay is what tells them apart from
+  // the LED EQ when both are on screen.
+  'peak-pills': { segmented: true, segmentGap: 3, peakHold: true, peakDecay: EQ_PILL_PEAK_DECAY },
+}
+
+/** A template's own defaults, for an id that may have been saved before the template existed. */
+export const drawingDefaultsFor = (id: Visualization | undefined): DrawingDefaults =>
+  VISUALIZATION_DEFAULTS[templateFor(id).id]
 
 /** The height one block of a segmented drawing gets, so the blocks tile the frame exactly and none is cut. */
 export const segmentHeight = (height: number): number => height / Math.max(1, Math.round(height / SEGMENT_PX))
@@ -547,6 +692,13 @@ export interface DrawingTune {
   spectrumScale: SpectrumScale
   spectrumSaturation: number
   segmented: boolean
+  /** How thick the divider between a segmented drawing's blocks is, in pixels of the frame. */
+  segmentGap: number
+  /** Whether the bar drawings hold their peaks, and how long one is held for — see `eqPeakHold`. */
+  peakHold: boolean
+  peakDecay: number
+  /** Whether the LED EQ draws its frequency bands along the bottom. */
+  labels: boolean
   scopePersist: number
   scopeZoom: number
   scopeDraw: ScopeDraw
@@ -570,28 +722,48 @@ export const DEFAULT_TUNE: DrawingTune = {
   spectrumScale: SPECTRUM_DEFAULT_SCALE,
   spectrumSaturation: SPECTRUM_DEFAULT_SATURATION,
   segmented: false,
+  segmentGap: SEGMENT_DIVIDER,
+  peakHold: false,
+  peakDecay: EQ_DEFAULT_PEAK_DECAY,
+  labels: false,
   scopePersist: SCOPE_DEFAULT_PERSIST,
   scopeZoom: SCOPE_DEFAULT_ZOOM,
   scopeDraw: SCOPE_DEFAULT_DRAW,
   trueStereo: false,
 }
 
-/** A preset's knobs, resolved with the defaults filled in and every figure held to what the filters take. */
+/**
+ * A preset's knobs, resolved with the defaults filled in and every figure held to what the filters take.
+ *
+ * The template's OWN defaults are what an absent field falls back to — see `drawingDefaultsFor` — so a job
+ * that picks LED EQ gets its hold and its blocks without being asked, while a job that says nothing at all
+ * still resolves exactly as it always did, because the templates that declare no defaults declare none. A
+ * peak hold is off when its decay is nothing as well as when it is not asked for: a peak that falls instantly
+ * is no peak, and the two ways of saying off should mean the same thing to the graph.
+ */
 export const drawingTuneOf = (preset: Pick<EncodingPreset,
-  'drawingTheme' | 'waveScale' | 'waveWeight' | 'waveChannels' | 'spectrumScale' | 'spectrumSaturation' |
-  'eqSegmented' | 'scopePersist' | 'scopeZoom' | 'scopeDraw' | 'scopeTrueStereo'>): DrawingTune => ({
-  theme: themeFor(preset.drawingTheme).id,
-  waveScale: WAVE_SCALES.includes(preset.waveScale as WaveScale) ? (preset.waveScale as WaveScale) : WAVE_DEFAULT_SCALE,
-  waveWeight: preset.waveWeight === 'line' ? 'line' : WAVE_DEFAULT_WEIGHT,
-  waveChannels: preset.waveChannels === 2 ? 2 : WAVE_DEFAULT_CHANNELS,
-  spectrumScale: SPECTRUM_SCALES.includes(preset.spectrumScale as SpectrumScale) ? (preset.spectrumScale as SpectrumScale) : SPECTRUM_DEFAULT_SCALE,
-  spectrumSaturation: clampSaturation(preset.spectrumSaturation ?? SPECTRUM_DEFAULT_SATURATION),
-  segmented: preset.eqSegmented === true,
-  scopePersist: clampScopePersist(preset.scopePersist ?? SCOPE_DEFAULT_PERSIST),
-  scopeZoom: clampScopeZoom(preset.scopeZoom ?? SCOPE_DEFAULT_ZOOM),
-  scopeDraw: preset.scopeDraw === 'dot' ? 'dot' : SCOPE_DEFAULT_DRAW,
-  trueStereo: preset.scopeTrueStereo === true,
-})
+  'visualization' | 'drawingTheme' | 'waveScale' | 'waveWeight' | 'waveChannels' | 'spectrumScale' | 'spectrumSaturation' |
+  'eqSegmented' | 'eqPeakHold' | 'eqPeakDecay' | 'eqSegmentGap' | 'eqLabels' | 'scopePersist' | 'scopeZoom' | 'scopeDraw' | 'scopeTrueStereo'>): DrawingTune => {
+  const own = drawingDefaultsFor(preset.visualization)
+  const peakDecay = clampPeakDecay(preset.eqPeakDecay ?? own.peakDecay ?? EQ_DEFAULT_PEAK_DECAY)
+  return {
+    theme: themeFor(preset.drawingTheme).id,
+    waveScale: WAVE_SCALES.includes(preset.waveScale as WaveScale) ? (preset.waveScale as WaveScale) : WAVE_DEFAULT_SCALE,
+    waveWeight: preset.waveWeight === 'line' ? 'line' : WAVE_DEFAULT_WEIGHT,
+    waveChannels: preset.waveChannels === 2 ? 2 : WAVE_DEFAULT_CHANNELS,
+    spectrumScale: SPECTRUM_SCALES.includes(preset.spectrumScale as SpectrumScale) ? (preset.spectrumScale as SpectrumScale) : SPECTRUM_DEFAULT_SCALE,
+    spectrumSaturation: clampSaturation(preset.spectrumSaturation ?? SPECTRUM_DEFAULT_SATURATION),
+    segmented: (preset.eqSegmented ?? own.segmented) === true,
+    segmentGap: clampSegmentGap(preset.eqSegmentGap ?? own.segmentGap ?? SEGMENT_DIVIDER),
+    peakHold: (preset.eqPeakHold ?? own.peakHold) === true && peakDecay > EQ_PEAK_DECAY_MIN,
+    peakDecay,
+    labels: (preset.eqLabels ?? own.labels) === true,
+    scopePersist: clampScopePersist(preset.scopePersist ?? SCOPE_DEFAULT_PERSIST),
+    scopeZoom: clampScopeZoom(preset.scopeZoom ?? SCOPE_DEFAULT_ZOOM),
+    scopeDraw: preset.scopeDraw === 'dot' ? 'dot' : SCOPE_DEFAULT_DRAW,
+    trueStereo: preset.scopeTrueStereo === true,
+  }
+}
 
 /** Everything one drawing is made from: the template, the two sizes, the palette and the knobs. */
 interface DrawingRequest {
@@ -622,7 +794,22 @@ const drawingSize = (request: DrawingRequest): string => {
 
 /** The height a bars drawing is made at: the frame's, or half of it when it is to be mirrored. */
 const barsDrawHeight = (template: Visualization, frameHeight: number): number =>
-  template === 'mirrored-bars' ? evenNumber(frameHeight / 2) : Math.max(2, frameHeight)
+  isMirroredTemplate(template) ? evenNumber(frameHeight / 2) : Math.max(2, frameHeight)
+
+/**
+ * Where a bars drawing's bars land on the frame: the whole-pixel width of one, the strip they fill, and the
+ * leftover that is centred.
+ *
+ * One geometry, read by the stage that draws the bars and by the panel that is drawn beneath MATRIX PANEL's
+ * active layer, so the built panel's cells line up with the bars rather than beside them. See the stage's own
+ * note for why the count is the width and the leftover is padded rather than stretched.
+ */
+export const barsGeometry = (frameWidth: number, bars: number): { barPx: number; strip: number; pad: number } => {
+  const barPx = Math.max(1, Math.floor(frameWidth / bars))
+  const strip = Math.max(1, barPx * bars)
+  const pad = Math.max(0, Math.round((frameWidth - strip) / 2))
+  return { barPx, strip, pad }
+}
 
 /**
  * One template's filter — the ONE its preview and its export are both made from.
@@ -722,27 +909,33 @@ interface DrawingStage {
   mirror: boolean
 }
 
-const drawingStage = (template: Visualization, frame: { width: number; height: number }, eq: EqStyle, tune: DrawingTune): DrawingStage => {
+const drawingStage = (request: DrawingRequest): DrawingStage => {
+  const { template, frame, eq, tune, color } = request
   if (template === 'scope') {
     const side = scopeSide(frame)
     const x = Math.max(0, Math.round((frame.width - side) / 2))
     return { scale: { width: side, height: side }, flags: 'lanczos', finish: (target) => `,pad=${frame.width}:${frame.height}:${x}:0:color=black${target}`, mirror: false }
   }
   if (isBarsTemplate(template)) {
-    const barPx = Math.max(1, Math.floor(frame.width / eq.bars))
-    const strip = Math.max(1, barPx * eq.bars)
-    const pad = Math.max(0, Math.round((frame.width - strip) / 2))
+    const { barPx, strip, pad } = barsGeometry(frame.width, eq.bars)
     // The gap is a share of a bar, so it stops meaning anything on a bar a couple of pixels wide: past that it
     // is turned off rather than drawn as a comb.
     const gap = eq.gap > 0 && barPx >= EQ_MIN_BAR_PX ? `,drawgrid=x=${pad}:y=99999:w=${barPx}:h=99999:t=${eq.gap}:c=black` : ''
     // The segment dividers are drawn with a height the frame divides EXACTLY into, so every block is whole —
-    // the top one included, which a grid aligned from the baseline would leave cut off.
-    const segments = tune.segmented ? `,drawgrid=x=99999:y=0:w=99999:h=${segmentHeight(frame.height)}:t=${SEGMENT_DIVIDER}:c=black` : ''
+    // the top one included, which a grid aligned from the baseline would leave cut off. The gap between them
+    // is the knobs', and MATRIX PANEL's active layer is always segmented: its whole idea is bright cells over a
+    // field of dim ones, and a solid bar over a celled field would read as neither.
+    const segmented = tune.segmented || template === 'matrix-panel'
+    const segments = segmented ? `,drawgrid=x=99999:y=0:w=99999:h=${segmentHeight(frame.height)}:t=${tune.segmentGap}:c=black` : ''
+    // The band labels are drawn LAST, over the finished frame, so they sit on the blocks rather than under
+    // them — and only the LED EQ is offered them, because on a sixty-four bar spectrum seven labels would be
+    // reading under bars they do not name.
+    const labels = template === 'led-eq' && tune.labels ? labelFilters(frame, color) : ''
     return {
       scale: { width: strip, height: barsDrawHeight(template, frame.height) },
       flags: 'neighbor',
-      finish: (target) => `,pad=${frame.width}:${frame.height}:${pad}:0:color=black${gap}${segments}${target}`,
-      mirror: template === 'mirrored-bars',
+      finish: (target) => `,pad=${frame.width}:${frame.height}:${pad}:0:color=black${gap}${segments}${labels}${target}`,
+      mirror: isMirroredTemplate(template),
     }
   }
   // Everything else is drawn at the frame's own size already, so there is nothing between the scale and the
@@ -751,13 +944,75 @@ const drawingStage = (template: Visualization, frame: { width: number; height: n
 }
 
 /**
+ * The band labels along the bottom of an LED EQ, one per named frequency, in the drawing's own colour.
+ *
+ * The font is named rather than left to the system: a label is a readout and has to be legible, and the app is
+ * a macOS one where this face is always present. `drawtext` needs to be told SOMETHING — left entirely to
+ * fontconfig it picks a proportional face, which reads as a caption rather than as an instrument scale. The
+ * bands are spaced evenly across the width and each label is nudged in from its division's leading edge, which
+ * is the one layout that holds whatever the bar count; a true frequency axis would need the labels to track
+ * the filter's `fscale`, which is a mapping `drawtext` cannot be handed.
+ */
+const LABEL_FONT = 'Menlo'
+
+const labelFilters = (frame: { width: number; height: number }, colour: string): string => {
+  const size = Math.max(10, Math.round(frame.height * 0.03))
+  const y = Math.max(0, frame.height - size - Math.round(frame.height * 0.02))
+  const step = frame.width / EQ_LABEL_FREQUENCIES.length
+  return EQ_LABEL_FREQUENCIES.map((label, index) =>
+    `,drawtext=font=${LABEL_FONT}:text=${label}:x=${Math.round(index * step + step * 0.06)}:y=${y}:fontsize=${size}:fontcolor=${colour}`,
+  ).join('')
+}
+
+/**
+ * The decay a bar drawing's peak hold is made with, or nothing where it is not asked for.
+ *
+ * The toggle and the decay are two ways of asking for the same thing and both have to agree: a hold that was
+ * switched on and then faded to nothing is off, and so is one nothing turned on. The filter only exists when
+ * this returns a figure, which is what keeps a hold nobody asked for out of the graph entirely.
+ */
+const peakHoldDecay = (request: DrawingRequest): number | null => {
+  if (!isBarsTemplate(request.template) || !request.tune.peakHold) return null
+  return request.tune.peakDecay > EQ_PEAK_DECAY_MIN ? request.tune.peakDecay : null
+}
+
+/**
+ * MATRIX PANEL's lit field: every cell of the panel at a share of the drawing's colour.
+ *
+ * A source rather than a filter, because there is nothing to derive it from — the unlit cells are lit whether
+ * or not the sound is there, which is the whole difference between a panel and a bar chart. It is built at the
+ * SAME bar geometry as the active layer above it and its grids are drawn from the same pad origin, so a cell of
+ * the field sits exactly under the bar that will light it. The two are then combined by LIGHTENING, which is
+ * the one blend that gives the composite the behaviour the look needs: where the active bar is bright it wins,
+ * where it is dark the field shows through, and the active layer's own black padding — the leftover when the
+ * bar count does not divide the frame — leaves the field rather than a black stripe.
+ */
+const matrixPanelChain = (request: DrawingRequest): string => {
+  const { frame, eq, tune, color, fps } = request
+  const { barPx, pad } = barsGeometry(frame.width, eq.bars)
+  const dim = dimmedColour(color, MATRIX_DIM_SHARE)
+  const gap = eq.gap > 0 && barPx >= EQ_MIN_BAR_PX ? `,drawgrid=x=${pad}:y=99999:w=${barPx}:h=99999:t=${eq.gap}:c=black` : ''
+  const segments = `,drawgrid=x=99999:y=0:w=99999:h=${segmentHeight(frame.height)}:t=${tune.segmentGap}:c=black`
+  return `color=c=${dim}:s=${frame.width}x${frame.height}:r=${fps}${gap}${segments}[panel]`
+}
+
+/**
  * The chains that draw one template's picture to `target`, at the frame's own size.
  *
- * Two templates need more than a filter: the MIRRORED BARS come to the frame as two halves rather than one,
- * and the SCOPE is opened into a ring first — see below, where the whole of that is.
+ * More than a scale is needed in four of the cases, and each for a reason that is arithmetic rather than taste:
+ *
+ * - The BARS templates come to the frame through `drawingStage`, which is where the bar count and the gap
+ *   become exact — see its own note.
+ * - A PEAK HOLD is a split, a `lagfun` and a recombine, so it is chains rather than a suffix: the drawing is
+ *   forked, one fork is run through `lagfun` so its brightest points fall slowly instead of vanishing, and the
+ *   two are merged by LIGHTENING — so a live bar is its full height while the peak above it lingers and fades.
+ * - The MIRROR is two half-drawings stacked, as it always was.
+ * - MATRIX PANEL adds a source beneath the two: a panel of dim cells, built where the drawing cannot reach, and
+ *   merged with the active layer by the same lightening. Every other template's chains are byte for byte what
+ *   they were, which is deliberate — the graph is asserted, so a change of shape has to be a change of look.
  */
 const drawingChains = (request: DrawingRequest, input: string, filters: string, target: string): string[] => {
-  const stage = drawingStage(request.template, request.frame, request.eq, request.tune)
+  const stage = drawingStage(request)
   const drawn = `${filters},scale=${stage.scale.width}:${stage.scale.height}:flags=${stage.flags}`
   if (request.template === 'scope' && !request.tune.trueStereo) {
     // One channel, then two that are a quarter of a cycle apart. The mix comes FIRST so the pair is built
@@ -770,14 +1025,41 @@ const drawingChains = (request: DrawingRequest, input: string, filters: string, 
       `[scopeI][scopeQ]join=inputs=2:channel_layout=stereo,${drawn}${stage.finish(target)}`,
     ]
   }
-  if (stage.mirror) {
-    return [
-      `${input}${drawn},split[halfAbove][halfBelow]`,
-      '[halfAbove]vflip[flipped]',
-      `[flipped][halfBelow]vstack${stage.finish(target)}`,
-    ]
+  const hold = peakHoldDecay(request)
+  if (hold == null && request.template !== 'matrix-panel') {
+    // The shape every template had before any of this: one chain, or the mirror's three.
+    if (stage.mirror) {
+      return [
+        `${input}${drawn},split[halfAbove][halfBelow]`,
+        '[halfAbove]vflip[flipped]',
+        `[flipped][halfBelow]vstack${stage.finish(target)}`,
+      ]
+    }
+    return [`${input}${drawn}${stage.finish(target)}`]
   }
-  return [`${input}${drawn}${stage.finish(target)}`]
+  // The drawing, then its hold, then its mirror, each stage taking the label the one before it left.
+  const chains: string[] = []
+  let body = `${input}${drawn}`
+  if (hold != null) {
+    chains.push(`${body},split[holdLive][holdGhostSrc]`)
+    chains.push(`[holdGhostSrc]lagfun=decay=${hold}[holdGhost]`)
+    body = '[holdLive][holdGhost]blend=all_mode=lighten'
+  }
+  if (stage.mirror) {
+    chains.push(`${body},split[holdHalfAbove][holdHalfBelow]`)
+    chains.push('[holdHalfAbove]vflip[holdFlipped]')
+    body = '[holdFlipped][holdHalfBelow]vstack'
+  }
+  if (request.template === 'matrix-panel') {
+    chains.push(`${body}${stage.finish('[active]')}`)
+    chains.push(matrixPanelChain(request))
+    // `shortest` because the panel is an endless source and the drawing is not: without it the merge would
+    // wait for the panel to finish, which it never does.
+    chains.push(`[panel][active]blend=all_mode=lighten:shortest=1${target}`)
+    return chains
+  }
+  chains.push(`${body}${stage.finish(target)}`)
+  return chains
 }
 
 /**

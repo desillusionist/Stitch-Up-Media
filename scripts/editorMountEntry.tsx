@@ -337,6 +337,25 @@ const drive = async () => {
     mirrorToggles: templates ? labelsOf('.editor-toggle') : null,
     mirrorStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
   }
+
+  // The three LED templates, which ARE the bars with settings of their own. Choosing one has to bring out the
+  // knobs the family shares, the two the LED looks add — the peak hold and the block gap — and the template's
+  // own density: the LED EQ opens at sixteen bars where the plain bars open at sixty-four, so a still asked for
+  // at sixty-four would be a drawing nobody chose.
+  if (templates) choose(templates, 'led-eq')
+  await wait(600)
+  result.audio = {
+    ...(result.audio as object),
+    ledFields: templates ? labelsOf('.editor-field') : null,
+    ledToggles: templates ? labelsOf('.editor-toggle') : null,
+    ledStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
+  }
+  if (templates) choose(templates, 'matrix-panel')
+  await wait(600)
+  result.audio = {
+    ...(result.audio as object),
+    panelStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
+  }
   // The bitrate's CUSTOM rung, which has to bring its own field out: a ladder that offers a typed figure has to
   // have somewhere to type it.
   const chooseBitrate = bitrateSelect()

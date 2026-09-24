@@ -4,7 +4,7 @@ import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, Queu
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
-import { DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_DEFAULT_BARS, EQ_DEFAULT_GAP, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
+import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { PREVIEW_SPEEDS, speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
@@ -1281,11 +1281,12 @@ export const EditJobApp: React.FC = () => {
    * focused range slider stays live, because placing the playhead leaves focus on
    * the scrubber, and treating that as typing swallowed every shortcut.
    *
-   * LEFT and RIGHT SHUTTLE, exactly as J and L do — the same keys under another name, because a reader who
-   * reaches for an arrow means what a reader who reaches for J or L means. Frame stepping keeps its own two
-   * homes: the transport's own FRAME buttons, and the quick tap that a K+shuttle makes. UP and DOWN still move
-   * to the edges of the clip under the playhead, and pressing again walks to the neighbouring clip's edge,
-   * which is the frame-accurate helper's jump-to-start and jump-to-end widened to a timeline with many clips.
+   * LEFT and RIGHT STEP ONE FRAME, which is the transport's own FRAME buttons under another name — a
+   * precision nudge, not a shuttle. The shuttle keeps its own two letters, J and L, so the arrows can mean the
+   * one thing a reader reaching for a frame most wants; holding an arrow repeats the step, which is how a
+   * reader walks a dozen frames without letting go. UP and DOWN still move to the edges of the clip under the
+   * playhead, and pressing again walks to the neighbouring clip's edge, which is the frame-accurate helper's
+   * jump-to-start and jump-to-end widened to a timeline with many clips.
    */
   const heldKeysRef = useRef({ k: false })
   const slowMotionRef = useRef(false)
@@ -1340,6 +1341,14 @@ export const EditJobApp: React.FC = () => {
         jumpToClipEdge(code === 'ArrowDown' ? 1 : -1)
         return
       }
+      // The arrows are the FRAME buttons: one whole frame each way, held and repeated like any other key. They
+      // are not a shuttle, so nothing here ramps or latches — J and L do that, and a reader who wants it will
+      // reach for them.
+      if (code === 'ArrowLeft' || code === 'ArrowRight') {
+        event.preventDefault()
+        playbackRef.current.step((code === 'ArrowRight' ? 1 : -1) / stepFpsRef.current)
+        return
+      }
       // Bound by physical key rather than by character. On a non-Latin layout the
       // letter keys report a different character, which is why Space worked while
       // these did nothing.
@@ -1348,12 +1357,9 @@ export const EditJobApp: React.FC = () => {
         if (!event.repeat) { heldKeysRef.current.k = true; playbackRef.current.pause() }
         return
       }
-      // The arrows are the shuttle keys under another name: Left is J and Right is L, so the whole of the
-      // ladder below applies to either pair, taps and slow motion included.
-      const key = code === 'ArrowLeft' ? 'KeyJ' : code === 'ArrowRight' ? 'KeyL' : code
-      if ((key !== 'KeyJ' && key !== 'KeyL') || event.repeat) return
+      if ((code !== 'KeyJ' && code !== 'KeyL') || event.repeat) return
       event.preventDefault()
-      const direction: 1 | -1 = key === 'KeyL' ? 1 : -1
+      const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
       if (heldKeysRef.current.k) {
         clearTap()
         tapTimerRef.current = window.setTimeout(() => {
@@ -1368,9 +1374,8 @@ export const EditJobApp: React.FC = () => {
     const onKeyUp = (event: KeyboardEvent) => {
       const code = event.code
       if (code === 'KeyK') { heldKeysRef.current.k = false; return }
-      const key = code === 'ArrowLeft' ? 'KeyJ' : code === 'ArrowRight' ? 'KeyL' : code
-      if (key !== 'KeyJ' && key !== 'KeyL') return
-      const direction: 1 | -1 = key === 'KeyL' ? 1 : -1
+      if (code !== 'KeyJ' && code !== 'KeyL') return
+      const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
       if (tapTimerRef.current != null) {
         // Released before the threshold, so it was a tap: step one whole frame.
         clearTap()
@@ -1495,6 +1500,12 @@ export const EditJobApp: React.FC = () => {
    * export ignores.
    */
   const drawingTune = draft ? drawingTuneOf(draft.preset) : DEFAULT_TUNE
+  /**
+   * The EQ's knobs, resolved the same way and for the same reason — and the reason a bar count can differ
+   * between one template and another: a template's own default is what an unset field falls back to, so the
+   * LED EQ's field reads the sixteen it will draw with rather than the sixty-four the plain bars default to.
+   */
+  const eqStyle = draft ? eqStyleOf(draft.preset) : DEFAULT_EQ_STYLE
   /** The chosen drawing, resolved once, so the knob rows below and the monitor agree on which set applies. */
   const drawingTemplate = templateFor(draft?.preset.visualization)
   /**
@@ -3037,7 +3048,7 @@ export const EditJobApp: React.FC = () => {
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
-          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. J / L OR \u2190 / \u2192 SHUTTLE AND SPEED UP ON REPEAT; K+J OR K+L IS SLOW MOTION; A QUICK TAP STEPS ONE FRAME. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
+          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. \u2190 / \u2192 STEP ONE FRAME; J / L SHUTTLE AND SPEED UP ON REPEAT, K+J OR K+L IS SLOW MOTION. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
         </section>
 
         <section className="timeline-panel">
@@ -3536,8 +3547,8 @@ export const EditJobApp: React.FC = () => {
                   <div className="editor-field">
                     <span><span className="editor-label">BAR COUNT</span></span>
                     <div className="exact-row">
-                      <label className="mini-field"><span>DENSITY</span><NumberField min={EQ_MIN_BARS} max={EQ_MAX_BARS} step={1} className="editor-input" value={draft.preset.eqBars ?? EQ_DEFAULT_BARS} onValue={(value) => updatePreset({ eqBars: clampEqBars(value) })} title="How many bars the spectrum is divided into" /></label>
-                      <label className="mini-field"><span>GAP PX</span><NumberField min={0} max={EQ_MAX_GAP} step={1} className="editor-input" value={draft.preset.eqGap ?? EQ_DEFAULT_GAP} onValue={(value) => updatePreset({ eqGap: clampEqGap(value) })} title="The gap between bars, in pixels of the output frame. 0 is solid." /></label>
+                      <label className="mini-field"><span>DENSITY</span><NumberField min={EQ_MIN_BARS} max={EQ_MAX_BARS} step={1} className="editor-input" value={eqStyle.bars} onValue={(value) => updatePreset({ eqBars: clampEqBars(value) })} title="How many bars the spectrum is divided into" /></label>
+                      <label className="mini-field"><span>GAP PX</span><NumberField min={0} max={EQ_MAX_GAP} step={1} className="editor-input" value={eqStyle.gap} onValue={(value) => updatePreset({ eqGap: clampEqGap(value) })} title="The gap between bars, in pixels of the output frame. 0 is solid." /></label>
                     </div>
                   </div>
                   <EditorField label="AMPLITUDE" reason="How a frequency's level is turned into the height of its bar. Logarithmic is what a spectrum normally wants — it makes the quiet end visible — and linear shows the levels as they are.">
@@ -3554,6 +3565,18 @@ export const EditJobApp: React.FC = () => {
                     <NumberField min={EQ_MIN_SENSITIVITY} max={EQ_MAX_SENSITIVITY} step={0.0000001} className="editor-input" value={draft.preset.eqSensitivity ?? EQ_MAX_SENSITIVITY} onValue={(value) => updatePreset({ eqSensitivity: clampEqSensitivity(value) })} title="The minimum amplitude a frequency must reach to be drawn" />
                   </EditorField>
                   <EditorToggle label="SEGMENTED" checked={drawingTune.segmented} onChange={(checked) => updatePreset({ eqSegmented: checked })} reason="Break each bar into a stack of blocks with thin dark lines between them, so the drawing reads as a panel of lamps rather than a solid column. The lines are aligned from the top so no block is cut off." />
+                  {/* The block drawing's own two. The gap is how thick the dividers are — a hairline for the
+                      ordinary stack, and the wide one that turns it into separated pills — and the hold is what
+                      leaves a fading ghost above each peak rather than letting it drop out from under the bar. */}
+                  <div className="editor-field">
+                    <span><span className="editor-label">BLOCKS</span></span>
+                    <div className="exact-row">
+                      <label className="mini-field"><span>BLOCK GAP</span><NumberField min={1} max={EQ_SEGMENT_GAP_MAX} step={1} className="editor-input" value={drawingTune.segmentGap} onValue={(value) => updatePreset({ eqSegmentGap: clampSegmentGap(value) })} title="How many pixels thick the divider between two blocks is. A hairline is a stack; several pixels turns it into a column of separated pills." /></label>
+                      {drawingTune.peakHold && <label className="mini-field"><span>PEAK DECAY</span><NumberField min={EQ_PEAK_DECAY_MIN} max={EQ_PEAK_DECAY_MAX} step={0.005} className="editor-input" value={drawingTune.peakDecay} onValue={(value) => updatePreset({ eqPeakDecay: clampPeakDecay(value) })} title="How long a held peak lasts: the share of its height it keeps each frame, so a figure just below one is a long trail and zero is no hold at all." /></label>}
+                    </div>
+                  </div>
+                  <EditorToggle label="PEAK HOLD" checked={drawingTune.peakHold} onChange={(checked) => updatePreset({ eqPeakHold: checked })} reason="Let each bar's peaks linger and fade above it rather than vanishing with its height, which is what a peak-hold meter does. The bar itself stays crisp; only the ghosts above it fall away. A decay of zero is no hold, so a job that fades it out has turned it off." />
+                  {drawingTemplate.id === 'led-eq' && <EditorToggle label="LABELS" checked={drawingTune.labels} onChange={(checked) => updatePreset({ eqLabels: checked })} reason="Draw the band frequencies along the bottom of the panel, one per named band, in the drawing's own colour." />}
                 </>}
                 {/* The scope's own four. Its colour is three channel contrasts rather than a hex, so that comes
                     from the theme; the fade is the inverse of the persistence; and TRUE STEREO is the one thing

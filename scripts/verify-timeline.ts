@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, colourList, drawingCanvas, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
+import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
 import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
@@ -1393,9 +1393,11 @@ console.log('\n== what a drawing sits on ==')
   // The template table, which is what keeps "the editor offers a colour" and "the encoder is given one" from
   // disagreeing: the two spectra colour themselves by intensity and take no colour of their own.
   check('the waveform is what a job gets unless it asks for something else', templateFor(undefined).id, 'waveform')
-  check('the two pictures come first, then the five that move', VISUALIZATIONS.map((template) => template.kind), ['picture', 'picture', 'moving', 'moving', 'moving', 'moving', 'moving'])
-  check('the colour field is offered exactly where a colour does something', VISUALIZATIONS.map((template) => template.colour), [true, false, true, true, false, true, false])
-  check('and the two bar drawings are the pair that share their knobs', VISUALIZATIONS.filter((template) => isBarsTemplate(template.id)).map((template) => template.id), ['eq', 'mirrored-bars'])
+  check('the two pictures come first, then the eight that move', VISUALIZATIONS.map((template) => template.kind), ['picture', 'picture', 'moving', 'moving', 'moving', 'moving', 'moving', 'moving', 'moving', 'moving'])
+  check('the colour field is offered exactly where a colour does something', VISUALIZATIONS.map((template) => template.colour), [true, false, true, true, true, true, true, false, true, false])
+  check('and the bar drawings are the five that share their knobs', VISUALIZATIONS.filter((template) => isBarsTemplate(template.id)).map((template) => template.id), ['eq', 'mirrored-bars', 'led-eq', 'matrix-panel', 'peak-pills'])
+  check('of which two are mirrored — the bars, and the panel\u2019s active layer', VISUALIZATIONS.filter((template) => isMirroredTemplate(template.id)).map((template) => template.id), ['mirrored-bars', 'matrix-panel'])
+  check('and a newly saved name resolves rather than crashing', templateFor('led-eq').id, 'led-eq')
   check('the two waveforms are a pair too', VISUALIZATIONS.filter((template) => isWaveTemplate(template.id)).map((template) => template.id), ['waveform', 'waveform-scroll'])
   check('and the two spectra', VISUALIZATIONS.filter((template) => isSpectrumTemplate(template.id)).map((template) => template.id), ['spectrum', 'spectrum-scroll'])
   check('a job saved with a template that is still there keeps it', templateFor('spectrum-scroll').id, 'spectrum-scroll')
@@ -1534,6 +1536,88 @@ console.log('\n== mirrored bars ==')
   const mirroredKnobs = visualizationGraph({ ...settings, template: 'mirrored-bars', eq: { ...DEFAULT_EQ_STYLE, bars: 128, gap: 6 }, tune: { ...DEFAULT_TUNE, segmented: true } })
   check('the mirror inherits the bar count and the gap', mirroredKnobs.includes('showfreqs=s=128x540:mode=bar') && mirroredKnobs.includes('drawgrid=x=0:y=99999:w=15:h=99999:t=6:c=black'), true)
   check('and the segments too', mirroredKnobs.includes(',drawgrid=x=99999:y=0:w=99999:h=8:t=1:c=black'), true)
+}
+
+console.log('\n== the LED templates ==')
+{
+  // The three LED looks are the bars with different settings, so the assertions are about the two things they
+  // add to the family: a PEAK HOLD, which is a split, a `lagfun` and a recombine; and MATRIX PANEL's lit field,
+  // a source beneath the active layer. Neither may disturb a template that asks for neither, which is why the
+  // plain bars are asserted alongside.
+  const settings = { width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 }
+  const ledEq = { eq: eqStyleOf({ visualization: 'led-eq' }), tune: drawingTuneOf({ visualization: 'led-eq' }) }
+
+  // A peak hold: the drawing forked, one fork lagged, the two recombined by lightening. Measured on the encoder
+  // harness, the same loud-then-quiet sound reads its top band 16 (black) without the hold and 158 with it, and
+  // the ghost then falls 158 to 132 to 103 across the quiet stretch.
+  const held = visualizationGraph({ ...settings, template: 'led-eq', ...ledEq })
+  check('the LED EQ opens at its own bar count', held.includes('showfreqs=s=16x1080:mode=bar'), true)
+  check('a hold forks the drawing', held.includes('split[holdLive][holdGhostSrc]'), true)
+  check('with one fork lagged, which is what holds a peak rather than losing it', held.includes('lagfun=decay=0.95'), true)
+  check('and the two recombined by lightening, so the bar itself stays whole', held.includes('[holdLive][holdGhost]blend=all_mode=lighten'), true)
+  // The LED EQ's own defaults, which is the whole of what makes it a different look from the plain bars.
+  check('and is blocked and holding without being asked', [drawingTuneOf({ visualization: 'led-eq' }).segmented, drawingTuneOf({ visualization: 'led-eq' }).peakHold], [true, true])
+  check('its hold is the ordinary decay', drawingTuneOf({ visualization: 'led-eq' }).peakDecay, EQ_DEFAULT_PEAK_DECAY)
+  check('and it is NOT mirrored, unlike the bars beside it', isMirroredTemplate('led-eq'), false)
+  // A hold nobody asked for is absent from the graph entirely, so the plain bars are byte for byte what they
+  // were — which the geometry section above already asserts in full.
+  check('a drawing with no hold has no lagfun in it', visualizationGraph({ ...settings, template: 'eq', eq: DEFAULT_EQ_STYLE, tune: DEFAULT_TUNE }).includes('lagfun'), false)
+  // And a decay of zero turns a hold off even where it was switched on: a peak that falls instantly is no peak.
+  const faded = drawingTuneOf({ visualization: 'led-eq', eqPeakDecay: 0 })
+  check('a hold faded to nothing is off', [faded.peakHold, faded.peakDecay], [false, 0])
+  check('so its graph has no lagfun either', visualizationGraph({ ...settings, template: 'led-eq', eq: eqStyleOf({ visualization: 'led-eq' }), tune: faded }).includes('lagfun'), false)
+  // The decay is capped below one on purpose: a `lagfun` that never lets go would make the drawing an image
+  // that only ever grows, which stops being a drawing of the sound at all.
+  check('a decay is capped below one', clampPeakDecay(2), EQ_PEAK_DECAY_MAX)
+  check('and nonsense falls back to the ordinary hold', clampPeakDecay('nonsense'), EQ_DEFAULT_PEAK_DECAY)
+
+  // PEAK PILLS: the blocks with a wide divider and a slower fall, which is what tells it apart from the LED EQ.
+  const pills = drawingTuneOf({ visualization: 'peak-pills' })
+  check('the pills are the blocks with a wider divider', [pills.segmented, pills.segmentGap], [true, 3])
+  check('and a slower hold than the LED EQ', [pills.peakDecay > EQ_DEFAULT_PEAK_DECAY, pills.peakDecay === EQ_PILL_PEAK_DECAY], [true, true])
+  const pillGraph = visualizationGraph({ ...settings, template: 'peak-pills', eq: eqStyleOf({ visualization: 'peak-pills' }), tune: pills })
+  check('so its divider is drawn several pixels thick', pillGraph.includes(`:h=${segmentHeight(1080)}:t=3:c=black`), true)
+  check('and it is not mirrored either', pillGraph.includes('vstack'), false)
+  check('a block gap is held between a hairline and half a block', [clampSegmentGap(0), clampSegmentGap(99)], [1, EQ_SEGMENT_GAP_MAX])
+
+  // MATRIX PANEL: a lit field beneath the mirrored, blocked bars, the two merged by lightening. The field is a
+  // SOURCE, because it is not derived from the sound at all — that is the whole difference between a panel and
+  // a bar chart, and the reason it cannot be a suffix on the drawing's own chain.
+  const panelEq = { ...eqStyleOf({ visualization: 'matrix-panel' }), gap: 6 }
+  const panel = visualizationGraph({ ...settings, template: 'matrix-panel', eq: panelEq, tune: drawingTuneOf({ visualization: 'matrix-panel' }) })
+  const panelChain = panel.split(';').find((chain) => chain.includes('[panel]')) ?? ''
+  check('the panel lights its unlit cells from a source of its own', panel.includes(`color=c=${dimmedColour('#9fbf9a', MATRIX_DIM_SHARE)}:s=1920x1080:r=30`), true)
+  check('built at the same bar geometry as the bars above it', panel.includes(',drawgrid=x=0:y=99999:w=80:h=99999:t=6:c=black'), true)
+  check('and carrying the same block dividers', panel.includes(`:h=${segmentHeight(1080)}:t=1:c=black[panel]`), true)
+  check('the active layer is the mirrored barred drawing', panel.includes('vstack'), true)
+  check('merged with the panel by lightening, so a dark bar lets the field through', panel.includes('[panel][active]blend=all_mode=lighten'), true)
+  check('bounded by the drawing, because the panel source itself never ends', panel.includes('shortest=1'), true)
+  check('and the panel is not mirrored, because a field has no centre line', panelChain.includes('vstack'), false)
+  check('the LED panel opens at more bars than the bar chart', eqStyleOf({ visualization: 'matrix-panel' }).bars > eqStyleOf({ visualization: 'led-eq' }).bars, true)
+  // The dim is a share of whatever colour the drawing is made in, so the panel follows the theme and the
+  // swatch rather than being a fixed grey.
+  check('the dim follows the drawing\u2019s own colour', dimmedColour('#9fbf9a', MATRIX_DIM_SHARE), '#181d17')
+  check('a short hex is read the same way', dimmedColour('#fff', 0.5), '#808080')
+  check('and something unreadable dims to the one colour that cannot be wrong', dimmedColour('nonsense', 0.5), '#000000')
+  check('so an amber panel is the amber, dimmed', visualizationGraph({ ...settings, color: '#c5b879', template: 'matrix-panel', eq: panelEq, tune: drawingTuneOf({ visualization: 'matrix-panel' }) }).includes(`color=c=${dimmedColour('#c5b879', MATRIX_DIM_SHARE)}`), true)
+
+  // LABELS, only the LED EQ's, drawn after the blocks so they sit over them rather than under.
+  const labelled = visualizationGraph({ ...settings, template: 'led-eq', eq: eqStyleOf({ visualization: 'led-eq' }), tune: drawingTuneOf({ visualization: 'led-eq', eqLabels: true }) })
+  check('the LED EQ is offered its band labels', drawingTuneOf({ visualization: 'led-eq', eqLabels: true }).labels, true)
+  check('and they are the seven a reader recognises', EQ_LABEL_FREQUENCIES, ['63', '160', '400', '1k', '2.5k', '6.3k', '16k'])
+  check('drawn in a face that is legible and the drawing\u2019s own colour', labelled.includes('drawtext=font=Menlo:text=63'), true)
+  check('and after the blocks, so they read over them', labelled.indexOf('drawgrid') < labelled.indexOf('drawtext'), true)
+  check('while off unless asked for', drawingTuneOf({ visualization: 'led-eq' }).labels, false)
+  check('and a template that is not the LED EQ is offered none', visualizationGraph({ ...settings, template: 'eq', eq: DEFAULT_EQ_STYLE, tune: drawingTuneOf({ visualization: 'eq', eqLabels: true }) }).includes('drawtext'), false)
+
+  // The bar geometry the panel and the bars share, asserted directly as well as through the graphs.
+  check('the geometry is the whole-pixel bar, the strip and the leftover', barsGeometry(1920, 7), { barPx: 274, strip: 1918, pad: 1 })
+  check('and a count that divides the frame leaves nothing over', barsGeometry(1920, 64), { barPx: 30, strip: 1920, pad: 0 })
+
+  // The defaults table: a template that declares none must resolve exactly as it always did, which is what keeps
+  // every job saved before these three from being redrawn.
+  check('a template that declares no defaults declares none', [VISUALIZATION_DEFAULTS.waveform, VISUALIZATION_DEFAULTS.eq, drawingDefaultsFor(undefined), drawingDefaultsFor('scope')], [{}, {}, {}, {}])
+  check('the editor\u2019s still is built through the same chains', visualizationStillGraph({ ...settings, template: 'matrix-panel', sources: ['0:a'], eq: panelEq, tune: drawingTuneOf({ visualization: 'matrix-panel' }) }).includes('[panel][active]blend=all_mode=lighten:shortest=1'), true)
 }
 
 console.log('\n== the polar scope ==')

@@ -426,7 +426,7 @@ app.whenReady().then(() => {
    */
   ipcMain.handle('visualization-still', async (_, options: {
     sources: string[]
-    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope'
+    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope' | 'led-eq' | 'matrix-panel' | 'peak-pills'
     color?: string
     background?: 'colour' | 'still' | 'image'
     backgroundColor?: string
@@ -445,6 +445,13 @@ app.whenReady().then(() => {
     /** The palette, and the knobs each template reads — see `drawingTuneOf`. */
     theme?: 'green' | 'amber'
     segmented?: boolean
+    /** How thick a segmented drawing's block dividers are, in frame pixels. */
+    segmentGap?: number
+    /** Whether the bar drawings hold their peaks, and how long one is held for. */
+    peakHold?: boolean
+    peakDecay?: number
+    /** Whether the LED EQ draws its frequency bands along the bottom. */
+    labels?: boolean
     waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
     waveWeight?: 'line' | 'fill'
     waveChannels?: 1 | 2
@@ -492,8 +499,12 @@ app.whenReady().then(() => {
         sources: sources.map((_, index) => `${index}:a`),
         background,
         progressLine: options.progressLine,
-        eq: eqStyleOf({ eqBars: options.bars, eqGap: options.gap, eqAmplitude: options.amplitude, eqFrequency: options.frequency, eqSensitivity: options.sensitivity }),
+        // The template is named to both resolvers as well as the figures, because a template's OWN defaults
+        // are what an unset knob falls back to — so the still the editor photographs is drawn with the same
+        // hold, the same block gap and the same bar count the export will use.
+        eq: eqStyleOf({ visualization: options.template, eqBars: options.bars, eqGap: options.gap, eqAmplitude: options.amplitude, eqFrequency: options.frequency, eqSensitivity: options.sensitivity }),
         tune: drawingTuneOf({
+          visualization: options.template,
           drawingTheme: options.theme,
           waveScale: options.waveScale,
           waveWeight: options.waveWeight,
@@ -501,6 +512,10 @@ app.whenReady().then(() => {
           spectrumScale: options.spectrumScale,
           spectrumSaturation: options.spectrumSaturation,
           eqSegmented: options.segmented,
+          eqSegmentGap: options.segmentGap,
+          eqPeakHold: options.peakHold,
+          eqPeakDecay: options.peakDecay,
+          eqLabels: options.labels,
           scopePersist: options.scopePersist,
           scopeZoom: options.scopeZoom,
           scopeDraw: options.scopeDraw,

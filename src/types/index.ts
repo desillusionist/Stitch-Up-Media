@@ -98,7 +98,7 @@ export interface EncodingPreset {
    * editor can show a still of exactly what will be written; the last three draw an instant at a time. See
    * `VISUALIZATIONS` for the table the editor and the encoder both read.
    */
-  visualization?: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope'
+  visualization?: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope' | 'led-eq' | 'matrix-panel' | 'peak-pills'
   /** The colour the drawing is made in, as ffmpeg takes it. Absent means the app's green. */
   visualizationColor?: string
   /**
@@ -125,6 +125,28 @@ export interface EncodingPreset {
   drawingTheme?: 'green' | 'amber'
   /** The EQ and the mirrored bars: dividers across the bars, so each becomes a stack of blocks. */
   eqSegmented?: boolean
+  /**
+   * Whether the bar drawings hold their peaks.
+   *
+   * The drawing is split, one half is run through `lagfun` so its brightest points fade rather than vanish,
+   * and the two are recombined by lightening — so a live bar stays crisp while the peaks it reached linger
+   * above it as ghosts. Absent means the template's own default, which is on for the LED templates and off
+   * elsewhere; a decay of zero turns it off whatever this says — see `eqPeakDecay`.
+   */
+  eqPeakHold?: boolean
+  /**
+   * How long a held peak lingers, 0 to 1: the share of its height it keeps each frame. Absent means the
+   * template's own default, and zero means no hold at all, because a peak that decays to nothing instantly is
+   * no peak. It is only read when a hold is asked for.
+   */
+  eqPeakDecay?: number
+  /**
+   * How thick the divider between a segmented drawing's blocks is, in pixels. Absent means the template's
+   * own — a hairline for the ordinary blocks, and a broader gap for the pills.
+   */
+  eqSegmentGap?: number
+  /** Whether the LED EQ draws its frequency bands along the bottom. Absent means the template's own default. */
+  eqLabels?: boolean
   /** The waveform templates' amplitude scale. Absent means linear. */
   waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
   /** The waveform templates' weight: a thin line, or the full filled drawing. Absent means the fill. */

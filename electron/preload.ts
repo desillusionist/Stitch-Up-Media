@@ -13,7 +13,7 @@ export interface IElectronAPI {
    */
   visualizationStill: (options: {
     sources: string[]
-    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope'
+    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope' | 'led-eq' | 'matrix-panel' | 'peak-pills'
     color?: string
     background?: 'colour' | 'still' | 'image'
     backgroundColor?: string
@@ -32,6 +32,13 @@ export interface IElectronAPI {
     /** The palette, and the knobs each template reads — see `drawingTuneOf`. */
     theme?: 'green' | 'amber'
     segmented?: boolean
+    /** How thick a segmented drawing's block dividers are, in frame pixels. */
+    segmentGap?: number
+    /** Whether the bar drawings hold their peaks, and how long one is held for. */
+    peakHold?: boolean
+    peakDecay?: number
+    /** Whether the LED EQ draws its frequency bands along the bottom. */
+    labels?: boolean
     waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
     waveWeight?: 'line' | 'fill'
     waveChannels?: 1 | 2
