@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, SCROLLING_WAVEFORM_MAX_EDGE, VISUALIZATIONS, VISUALIZATION_PROGRESS_COLOR, drawingCanvas, drawingPictureFor, progressLineWidth, stillWarmupSeconds, templateFor, templateMaxEdge, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
+import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, drawingCanvas, drawingPictureFor, progressLineWidth, stillWarmupSeconds, templateFor, templateMaxEdge, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -1288,7 +1288,11 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   // of it — the bar travels from the left edge at t=0 to the right edge at the sound's own end.
   const swept = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2, duration: 5, progressLine: true })
   check('a picture asked for a progress line is given a bar', swept.includes(`color=c=${VISUALIZATION_PROGRESS_COLOR}:s=`), true)
-  check('the bar is the height of the frame and a few pixels wide', swept.includes(`:s=6x1080:r=30[bar]`), true)
+  check('the bar is the height of the frame and a few pixels wide', swept.includes(`color=c=${VISUALIZATION_PROGRESS_COLOR}:s=6x1080:r=30[core]`), true)
+  // The core is cased in the background colour: a bare amber line all but disappears over a drawing that fills
+  // its frame with colour, which is the spectrum — that is why it looked like it was not drawing at all.
+  check('and it is cased in the dark, so it reads on a bright drawing too', swept.includes(`color=c=${VISUALIZATION_PROGRESS_CASE_COLOR}:s=${progressLineWidth(1080) + PROGRESS_LINE_CASE * 2}x1080:r=30[case]`), true)
+  check('the case and the core are composited into one bar', swept.includes(`[case][core]overlay=x=${PROGRESS_LINE_CASE}:y=0[bar]`), true)
   check('and it is laid over the plate rather than under it', swept.includes('[plate][bar]overlay=x='), true)
   check('the bar sweeps the sound\u2019s own length', swept.includes(`x='(t/5.000)*(main_w-overlay_w)'`), true)
   check('and the result is flattened like everything else', swept.includes(`format=yuv420p[v]`), true)
@@ -1381,13 +1385,19 @@ console.log('\n== what a drawing sits on ==')
   check('and one naming nothing falls back rather than crashing', templateFor(undefined).id, 'waveform')
 
   // How long a drawing is given to fill first. A PICTURE is the whole sound already and is taken at once; a
-  // moving drawing has to be given a moment, except the waveform, whose line is there from its first frame.
-  check('a waveform still needs no warm-up', stillWarmupSeconds('waveform', 4), 0)
-  check('nor does a spectrum picture, which is the whole sound in one frame', stillWarmupSeconds('spectrum', 4), 0)
-  check('a scrolling spectrum gets half of a one-second sound', stillWarmupSeconds('spectrum-scroll', 1), 0.5)
-  check('never more than a second', stillWarmupSeconds('spectrum-scroll', 60), 1)
-  check('and a scrolling waveform needs none either', stillWarmupSeconds('waveform-scroll', 4), 0)
-  check('and nothing at all from a sound with no length', stillWarmupSeconds('eq', 0), 0)
+  // drawing that MOVES is BLACK at t=0, because its canvas fills as it scrolls, so its sample has to be taken
+  // somewhere the window is populated — a couple of seconds in, or the window's own fill time where that is
+  // longer, and never past the middle of the sound.
+  check('a waveform picture is taken at once, with no warm-up', stillWarmupSeconds('waveform', 4, 1280, 30), 0)
+  check('nor does a spectrum picture need one', stillWarmupSeconds('spectrum', 4, 1280, 30), 0)
+  check('a scrolling waveform is sampled away from its empty first frame', stillWarmupSeconds('waveform-scroll', 4, 960, 30), 2)
+  check('the bars too', stillWarmupSeconds('eq', 4, 1280, 30), 2)
+  check('a scrolling spectrum waits for its window to fill', stillWarmupSeconds('spectrum-scroll', 5, 1280, 30), 2.5)
+  check('but never past the middle of the sound', stillWarmupSeconds('waveform-scroll', 3, 960, 30), 1.5)
+  check('and a one-second one is sampled at its own middle, its window never filling', stillWarmupSeconds('spectrum-scroll', 1, 1280, 30), 0.5)
+  check('a long scrolling spectrum is sampled at its middle rather than made to wait a minute', stillWarmupSeconds('spectrum-scroll', 60, 1280, 30), 30)
+  check('while a long scrolling waveform is not made to wait at all', stillWarmupSeconds('waveform-scroll', 60, 960, 30), 2)
+  check('and a sound with no length has no frame to ask for', stillWarmupSeconds('eq', 0, 1280, 30), 0)
   check('the debounce is the 150ms the editor was asked for', DRAWING_STILL_SETTLE_MS, 150)
 
   // The canvas each template is drawn on. The scrolling waveform's cap is lower than the rest, and it is a

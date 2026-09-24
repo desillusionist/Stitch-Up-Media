@@ -72,7 +72,7 @@ const brightestLuma = async (file, time) => {
 }
 
 /**
- * How bright a narrow column of a frame is, at a fraction across it.
+ /** How bright a narrow column of a frame is, at a fraction across it.
  *
  * Which is how a spectrum is asked whether it reaches the right-hand edge: `showspectrum` left on its
  * default draws one column per emitted frame into a frame nothing ever fills, so its right-hand side is
@@ -81,6 +81,21 @@ const brightestLuma = async (file, time) => {
 const columnLuma = async (file, time, fraction) => {
   const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `crop=iw*0.04:ih:iw*${fraction}:0,signalstats,metadata=print:file=-`, '-f', 'null', '-'])
   return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
+}
+
+/**
+ * How different two exports are in a narrow column, at a fraction across it.
+ *
+ * This is how the progress line is asked whether it is drawn where it should be WITHOUT needing the rest of
+ * the frame to be black: two jobs identical but for the line are blended by difference, and a column the line
+ * is over reads high while a column it is not over reads near zero. A waveform can be asked more simply
+ * because its drawing is a thin line on black, but a spectrum fills its frame, so "where the line is" has to
+ * be read as a difference rather than as brightness.
+ */
+const columnDelta = async (file, reference, time, fraction) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-ss', String(time), '-i', reference, '-frames:v', '1', '-filter_complex', `[0:v][1:v]blend=all_mode=difference[d];[d]crop=iw*0.03:ih:iw*${fraction}:0,signalstats,metadata=print:file=-`, '-f', 'null', '-'])
+  const values = [...String(out).matchAll(/YMAX=([\d.]+)/g)].map((match) => Number(match[1]))
+  return Math.round(Math.max(0, ...values))
 }
 
 /** How far apart the brightest and darkest pixel of a frame are: how much is DRAWN in it. */
@@ -366,6 +381,27 @@ const main = async () => {
       fillsTheFrame: true,
     },
     {
+      // THE SAME SPECTRUM WITH THE PROGRESS LINE ON, and the guard against it silently going missing again.
+      // It was reported as not drawing; it WAS drawing, and the reason it could not be seen is that a bare
+      // amber line all but vanishes over a drawing that fills its frame with colour. The line is cased now.
+      //
+      // The check is an A/B against the export directly above — identical but for the line — because "black
+      // elsewhere" cannot be said of a spectrum: the drawing is colour right across the frame. Blended by
+      // difference, a column the line is over reads high and one it is not over reads nothing, at two
+      // timestamps, which is both that the line is there and that it MOVES.
+      name: 'a spectrum with a progress line over it',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'spectrum', fps: 30, visualizationProgressLine: true },
+      task: {
+        id: 'viz-spec-sweep', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'viz-spec-sweep.mp4', preset,
+      },
+      output: path.join(root, 'viz-spec-sweep.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      sweepsAgainst: path.join(root, 'viz-spectrum-fill.mp4'),
+    },
+    {
       // Whether the DRAWN audio follows the trim, which was reported as not happening. This sound is loud
       // for two seconds and silent for three, and the trim keeps the SILENT three: a drawing of that
       // segment is a frame with nothing in it at all. A drawing of the whole source would be a tall line
@@ -522,6 +558,16 @@ const main = async () => {
       }
       if (item.drawnIsAudible) {
         check('and the same sound untrimmed is drawn as a line, so the check above can tell them apart', (await contrast(item.output, 0.5)) > 60, true)
+      }
+      if (item.sweepsAgainst) {
+        // The line's column at one time, and the column it will have left by the other. Both are in the BLACK
+        // of the silent half of the fixture, so the pair says the line moved rather than that it was there.
+        const atThree = await columnDelta(item.output, item.sweepsAgainst, 3.0, 0.60)
+        const cleanAtThree = await columnDelta(item.output, item.sweepsAgainst, 3.0, 0.90)
+        const atEnd = await columnDelta(item.output, item.sweepsAgainst, 4.6, 0.90)
+        const cleanAtEnd = await columnDelta(item.output, item.sweepsAgainst, 4.6, 0.60)
+        check(`the line is over the spectrum at 3s (${atThree}) and the picture is otherwise untouched (${cleanAtThree})`, atThree > 60 && cleanAtThree < 25, true)
+        check(`and it has swept to the end by 4.6s (${atEnd}), where it was now clean (${cleanAtEnd})`, atEnd > 60 && cleanAtEnd < 25, true)
       }
       if (item.sweeps) {
         // The bar travels from the left edge at t=0 to the right edge at t=sound length. Three seconds into

@@ -156,6 +156,11 @@ export const DRAWING_MAX_EDGE = 1280
  */
 export const progressLineWidth = (height: number): number => Math.max(2, Math.round(height * 0.006))
 
+/** How much dark case the bar carries on each side, in pixels. */
+export const PROGRESS_LINE_CASE = 2
+/** The case's colour: the same black the export letterboxes with, so the bar reads on any drawing. */
+export const VISUALIZATION_PROGRESS_CASE_COLOR = '#000000'
+
 /**
  * The sweeping progress line, as the bar it is made of and the overlay that moves it.
  *
@@ -166,13 +171,21 @@ export const progressLineWidth = (height: number): number => Math.max(2, Math.ro
  * waveform. `atStart` pins it to the left, which is what the editor's own still shows: the sweep is a
  * playback affordance, not a design, so the still shows that the bar EXISTS rather than guessing at a moment.
  *
+ * The bar is drawn as an amber CORE inside a dark case rather than as a bare line. That is not decoration: a
+ * spectrum fills its frame with colour, and a bare amber line over it all but disappears wherever the drawing
+ * underneath is itself bright — which is why the line on the spectrum was reported as not drawing at all when
+ * it was there the whole time. The case is what makes the line read on the bright drawing as well as on the
+ * dark one, and the pair is composited into one small image that the sweep then moves.
+ *
  * Nothing is returned when there is no line to draw — a moving template, the line turned off, or a sound with
  * no known length to sweep across.
  */
 const progressLineGraph = (template: Visualization, height: number, fps: number, duration: number, atStart: boolean): { bar: string; overlay: string } | null => {
   if (templateFor(template).kind !== 'picture') return null
   if (!atStart && !(duration > 0)) return null
-  const bar = `color=c=${VISUALIZATION_PROGRESS_COLOR}:s=${progressLineWidth(height)}x${height}:r=${fps}`
+  const core = progressLineWidth(height)
+  const caseWidth = core + PROGRESS_LINE_CASE * 2
+  const bar = `color=c=${VISUALIZATION_PROGRESS_CASE_COLOR}:s=${caseWidth}x${height}:r=${fps}[case];color=c=${VISUALIZATION_PROGRESS_COLOR}:s=${core}x${height}:r=${fps}[core];[case][core]overlay=x=${PROGRESS_LINE_CASE}:y=0[bar]`
   const x = atStart ? '0' : `(t/${duration.toFixed(3)})*(main_w-overlay_w)`
   return { bar, overlay: `overlay=x='${x}':y=0` }
 }
@@ -229,11 +242,27 @@ export const drawingCanvas = (width: number, height: number, maxEdge: number = D
  * at all rather than a late one. The spectrum slides in from the right, so a still taken at half a second of
  * a four-second sound is a filled frame; the same still of a four-TENTH-second sound would be a sliver.
  */
-export const stillWarmupSeconds = (template: Visualization, duration: number): number => {
-  // A PICTURE is the whole sound already and is taken at once; a moving drawing has to be given a moment to
-  // fill, unless it is a waveform, whose line is there from its first frame.
-  if (templateFor(template).kind === 'picture' || template === 'waveform-scroll' || !(duration > 0)) return 0
-  return Math.min(1, duration / 2)
+/**
+ * How long a drawing is given to fill before a still of it is taken, in seconds.
+ *
+ * A PICTURE is the whole sound in one frame and is photographed at once. A drawing that MOVES has an EMPTY
+ * canvas at t=0 — content arrives as it scrolls or fills, so a frame taken at the start is black, which is
+ * what a reviewer saw for both scrolling templates. The sample is therefore taken somewhere the window is
+ * populated, and there are two bounds on it.
+ *
+ * The first is how long the window takes to fill: the scrolling spectrum fills one column per frame, so its
+ * window is `canvasWidth / fps` seconds long, while a scrolling waveform's line and the bars are there within
+ * a frame or two. The second is the middle of the sound — a frame asked for after the sound has ENDED comes
+ * back blank, so a short clip is sampled at its own midpoint rather than at a figure it never reaches. The
+ * floor of `STILL_SAMPLE_SECONDS` is what keeps a long clip's preview cheap: its window would take a minute
+ * to fill, and waiting that long to draw a thumbnail is worse than showing a partly-filled one.
+ */
+export const STILL_SAMPLE_SECONDS = 2
+
+export const stillWarmupSeconds = (template: Visualization, duration: number, canvasWidth: number, fps: number): number => {
+  if (templateFor(template).kind === 'picture' || !(duration > 0)) return 0
+  const fill = template === 'spectrum-scroll' ? canvasWidth / Math.max(1, fps) : 0
+  return Math.max(0, Math.min(duration / 2, Math.max(fill, STILL_SAMPLE_SECONDS)))
 }
 
 export interface VisualizationRequest {
@@ -355,7 +384,7 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
     base,
     '[bg][scaled]overlay=shortest=1[plate]',
     ...(line
-      ? [`${line.bar}[bar]`, `[plate][bar]${line.overlay},format=yuv420p[out]`]
+      ? [line.bar, `[plate][bar]${line.overlay},format=yuv420p[out]`]
       : ['[plate]format=yuv420p[out]']),
   ].join(';')
 }
@@ -398,7 +427,7 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
     base,
     '[bg][w]overlay=shortest=1[plate]',
     ...(line
-      ? [`${line.bar}[bar]`, `[plate][bar]${line.overlay},format=yuv420p[v]`]
+      ? [line.bar, `[plate][bar]${line.overlay},format=yuv420p[v]`]
       : ['[plate]format=yuv420p[v]']),
   ].join(';')
 }

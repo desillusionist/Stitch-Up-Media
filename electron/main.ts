@@ -10,7 +10,7 @@ import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { clipFilters } from '../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, stillWarmupSeconds, visualizationStillGraph } from '../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, drawingCanvas, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { runFfmpeg } from './ffmpeg/run'
 import { spawn, execFileSync } from 'node:child_process'
@@ -449,13 +449,15 @@ app.whenReady().then(() => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-viz-'))
     const stillPath = path.join(dir, 'still.jpg')
     try {
-      // How long the drawing is given to fill before it is photographed, clamped to the shortest sound it
-      // is drawn from — a frame asked for after a source has ended is a frame that arrives empty.
+      // How long the drawing is given to fill before it is photographed, clamped to the shortest sound it is
+      // drawn from — a frame asked for after a source has ended is a frame that arrives empty. The window's
+      // own fill time is the drawing CANVAS's, since that is the width the scrolling filters fill a column of.
       let shortest = Number.POSITIVE_INFINITY
       for (const source of sources) {
         try { shortest = Math.min(shortest, Number((await probeFile(source)).duration || 0)) } catch { /* an unreadable length leaves the others */ }
       }
-      const warmup = Number.isFinite(shortest) && shortest > 0 ? stillWarmupSeconds(options.template, shortest) : 0
+      const canvasWidth = drawingCanvas(width, height, templateMaxEdge(options.template)).width
+      const warmup = Number.isFinite(shortest) && shortest > 0 ? stillWarmupSeconds(options.template, shortest, canvasWidth, fps) : 0
       const args = ['-hide_banner', '-loglevel', 'error', '-y', ...sources.flatMap((source) => ['-i', source])]
       if (backgroundImage) args.push('-loop', '1', '-framerate', String(fps), '-i', backgroundImage)
       const background = backgroundImage ? { input: sources.length } : (options.backgroundColor || VISUALIZATION_BACKGROUND)
