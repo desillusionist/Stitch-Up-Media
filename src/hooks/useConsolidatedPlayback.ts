@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { nextShuttleRate } from '../lib/shuttleRates'
 import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
+import { DEFAULT_PREVIEW_SPEED, PreviewSpeed, clampPreviewSpeed, playbackRateFor } from '../lib/previewSpeed'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
 const DRIFT_TOLERANCE = 0.25
@@ -19,6 +20,14 @@ export interface ConsolidatedPlayback {
   playing: boolean
   /** Signed shuttle rate. Zero means ordinary playback, negative means reverse. */
   shuttleRate: number
+  /**
+   * The preview speed being watched at, which is NOT the export's business and not the shuttle's.
+   *
+   * It multiplies the shuttle and the element's own rate: the monitor is played at this speed, and the
+   * export is untouched. See `previewSpeed`.
+   */
+  speed: PreviewSpeed
+  setSpeed: (rate: number) => void
   error: string | null
   toggle: () => void
   pause: () => void
@@ -84,6 +93,7 @@ export const useConsolidatedPlayback = (
   const [segmentIndex, setSegmentIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [shuttleRate, setShuttleRateState] = useState(0)
+  const [speed, setSpeedState] = useState<PreviewSpeed>(DEFAULT_PREVIEW_SPEED)
   const [error, setError] = useState<string | null>(null)
 
   const mainSegments = model.lanes[0]?.segments ?? []
@@ -116,6 +126,9 @@ export const useConsolidatedPlayback = (
   segmentIndexRef.current = segmentIndex
   const shuttleRef = useRef(shuttleRate)
   shuttleRef.current = shuttleRate
+  /** The preview speed, read by the frame loop and the rate setter, which are not re-made by a render. */
+  const speedRef = useRef<number>(speed)
+  speedRef.current = speed
   const fpsRef = useRef(fps)
   fpsRef.current = Math.max(1, fps)
   /**
@@ -203,8 +216,11 @@ export const useConsolidatedPlayback = (
   const applyRate = useCallback(() => {
     const video = videoRef.current
     if (!video) return
-    // Reverse has no native rate, so the element is paused and stepped instead.
-    video.playbackRate = shuttleRef.current > 0 ? Math.min(16, shuttleRef.current) : 1
+    // The shuttle's rate and the speed being watched at, composed — see `playbackRateFor`. Reverse has no
+    // native rate, so the element is left at 1x (times the speed) and stepped to paint the frames instead.
+    video.playbackRate = playbackRateFor(shuttleRef.current, speedRef.current)
+    // Pitch-corrected, so a 0.5x or a 2x preview is the same voice at a different tempo rather than tape.
+    video.preservesPitch = true
   }, [])
 
   const onLoaded = useCallback(() => {
@@ -302,6 +318,9 @@ export const useConsolidatedPlayback = (
         key: current?.key,
         reverse,
         shuttleRate: shuttleRef.current,
+        // The speed is the anchored clock's business too: a still or a tail has no element to carry it, so
+        // without this a preview at another speed would drop back to 1x for the length of that segment.
+        speed: speedRef.current,
       })
       anchorRef.current = advanced.anchor
       return advanced.value
@@ -377,15 +396,20 @@ export const useConsolidatedPlayback = (
     // motion is followed by rate rather than being dropped, so the two never drift.
     // A shuttle past normal speed and reverse are silent: audio cannot follow either.
     const magnitude = Math.abs(shuttleRate) || 1
+    // What an added track is played at: the same composed rate the picture element is given, so the two
+    // never drift apart. Whether it is HEARD is still the shuttle's question — audio cannot follow a shuttle
+    // past normal speed — while a preview speed above 1x keeps its tracks, pitch-corrected.
+    const rate = playbackRateFor(shuttleRate, speed)
     const audible = playing && shuttleRate >= 0 && magnitude <= 1
     lanesRef.current.forEach((lane) => {
       const element = audioElements.current?.[lane.id]
       if (!element) return
-      element.playbackRate = magnitude
+      element.playbackRate = rate
+      element.preservesPitch = true
       if (audible) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
-  }, [playing, shuttleRate, segment?.key, audioLaneSignature, audioElements, applyPendingSeek, applyRate, startPlayback])
+  }, [playing, shuttleRate, speed, segment?.key, audioLaneSignature, audioElements, applyPendingSeek, applyRate, startPlayback])
 
   // Frame loop: advance the playhead, cross junctions, correct drift.
   useEffect(() => {
@@ -468,6 +492,13 @@ export const useConsolidatedPlayback = (
     position,
     playing,
     shuttleRate,
+    speed,
+    setSpeed: useCallback((rate: number) => {
+      setSpeedState(clampPreviewSpeed(rate))
+      // Re-anchored exactly as the shuttle's own rate change is, so the position is held at the moment the
+      // speed changes rather than being credited the wall time at the old rate.
+      anchorRef.current = null
+    }, []),
     error,
     toggle: useCallback(() => {
       if (!playable) return

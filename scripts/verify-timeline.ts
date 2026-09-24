@@ -12,7 +12,8 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, drawingCanvas, drawingPictureFor, progressLineWidth, stillWarmupSeconds, templateFor, templateMaxEdge, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
+import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DEFAULT_EQ_STYLE, EQ_DEFAULT_BARS, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, clampEqBars, clampEqGap, clampEqSensitivity, drawingCanvas, drawingPictureFor, eqStyleOf, progressLineWidth, stillWarmupSeconds, templateFor, templateMaxEdge, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
+import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor } from '../src/lib/previewSpeed'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -1306,8 +1307,11 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   const tracks = visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a', '2:a'], background: { input: 0 }, rate: 48000, channels: 2 })
   check('several tracks are summed into one mix', tracks.includes('[0:a][1:a][2:a]amix=inputs=3:normalize=0'), true)
   check('with the levels as they were set', tracks.includes('normalize=0'), true)
-  check('and the drawing sits on the picture input it was given', tracks.includes('[0:v]scale=1080:1920,setsar=1[bg]'), true)
-  check('a portrait frame draws portrait', tracks.includes('showfreqs=s=720x1280'), true)
+  check('the drawing sits on the picture input it was given', tracks.includes('[0:v]scale=1080:1920,setsar=1[bg]'), true)
+  // The EQ is the one template whose drawing is NOT made on the capped canvas: it is made one pixel per bar at
+  // the frame\u2019s own height, because the stretch that makes the bars chunky is nearest-neighbour and a
+  // vertical stretch would step the frequency axis too.
+  check('an EQ drawing is made one pixel per bar at the frame\u2019s own height', tracks.includes('showfreqs=s=64x1920:mode=bar'), true)
 
   // Its own two quirks: `showspectrum` has no rate option, so the rate is imposed after it, and its
   // colouring is ffmpeg's own ramp, so the hex this app offers is not passed to it.
@@ -1325,9 +1329,13 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   const scrolled = visualizationGraph({ template: 'spectrum-scroll', width: 1920, height: 1080, fps: 24, color: '#ff0000', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
   check('the scrolling spectrum is told to slide, which is what fills its frame', scrolled.includes('slide=scroll'), true)
   // And the scrolling WAVEFORM is drawn on a smaller canvas than everything else, which is measured too: at
-  // exactly 1280 wide with this app's own green, `showwaves` in `cline` mode draws a PURPLE line.
+  // exactly 1280 wide with this app's own green, `showwaves` in `cline` mode draws a PURPLE line. It is drawn
+  // as a SOLID FILL rather than a stroke — `cline` is a centred line per sample, which draws the envelope's
+  // outline and leaves the middle hollow, and it is `line` that fills a column to the peak. That is also
+  // what the still waveform's `showwavespic` draws, so the two agree.
   const scrollingWave = visualizationGraph({ template: 'waveform-scroll', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
-  check('the scrolling waveform draws on its own, smaller canvas', scrollingWave.includes('showwaves=s=960x540:mode=cline:rate=30:colors=#9fbf9a'), true)
+  check('the scrolling waveform draws on its own, smaller canvas', scrollingWave.includes('showwaves=s=960x540:mode=line:rate=30:colors=#9fbf9a'), true)
+  check('and it is a solid fill rather than the stroke `cline` draws', scrollingWave.includes('mode=cline'), false)
   check('and a moving drawing is NOT held, because it moves', scrollingWave.includes('loop='), false)
 
   // A stitch draws the CONCATENATED stream it writes, named down to its index: `[0:a]` would stand
@@ -1406,6 +1414,84 @@ console.log('\n== what a drawing sits on ==')
   check('the scrolling waveform is capped lower', templateMaxEdge('waveform-scroll'), SCROLLING_WAVEFORM_MAX_EDGE)
   check('a 16:9 frame draws at the scrolling waveform\u2019s own size', drawingCanvas(1920, 1080, templateMaxEdge('waveform-scroll')), { width: 960, height: 540 })
   check('and at the shared size for everything else', drawingCanvas(1920, 1080, templateMaxEdge('spectrum')), { width: 1280, height: 720 })
+}
+
+console.log('\n== the EQ drawing\u2019s own knobs ==')
+{
+  // `showfreqs` has no bar count, no thickness and no gap: its bars are one output column each, so the count
+  // IS the width. The knobs are therefore made out of what it does have — the size it is drawn at and a
+  // nearest-neighbour stretch — while the filter's own four options are passed straight through.
+  const settings = { template: 'eq' as const, width: 1920, height: 1080, fps: 30, color: '#ffffff', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 }
+  const eq = visualizationGraph({ ...settings, eq: DEFAULT_EQ_STYLE })
+  check('an EQ drawing is made one pixel per bar, at the frame\u2019s own height', eq.includes(`showfreqs=s=${EQ_DEFAULT_BARS}x1080:mode=bar`), true)
+  check('and its amplitude scale is passed through', eq.includes('ascale=log'), true)
+  check('and its frequency scale', eq.includes('fscale=lin'), true)
+  check('and its sensitivity floor', eq.includes(`minamp=${EQ_MAX_SENSITIVITY}`), true)
+  check('and its colour', eq.includes('colors=#ffffff'), true)
+  check('and the bars are made chunky by a nearest-neighbour stretch', eq.includes('scale=1920:1080:flags=neighbor'), true)
+  check('with no grid drawn when there is no gap', eq.includes('drawgrid'), false)
+
+  const gapped = visualizationGraph({ ...settings, eq: { ...DEFAULT_EQ_STYLE, bars: 128, gap: 6 } })
+  check('a bar count changes the width the drawing is made at', gapped.includes('showfreqs=s=128x1080:mode=bar'), true)
+  check('and a gap lays a grid over the stretched bars', gapped.includes('drawgrid=x=0:y=99999:w=15:h=99999:t=6:c=black'), true)
+  const shaped = visualizationGraph({ ...settings, eq: { ...DEFAULT_EQ_STYLE, amplitude: 'sqrt', frequency: 'rlog', sensitivity: 1e-7 } })
+  check('the amplitude scale is the one asked for', shaped.includes('ascale=sqrt'), true)
+  check('the frequency scale is the one asked for', shaped.includes('fscale=rlog'), true)
+  check('and the sensitivity is the one asked for', shaped.includes('minamp=1e-7'), true)
+  check('a template that is not the EQ is given none of it', visualizationGraph({ ...settings, template: 'waveform', eq: { ...DEFAULT_EQ_STYLE, bars: 8 } }).includes('showfreqs'), false)
+
+  // The editor\u2019s still is built by the same builder with the same knobs, so a design judged in the monitor
+  // is the one that is encoded — including the bar count and the gap, which are graph-level facts.
+  const eqStill = visualizationStillGraph({ template: 'eq', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', eq: { ...DEFAULT_EQ_STYLE, bars: 32, gap: 4 } })
+  check('the still draws the same bars', eqStill.includes('showfreqs=s=32x1080:mode=bar'), true)
+  check('and the same chunky stretch', eqStill.includes('[draw]scale=1920:1080:flags=neighbor'), true)
+  check('and the same gap', eqStill.includes('drawgrid='), true)
+
+  // The knobs, held to what the filter takes. One bar is not a spectrum and a thousand-pixel gap is nothing
+  // but gap, and `minamp` has a ceiling of its own which is the least sensitive end of its range.
+  const defaults = eqStyleOf({})
+  check('a job that says nothing about the EQ gets the default density', defaults.bars, EQ_DEFAULT_BARS)
+  check('and no gap', defaults.gap, 0)
+  check('and ffmpeg\u2019s own floor', defaults.sensitivity, EQ_MAX_SENSITIVITY)
+  check('a bar count is never below two', clampEqBars(1), EQ_MIN_BARS)
+  check('nor above the range a stretch is worth', clampEqBars(100000), EQ_MAX_BARS)
+  check('and nonsense falls back to the default', clampEqBars(undefined), EQ_DEFAULT_BARS)
+  check('a gap is never negative', clampEqGap(-5), 0)
+  check('nor wider than a bar is worth', clampEqGap(100000), EQ_MAX_GAP)
+  check('sensitivity is never above ffmpeg\u2019s own floor', clampEqSensitivity(1), EQ_MAX_SENSITIVITY)
+  check('and nonsense falls back to it too', clampEqSensitivity('nonsense'), EQ_MAX_SENSITIVITY)
+  const spoken = eqStyleOf({ eqBars: 200, eqGap: 8, eqAmplitude: 'cbrt', eqFrequency: 'log', eqSensitivity: 1e-8 })
+  check('a style says what the job said about the bars', spoken.bars, 200)
+  check('and about the gap', spoken.gap, 8)
+  check('and about the amplitude scale', spoken.amplitude, 'cbrt')
+  check('and about the frequency scale', spoken.frequency, 'log')
+  check('and about the sensitivity', spoken.sensitivity, 1e-8)
+}
+
+console.log('\n== the preview speed ==')
+{
+  // PREVIEW ONLY: this is the monitor\u2019s own playbackRate and a multiplier on the fallback clock. Nothing
+  // here reaches ffmpeg — an export at an altered speed would be a different render, `setpts` and `atempo`.
+  check('the speeds the monitor offers', PREVIEW_SPEEDS.join(','), '0.5,1,1.5,2,3')
+  check('and it opens at ordinary speed', DEFAULT_PREVIEW_SPEED, 1)
+  check('a speed that is not offered is answered with the ordinary one', clampPreviewSpeed(7), DEFAULT_PREVIEW_SPEED)
+  check('and so is nonsense', clampPreviewSpeed('nonsense'), DEFAULT_PREVIEW_SPEED)
+  check('an offered one is kept', clampPreviewSpeed(1.5), 1.5)
+  // The element\u2019s rate is the shuttle and the speed composed, because the two are separate controls.
+  check('at rest the element runs at the preview speed', playbackRateFor(0, 2), 2)
+  check('a shuttle multiplies it', playbackRateFor(4, 2), 8)
+  check('and the pair is capped at what an element will take', playbackRateFor(8, 3), 16)
+  check('reverse is the element\u2019s own rate times the speed', playbackRateFor(-4, 2), 2)
+  // The fallback clock runs at it too, or a preview would drop back to 1x for the length of a still.
+  const quick = advanceClock(null, { from: 0, now: 1000, key: 'a', reverse: false, shuttleRate: 0, speed: 2 })
+  const quicker = advanceClock(quick.anchor, { from: 0, now: 2000, key: 'a', reverse: false, shuttleRate: 0, speed: 2 })
+  near('a 2x preview advances 2s per second over a still', quicker.value, 2)
+  const slow = advanceClock(null, { from: 0, now: 1000, key: 'a', reverse: false, shuttleRate: 0, speed: 0.5 })
+  const slower = advanceClock(slow.anchor, { from: 0, now: 2000, key: 'a', reverse: false, shuttleRate: 0, speed: 0.5 })
+  near('and a 0.5x one advances half of one', slower.value, 0.5)
+  const both = advanceClock(null, { from: 0, now: 1000, key: 'a', reverse: false, shuttleRate: 2, speed: 2 })
+  const bothAfter = advanceClock(both.anchor, { from: 0, now: 2000, key: 'a', reverse: false, shuttleRate: 2, speed: 2 })
+  near('a shuttle and a speed compose', bothAfter.value, 4)
 }
 
 console.log('\n== whether an export draws its own sound ==')

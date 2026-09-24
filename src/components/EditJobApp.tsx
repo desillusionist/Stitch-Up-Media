@@ -4,7 +4,8 @@ import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, Queu
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
-import { DRAWING_STILL_SETTLE_MS, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATION_COLOR, VISUALIZATIONS, drawingPictureFor, templateFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
+import { DRAWING_STILL_SETTLE_MS, EQ_AMPLITUDE_SCALES, EQ_DEFAULT_BARS, EQ_DEFAULT_GAP, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATION_COLOR, VISUALIZATIONS, clampEqBars, clampEqGap, clampEqSensitivity, drawingPictureFor, eqStyleOf, templateFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
+import { PREVIEW_SPEEDS, speedLabel } from '../lib/previewSpeed'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -1433,6 +1434,13 @@ export const EditJobApp: React.FC = () => {
     draft?.preset.visualization ?? 'waveform',
     draft?.preset.visualizationColor ?? '',
     drawingLine,
+    // The EQ's own knobs are part of the design too, so a change to one redraws the still. They are named
+    // whether or not the template is the EQ, which costs one redraw if they are set and then left behind.
+    draft?.preset.eqBars ?? '',
+    draft?.preset.eqGap ?? '',
+    draft?.preset.eqAmplitude ?? '',
+    draft?.preset.eqFrequency ?? '',
+    draft?.preset.eqSensitivity ?? '',
     drawingBackground,
     draft?.preset.visualizationBackgroundColor ?? '',
     drawingBackground === 'image' ? draft?.preset.visualizationBackgroundImage ?? '' : '',
@@ -1451,6 +1459,10 @@ export const EditJobApp: React.FC = () => {
         backgroundColor: draft?.preset.visualizationBackgroundColor,
         backgroundImage: drawingBackground === 'image' ? draft?.preset.visualizationBackgroundImage : drawingPicture.still ?? undefined,
         progressLine: drawingLine,
+        // The EQ's knobs RESOLVED rather than as they are stored, so the request carries the figures the export
+        // will actually draw with — the defaults included. The export resolves them from the preset by the same
+        // function, so the design judged here and the design written cannot disagree about an unset knob.
+        ...(draft ? eqStyleOf(draft.preset) : {}),
         ...(outputFrame ? { width: outputFrame.width, height: outputFrame.height } : {}),
         fps: draft?.preset.fps ?? 30,
       }).then((url) => { if (!cancelled) setDrawingStill(url) }).catch(() => { if (!cancelled) setDrawingStill(null) })
@@ -2708,7 +2720,12 @@ export const EditJobApp: React.FC = () => {
                           // drawing of a design nobody asked for. Until it arrives, and if it cannot be
                           // made, the waveform below stands in rather than the monitor going blank.
                           ? drawingStill && drawingPicture.draws
-                            ? <img className="editor-still" draggable={false} style={{ ...mediaStyle }} src={drawingStill} alt="DRAWING THE SOUND" />
+                            // Given the drawing class rather than left to the still's own rule: this picture is the
+                            // WHOLE monitor (the job is sound and nothing else), so it fills the frame it is
+                            // drawn in and letterboxes inside it, exactly as the video element does — the stage's
+                            // observer reports the viewport and the picture follows it, without the picture being
+                            // regenerated. It is generated at the output resolution and only ever RESCALED here.
+                            ? <img className="editor-still is-drawing" draggable={false} style={{ ...mediaStyle }} src={drawingStill} alt="DRAWING THE SOUND" />
                             : monitorWaveform
                             ? <svg className="editor-waveform" width="100%" height="100%" viewBox={`0 0 ${monitorWaveform.width} ${monitorWaveform.height}`} preserveAspectRatio="none" aria-hidden="true">
                               <line x1="0" y1={monitorWaveform.height / 2} x2={monitorWaveform.width} y2={monitorWaveform.height / 2} stroke="var(--ui-border)" strokeWidth="1" />
@@ -2758,6 +2775,15 @@ export const EditJobApp: React.FC = () => {
             <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 ? ' is-fast' : ''}`}>
               {playback.shuttleRate > 0 ? `\u25b6 ${playback.shuttleRate}\u00d7` : playback.shuttleRate < 0 ? `\u25c0 ${Math.abs(playback.shuttleRate)}\u00d7` : playback.playing ? '\u25b6 1\u00d7' : '\u275a\u275a'}
             </span>
+            {/* The speed the monitor is WATCHED at, which is not the shuttle and never the export. It is a
+                property set on the element (pitch-corrected) and a multiplier on the fallback clock, so both
+                the picture and the sound of a preview follow it. */}
+            <label className="transport-speed" title="PREVIEW SPEED — THIS NEVER CHANGES THE EXPORT.">
+              <span>SPEED</span>
+              <select value={playback.speed} onChange={(event) => playback.setSpeed(Number(event.target.value))} disabled={!playable}>
+                {PREVIEW_SPEEDS.map((rate) => <option key={rate} value={rate}>{speedLabel(rate)}</option>)}
+              </select>
+            </label>
             <span>{stampPair(playback.position, duration, fps, timestampMode)}</span>
             <input
               type="range"
@@ -3252,6 +3278,32 @@ export const EditJobApp: React.FC = () => {
                 {/* Only the PICTURES get a line: a drawing that moves is already showing where the sound is,
                     and a bar over one would be a second answer to the same question. */}
                 {templateFor(draft.preset.visualization).kind === 'picture' && <EditorToggle label="PROGRESS LINE" checked={visualizationProgressLine(draft.preset)} onChange={(checked) => updatePreset({ visualizationProgressLine: checked })} reason="A bar that sweeps across the picture from the left edge to the right as the sound plays, which is what a podcast video looks like. The two pictures are one frame held for the length of the sound, so without it the video sits motionless; it is off where the drawing already moves." />}
+                {/* The EQ's own knobs, and only for the EQ. Its bars are drawn one pixel each and STRETCHED to
+                    the frame, so the count is what makes them chunky; the gap is a grid drawn over that, which
+                    is the only way to open one in a filter that has no concept of it. The rest are the
+                    filter's own knobs, passed through unchanged. */}
+                {draft.preset.visualization === 'eq' && <>
+                  <div className="editor-field">
+                    <span><span className="editor-label">BAR COUNT</span></span>
+                    <div className="exact-row">
+                      <label className="mini-field"><span>DENSITY</span><NumberField min={EQ_MIN_BARS} max={EQ_MAX_BARS} step={1} className="editor-input" value={draft.preset.eqBars ?? EQ_DEFAULT_BARS} onValue={(value) => updatePreset({ eqBars: clampEqBars(value) })} title="How many bars the spectrum is divided into" /></label>
+                      <label className="mini-field"><span>GAP PX</span><NumberField min={0} max={EQ_MAX_GAP} step={1} className="editor-input" value={draft.preset.eqGap ?? EQ_DEFAULT_GAP} onValue={(value) => updatePreset({ eqGap: clampEqGap(value) })} title="The gap between bars, in pixels of the output frame. 0 is solid." /></label>
+                    </div>
+                  </div>
+                  <EditorField label="AMPLITUDE" reason="How a frequency's level is turned into the height of its bar. Logarithmic is what a spectrum normally wants — it makes the quiet end visible — and linear shows the levels as they are.">
+                    <select value={draft.preset.eqAmplitude ?? 'log'} onChange={(event) => updatePreset({ eqAmplitude: event.target.value as NonNullable<EncodingPreset['eqAmplitude']> })}>
+                      {EQ_AMPLITUDE_SCALES.map((scale) => <option key={scale} value={scale}>{scale.toUpperCase()}</option>)}
+                    </select>
+                  </EditorField>
+                  <EditorField label="FREQUENCY" reason="How the frequencies are laid out across the frame: linear is even per hertz, logarithmic is even per octave and reads the way music is heard.">
+                    <select value={draft.preset.eqFrequency ?? 'lin'} onChange={(event) => updatePreset({ eqFrequency: event.target.value as NonNullable<EncodingPreset['eqFrequency']> })}>
+                      {EQ_FREQUENCY_SCALES.map((scale) => <option key={scale} value={scale}>{scale.toUpperCase()}</option>)}
+                    </select>
+                  </EditorField>
+                  <EditorField label="SENSITIVITY" reason="The floor below which a frequency is not drawn: the smaller the figure, the more of the quiet detail is shown. It is a fraction of full scale, so the useful figures are small — 0.000001 is ffmpeg's own floor and the least sensitive this can be asked to be.">
+                    <NumberField min={EQ_MIN_SENSITIVITY} max={EQ_MAX_SENSITIVITY} step={0.0000001} className="editor-input" value={draft.preset.eqSensitivity ?? EQ_MAX_SENSITIVITY} onValue={(value) => updatePreset({ eqSensitivity: clampEqSensitivity(value) })} title="The minimum amplitude a frequency must reach to be drawn" />
+                  </EditorField>
+                </>}
               </>}
             </>}
             {artCoverOffered && <EditorToggle label="COVER ART" checked={draft.preset.coverArt !== false} onChange={(checked) => updatePreset({ coverArt: checked })} reason="Attach the still to the file as its artwork. It is stored as a picture rather than played as a frame, which is what an MP3, M4A or FLAC can hold." />}

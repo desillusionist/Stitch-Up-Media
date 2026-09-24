@@ -120,6 +120,10 @@ carries.__MOUNT_DONE = false
 /** The label text of every settings field or toggle on screen, which is what "did it render" means. */
 const labelsOf = (selector: string) => [...document.querySelectorAll(selector)].map((element) => element.querySelector('span')?.textContent?.trim() ?? '')
 
+/** The TEMPLATE control, found by the option only it offers rather than by position. */
+const templateSelect = () => [...document.querySelectorAll('select')]
+  .find((select) => [...(select as HTMLSelectElement).options].some((option) => option.value === 'eq')) as HTMLSelectElement | undefined
+
 /** The PICTURE SOURCE control, found by the label the window gives it rather than by position. */
 const pictureSourceSelect = () => [...document.querySelectorAll('.editor-field')]
   .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('PICTURE SOURCE'))
@@ -132,6 +136,26 @@ const backgroundSelect = () => [...document.querySelectorAll('.editor-field')]
 
 /** Whether the monitor is drawing the still it was handed, found by the name the window gives it. */
 const monitorDrawing = () => Boolean(document.querySelector('img[alt="DRAWING THE SOUND"]'))
+
+/**
+ * What the loaded stylesheet declares for a selector, or nothing where it carries no such rule.
+ *
+ * For the rules a stub environment cannot put on screen. The monitor's drawing never mounts here — the stub
+ * media fails to decode, which the monitor answers with its own notice — so its LAYOUT cannot be measured,
+ * while the rule that decides that layout is in the stylesheet either way and is what the fix consists of.
+ */
+const cssRule = (selector: string) => {
+  for (const sheet of Array.from(document.styleSheets)) {
+    let rules: CSSRuleList | undefined
+    try { rules = sheet.cssRules } catch { continue }
+    for (const rule of Array.from(rules ?? [])) {
+      if (rule instanceof CSSStyleRule && rule.selectorText === selector) {
+        return { selector: rule.selectorText, width: rule.style.width, height: rule.style.height, objectFit: rule.style.objectFit }
+      }
+    }
+  }
+  return null
+}
 
 const clickTab = (name: string) => {
   const button = [...document.querySelectorAll('.export-tabs button')].find((candidate) => candidate.textContent?.trim() === name)
@@ -206,9 +230,26 @@ const drive = async () => {
   result.audio = {
     ...(result.audio as object),
     monitorDrawing: monitorDrawing(),
+    // The drawing's own scaling rule, read off the loaded stylesheet: see `cssRule` for why it is the rule
+    // rather than the element that this harness can check.
+    drawingRule: cssRule('.editor-still.is-drawing'),
     screen: document.querySelector('.editor-screen-message')?.textContent ?? null,
     stillAlts: [...document.querySelectorAll('.editor-still')].map((img) => img.getAttribute('alt')),
+    // The request as it stood BEFORE the EQ was chosen, because the assertions about the drawing's own
+    // settings are about the template that was chosen first and the last request on the list is the EQ's.
+    drawingStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
     stillRequests,
+  }
+  // The EQ's own knobs. They are state the editor has to RENDER, and state without a control is exactly the
+  // fault this harness exists to catch — so choosing the EQ has to bring its four controls out AND reach the
+  // encoder as four figures, which the still request is where a window can be wrong on its own.
+  const templates = templateSelect()
+  if (templates) choose(templates, 'eq')
+  await wait(600)
+  result.audio = {
+    ...(result.audio as object),
+    eqFields: templates ? labelsOf('.editor-field') : null,
+    eqStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
   }
   // What the choice becomes: the patch the window hands the queue, which is where the drawing has to
   // arrive for the encoder to be asked for it at all. `check-tail` proves the encoder then draws; this is

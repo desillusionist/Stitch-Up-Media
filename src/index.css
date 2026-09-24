@@ -233,6 +233,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .transport-rate { min-width: 46px; text-align: center; color: var(--ui-muted); font-size: 10px; }
 .transport-rate.is-fast { color: var(--ui-encoding); }
 .transport-rate.is-reverse { color: var(--ui-paused); }
+/* The preview speed: a dropdown beside the transport, so it reads as a viewer's setting rather than as
+   another transport button. It is deliberately NOT styled like the shuttle readout, because it is not one. */
+.transport-speed { display: inline-flex; align-items: center; gap: 4px; }
+.transport-speed select { padding: 3px 4px; font-size: 10px; }
 .timeline-panel { padding: 10px; flex: 0 0 auto; max-height: 46%; overflow-y: auto; overflow-x: hidden; }
 /* Everything a lane's clip is drawn with is stated further down, against `.timeline-lane`, because a
    clip has no meaning outside one. What used to be here stated the same properties for a standalone
@@ -570,6 +574,13 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .boundary-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; object-fit: contain; cursor: pointer; }
 .editor-still { flex: 1 1 auto; min-height: 0; max-width: 100%; background: #030910; object-fit: contain; -webkit-user-drag: none; user-select: none; }
+/* A sound-only job's own picture — the drawing the export will write. It is the whole monitor rather than a
+   clip inside the frame, so it is given the video element's own rule: 100% of the frame it is drawn in, with
+   contain-scaling, so it fills to fit and letterboxes as the viewport changes. Without a width and a height
+   it was laid out at its own natural size, which is the output resolution — so it was drawn at whatever that
+   happened to be and never rescaled when the panel did. The stage's ResizeObserver is what reports the
+   viewport, so the picture tracks it and is never regenerated. */
+.editor-still.is-drawing { width: 100%; height: 100%; object-fit: contain; }
 .editor-screen-message { color: var(--ui-muted); font-size: 10px; }
 
 .drop-chooser { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: rgba(3,9,16,.86); }

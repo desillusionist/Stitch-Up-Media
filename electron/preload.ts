@@ -23,6 +23,12 @@ export interface IElectronAPI {
     fps?: number
     /** Whether the design carries the sweeping progress line, pinned at the left in a still. */
     progressLine?: boolean
+    /** The EQ drawing's own knobs — read only when the template is EQ. */
+    bars?: number
+    gap?: number
+    amplitude?: 'lin' | 'sqrt' | 'cbrt' | 'log'
+    frequency?: 'lin' | 'log' | 'rlog'
+    sensitivity?: number
   }) => Promise<string | null>
   expandMediaPaths: (paths: string[]) => Promise<string[]>
   createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>

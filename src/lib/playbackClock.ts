@@ -23,6 +23,15 @@ export interface ClockInput {
   reverse: boolean
   /** Signed shuttle rate. Zero means ordinary forward playback. */
   shuttleRate: number
+  /**
+   * A preview SPEED multiplier, separate from the shuttle and multiplied with it. Absent means 1.
+   *
+   * It is here rather than folded into `shuttleRate` because the two are different controls: the shuttle is
+   * how hard the transport is being driven, the speed is how fast the viewer wants to watch. This clock is
+   * the only one a still frame or a tail has, so without it a 2x preview would visibly drop to 1x on entering
+   * a still while the picture element carried on at 2x.
+   */
+  speed?: number
 }
 
 /**
@@ -39,7 +48,8 @@ export interface ClockInput {
  */
 export const advanceClock = (anchor: ClockAnchor | null, input: ClockInput): { value: number; anchor: ClockAnchor } => {
   const direction: 1 | -1 = input.reverse ? -1 : 1
-  const rate = Math.max(0.05, Math.abs(input.shuttleRate) || 1)
+  const speed = input.speed && input.speed > 0 && Number.isFinite(input.speed) ? input.speed : 1
+  const rate = Math.max(0.05, (Math.abs(input.shuttleRate) || 1) * speed)
   const value = anchor
     ? anchor.position + anchor.direction * anchor.rate * (input.now - anchor.startedAt) / 1000
     : input.from

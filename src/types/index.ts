@@ -74,8 +74,23 @@ export interface EncodingPreset {
    * `VISUALIZATIONS` for the table the editor and the encoder both read.
    */
   visualization?: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll'
-  /** The drawing's own colour, as ffmpeg takes it. Absent means the app's green. */
+  /** The colour the drawing is made in, as ffmpeg takes it. Absent means the app's green. */
   visualizationColor?: string
+  /**
+   * The EQ drawing's own knobs. They are read only when the template is EQ — see `eqStyleOf`, which is what
+   * the editor and the encoder both ask so the two cannot disagree about a job that was saved before they
+   * existed.
+   */
+  /** How many bars an EQ drawing is divided into. Absent means the default density. */
+  eqBars?: number
+  /** The gap between EQ bars, in pixels of the output frame. Absent means solid. */
+  eqGap?: number
+  /** The EQ's amplitude scale. Absent means logarithmic. */
+  eqAmplitude?: 'lin' | 'sqrt' | 'cbrt' | 'log'
+  /** The EQ's frequency scale. Absent means linear. */
+  eqFrequency?: 'lin' | 'log' | 'rlog'
+  /** The EQ's minimum amplitude — how quiet a frequency may be and still be drawn. Absent means ffmpeg's own. */
+  eqSensitivity?: number
   /** What the drawing sits on. Absent means black. */
   visualizationBackgroundColor?: string
   /**

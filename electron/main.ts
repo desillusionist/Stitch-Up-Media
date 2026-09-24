@@ -10,7 +10,7 @@ import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { clipFilters } from '../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, drawingCanvas, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, drawingCanvas, eqStyleOf, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { runFfmpeg } from './ffmpeg/run'
 import { spawn, execFileSync } from 'node:child_process'
@@ -436,6 +436,12 @@ app.whenReady().then(() => {
     fps?: number
     /** Whether the design carries the sweeping progress line, pinned at the left in a still. */
     progressLine?: boolean
+    /** The EQ drawing's own knobs — read only when the template is EQ. */
+    bars?: number
+    gap?: number
+    amplitude?: 'lin' | 'sqrt' | 'cbrt' | 'log'
+    frequency?: 'lin' | 'log' | 'rlog'
+    sensitivity?: number
   }) => {
     const sources = (options.sources ?? []).filter((source) => { try { return fs.statSync(source).isFile() } catch { return false } })
     // Nothing to draw from is not an error: a job whose sound has not been probed yet simply has no still
@@ -470,6 +476,7 @@ app.whenReady().then(() => {
         sources: sources.map((_, index) => `${index}:a`),
         background,
         progressLine: options.progressLine,
+        eq: eqStyleOf({ eqBars: options.bars, eqGap: options.gap, eqAmplitude: options.amplitude, eqFrequency: options.frequency, eqSensitivity: options.sensitivity }),
       })
       args.push('-filter_complex', graph, '-map', '[out]')
       if (warmup > 0.001) args.push('-ss', warmup.toFixed(3))

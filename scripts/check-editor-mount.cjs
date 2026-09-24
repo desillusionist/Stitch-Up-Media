@@ -95,16 +95,47 @@ app.whenReady().then(async () => {
       // and the still never gets a chance to be drawn — a window that could not play and one that was never
       // asked are the same thing to this harness. What CAN be checked is that the monitor asked, and asked
       // for the right thing; that the drawing is what it draws is `check-tail`'s and `verify`'s business.
-      const asks = Array.isArray(audio.stillRequests) ? audio.stillRequests : []
-      if (!asks.length) problems.push('the monitor never asked for a still of the drawing it was showing')
+      const ask = audio.drawingStill
+      if (!ask) problems.push('the monitor never asked for a still of the drawing it was showing')
       else {
-        const ask = asks[asks.length - 1]
         if (String(ask.sources) !== '/tmp/track.wav') problems.push(`the monitor's still was drawn from ${JSON.stringify(ask.sources)} rather than the job's own sound`)
         if (ask.template !== 'waveform') problems.push(`the monitor's still was of ${ask.template} rather than the template chosen`)
         if (ask.background !== 'colour') problems.push(`the monitor's still sat on ${ask.background} rather than the background chosen`)
         if (ask.width !== 1920 || ask.height !== 1080) problems.push(`the monitor's still was made at ${ask.width}x${ask.height} rather than the output frame`)
       }
       if (audio.appliedPicture !== 'visualization') problems.push(`choosing the drawing sent a patch with picture source ${audio.appliedPicture} rather than the drawing, so the encoder is never asked for one`)
+      // The EQ's own knobs, which exist only for the EQ. Choosing it has to bring four controls out and send
+      // all four to the encoder: a knob the editor holds but never draws is the same fault one level down.
+      if (!audio.eqFields) problems.push('the EQ template could not be chosen at all')
+      else {
+        for (const expected of ['BAR COUNT', 'AMPLITUDE', 'FREQUENCY', 'SENSITIVITY']) {
+          if (!audio.eqFields.some((label) => label.startsWith(expected))) problems.push(`choosing the EQ drew no ${expected} control`)
+        }
+      }
+      const eqAsk = audio.eqStill
+      if (!eqAsk) problems.push('the monitor asked for no still once the EQ was chosen')
+      else {
+        if (eqAsk.template !== 'eq') problems.push(`the still asked for once the EQ was chosen was of ${eqAsk.template}`)
+        // The figures rather than the stored settings: the request carries the RESOLVED style, so this is the
+        // density and the scales the export will draw with, defaults and all.
+        if (eqAsk.bars !== 64) problems.push(`the EQ's still was asked for ${eqAsk.bars} bars rather than the default density`)
+        if (eqAsk.gap !== 0) problems.push(`the EQ's still was asked for a ${eqAsk.gap} pixel gap rather than none`)
+        if (eqAsk.amplitude !== 'log' || eqAsk.frequency !== 'lin') problems.push(`the EQ's still was asked for its scales as ${eqAsk.amplitude}/${eqAsk.frequency}`)
+      }
+      // HOW the drawing is laid out. It is the whole monitor for a sound-only job, so it is given the same rule
+      // the video element has — 100% of the frame it is drawn in, contain-scaled — rather than being laid out
+      // at its own natural size, which is the output resolution. Without that it was drawn at whatever the
+      // output happened to be and never rescaled when the panel was.
+      //
+      // The element itself cannot be measured here: the stub media fails to decode, and the monitor answers
+      // that with its own notice before the drawing is reached, so the RULE is what this checks — it is in the
+      // stylesheet either way, and it is the whole of the change.
+      const rule = audio.drawingRule
+      if (!rule) problems.push('the stylesheet carries no rule for a drawing still, so it is laid out at its natural size')
+      else {
+        if (rule.width !== '100%' || rule.height !== '100%') problems.push(`a drawing still does not fill the frame it is drawn in: ${rule.width} x ${rule.height}`)
+        if (!String(rule.objectFit).includes('contain')) problems.push(`a drawing still does not contain-scale: ${rule.objectFit}`)
+      }
       const stitch = result.stitch
       if (!stitch) problems.push('the stitch-of-sounds job reported nothing at all')
       else {

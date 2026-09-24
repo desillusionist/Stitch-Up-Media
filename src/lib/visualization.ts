@@ -290,6 +290,10 @@ export interface VisualizationRequest {
   rate: number
   channels: number
   /**
+   * The EQ's own knobs, when the template is one. Absent means the defaults — see `DEFAULT_EQ_STYLE`.
+   */
+  eq?: EqStyle
+  /**
    * The length the export's sound runs for, in seconds — what the progress line sweeps across. A sweep needs
    * a beginning and an end, so a sound with no known length gets no line.
    */
@@ -301,6 +305,116 @@ export interface VisualizationRequest {
    */
   progressLine?: boolean
 }
+
+/**
+ * The EQ drawing's own knobs, resolved from a preset's settings.
+ *
+ * `showfreqs` in `bar` mode has no option for how many bars it draws, how thick they are, or how far apart:
+ * its bars are one output column each, so the count IS the width and a thicker bar is only a wider drawing.
+ * The way to control it is therefore to draw at the BAR COUNT and stretch — one pixel per bar, scaled up with
+ * a nearest-neighbour stretch, so a bar becomes `frameWidth / bars` output pixels wide and the bars are
+ * chunky rather than blurred. The GAP is then a grid drawn over the result, blanking the leading pixels of
+ * every bar's cell, which is the only way to open one in a filter that has no concept of it.
+ */
+export interface EqStyle {
+  /** How many bars the spectrum is divided into — its density. */
+  bars: number
+  /** The gap between bars, in pixels of the output frame. 0 is solid. */
+  gap: number
+  amplitude: EqAmplitudeScale
+  frequency: EqFrequencyScale
+  /** ffmpeg's `minamp`: the floor below which a frequency is not drawn. Smaller is more sensitive. */
+  sensitivity: number
+}
+
+export type EqAmplitudeScale = 'lin' | 'sqrt' | 'cbrt' | 'log'
+export type EqFrequencyScale = 'lin' | 'log' | 'rlog'
+
+export const EQ_AMPLITUDE_SCALES: EqAmplitudeScale[] = ['lin', 'sqrt', 'cbrt', 'log']
+export const EQ_FREQUENCY_SCALES: EqFrequencyScale[] = ['lin', 'log', 'rlog']
+/** How many bars a drawing starts with. */
+export const EQ_DEFAULT_BARS = 64
+/** The range a bar count may take: below this every bar is gap, above it the stretch is pointless. */
+export const EQ_MIN_BARS = 2
+export const EQ_MAX_BARS = 512
+/** The gap starts at none, which is a solid spectrum. */
+export const EQ_DEFAULT_GAP = 0
+/** The widest a gap may be, in output pixels — past this a bar would be mostly gap. */
+export const EQ_MAX_GAP = 200
+/**
+ * The largest `minamp` ffmpeg takes, which is the least sensitive a spectrum can be asked to be — and the
+ * default, because a drawing's own floor is what a spectrum normally wants.
+ */
+export const EQ_MAX_SENSITIVITY = 1e-6
+/** And the smallest, which is as sensitive as it is worth asking for. */
+export const EQ_MIN_SENSITIVITY = 1e-12
+
+/** The EQ's knobs as a job that says nothing about them gets them. */
+export const DEFAULT_EQ_STYLE: EqStyle = { bars: EQ_DEFAULT_BARS, gap: EQ_DEFAULT_GAP, amplitude: 'log', frequency: 'lin', sensitivity: EQ_MAX_SENSITIVITY }
+
+export const clampEqBars = (value: unknown): number => {
+  const bars = Math.round(Number(value))
+  return Number.isFinite(bars) && bars > 0 ? Math.max(EQ_MIN_BARS, Math.min(EQ_MAX_BARS, bars)) : EQ_DEFAULT_BARS
+}
+
+export const clampEqGap = (value: unknown): number => {
+  const gap = Math.round(Number(value))
+  return Number.isFinite(gap) ? Math.max(0, Math.min(EQ_MAX_GAP, gap)) : EQ_DEFAULT_GAP
+}
+
+export const clampEqSensitivity = (value: unknown): number => {
+  const sensitivity = Number(value)
+  if (!Number.isFinite(sensitivity) || sensitivity <= 0) return EQ_MAX_SENSITIVITY
+  return Math.max(EQ_MIN_SENSITIVITY, Math.min(EQ_MAX_SENSITIVITY, sensitivity))
+}
+
+/** The EQ's knobs, read off a preset with the defaults filled in and every figure held to what ffmpeg takes. */
+export const eqStyleOf = (preset: Pick<EncodingPreset, 'eqBars' | 'eqGap' | 'eqAmplitude' | 'eqFrequency' | 'eqSensitivity'>): EqStyle => ({
+  bars: clampEqBars(preset.eqBars ?? EQ_DEFAULT_BARS),
+  gap: clampEqGap(preset.eqGap ?? EQ_DEFAULT_GAP),
+  amplitude: EQ_AMPLITUDE_SCALES.includes(preset.eqAmplitude as EqAmplitudeScale) ? (preset.eqAmplitude as EqAmplitudeScale) : DEFAULT_EQ_STYLE.amplitude,
+  frequency: EQ_FREQUENCY_SCALES.includes(preset.eqFrequency as EqFrequencyScale) ? (preset.eqFrequency as EqFrequencyScale) : DEFAULT_EQ_STYLE.frequency,
+  sensitivity: clampEqSensitivity(preset.eqSensitivity ?? EQ_MAX_SENSITIVITY),
+})
+
+/** Everything one drawing is made from: the template, the two sizes, and the style. */
+interface DrawingRequest {
+  template: Visualization
+  /** The bounded canvas the drawing is made on, which is what every template but the EQ uses. */
+  canvas: { width: number; height: number }
+  /** The frame the drawing is scaled up to, which the EQ measures a bar and its gap in. */
+  frame: { width: number; height: number }
+  fps: number
+  color: string
+  eq: EqStyle
+}
+
+/**
+ * The size a drawing is MADE at — the bar count by the frame's own height, for the EQ.
+ *
+ * Height rather than the bounded canvas because the stretch to the frame is nearest-neighbour: drawing at the
+ * frame's full height leaves the vertical axis at one pixel per row, so the frequency resolution is untouched
+ * and only the bars are made chunky. Every other template is made at the capped canvas and scaled up
+ * smoothly, which is what `drawingCanvas` explains.
+ */
+const drawingSize = (template: Visualization, canvas: { width: number; height: number }, frame: { width: number; height: number }, eq: EqStyle): string =>
+  template === 'eq' ? `${eq.bars}x${frame.height}` : `${canvas.width}x${canvas.height}`
+
+/**
+ * How a drawing reaches the frame. The EQ is stretched nearest-neighbour so its bars stay chunky; everything
+ * else is scaled smoothly, because a waveform has no detail an upscale can lose.
+ */
+const drawingScaleFlags = (template: Visualization): string => (template === 'eq' ? 'neighbor' : 'lanczos')
+
+/**
+ * The EQ's gap, as a grid drawn over the stretched bars.
+ *
+ * `showfreqs` has no gap, so the cells are cut afterwards: a grid whose cell is one bar and whose thickness is
+ * the gap, with its horizontal rule put a long way off the frame so only the vertical lines are drawn at all.
+ * Nothing is returned when there is no gap, which is the common case.
+ */
+const drawingGapFilter = (template: Visualization, frameWidth: number, eq: EqStyle): string =>
+  template === 'eq' && eq.gap > 0 ? `,drawgrid=x=0:y=99999:w=${Math.max(1, Math.round(frameWidth / eq.bars))}:h=99999:t=${eq.gap}:c=black` : ''
 
 /**
  * One template's filter — the ONE its preview and its export are both made from.
@@ -316,12 +430,25 @@ export interface VisualizationRequest {
  * right-hand column at one second, two seconds and at the end, while `slide=scroll` reads 233 to 235 at
  * every one of them. The picture one needs `legend=0` for the same kind of reason: its legend band occupies
  * the right-hand edge, so with the default the picture does not reach its own frame.
+ *
+ * The scrolling WAVEFORM draws a SOLID fill rather than a stroke. `mode=cline` — a centred line per sample —
+ * is a stroke: measured on broadband material it draws a bright core with hollow shoulder work, and on a
+ * quiet passage it draws nothing but the outline, which is the "stroked outline around its filled shape" it
+ * was reported as. `mode=line` draws a vertical line from the centre to each sample, so a column fills to the
+ * peak and the drawing is solid to its own envelope — which is also exactly what the still WAVEFORM's
+ * `showwavespic` draws, so the two waveform templates now agree on what a waveform looks like.
  */
-const drawingFilters = (template: Visualization, size: string, fps: number, color: string): string => {
-  if (template === 'eq') return `showfreqs=s=${size}:mode=bar:ascale=log:rate=${fps}:colors=${color}`
+const drawingFilters = (request: DrawingRequest): string => {
+  const { template, fps, color, eq } = request
+  const size = drawingSize(template, request.canvas, request.frame, eq)
+  // The EQ's own knobs, all four of them, on the filter that has them: the amplitude and frequency scales,
+  // the sensitivity floor, and the colour. How MANY bars and how far apart they are is not a filter option —
+  // it is the size it is drawn at and the grid drawn over it, which is what `drawingSize` and
+  // `drawingGapFilter` are for.
+  if (template === 'eq') return `showfreqs=s=${size}:mode=bar:ascale=${eq.amplitude}:fscale=${eq.frequency}:minamp=${eq.sensitivity}:rate=${fps}:colors=${color}`
   if (template === 'spectrum') return `showspectrumpic=s=${size}:mode=combined:color=intensity:scale=log:legend=0`
   if (template === 'spectrum-scroll') return `showspectrum=s=${size}:mode=combined:color=intensity:scale=log:slide=scroll,fps=${fps}`
-  if (template === 'waveform-scroll') return `showwaves=s=${size}:mode=cline:rate=${fps}:colors=${color}`
+  if (template === 'waveform-scroll') return `showwaves=s=${size}:mode=line:rate=${fps}:colors=${color}`
   return `showwavespic=s=${size}:colors=${color}`
 }
 
@@ -332,9 +459,9 @@ const drawingFilters = (template: Visualization, size: string, fps: number, colo
  * then as long as the sound it is drawn from. This is the only difference between what the editor shows and
  * what the encoder writes — a loop is not a look, so the still the editor draws is a frame of exactly this.
  */
-const exportDrawingFilters = (template: Visualization, size: string, fps: number, color: string): string => {
-  const drawn = drawingFilters(template, size, fps, color)
-  return templateFor(template).kind === 'picture' ? `${drawn},loop=loop=-1:size=1` : drawn
+const exportDrawingFilters = (request: DrawingRequest): string => {
+  const drawn = drawingFilters(request)
+  return templateFor(request.template).kind === 'picture' ? `${drawn},loop=loop=-1:size=1` : drawn
 }
 
 /**
@@ -354,6 +481,8 @@ export interface VisualizationStillRequest {
   background: string | { input: number }
   /** Whether the still shows the progress line, pinned at the left. Off unless asked for — see the export. */
   progressLine?: boolean
+  /** The EQ's own knobs, when the template is one. Absent means the defaults — see `DEFAULT_EQ_STYLE`. */
+  eq?: EqStyle
 }
 
 /**
@@ -365,13 +494,13 @@ export interface VisualizationStillRequest {
  * draws the whole file as one picture, which is a truer thing to look at than one frame of a line.
  */
 export const visualizationStillGraph = (request: VisualizationStillRequest): string => {
-  const { template, width, height, fps, color, sources, background, progressLine } = request
+  const { template, width, height, fps, color, sources, background, progressLine, eq } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
-  const size = `${canvas.width}x${canvas.height}`
-  const drawn = drawingFilters(template, size, fps, color)
+  const style = eq ?? DEFAULT_EQ_STYLE
+  const drawing: DrawingRequest = { template, canvas, frame: { width, height }, fps, color, eq: style }
   const listened = sources.length === 1
-    ? `[${sources[0]}]${drawn}[draw]`
-    : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0,${drawn}[draw]`
+    ? `[${sources[0]}]${drawingFilters(drawing)}[draw]`
+    : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0,${drawingFilters(drawing)}[draw]`
   const base = typeof background === 'string'
     ? `color=c=${background}:s=${width}x${height}:r=${fps}[bg]`
     : `[${background.input}:v]scale=${width}:${height},setsar=1[bg]`
@@ -380,7 +509,7 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
   const line = progressLine ? progressLineGraph(template, height, fps, 0, true) : null
   return [
     listened,
-    `[draw]scale=${width}:${height}:flags=lanczos[scaled]`,
+    `[draw]scale=${width}:${height}:flags=${drawingScaleFlags(template)}${drawingGapFilter(template, width, style)}[scaled]`,
     base,
     '[bg][scaled]overlay=shortest=1[plate]',
     ...(line
@@ -407,8 +536,10 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
  * own size.
  */
 export const visualizationGraph = (request: VisualizationRequest): string => {
-  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine } = request
+  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine, eq } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
+  const style = eq ?? DEFAULT_EQ_STYLE
+  const drawing: DrawingRequest = { template, canvas, frame: { width, height }, fps, color, eq: style }
   const listened = sources.length === 1
     ? `[${sources[0]}]asplit=2[mixA][mixV]`
     : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0,asplit=2[mixA][mixV]`
@@ -423,7 +554,7 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
     // The export's own audio, resampled and laid out exactly as the path that asked for the drawing
     // writes it, and cut from the mix rather than from the files.
     `[mixA]aresample=${rate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${channels === 1 ? 'mono' : 'stereo'}[aout]`,
-    `[mixV]${exportDrawingFilters(template, `${canvas.width}x${canvas.height}`, fps, color)},scale=${width}:${height}:flags=lanczos[w]`,
+    `[mixV]${exportDrawingFilters(drawing)},scale=${width}:${height}:flags=${drawingScaleFlags(template)}${drawingGapFilter(template, width, style)}[w]`,
     base,
     '[bg][w]overlay=shortest=1[plate]',
     ...(line

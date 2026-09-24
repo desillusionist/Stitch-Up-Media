@@ -98,6 +98,12 @@ const columnDelta = async (file, reference, time, fraction) => {
   return Math.round(Math.max(0, ...values))
 }
 
+/** How bright a narrow strip of a frame is, at an x in PIXELS. Narrow enough to sit inside a gap. */
+const stripLuma = async (file, time, x, width = 8) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `crop=${width}:ih:${x}:0,signalstats,metadata=print:file=-`, '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
+}
+
 /** How far apart the brightest and darkest pixel of a frame are: how much is DRAWN in it. */
 const contrast = async (file, time) => {
   const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', 'signalstats,metadata=print:file=-', '-f', 'null', '-'])
@@ -170,6 +176,11 @@ const main = async () => {
   // An image of a colour nothing else in these fixtures uses, for a drawing to be laid over.
   const artwork = path.join(root, 'artwork.png')
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=0x204060:s=320x180', '-frames:v', '1', artwork])
+
+  // A broadband sound, so a spectrum has something in every band: a tone lights one bar and leaves the rest
+  // black, which would make "the bar under this column is drawn" a question about the fixture's frequency.
+  const broadband = path.join(root, 'broadband.wav')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'anoisesrc=color=pink:sample_rate=48000:duration=5', '-c:a', 'pcm_s16le', broadband])
 
   const engine = new FFmpegEngine()
   const encode = (task) => new Promise((resolve, reject) => engine.runTask(task, () => {}, resolve, reject))
@@ -440,6 +451,40 @@ const main = async () => {
       sweeps: true,
     },
     {
+      // THE EQ'S OWN KNOBS, which `showfreqs` has no way to be told: its bars are one output column each, so
+      // the count IS the width and the drawing is stretched to the frame. This job asks for EIGHT bars with a
+      // twenty-four pixel gap, which makes both of them readable off the picture — a cell is 240 pixels wide
+      // and its first 24 are blanked, so the same probe at the cell's lead and at its middle tells the gap
+      // apart from the bar, and probing the NEXT cell's lead says how wide a cell is.
+      name: 'a sound file drawn as eight EQ bars with a gap between them',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'eq', fps: 30, eqBars: 8, eqGap: 24 },
+      task: {
+        id: 'viz-eq-gap', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [broadband],
+        outputDirectory: root, outputFilename: 'viz-eq-gap.mp4', preset,
+      },
+      output: path.join(root, 'viz-eq-gap.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      // The lead of the first cell and of the second, and the middle of the first bar between them.
+      eqProbes: { gap: [4, 244], bar: 100 },
+    },
+    {
+      // The same eight bars with NO gap, which is the control for the case above: the column the gap blanked
+      // is drawn, so what the pair proves is that the gap is what blanked it and not the drawing being dark.
+      name: 'the same bars with no gap',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'eq', fps: 30, eqBars: 8, eqGap: 0 },
+      task: {
+        id: 'viz-eq-solid', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [broadband],
+        outputDirectory: root, outputFilename: 'viz-eq-solid.mp4', preset,
+      },
+      output: path.join(root, 'viz-eq-solid.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      eqSolid: { bar: 4 },
+    },
+    {
       name: 'the same sound drawn without its trim',
       // No line, so the pair with the trimmed case above differs in the TRIM alone and the comparison is
       // between two drawings of the same kind.
@@ -558,6 +603,18 @@ const main = async () => {
       }
       if (item.drawnIsAudible) {
         check('and the same sound untrimmed is drawn as a line, so the check above can tell them apart', (await contrast(item.output, 0.5)) > 60, true)
+      }
+      if (item.eqProbes) {
+        // The gap's lead, the bar between the two gaps, and the NEXT gap's lead: the first and last are blank
+        // and the middle is drawn, which is both that the gap is applied and that a cell is one bar wide.
+        const inGap = await stripLuma(item.output, 1, item.eqProbes.gap[0])
+        const inBar = await stripLuma(item.output, 1, item.eqProbes.bar)
+        const nextGap = await stripLuma(item.output, 1, item.eqProbes.gap[1])
+        check(`a gap blanks the columns it is over (${inGap} and ${nextGap}) while the bar between them is drawn (${inBar})`, inGap < 40 && nextGap < 40 && inBar > 60, true)
+      }
+      if (item.eqSolid) {
+        const inBar = await stripLuma(item.output, 1, item.eqSolid.bar)
+        check(`with no gap the column the gap would blank is drawn (${inBar})`, inBar > 60, true)
       }
       if (item.sweepsAgainst) {
         // The line's column at one time, and the column it will have left by the other. Both are in the BLACK

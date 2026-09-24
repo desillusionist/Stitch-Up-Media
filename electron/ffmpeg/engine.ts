@@ -10,7 +10,7 @@ import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -795,6 +795,7 @@ export class FFmpegEngine {
       channels,
       duration,
       progressLine: visualizationProgressLine(preset),
+      eq: eqStyleOf(preset),
     })
     cmd.outputOptions([`-filter_complex ${graph}`, '-map [v]', '-map [aout]', '-shortest'])
   }
