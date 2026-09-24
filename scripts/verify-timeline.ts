@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, drawingCanvas, drawingColorOf, drawingPictureFor, drawingSoundIsMono, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
+import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, colourList, drawingCanvas, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
 import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
@@ -1542,8 +1542,15 @@ console.log('\n== the polar scope ==')
   // frame a ring would be an ellipse — and why a mono sound cannot be fed straight in. And its colour is
   // three channel CONTRASTS rather than a hex, so it comes from the theme.
   const settings = { width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 }
-  const scope = visualizationGraph({ ...settings, template: 'scope', tune: DEFAULT_TUNE, mono: false })
-  check('a stereo scope is drawn straight, with no quadrature in front of it', scope.includes('aphaseshift'), false)
+  // The ring is what a scope draws UNLESS it is told otherwise, and that is the correction of a wrong guess: a
+  // container's channel count is not its content, so a mono signal stored as stereo — the commonest case by
+  // far — was fed straight in and drew a spoke. Measured on the encoder harness, that sound reaches one
+  // column band of twenty as a spoke and fourteen as a ring.
+  const scope = visualizationGraph({ ...settings, template: 'scope', tune: DEFAULT_TUNE })
+  check('a scope draws a synthesised ring by default', scope.includes('aphaseshift=shift=0.25'), true)
+  check('and the sound is mixed to ONE channel first, so the pair is built from the sound', scope.includes('[mixV]aformat=channel_layouts=mono,asplit=2[scopeQ1][scopeQ2]'), true)
+  check('and one half is shifted a quarter of a cycle', scope.includes('[scopeQ2]aphaseshift=shift=0.25[scopeQ]'), true)
+  check('and the halves are joined into a stereo pair, which is what opens it into a ring', scope.includes('[scopeI][scopeQ]join=inputs=2:channel_layout=stereo,avectorscope='), true)
   check('as a polar trace at the frame\u2019s rate and draw mode', scope.includes('avectorscope=mode=polar:rate=30:draw=line:zoom=1'), true)
   check('on a square canvas the frame\u2019s short side gives it', scope.includes(':s=1080x1080'), true)
   check('padded either side, so a ring stays a ring', scope.includes(',pad=1920:1080:420:0:color=black[w]'), true)
@@ -1555,21 +1562,15 @@ console.log('\n== the polar scope ==')
   check('the square is the frame\u2019s short side', scopeSide({ width: 1920, height: 1080 }), 1080)
   check('a portrait frame is squared on its own short side', scopeSide({ width: 1080, height: 1920 }), 1080)
   check('and a 4K frame is still drawn at the cap, like every other drawing', scopeSide({ width: 3840, height: 2160 }), DRAWING_MAX_EDGE)
-
-  // The mono branch. Two IDENTICAL channels draw a flat diagonal rather than a ring, so the sound is split,
-  // one half is shifted a quarter of a cycle — `aphaseshift`'s own unit is a cycle — and the halves are joined
-  // back into a stereo pair. Measured on the encoder harness: the same mono file drawn with the branch on inks
-  // eight of twenty column bands, and with it off exactly one.
-  const scopeMono = visualizationGraph({ ...settings, template: 'scope', tune: DEFAULT_TUNE, mono: true })
-  check('a mono sound is split before it is drawn', scopeMono.includes('[mixV]asplit=2[scopeQ1][scopeQ2]'), true)
-  check('and one half is shifted a quarter of a cycle', scopeMono.includes('[scopeQ2]aphaseshift=shift=0.25[scopeQ]'), true)
-  check('and the halves are joined into a stereo pair, which is what opens it into a ring', scopeMono.includes('[scopeI][scopeQ]join=inputs=2:channel_layout=stereo,avectorscope='), true)
-  check('the quadrature is the drawing\u2019s own, so the export\u2019s audio is the untouched mono mix', scopeMono.includes('[mixA]aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo[aout]'), true)
-  check('a sound of one channel is mono', drawingSoundIsMono([1]), true)
-  check('and one of two is not', drawingSoundIsMono([2]), false)
-  check('nor is a set with any stereo in it', drawingSoundIsMono([1, 2]), false)
-  check('and an unknown layout is drawn as a stereo one rather than guessed at as mono', drawingSoundIsMono([]), false)
-  check('the editor\u2019s still is opened out the same way', visualizationStillGraph({ ...settings, template: 'scope', sources: ['0:a'], mono: true }).includes('aphaseshift=shift=0.25'), true)
+  // The quadrature is the drawing's own, so the export's audio is untouched by it.
+  check('the quadrature is the drawing\u2019s own, so the export\u2019s audio is the untouched mix', scope.includes('[mixA]aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo[aout]'), true)
+  // TRUE STEREO is the opt-in for genuinely wide music: the sound's own two channels, straight in.
+  const wide = visualizationGraph({ ...settings, template: 'scope', tune: drawingTuneOf({ scopeTrueStereo: true }) })
+  check('TRUE STEREO feeds the sound\u2019s own pair, with no quadrature in front of it', wide.includes('aphaseshift'), false)
+  check('and no downmix either', wide.includes('aformat=channel_layouts=mono'), false)
+  check('so the scope is handed the mix as it stands', wide.includes('[mixV]avectorscope=mode=polar'), true)
+  check('and it is off unless it is asked for', drawingTuneOf({}).trueStereo, false)
+  check('the editor\u2019s still is opened out the same way', visualizationStillGraph({ ...settings, template: 'scope', sources: ['0:a'] }).includes('aphaseshift=shift=0.25'), true)
 }
 
 console.log('\n== the theme, and the knobs each template reads ==')
@@ -1586,15 +1587,35 @@ console.log('\n== the theme, and the knobs each template reads ==')
   check('so an amber spectrum is drawn on the warm ramp', visualizationGraph({ ...settings, template: 'spectrum', sources: ['0:a'], tune: drawingTuneOf({ drawingTheme: 'amber' }) }).includes(':color=fiery:'), true)
   check('and a green one on the green', visualizationGraph({ ...settings, template: 'spectrum', sources: ['0:a'], tune: drawingTuneOf({}) }).includes(':color=green:'), true)
 
-  // The waveform's own three: how the amplitude is scaled, how heavy the drawing is, and whether the channels
-  // are drawn in their own halves. All three are the filter's own options, passed through.
-  const lighter = visualizationGraph({ ...settings, template: 'waveform', sources: ['0:a'], tune: drawingTuneOf({ waveScale: 'log', waveWeight: 'line', waveMirror: true }) })
-  check('the waveform\u2019s amplitude scale is passed through', lighter.includes('showwavespic=s=1280x720:scale=log'), true)
-  check('and its weight is one of ffmpeg\u2019s two draw modes', lighter.includes('draw=scale'), true)
-  check('and the mirror is the filter\u2019s own channel split', lighter.includes('split_channels=1'), true)
+  // The waveform's own three: how the amplitude is scaled, how heavy the drawing is, and how many waveforms
+  // it draws. The first two are the filter's own options; the third is a DOWNMIX, because both waveform filters
+  // draw a channel per row and a stereo input fills the frame with two of them however `split_channels` is set.
+  const twoWaves = visualizationGraph({ ...settings, template: 'waveform', sources: ['0:a'], tune: drawingTuneOf({ waveScale: 'log', waveWeight: 'line', waveChannels: 2 }) })
+  check('the waveform\u2019s amplitude scale is passed through', twoWaves.includes('showwavespic=s=1280x720:scale=log'), true)
+  check('and its weight is one of ffmpeg\u2019s two draw modes', twoWaves.includes('draw=scale'), true)
+  check('two waveforms keep the sound\u2019s own pair and ask the filter to split it', twoWaves.includes('split_channels=1'), true)
+  check('and nothing is mixed down for them', twoWaves.includes('aformat=channel_layouts=mono'), false)
+  const oneWave = visualizationGraph({ ...settings, template: 'waveform', sources: ['0:a'], tune: drawingTuneOf({}) })
+  check('ONE waveform — the default — mixes the sound down before the filter', oneWave.includes('[mixV]aformat=channel_layouts=mono,showwavespic='), true)
+  check('and asks for no split, because there is nothing to split', oneWave.includes('split_channels=0'), true)
+  check('and the scrolling one is given the same thing, so the two agree', visualizationGraph({ ...settings, template: 'waveform-scroll', sources: ['0:a'], tune: drawingTuneOf({}) }).includes('[mixV]aformat=channel_layouts=mono,showwaves='), true)
+  check('two waveforms there too, where they are asked for', visualizationGraph({ ...settings, template: 'waveform-scroll', sources: ['0:a'], tune: drawingTuneOf({ waveChannels: 2 }) }).includes('split_channels=1'), true)
   check('the default weight is the filled draw', drawingTuneOf({}).waveWeight, 'fill')
   check('because the lighter one is what reads as a blank monitor on a 1080-row frame', drawingTuneOf({ waveWeight: 'line' }).waveWeight, 'line')
   check('and an amplitude scale the job says nothing about is linear', drawingTuneOf({}).waveScale, 'lin')
+  check('and a job that says nothing draws ONE waveform', drawingTuneOf({}).waveChannels, 1)
+  check('which is the default the table carries', WAVE_DEFAULT_CHANNELS, 1)
+  check('and the downmix is the layout-agnostic one, so it is never told what it is handed', oneWave.includes(MONO_MIX), true)
+
+  // And the colour, which is a LIST indexed by channel: a short list leaves the channels it does not cover
+  // drawn in the filter's own default, which is how a stereo source came to be drawn in white. Measured, one
+  // entry puts pure white in the frame and a full list puts the theme's green there and nothing else.
+  const bars = visualizationGraph({ ...settings, template: 'eq', sources: ['0:a'], eq: DEFAULT_EQ_STYLE })
+  check('the bars are given a colour PER CHANNEL, so none of them falls back to white', bars.includes(`colors=${colourList('#ffffff')}`), true)
+  check('and that is more entries than a sound can have channels', colourList('#ffffff').split('|').length >= 6, true)
+  check('which is eight entries, the widest layout ffmpeg names', colourList('#ffffff').split('|').length, 8)
+  check('and all of them are the one colour', new Set(colourList('#9fbf9a').split('|')), new Set(['#9fbf9a']))
+  check('the mirrored bars are given it too', visualizationGraph({ ...settings, template: 'mirrored-bars', sources: ['0:a'], eq: DEFAULT_EQ_STYLE }).includes(colourList('#ffffff')), true)
 
   // And the spectra's own two. `sat` is a multiplier rather than an on/off, and 0 is a grey ramp.
   const saturated = visualizationGraph({ ...settings, template: 'spectrum', sources: ['0:a'], tune: drawingTuneOf({ spectrumScale: 'cbrt', spectrumSaturation: 3 }) })

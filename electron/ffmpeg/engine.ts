@@ -10,7 +10,7 @@ import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingSoundIsMono, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
 import { channelLayoutFor, outputChannels } from '../../src/lib/audioFacts'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
@@ -204,18 +204,14 @@ export class FFmpegEngine {
     let sourceSize: { width: number; height: number } | null = sequence?.width && sequence?.height
       ? { width: sequence.width, height: sequence.height }
       : null
-    // The channel counts of the sound being drawn, which is the one thing a polar scope has to know about
-    // its input: two identical channels draw a flat line rather than a ring. Taken from the probe this path
-    // already makes, and left empty when it fails — an unknown layout is drawn as a stereo one, because a
-    // wrong quadrant on a stereo file is worse than a plain scope on a mono one.
-    let sourceChannels: number[] = []
+    // The channel counts of the sound are no longer read here: the scope's ring is synthesised whatever the
+    // container holds — see `TRUE STEREO` on the preset — so the drawing no longer depends on a probe.
     try {
       const probe = await probeFile(source)
       expectedSeconds = segmentTiming(
         sourceDuration(task, source, sequence, () => ({ duration: Number(probe.duration || 0) })),
         trim,
       ).duration
-      sourceChannels = probe.audioStreams.map((stream) => stream.channels || 0).filter((count) => count > 0)
       const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
       if (!sourceSize && resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
         sourceSize = { width: resolution[0], height: resolution[1] }
@@ -241,15 +237,20 @@ export class FFmpegEngine {
     // EVERY audio stream of the input, which is fine for a lone sound file and wrong the moment one is
     // not, while `[0:a:0]` is the one stream this path means. The drawing is laid out to the same rate
     // and channel count every other path writes, because the two halves of one split cannot differ.
-    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, this.exportChannels(task.preset, 2), expectedSeconds, drawingSoundIsMono(sourceChannels))
-    else if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
+    // A picture the job was GIVEN, for the third of the three answers its picture source can be: black, a
+    // drawing of its own sound, or an image the user picked. The picked one is added as an input of its own
+    // before the preset's filters are built, because the chain that fits it into the frame is one of them.
+    const customPicture = soundOnly ? this.usablePicture(task.preset.audioPicture === 'custom' ? task.preset.audioPictureImage : undefined) : null
+    const pictureFilters = customPicture ? this.addStillPicture(cmd, task.preset, customPicture) : []
+    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, this.exportChannels(task.preset, 2), expectedSeconds)
+    else if (soundOnly && !customPicture) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
     // the picture is not normalized first: a single visual has no other clip to be joined to, so
     // there is nothing to normalize it against. The chain STANDS IN for the job's own crop, scale
     // and pad rather than being added after them, so the clip is not framed twice.
     const clipChain = this.clipFraming(task, source, sourceSize)
-    this.applyPresetToCommand(cmd, task.preset, [], {
+    this.applyPresetToCommand(cmd, task.preset, pictureFilters, {
       ...(clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) }),
       ...(draws ? { graphOwnsPicture: true } : {}),
     })
@@ -381,8 +382,12 @@ export class FFmpegEngine {
     const soundOnlyStitch = task.sourcePaths.length > 0 && task.sourcePaths.every((source) => mediaKind(source) === 'audio')
     const stitchPictured = jobExportsPicture(task) && soundOnlyStitch && carriesMainAudio
     const stitchDraws = stitchPictured && task.preset.audioPicture === 'visualization' && task.preset.videoCodec !== 'copy'
+    // And the third answer its picture source can be: an image the user picked rather than the black frame.
+    // Added here, ahead of the preset's filters, because the chain that fits it into the frame is one of them.
+    const stitchCustom = stitchDraws || !stitchPictured ? null : this.usablePicture(task.preset.audioPicture === 'custom' ? task.preset.audioPictureImage : undefined)
+    const stitchPictureFilters = stitchCustom ? this.addStillPicture(cmd, task.preset, stitchCustom) : []
 
-    this.applyPresetToCommand(cmd, task.preset, [], {
+    this.applyPresetToCommand(cmd, task.preset, stitchPictureFilters, {
       cropsPerClip: clipsConcatenate(task),
       // The drawing's graph owns the picture and the audio, so the encoder is not handed a `-vf` for a
       // picture the graph is already making.
@@ -413,8 +418,8 @@ export class FFmpegEngine {
     if (stitchPictured) {
       // Every normalized source is written as stereo before it is joined, so the concatenated stream the
       // drawing is made from is a stereo one whatever the files were — the scope is drawn straight.
-      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, this.exportChannels(task.preset, targetChannels), clipDurations.reduce((total, clip) => total + clip, 0), false)
-      else this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
+      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, this.exportChannels(task.preset, targetChannels), clipDurations.reduce((total, clip) => total + clip, 0))
+      else if (!stitchCustom) this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
     }
 
     cmd
@@ -555,10 +560,6 @@ export class FFmpegEngine {
     // video's own answer comes from the probe below. Guessed at rather than probed, the tags that name
     // each track's language would be written against a stream that may not exist.
     let videoHasAudio = !isStillCover && !isSequenceVideo
-    // The added tracks' channel counts, which the polar scope's mono branch is decided from. Collected here
-    // because this path already probes every one of them, and empty when the probe fails — an unknown layout
-    // is drawn as a stereo one rather than guessed at as a mono one.
-    let extraAudioChannels: number[] = []
     try {
       const videoProbe = await probeFile(videoSource)
       probedDuration = Number(videoProbe.duration || 0)
@@ -570,9 +571,6 @@ export class FFmpegEngine {
         videoSize = { width: videoSequence.width, height: videoSequence.height }
       }
       const audioProbes = await Promise.all(extraAudios.map((track) => probeFile(track.path)))
-      extraAudioChannels = audioProbes
-        .flatMap((probe) => probe.audioStreams.map((stream) => stream.channels || 0))
-        .filter((count) => count > 0)
       longestAudioDuration = audioProbes.reduce((max, probe, index) => {
         const point = this.trimPoint(task, extraAudios[index].path, 0)
         const full = Number(probe.duration || 0)
@@ -630,15 +628,21 @@ export class FFmpegEngine {
     ]
     const pictured = drawsSound && audible.length > 0
     if (pictured) {
-      // The audible tracks are what the drawing is made from, so the scope is opened into quadrature only
-      // when every one of them is a single channel — the same question asked of the export's own mix.
-      const mono = drawingSoundIsMono(extraAudioChannels)
-      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, this.exportChannels(task.preset, 2), expectedSeconds, mono)
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, this.exportChannels(task.preset, 2), expectedSeconds)
     }
     const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
+    // And the picture the job was GIVEN, where its picture source is an image of the user's own choosing rather
+    // than the still it is covered with. It is added as the LAST input, after the tracks, so every input index
+    // written below — the tracks and their tags — still means what it meant; the mapping below is what points
+    // the picture at it instead of at the cover. It is decided here rather than beside the filters because the
+    // video mapping is what names it.
+    const customPicture = pictured || attachCover ? null : this.usablePicture(task.preset.audioPicture === 'custom' ? task.preset.audioPictureImage : undefined)
+    const pictureIndex = customPicture ? 1 + extraAudios.length : 0
+    const pictureFilters = customPicture ? this.addStillPicture(cmd, task.preset, customPicture) : []
+
     // Video stream mapping
-    const outputOptions: string[] = pictured ? [] : ['-map 0:v:0']
+    const outputOptions: string[] = pictured ? [] : [`-map ${pictureIndex}:v:0`]
     if (attachCover) {
       // The still, stored rather than re-encoded, and marked as the file's artwork. `-c:v copy` comes
       // after the preset's own video codec so it is the codec that stands, and the still is never
@@ -680,7 +684,7 @@ export class FFmpegEngine {
     const tailFilter = tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
       ? [`tpad=stop_mode=add:color=black:stop_duration=${tailDuration.toFixed(3)}`]
       : []
-    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : tailFilter, {
+    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : [...tailFilter, ...pictureFilters], {
       ...(clipChain ? { clipChain } : {}),
       ...(pictured ? { graphOwnsPicture: true } : {}),
       ...(attachCover ? { keepsArtwork: true } : {}),
@@ -770,6 +774,43 @@ export class FFmpegEngine {
     cmd.outputOptions(['-shortest'])
   }
 
+  /** A path a job was given, where it can actually be read — a picture that has moved is not a picture. */
+  private usablePicture(imagePath: string | undefined): string | null {
+    if (!imagePath) return null
+    try { return fs.statSync(imagePath).isFile() ? imagePath : null } catch { return null }
+  }
+
+  /**
+   * The frame an image the job was given is fitted into: scaled with its shape kept, letterboxed on black.
+   *
+   * The same rule the export already applies to a clip that does not fill its frame, and the same one the
+   * drawing's own graphs use for an uploaded background — so a custom picture and a drawing's background land
+   * in the frame the same way. It is a suffix to the preset's own filters rather than a replacement for them,
+   * so a job that named a resolution is scaled by that first and this then finds nothing left to do.
+   */
+  private stillFitFilters(preset: EncodingPreset): string[] {
+    const { width, height } = this.frameBoxFor(preset)
+    return [
+      `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+      `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+      'setsar=1',
+    ]
+  }
+
+  /**
+   * The picture a job with only sound was given, added as an input of its own.
+   *
+   * HELD rather than played: an image input is looped at the export's own rate, and `-shortest` bounds it to
+   * the sound, which is the rule the black frame beside it follows and the reason a still does not outlast the
+   * track it accompanies. What comes back is the suffix that fits it into the frame — see `stillFitFilters`.
+   */
+  private addStillPicture(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, imagePath: string): string[] {
+    cmd.input(imagePath)
+    cmd.inputOptions(['-loop', '1', '-framerate', String(this.pictureRateFor(preset))])
+    cmd.outputOptions(['-shortest'])
+    return this.stillFitFilters(preset)
+  }
+
   /**
    * The frame a job with no picture of its own is given, and the rate it is written at.
    *
@@ -816,7 +857,7 @@ export class FFmpegEngine {
    * `duration` is how long the export's sound runs — what the progress line sweeps across — and the line's
    * own on/off comes from the preset, so the default lives in one place rather than at each call site.
    */
-  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number, mono: boolean): void {
+  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number): void {
     const { width, height } = this.frameBoxFor(preset)
     const graph = visualizationGraph({
       template: preset.visualization ?? 'waveform',
@@ -832,7 +873,6 @@ export class FFmpegEngine {
       progressLine: visualizationProgressLine(preset),
       eq: eqStyleOf(preset),
       tune: drawingTuneOf(preset),
-      mono,
     })
     cmd.outputOptions([`-filter_complex ${graph}`, '-map [v]', '-map [aout]', '-shortest'])
   }

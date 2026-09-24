@@ -316,6 +316,16 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    same measured size, so the row reads as one of the settings rather than as an action. */
 .editor-pick { width: 100%; padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-family: inherit; font-size: inherit; text-align: left; }
 .editor-pick:hover { border-color: var(--ui-accent); }
+/* Two controls that belong to one setting, side by side: the drawing's colour swatch beside its hex field,
+   and a bitrate's ladder beside a typed figure. The swatch is the RESOLVED colour — the theme's own until one
+   is picked — so it never shows an empty black for a job that has named none. The input is stripped of its own
+   chrome so what is left is a filled box. */
+.field-pair { display: flex; align-items: center; gap: 6px; }
+.field-pair .editor-input { flex: 1 1 auto; min-width: 0; }
+.editor-swatch { flex: 0 0 auto; width: 30px; height: 27px; padding: 0; border: 1px solid var(--ui-border); background: transparent; cursor: pointer; }
+.editor-swatch:hover { border-color: var(--ui-accent); }
+.editor-swatch::-webkit-color-swatch-wrapper { padding: 0; }
+.editor-swatch::-webkit-color-swatch { border: 0; }
 .editor-toggle.is-locked { opacity: .45; }
 .editor-toggle.is-locked input { cursor: not-allowed; }
 .editor-conflict { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin: 12px 14px 0; padding: 10px 14px; border: 1px solid var(--ui-encoding); background: var(--ui-panel-inset); color: var(--ui-foreground); }

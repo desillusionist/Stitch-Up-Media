@@ -92,6 +92,15 @@ app.whenReady().then(async () => {
           if (!audio.drawnFields.some((label) => label.startsWith(expected))) problems.push(`choosing the drawing drew no ${expected} control`)
         }
       }
+      // The COLOUR SWATCH, which is where a job that has named no colour shows the one it will be drawn in: the
+      // swatch's value is the RESOLVED colour, so an empty box here would mean the theme were not behind it.
+      if (audio.colourSwatch !== '#9fbf9a') problems.push(`the colour swatch shows ${String(audio.colourSwatch)} rather than the theme's own green`)
+      // The waveform's own count, which defaults to ONE — the downmix that makes the drawing one shape.
+      if (!audio.waveforms) problems.push('the waveform was offered no count of how many waveforms it draws')
+      else {
+        if (String(audio.waveforms.options) !== '1,2') problems.push(`the waveform count offers ${JSON.stringify(audio.waveforms.options)} rather than one or two`)
+        if (audio.waveforms.value !== '1') problems.push(`a job that says nothing draws ${audio.waveforms.value} waveforms rather than one`)
+      }
       // The palette, which every template reads and which is offered whatever the template is — a colour the
       // job names for itself wins over it, but a job that names none takes its own colour FROM it, so a
       // template without a colour field still has a palette behind it.
@@ -100,9 +109,9 @@ app.whenReady().then(async () => {
       // The waveform's own knobs, which only the two waveforms take.
       if (!audio.drawnToggles) problems.push('the drawing drew no toggles at all')
       else {
-        if (!audio.drawnToggles.includes('MIRROR CHANNELS')) problems.push('the waveform was offered no channel mirror')
         if (!audio.drawnToggles.includes('PROGRESS LINE')) problems.push('the waveform picture was offered no progress line')
         if (audio.drawnToggles.includes('SEGMENTED')) problems.push('the waveform was offered the bars\u2019 own segment control')
+        if (audio.drawnToggles.includes('TRUE STEREO')) problems.push('the waveform was offered the scope\u2019s own stereo switch')
       }
       // And the tune actually reaches the encoder. The request carries the RESOLVED palette and knobs, so this
       // is what the export will be drawn with, defaults included — a knob the editor draws and never sends is
@@ -110,7 +119,8 @@ app.whenReady().then(async () => {
       const tuneAsk = audio.drawingStill
       if (tuneAsk) {
         if (tuneAsk.theme !== 'green') problems.push(`the still was asked for theme ${String(tuneAsk.theme)} rather than the app's green`)
-        if (tuneAsk.waveScale !== 'lin' || tuneAsk.waveWeight !== 'fill' || tuneAsk.waveMirror !== false) problems.push(`the still was asked for a waveform of ${String(tuneAsk.waveScale)}/${String(tuneAsk.waveWeight)}/mirror ${String(tuneAsk.waveMirror)}`)
+        if (tuneAsk.waveScale !== 'lin' || tuneAsk.waveWeight !== 'fill' || tuneAsk.waveChannels !== 1) problems.push(`the still was asked for a waveform of ${String(tuneAsk.waveScale)}/${String(tuneAsk.waveWeight)}/${String(tuneAsk.waveChannels)} waveforms`)
+        if (tuneAsk.trueStereo !== false) problems.push(`the still was asked for the scope\u2019s own stereo switch: ${String(tuneAsk.trueStereo)}`)
         if (tuneAsk.segmented !== false) problems.push(`the still was asked for segments it did not ask for: ${String(tuneAsk.segmented)}`)
       }
       if (audio.audioToggles.some((label) => label === 'COVER ART')) problems.push('cover art was offered for a container that holds a picture, not artwork')
@@ -135,7 +145,6 @@ app.whenReady().then(async () => {
         if (ask.background !== 'colour') problems.push(`the monitor's still sat on ${ask.background} rather than the background chosen`)
         if (ask.width !== 1920 || ask.height !== 1080) problems.push(`the monitor's still was made at ${ask.width}x${ask.height} rather than the output frame`)
       }
-      if (audio.appliedPicture !== 'visualization') problems.push(`choosing the drawing sent a patch with picture source ${audio.appliedPicture} rather than the drawing, so the encoder is never asked for one`)
       // The EQ's own knobs, which exist only for the EQ. Choosing it has to bring four controls out and send
       // all four to the encoder: a knob the editor holds but never draws is the same fault one level down.
       if (!audio.eqFields) problems.push('the EQ template could not be chosen at all')
@@ -157,6 +166,22 @@ app.whenReady().then(async () => {
       // chosen is the figure sent.
       if (audio.channelsAfterChoosing !== '1') problems.push(`choosing MONO left the field on ${String(audio.channelsAfterChoosing)}`)
       if (audio.appliedChannels !== 1) problems.push(`choosing MONO sent ${String(audio.appliedChannels)} rather than one channel`)
+      // The BITRATE ladder, which is a rung or a typed figure rather than a free field — and CUSTOM has to bring
+      // the field out, or the only thing it offers is the name of an option.
+      if (!audio.bitrate) problems.push('the AUDIO tab offered no bitrate control for a lossy codec')
+      else {
+        if (String(audio.bitrate.options) !== '0,96,128,160,192,256,320,custom') problems.push(`the bitrate offers ${JSON.stringify(audio.bitrate.options)} rather than the source and the ladder`)
+        if (audio.bitrate.value !== '0') problems.push(`a job that says nothing starts on bitrate ${audio.bitrate.value} rather than the source\u2019s own`)
+      }
+      if (audio.bitrateCustomFieldBefore) problems.push('a typed bitrate was offered before CUSTOM was chosen')
+      if (audio.bitrateAfterCustom !== 'custom' || !audio.bitrateCustomField) problems.push(`choosing CUSTOM left the ladder on ${String(audio.bitrateAfterCustom)} with the field ${String(audio.bitrateCustomField)}`)
+      // And the picture a sound-only job can be GIVEN, which is the third answer its picture source can be.
+      if (!audio.pictureSource || !audio.pictureSource.options.includes('custom')) problems.push('the picture source offered no image of the user\u2019s own')
+      if (audio.pictureImageRow !== 'IMAGE') problems.push(`choosing a custom picture drew no image picker (rows: ${JSON.stringify(audio.pictureImageRow)})`)
+      if (!String(audio.pictureImageName).includes('chosen.png')) problems.push(`the picked image was not recorded: ${String(audio.pictureImageName)}`)
+      if (!String(audio.appliedPictures).includes('visualization')) problems.push(`choosing the drawing never reached the encoder: ${JSON.stringify(audio.appliedPictures)}`)
+      if (audio.appliedPicture !== 'custom') problems.push(`choosing a custom picture sent ${String(audio.appliedPicture)}`)
+      if (audio.appliedPictureImage !== '/tmp/chosen.png') problems.push(`the picked image was not sent to the encoder: ${String(audio.appliedPictureImage)}`)
       // The segments, which are the bars' own and are one level further along than a field: the LED-panel look.
       if (!audio.eqSegments || !audio.eqSegments.includes('SEGMENTED')) problems.push('the bars were offered no segment control')
       // The SCOPE's own three, and its own canvas. It is the one drawing that is a different shape inside the
@@ -168,8 +193,10 @@ app.whenReady().then(async () => {
         for (const expected of ['TEMPLATE', 'THEME', 'TRACE', 'DRAW']) {
           if (!audio.scopeFields.some((label) => label.startsWith(expected))) problems.push(`choosing the scope drew no ${expected} control`)
         }
-        if (audio.scopeFields.some((label) => label.startsWith('MIRROR CHANNELS'))) problems.push('the scope was offered the waveform\u2019s own mirror')
       }
+      // TRUE STEREO, which is the one knob about the SOUND rather than about the drawing of it: off, the ring is
+      // synthesised, and it is what makes a scope on a mono sound draw a ring rather than a spoke.
+      if (!audio.scopeToggles || !audio.scopeToggles.includes('TRUE STEREO')) problems.push('the scope was offered no TRUE STEREO switch')
       const scopeAsk = audio.scopeStill
       if (!scopeAsk) problems.push('the monitor asked for no still once the scope was chosen')
       else {

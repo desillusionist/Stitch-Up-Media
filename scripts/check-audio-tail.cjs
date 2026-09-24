@@ -60,6 +60,16 @@ const pixelAt = async (file, time) => {
   return [raw[0], raw[1], raw[2]]
 }
 
+/** One pixel of the frame at a time, as three numbers — at a point of the caller's choosing.
+ *
+ * A LETTERBOXED picture is the reason this exists beside `pixelAt`: the middle of the frame is the image and
+ * the sides are the padding, so where the sample is taken is the whole of what it says.
+ */
+const pixelAtPoint = async (file, time, x, y) => {
+  const raw = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `crop=2:2:${x}:${y},format=rgb24`, '-f', 'rawvideo', '-'], { encoding: 'buffer' })
+  return [raw[0], raw[1], raw[2]]
+}
+
 /** What the file says about a stream's disposition, read from the video streams alone. */
 const attachedPicture = async (file) => String(await run('ffprobe', ['-v', 'error', '-select_streams', 'v', '-show_entries', 'stream_disposition=attached_pic', '-of', 'default=noprint_wrappers=1:nokey=1', file])).trim()
 
@@ -132,6 +142,39 @@ const drawnColour = async (file, time, template) => {
   const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `${crop},signalstats,metadata=print:file=-`, '-f', 'null', '-'])
   const text = String(out)
   return { u: Math.round(Number(text.match(/UAVG=([\d.]+)/)?.[1] ?? 0)), v: Math.round(Number(text.match(/VAVG=([\d.]+)/)?.[1] ?? 0)) }
+}
+
+/** What the whole frame averages to, as three channels.
+ *
+ * The frame's own colour, which is how the THEME's colour is asked about: a drawing in the app's green averages
+ * green — measured, 128,154,124 — and one drawn in the filter's own fallback averages pure white, 207,207,207,
+ * which no amount of reading luma could tell apart. */
+const frameColour = async (file, time) => {
+  const raw = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', 'scale=1:1,format=rgb24', '-f', 'rawvideo', '-'], { encoding: 'buffer' })
+  return [raw[0], raw[1], raw[2]]
+}
+
+/** How different two exports are, over the whole frame, at one moment.
+ *
+ * For the pair of questions a drawing option raises that the frame's own geometry cannot answer: a scrolling
+ * waveform's ink reaches its row's edge only where the sound PEAKS, so the top band of one of those is a
+ * question about the fixture's loudest moment rather than about how many rows it drew. What can be asked of it
+ * is that the two options draw different pictures at all.
+ */
+const frameDifference = async (file, reference, time) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-ss', String(time), '-i', reference, '-frames:v', '1', '-filter_complex', '[0:v][1:v]blend=all_mode=difference,signalstats,metadata=print:file=-', '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
+}
+
+/** The brightest luma in a horizontal band of the frame, given as fractions of its height.
+ *
+ * Which is how the NUMBER of waveforms is read off a drawing rather than claimed: a waveform filter fills a row
+ * per channel, so one waveform is a single row about the middle — the top of the frame black — and two put a
+ * channel in each half, so the top is inked and, for a still picture, the very centre is the gap between them.
+ */
+const bandLuma = async (file, time, from, to) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `crop=iw:ih*${(to - from).toFixed(4)}:0:ih*${from.toFixed(4)},signalstats,metadata=print:file=-`, '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
 }
 
 /** What the whole frame averages to, which is how two moments are asked whether they are the same picture. */
@@ -236,6 +279,10 @@ const main = async () => {
   // An image of a colour nothing else in these fixtures uses, for a drawing to be laid over.
   const artwork = path.join(root, 'artwork.png')
   await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=0x204060:s=320x180', '-frames:v', '1', artwork])
+  // And a SQUARE one of the same colour, for the picture a sound-only job can be given: a shape that cannot
+  // fill a 16:9 frame is the only way the letterboxing is visible in the finished file.
+  const squareArt = path.join(root, 'square.png')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=c=0x204060:s=400x400', '-frames:v', '1', squareArt])
 
   // A broadband sound, so a spectrum has something in every band: a tone lights one bar and leaves the rest
   // black, which would make "the bar under this column is drawn" a question about the fixture's frequency.
@@ -243,11 +290,15 @@ const main = async () => {
   await runFfmpeg(['-f', 'lavfi', '-i', 'anoisesrc=color=pink:sample_rate=48000:duration=5', '-c:a', 'pcm_s16le', broadband])
 
   // A GENUINELY stereo sound and a lossy one, for the two things the probe's own figures are asked about: a
-  // PCM file carries its sample size and a lossy one has none to carry. Two different tones joined rather than
-  // one tone upmixed, because `-ac 2` duplicates a single signal and two identical channels is the case the
-  // scope's quadrature exists for.
+  // PCM file carries its sample size and a lossy one has none to carry. The stereo pair is two DIFFERENT
+  // noises joined rather than one upmixed — `-ac 2` duplicates a single signal, and the drawing tests below
+  // turn on the two channels being different. Noise rather than tones because a pure tone lights one bar of a
+  // spectrum and draws one thin line, which is a fixture that cannot tell a colour from a blank frame.
   const stereo16 = path.join(root, 'stereo16.wav')
-  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=330:sample_rate=48000:duration=5', '-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=48000:duration=5', '-filter_complex', '[0:a][1:a]join=inputs=2:channel_layout=stereo', '-c:a', 'pcm_s16le', stereo16])
+  await runFfmpeg(['-f', 'lavfi', '-i', 'anoisesrc=color=pink:sample_rate=48000:duration=5:seed=42', '-f', 'lavfi', '-i', 'anoisesrc=color=white:sample_rate=48000:duration=5:seed=7', '-filter_complex', '[0:a][1:a]join=inputs=2:channel_layout=stereo', '-c:a', 'pcm_s16le', stereo16])
+  // And a stereo pair of TONES is deliberately NOT used for those tests: measured, `showwavespic` with
+  // `split_channels` on a pair of low tones draws an empty frame, so a fixture like that cannot say how many
+  // rows there are. Noise fills every row to the frame's edge, which is what the tests below read.
   const lossy = path.join(root, 'lossy.mp3')
   await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=5', '-c:a', 'libmp3lame', '-b:a', '320k', lossy])
 
@@ -761,6 +812,104 @@ const main = async () => {
       soundOnly: true,
       channels: 2,
     },
+    {
+      // THE BARS IN THE THEME'S COLOUR, on a sound with two channels — which is the case that had them drawn in
+      // WHITE. `colors` is a list indexed by CHANNEL, so a list shorter than the sound leaves the channels it
+      // does not cover in the filter's own default: measured, one entry with a stereo input averages
+      // (207,207,207), and a list long enough for every channel averages the theme's own green (128,154,124).
+      // The luma this drawing reads is no different either way, which is why it is the frame's COLOUR that is
+      // asserted rather than its brightness.
+      name: 'a stereo sound drawn as bars in the theme\u2019s own colour',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'eq', fps: 30, visualizationProgressLine: false },
+      task: {
+        id: 'viz-bars-theme', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [stereo16],
+        outputDirectory: root, outputFilename: 'viz-bars-theme.mp4', preset,
+      },
+      output: path.join(root, 'viz-bars-theme.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      themeGreen: true,
+    },
+    {
+      // ONE WAVEFORM, which is the default and what the report was about: a waveform filter fills a ROW per
+      // channel, so a stereo sound has two of them however `split_channels` is set. ONE is a real downmix, and
+      // this is the measurement that says so — the top of the frame is black and the middle is drawn.
+      name: 'a stereo sound drawn as one waveform',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationProgressLine: false },
+      task: {
+        id: 'viz-one-wave', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [stereo16],
+        outputDirectory: root, outputFilename: 'viz-one-wave.mp4', preset,
+      },
+      output: path.join(root, 'viz-one-wave.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      waveRows: { kind: 'waveform', rows: 1 },
+    },
+    {
+      // And the control: the same sound asked for TWO, which keeps its own pair and gives each a row — so the
+      // pair proves the knob rather than the fixture.
+      name: 'the same stereo sound drawn as two waveforms',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform', fps: 30, visualizationProgressLine: false, waveChannels: 2 },
+      task: {
+        id: 'viz-two-waves', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [stereo16],
+        outputDirectory: root, outputFilename: 'viz-two-waves.mp4', preset,
+      },
+      output: path.join(root, 'viz-two-waves.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      waveRows: { kind: 'waveform', rows: 2 },
+    },
+    {
+      // The SCROLLING waveform is the one the report named, and the same knob is read off it. Its rows fill
+      // their halves rather than leaving a gap at the centre, so it is asked about the top of the frame alone.
+      name: 'a stereo sound drawn as one scrolling waveform',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform-scroll', fps: 30 },
+      task: {
+        id: 'viz-one-scroll', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [stereo16],
+        outputDirectory: root, outputFilename: 'viz-one-scroll.mp4', preset,
+      },
+      output: path.join(root, 'viz-one-scroll.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      // The difference below is asked of the SECOND of the pair, because a comparison needs both files and this
+      // one is exported first — the pair is what says the knob changes the drawing at all.
+    },
+    {
+      name: 'the same sound drawn as two scrolling waveforms',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'waveform-scroll', fps: 30, waveChannels: 2 },
+      task: {
+        id: 'viz-two-scroll', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [stereo16],
+        outputDirectory: root, outputFilename: 'viz-two-scroll.mp4', preset,
+      },
+      output: path.join(root, 'viz-two-scroll.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      // And the two scrolling options are asked that they DIFFER rather than how far their ink reaches: the row
+      // GEOMETRY is read off the still picture above, which is the same knob, and a scrolling drawing's top band
+      // answers a question about where the fixture happens to peak.
+      waveDiffers: path.join(root, 'viz-one-scroll.mp4'),
+    },
+    {
+      // A PICTURE THE JOB WAS GIVEN, for a sound with none of its own: the third answer its picture source can
+      // be, beside the black frame and the drawing. It is held for the length of the sound and fitted with its
+      // shape kept, so a square image in a 16:9 frame is letterboxed — which is what the two samples below read:
+      // the middle of the frame is the image and the sides are the padding.
+      name: 'a sound given a picture of its own',
+      preset: { ...preset, audioPicture: 'custom', audioPictureImage: squareArt },
+      task: {
+        id: 'viz-custom-art', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [audio],
+        outputDirectory: root, outputFilename: 'viz-custom-art.mp4', preset,
+      },
+      output: path.join(root, 'viz-custom-art.mp4'),
+      expectedSeconds: 5,
+      picturedImage: true,
+    },
   ]
 
   for (const item of cases) {
@@ -791,6 +940,19 @@ const main = async () => {
       check('and it carries the sound it was given', carried.includes('audio'), true)
       continue
     }
+    if (item.picturedImage) {
+      // A picture the job was GIVEN. What is asked is the three things the branch can get wrong: that there IS a
+      // picture and that the sound is still there beside it; that it LASTS (an image input that is not looped
+      // gives a video one frame long); and that it is letterboxed rather than stretched — the image's own colour
+      // in the middle of the frame and the black it was padded with at the sides.
+      const carried = String(await probeValue(item.output, 'stream=codec_type')).split('\n').map((line) => line.trim()).filter(Boolean)
+      check('a job given an image carries a picture', carried.includes('video'), true)
+      check('and the sound it was given it for', carried.includes('audio'), true)
+      check('and the picture lasts as long as the sound', (await frameCount(item.output)) > 60, true)
+      check('the image is what the frame shows', isPicture(await pixelAtPoint(item.output, 2, 960, 540)), true)
+      check('and it is letterboxed rather than stretched, so the sides are black', isBlack(await pixelAtPoint(item.output, 2, 20, 540)), true)
+      continue
+    }
     if (item.drawn) {
       // A picture made from the sound. What matters is that there IS one, that the sound it was drawn
       // from is still there beside it, and that the frame is not blank: the black frame the same job
@@ -819,6 +981,24 @@ const main = async () => {
       }
       if (item.drawnIsAudible) {
         check('and the same sound untrimmed is drawn as a line, so the check above can tell them apart', (await contrast(item.output, 0.5)) > 60, true)
+      }
+      if (item.themeGreen) {
+        const [red, green, blue] = await frameColour(item.output, 1)
+        check(`the bars are drawn in the theme\u2019s green (frame rgb ${red},${green},${blue})`, green - red >= 12 && green - blue >= 12, true)
+      }
+      if (item.waveRows) {
+        // Read as the SHAPE of the frame rather than as a claim: one waveform is a single row about the middle,
+        // so the top is black; two put a channel in each half, so the top is inked — and a still picture's two
+        // rows leave the very centre as the gap between them. Measured on this fixture: 16 at the top and 168 at
+        // the centre for one, 221 and 16 for two.
+        const { rows } = item.waveRows
+        const top = await bandLuma(item.output, 1, 0, 0.2)
+        const centre = await bandLuma(item.output, 1, 0.49, 0.51)
+        check(`the drawing is ${rows} waveform(s) (top ${top}, centre ${centre})`, rows === 1 ? top < 40 && centre > 60 : top > 60 && centre < 40, true)
+      }
+      if (item.waveDiffers) {
+        const difference = await frameDifference(item.output, item.waveDiffers, 1)
+        check(`ONE waveform and TWO are different drawings (frame difference ${difference})`, difference > 60, true)
       }
       if (item.eqProbes) {
         // The gap's lead, the bar between the two gaps, and the NEXT gap's lead: the first and last are blank

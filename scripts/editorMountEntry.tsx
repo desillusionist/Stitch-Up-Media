@@ -139,6 +139,26 @@ const channelsSelect = () => [...document.querySelectorAll('.editor-field')]
   .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('CHANNELS'))
   ?.querySelector('select') as HTMLSelectElement | null
 
+/** The AUDIO tab's bitrate, which is a rung of a ladder rather than a free field. */
+const bitrateSelect = () => [...document.querySelectorAll('.editor-field')]
+  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('BITRATE'))
+  ?.querySelector('select') as HTMLSelectElement | null
+
+/** The bitrate's own typed field, which only appears once CUSTOM is chosen. */
+const bitrateCustomField = () => [...document.querySelectorAll('.editor-field')]
+  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('BITRATE'))
+  ?.querySelector('.field-pair input[type="text"]') as HTMLInputElement | null
+
+/** The drawing's colour SWATCH, which is the system picker drawn as a filled box. */
+const colourSwatch = () => [...document.querySelectorAll('.editor-field')]
+  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('COLOUR'))
+  ?.querySelector('.editor-swatch') as HTMLInputElement | null
+
+/** The waveform templates' WAVEFORMS count. */
+const waveformsSelect = () => [...document.querySelectorAll('.editor-field')]
+  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('WAVEFORMS'))
+  ?.querySelector('select') as HTMLSelectElement | null
+
 /** The speeds the monitor is watched at, which the wheel over it climbs. */
 const speedSelect = () => document.querySelector('.transport-speed select') as HTMLSelectElement | null
 
@@ -223,6 +243,7 @@ const drive = async () => {
   await wait(120)
   const soundSelect = pictureSourceSelect()
   const pictureSource = soundSelect ? { value: soundSelect.value, options: [...soundSelect.options].map((option) => option.value) } : null
+  const bitrate = bitrateSelect()
   if (soundSelect) choose(soundSelect, 'visualization')
   await wait(120)
   // The background control only exists once the picture source IS a drawing, so it is read after choosing.
@@ -242,8 +263,15 @@ const drive = async () => {
     background: background ? [...background.options].map((option) => option.value) : null,
     drawnFields: soundSelect ? labelsOf('.editor-field') : null,
     // The toggles the drawing brings with it, which are the one control that is not a FIELD: the progress
-    // line, which only a picture takes, and the waveform's own channel mirror.
+    // line, which only a picture takes, and the waveform's own count — which is a field, and read as one below.
     drawnToggles: soundSelect ? labelsOf('.editor-toggle') : null,
+    // The colour SWATCH, which is what the theme's own green is read off: a job that has named no colour has to
+    // show the colour it will be drawn in rather than an empty box, and the swatch is where that is visible.
+    colourSwatch: colourSwatch()?.value ?? null,
+    // The bitrate's own ladder, and the typed field that only CUSTOM brings out.
+    bitrate: bitrate ? { value: bitrate.value, options: [...bitrate.options].map((option) => option.value) } : null,
+    bitrateCustomFieldBefore: Boolean(bitrateCustomField()),
+    waveforms: waveformsSelect() ? { value: waveformsSelect()?.value, options: [...(waveformsSelect()?.options ?? [])].map((option) => option.value) } : null,
   }
   // What the monitor DID. The still is asked for over IPC and delayed, so this waits past the debounce;
   // the request itself is recorded too, because a monitor that could not play a stubbed file would
@@ -262,6 +290,12 @@ const drive = async () => {
     drawingStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
     stillRequests,
   }
+  // An APPLY here, while the picture source is still the DRAWING: the patch is what the encoder is asked by, so
+  // the history has to carry the drawing as well as the image chosen later — two answers, two applies.
+  const firstApply = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
+  ;(firstApply as HTMLButtonElement | undefined)?.click()
+  await wait(150)
+
   // The EQ's own knobs. They are state the editor has to RENDER, and state without a control is exactly the
   // fault this harness exists to catch — so choosing the EQ has to bring its four controls out AND reach the
   // encoder as four figures, which the still request is where a window can be wrong on its own.
@@ -287,6 +321,9 @@ const drive = async () => {
   result.audio = {
     ...(result.audio as object),
     scopeFields: templates ? labelsOf('.editor-field') : null,
+    // TRUE STEREO is a toggle rather than a field, and it is the one knob about the SOUND itself rather than
+    // about the drawing of it.
+    scopeToggles: templates ? labelsOf('.editor-toggle') : null,
     scopeStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
   }
 
@@ -300,6 +337,28 @@ const drive = async () => {
     mirrorToggles: templates ? labelsOf('.editor-toggle') : null,
     mirrorStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
   }
+  // The bitrate's CUSTOM rung, which has to bring its own field out: a ladder that offers a typed figure has to
+  // have somewhere to type it.
+  const chooseBitrate = bitrateSelect()
+  if (chooseBitrate) choose(chooseBitrate, 'custom')
+  await wait(120)
+  result.audio = { ...(result.audio as object), bitrateAfterCustom: bitrateSelect()?.value ?? null, bitrateCustomField: Boolean(bitrateCustomField()) }
+
+  // And the picture a sound-only job can be GIVEN: choosing it has to bring the picker out, and picking has to
+  // record the path the export will read. The stub picker answers with a path rather than opening a dialog, which
+  // is the half of it a page can drive.
+  const pictureForImage = pictureSourceSelect()
+  if (pictureForImage) choose(pictureForImage, 'custom')
+  await wait(120)
+  const pickButton = [...document.querySelectorAll('.editor-pick')].find((button) => button.textContent?.includes('CHOOSE')) as HTMLButtonElement | undefined
+  pickButton?.click()
+  await wait(200)
+  result.audio = {
+    ...(result.audio as object),
+    pictureImageRow: labelsOf('.editor-row').find((label) => label.startsWith('IMAGE')) ?? null,
+    pictureImageName: pickButton?.textContent ?? null,
+  }
+
   // The output channel count, chosen the way a user chooses it, so the patch proves the control reaches the
   // encoder rather than merely rendering. A stereo source asked for MONO is the case the encoder harness
   // reads off the finished file; this is the half a window can be wrong about on its own.
@@ -315,8 +374,16 @@ const drive = async () => {
   const apply = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
   ;(apply as HTMLButtonElement | undefined)?.click()
   await wait(150)
-  const patch = applied[applied.length - 1] as { preset?: { audioPicture?: string; audioChannels?: number } } | undefined
-  result.audio = { ...(result.audio as object), appliedPicture: patch?.preset?.audioPicture ?? null, appliedChannels: patch?.preset?.audioChannels ?? null }
+  const patch = applied[applied.length - 1] as { preset?: { audioPicture?: string; audioChannels?: number; audioPictureImage?: string } } | undefined
+  result.audio = {
+    ...(result.audio as object),
+    // What EACH patch said, as well as the last: the drive chooses the drawing and then an image of its own, so
+    // both are proved by the history rather than by the last one alone.
+    appliedPictures: applied.map((entry) => (entry as { preset?: { audioPicture?: string } })?.preset?.audioPicture ?? null),
+    appliedPicture: patch?.preset?.audioPicture ?? null,
+    appliedChannels: patch?.preset?.audioChannels ?? null,
+    appliedPictureImage: patch?.preset?.audioPictureImage ?? null,
+  }
 
   // The JOINED job. The tab is already on AUDIO, so its picture settings are what is on screen once the
   // new draft has arrived.

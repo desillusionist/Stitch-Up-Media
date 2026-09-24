@@ -34,12 +34,13 @@ export interface IElectronAPI {
     segmented?: boolean
     waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
     waveWeight?: 'line' | 'fill'
-    waveMirror?: boolean
+    waveChannels?: 1 | 2
     spectrumScale?: 'lin' | 'sqrt' | 'cbrt' | 'log' | '4thrt' | '5thrt'
     spectrumSaturation?: number
     scopePersist?: number
     scopeZoom?: number
     scopeDraw?: 'dot' | 'line'
+    trueStereo?: boolean
   }) => Promise<string | null>
   expandMediaPaths: (paths: string[]) => Promise<string[]>
   createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>

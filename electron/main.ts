@@ -10,7 +10,7 @@ import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { clipFilters } from '../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, drawingCanvas, drawingColorOf, drawingSoundIsMono, drawingTuneOf, eqStyleOf, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, drawingCanvas, drawingColorOf, drawingTuneOf, eqStyleOf, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { runFfmpeg } from './ffmpeg/run'
 import { spawn, execFileSync } from 'node:child_process'
@@ -447,12 +447,13 @@ app.whenReady().then(() => {
     segmented?: boolean
     waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
     waveWeight?: 'line' | 'fill'
-    waveMirror?: boolean
+    waveChannels?: 1 | 2
     spectrumScale?: 'lin' | 'sqrt' | 'cbrt' | 'log' | '4thrt' | '5thrt'
     spectrumSaturation?: number
     scopePersist?: number
     scopeZoom?: number
     scopeDraw?: 'dot' | 'line'
+    trueStereo?: boolean
   }) => {
     const sources = (options.sources ?? []).filter((source) => { try { return fs.statSync(source).isFile() } catch { return false } })
     // Nothing to draw from is not an error: a job whose sound has not been probed yet simply has no still
@@ -470,16 +471,9 @@ app.whenReady().then(() => {
       // drawn from — a frame asked for after a source has ended is a frame that arrives empty. The window's
       // own fill time is the drawing CANVAS's, since that is the width the scrolling filters fill a column of.
       let shortest = Number.POSITIVE_INFINITY
-      // The sources' channel counts, which is the one thing the polar scope has to know: two identical
-      // channels draw a flat line rather than a ring, so a mono sound is opened into quadrature and a stereo
-      // one is fed straight. Read from the probes this handler is already making, and left empty when they
-      // fail — an unknown layout is drawn as a stereo one rather than guessed at as a mono one.
-      const channelCounts: number[] = []
       for (const source of sources) {
         try {
-          const probe = await probeFile(source)
-          shortest = Math.min(shortest, Number(probe.duration || 0))
-          for (const stream of probe.audioStreams) if (stream.channels) channelCounts.push(stream.channels)
+          shortest = Math.min(shortest, Number((await probeFile(source)).duration || 0))
         } catch { /* an unreadable length leaves the others */ }
       }
       const canvasWidth = drawingCanvas(width, height, templateMaxEdge(options.template)).width
@@ -503,15 +497,15 @@ app.whenReady().then(() => {
           drawingTheme: options.theme,
           waveScale: options.waveScale,
           waveWeight: options.waveWeight,
-          waveMirror: options.waveMirror,
+          waveChannels: options.waveChannels,
           spectrumScale: options.spectrumScale,
           spectrumSaturation: options.spectrumSaturation,
           eqSegmented: options.segmented,
           scopePersist: options.scopePersist,
           scopeZoom: options.scopeZoom,
           scopeDraw: options.scopeDraw,
+          scopeTrueStereo: options.trueStereo,
         }),
-        mono: drawingSoundIsMono(channelCounts),
       })
       args.push('-filter_complex', graph, '-map', '[out]')
       if (warmup > 0.001) args.push('-ss', warmup.toFixed(3))

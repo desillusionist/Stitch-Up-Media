@@ -99,3 +99,37 @@ export const outputChannels = (preset: Pick<EncodingPreset, 'audioChannels'>): 1
 
 /** The ffmpeg layout name for a channel count, which is what `aformat` and the drawing's graph both take. */
 export const channelLayoutFor = (channels: number): string => (channels === 1 ? 'mono' : 'stereo')
+
+/**
+ * The bitrates the export is offered, in the order the editor offers them.
+ *
+ * The ordinary rungs of a lossy encoder's ladder, and nothing cleverer: a figure between two of them is a
+ * CUSTOM entry and not a rung, because a list that sprouted a value per typed figure would stop being a list.
+ */
+export const AUDIO_BITRATES = [96, 128, 160, 192, 256, 320]
+
+/**
+ * The rung a stored bitrate is, or nothing where it is not one.
+ *
+ * Tolerant of how the figure was written — `320`, `320k` and `320K` are the same rung — because the value has
+ * been a free field for longer than it has been a list, so a job saved then carries whatever was typed. What
+ * it is NOT is a guess: a figure that is not on the ladder is what CUSTOM is for.
+ */
+export const bitrateOptionOf = (stored: string | undefined): number | null => {
+  if (!stored) return null
+  const kbps = Math.round(Number(String(stored).trim().replace(/k(?:bps)?$/i, '')))
+  return Number.isFinite(kbps) && AUDIO_BITRATES.includes(kbps) ? kbps : null
+}
+
+/** A bitrate as the encoder takes it and as the select stores it: `320k`. */
+export const bitrateValue = (kbps: number): string => `${kbps}k`
+
+/**
+ * Whether a bitrate applies at all.
+ *
+ * A lossless codec has no bitrate to set — it writes what the samples are — so the control is hidden for one
+ * rather than left to be typed into and ignored. `copy` is here for the same reason: the stream is not being
+ * encoded at all.
+ */
+export const LOSSLESS_AUDIO_CODECS = ['pcm', 'flac', 'copy']
+export const bitrateApplies = (codec: string): boolean => !LOSSLESS_AUDIO_CODECS.includes(codec)

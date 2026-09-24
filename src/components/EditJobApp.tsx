@@ -4,9 +4,9 @@ import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, Queu
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
-import { DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_DEFAULT_BARS, EQ_DEFAULT_GAP, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
+import { DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_DEFAULT_BARS, EQ_DEFAULT_GAP, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { PREVIEW_SPEEDS, speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
-import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
+import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -1497,6 +1497,12 @@ export const EditJobApp: React.FC = () => {
   const drawingTune = draft ? drawingTuneOf(draft.preset) : DEFAULT_TUNE
   /** The chosen drawing, resolved once, so the knob rows below and the monitor agree on which set applies. */
   const drawingTemplate = templateFor(draft?.preset.visualization)
+  /**
+   * The colour the drawing will actually be made in: the job's own where it named one, and the theme's
+   * otherwise. The swatch shows THIS rather than the stored value, so a job that has named no colour shows the
+   * green it will be drawn in instead of an empty field.
+   */
+  const drawingColour = draft ? drawingColorOf(draft.preset) : VISUALIZATION_BACKGROUND
   const drawingStillKey = JSON.stringify([
     drawingPicture.draws ? drawingPicture.sources : [],
     draft?.preset.visualization ?? 'waveform',
@@ -2024,6 +2030,16 @@ export const EditJobApp: React.FC = () => {
    */
   const monitorSourcePath = playback.segment?.sourcePath
   const monitorIsAudio = Boolean(monitorSourcePath && (mediaKind(monitorSourcePath) === 'audio' || sourceVideo[monitorSourcePath] === false))
+  /**
+   * The picture a job with only sound was given, where it was given an image of its own.
+   *
+   * Read here rather than beside the AUDIO tab's own control because the MONITOR is what shows it, and that is
+   * drawn long before those settings are — and it is the same figure the encoder reads off the preset, so what
+   * the monitor shows and what the export writes cannot be two different pictures.
+   */
+  // The picture source is only OFFERED for a job of nothing but sound — see `offersPicture` — so a preset that
+  // still says `custom` on a job with footage is a leftover, and the encoder ignores it for the same reason.
+  const photoPicture = draft.preset.audioPicture === 'custom' ? draft.preset.audioPictureImage ?? null : null
   /**
    * Whether what the monitor has to DRAW is a picture file rather than footage.
    *
@@ -2774,6 +2790,26 @@ export const EditJobApp: React.FC = () => {
     if (chosen) updatePreset({ visualizationBackground: 'image', visualizationBackgroundImage: chosen })
   }
   const backgroundImageName = draft.preset.visualizationBackgroundImage?.split('/').pop() ?? ''
+  /** Picks the picture a job with nothing but sound is shown — the export's whole picture, not a background. */
+  const choosePictureImage = async () => {
+    const chosen = await window.electronAPI?.selectImage()
+    if (chosen) updatePreset({ audioPicture: 'custom', audioPictureImage: chosen })
+  }
+  const pictureImageName = draft.preset.audioPictureImage?.split('/').pop() ?? ''
+  /**
+   * The bitrate control's own three answers: SOURCE, a rung of the ladder, or a typed figure.
+   *
+   * CUSTOM is told apart from SOURCE by the key being PRESENT and empty rather than absent, which is the only
+   * thing a stored string can say: an absent bitrate is a job that never chose one, and an empty one is a job
+   * that chose to type its own and has not finished.
+   */
+  const bitrateRung = bitrateOptionOf(draft.preset.audioBitrate)
+  const bitrateCustom = draft.preset.audioBitrate !== undefined && bitrateRung === null
+  const bitrateValueForChoice = (choice: string) => {
+    if (choice === 'custom') updatePreset({ audioBitrate: '' })
+    else if (choice === '0') updatePreset({ audioBitrate: undefined })
+    else updatePreset({ audioBitrate: bitrateValue(Number(choice)) })
+  }
 
   return <div className="edit-job-shell">
     <header className="editor-header">
@@ -2832,16 +2868,17 @@ export const EditJobApp: React.FC = () => {
                         // Sound with no picture: a waveform, never a <video>. The element would be
                         // asked for a frame out of a file that has none.
                         : monitorIsAudio
-                          // The export's own picture, when the job's picture IS a drawing: a still of the
-                          // chosen template in the chosen colours, because the app's green line would be a
-                          // drawing of a design nobody asked for. Until it arrives, and if it cannot be
-                          // made, the waveform below stands in rather than the monitor going blank.
-                          ? drawingStill && drawingPicture.draws
-                            // Given the drawing class rather than left to the still's own rule: this picture is the
-                            // WHOLE monitor (the job is sound and nothing else), so it fills the frame it is
-                            // drawn in and letterboxes inside it, exactly as the video element does — the stage's
-                            // observer reports the viewport and the picture follows it, without the picture being
-                            // regenerated. It is generated at the output resolution and only ever RESCALED here.
+                          // The picture the job was GIVEN, where it was given an image of its own: the export's
+                          // whole picture, so the monitor shows the image itself rather than anything drawn
+                          // over it. It is laid out by the drawing's own rule — its shape kept, letterboxed —
+                          // because that is what `stillFitFilters` does to it on the way out.
+                          ? photoPicture
+                            ? <img className="editor-still is-drawing" draggable={false} style={{ ...mediaStyle }} src={mediaUrl(photoPicture)} alt="CUSTOM PICTURE" />
+                            // The export's own picture, when the job's picture IS a drawing: a still of the
+                            // chosen template in the chosen colours, because the app's green line would be a
+                            // drawing of a design nobody asked for. Until it arrives, and if it cannot be
+                            // made, the waveform below stands in rather than the monitor going blank.
+                            : drawingStill && drawingPicture.draws
                             ? <img className="editor-still is-drawing" draggable={false} style={{ ...mediaStyle }} src={drawingStill} alt="DRAWING THE SOUND" />
                             : monitorWaveform
                             ? <svg className="editor-waveform" width="100%" height="100%" viewBox={`0 0 ${monitorWaveform.width} ${monitorWaveform.height}`} preserveAspectRatio="none" aria-hidden="true">
@@ -3380,7 +3417,18 @@ export const EditJobApp: React.FC = () => {
               reason={tabAudioSource && tabAudioCodec ? `${sourceName(tabAudioSource)} — ${tabAudioCodec}.` : undefined}
             />
             <EditorField label="CODEC" reason={audioReason}><select value={draft.preset.audioCodec} disabled={audioDisabled} onChange={(event) => updatePreset({ audioCodec: event.target.value as EncodingPreset['audioCodec'] })}>{AUDIO_CODECS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
-            <EditorField label="BITRATE" reason={audioReason}><input type="text" className="editor-input" value={draft.preset.audioBitrate ?? ''} placeholder="SOURCE \u00b7 E.G. 320K" disabled={audioDisabled || draft.preset.audioCodec === 'copy' || draft.preset.audioCodec === 'pcm'} onChange={(event) => updatePreset({ audioBitrate: event.target.value.trim() || undefined })} /></EditorField>
+            {/* A rung of the encoder's own ladder, or a figure of the user's — and NOTHING AT ALL where the codec
+                has no bitrate to set, because a lossless encoder writes what the samples are. */}
+            {bitrateApplies(draft.preset.audioCodec) && <EditorField label="BITRATE" hint={bitrateCustom ? 'IN KBPS' : undefined} reason={audioReason ?? 'How many bits a second the sound is written at. A lossless codec has no such figure and is not offered one.'}>
+              <span className="field-pair">
+                <select value={bitrateCustom ? 'custom' : String(bitrateRung ?? 0)} disabled={audioDisabled} onChange={(event) => bitrateValueForChoice(event.target.value)}>
+                  <option value="0">SOURCE</option>
+                  {AUDIO_BITRATES.map((kbps) => <option key={kbps} value={String(kbps)}>{kbps} KBPS</option>)}
+                  <option value="custom">CUSTOM\u2026</option>
+                </select>
+                {bitrateCustom && <input type="text" className="editor-input" aria-label="Bitrate" value={draft.preset.audioBitrate ?? ''} placeholder="E.G. 320K" disabled={audioDisabled} onChange={(event) => updatePreset({ audioBitrate: event.target.value.trim() })} />}
+              </span>
+            </EditorField>}
             <EditorField label="SAMPLE RATE" reason={audioReason}><select value={draft.preset.audioSampleRate ?? 0} disabled={audioDisabled} onChange={(event) => updatePreset({ audioSampleRate: Number(event.target.value) || undefined })}><option value={0}>SOURCE</option><option value={44100}>44.1 KHZ</option><option value={48000}>48 KHZ</option><option value={96000}>96 KHZ</option></select></EditorField>
             {/* The one audio setting about the SHAPE of the stream rather than its quality, and the only one
                 offered for a job that has sound in it: a job with none has nothing to lay out, and the field
@@ -3395,13 +3443,17 @@ export const EditJobApp: React.FC = () => {
             {/* What a sound-only job is given to show. Every setting below it only exists while the
                 picture is being drawn, so the section reads as one decision and its consequences. */}
             {offersPicture && <>
-              <EditorField label="PICTURE SOURCE" reason="What the export is given to show when the job is nothing but sound: a black frame, the still the job already has, or a drawing made from the very mix that is written, so the picture cannot disagree with the sound.">
+              <EditorField label="PICTURE SOURCE" reason="What the export is given to show when the job is nothing but sound: a black frame, the still the job already has, an image of your own with nothing drawn over it, or a drawing made from the very mix that is written, so the picture cannot disagree with the sound.">
                 <select value={pictureSource} onChange={(event) => updatePreset({ audioPicture: event.target.value as NonNullable<EncodingPreset['audioPicture']> })}>
                   <option value="black">BLACK</option>
                   {hasStill && <option value="still">STILL IMAGE</option>}
+                  <option value="custom">CUSTOM IMAGE\u2026</option>
                   <option value="visualization">DRAW THE SOUND</option>
                 </select>
               </EditorField>
+              {/* A ROW rather than a FIELD, like the drawing's own IMAGE row: a field is a label, and a button
+                  inside a label is a button that is pressed twice. */}
+              {pictureSource === 'custom' && <EditorRow label="IMAGE" value={<button className="editor-pick" onClick={() => { void choosePictureImage() }}>{pictureImageName || 'CHOOSE\u2026'}</button>} reason="The image the export is shown. It is held for the length of the sound and scaled into the frame with its shape kept, letterboxed on black — the same rule a drawing's uploaded background follows, with nothing drawn over it." />}
               {pictureSource === 'visualization' && <>
                 <EditorField label="TEMPLATE" reason="What kind of drawing. WAVEFORM is the whole sound in one picture, held for the length of the export, which is what the monitor is showing; SPECTRUM is the same idea as a spectrogram. EQ BARS and the two SCROLL templates draw an instant at a time, so they move where the first two do not.">
                   <select value={draft.preset.visualization ?? 'waveform'} onChange={(event) => updatePreset({ visualization: event.target.value as NonNullable<EncodingPreset['visualization']> })}>
@@ -3413,8 +3465,21 @@ export const EditJobApp: React.FC = () => {
                     {DRAWING_THEMES.map((theme) => <option key={theme.id} value={theme.id}>{theme.name}</option>)}
                   </select>
                 </EditorField>
-                {templateFor(draft.preset.visualization).colour && <EditorField label="COLOUR" reason="The colour the drawing is made in, as a hex figure. Left blank it is the theme's own, and the two spectra colour themselves by intensity and take no colour of their own, so they are not offered one.">
-                  <input type="text" className="editor-input" value={draft.preset.visualizationColor ?? ''} placeholder={themeFor(draft.preset.drawingTheme).color.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
+                {templateFor(draft.preset.visualization).colour && <EditorField label="COLOUR" reason="The colour the drawing is made in. The SWATCH is the colour that will be used — the theme's own until one is picked — and clicking it opens the system picker; the field beside it takes the same colour as a hex figure, and clearing it hands the drawing back to the theme.">
+                  <span className="field-pair">
+                    {/* The swatch IS the picker: a colour input drawn as a filled box, which is what the
+                        system's own dialog hangs off. Its value is the RESOLVED colour, so a job that has
+                        named none shows the theme's green rather than an empty black. */}
+                    <input
+                      type="color"
+                      className="editor-swatch"
+                      value={drawingColour}
+                      aria-label="Pick the colour the drawing is made in"
+                      title="Pick the colour the drawing is made in"
+                      onChange={(event) => updatePreset({ visualizationColor: event.target.value })}
+                    />
+                    <input type="text" className="editor-input" value={draft.preset.visualizationColor ?? ''} placeholder={themeFor(draft.preset.drawingTheme).color.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
+                  </span>
                 </EditorField>}
                 <EditorField label="BACKGROUND" reason="What the drawing sits on: a flat colour, the still the job already has, or an image of your own. The image is scaled to the frame and the drawing is laid over it.">
                   <select value={backgroundKind} onChange={(event) => updatePreset({ visualizationBackground: event.target.value as NonNullable<EncodingPreset['visualizationBackground']> })}>
@@ -3430,8 +3495,9 @@ export const EditJobApp: React.FC = () => {
                 {/* Only the PICTURES get a line: a drawing that moves is already showing where the sound is,
                     and a bar over one would be a second answer to the same question. */}
                 {templateFor(draft.preset.visualization).kind === 'picture' && <EditorToggle label="PROGRESS LINE" checked={visualizationProgressLine(draft.preset)} onChange={(checked) => updatePreset({ visualizationProgressLine: checked })} reason="A bar that sweeps across the picture from the left edge to the right as the sound plays, which is what a podcast video looks like. The two pictures are one frame held for the length of the sound, so without it the video sits motionless; it is off where the drawing already moves." />}
-                {/* The waveform's own three: how the amplitude is scaled, how heavy the drawing is, and whether
-                    the two channels are drawn in their own halves of the frame. */}
+                {/* The waveform's own three: how the amplitude is scaled, how heavy the drawing is, and how many
+                    waveforms it draws. The count is a DOWNMIX rather than a filter option — see `WAVE_CHANNELS`:
+                    a stereo sound fills the frame with a row per channel however the filter is told to split. */}
                 {isWaveTemplate(drawingTemplate.id) && <>
                   <EditorField label="AMPLITUDE" reason="How the sound's own level is turned into the height of the drawing. Logarithmic makes the quiet end visible, which is what a waveform of speech is normally read with; linear draws the levels as they are.">
                     <select value={drawingTune.waveScale} onChange={(event) => updatePreset({ waveScale: event.target.value as NonNullable<EncodingPreset['waveScale']> })}>
@@ -3443,7 +3509,11 @@ export const EditJobApp: React.FC = () => {
                       {WAVE_WEIGHTS.map((weight) => <option key={weight} value={weight}>{weight === 'fill' ? 'FILLED' : 'LINE'}</option>)}
                     </select>
                   </EditorField>
-                  <EditorToggle label="MIRROR CHANNELS" checked={drawingTune.waveMirror} onChange={(checked) => updatePreset({ waveMirror: checked })} reason="Draw the two channels in their own halves of the frame rather than summed into one drawing, so a stereo difference is visible as two shapes." />
+                  <EditorField label="WAVEFORMS" reason="How many waveforms the drawing shows. ONE mixes the sound to a single channel first, which is what makes the drawing one shape and what the static waveform draws; TWO keeps the sound's own pair, each channel in its own row, which is the look for a sound whose channels differ.">
+                    <select value={String(drawingTune.waveChannels)} onChange={(event) => updatePreset({ waveChannels: Number(event.target.value) === 2 ? 2 : 1 })}>
+                      {WAVE_CHANNELS.map((count) => <option key={count} value={String(count)}>{count === 1 ? 'ONE' : 'TWO'}</option>)}
+                    </select>
+                  </EditorField>
                 </>}
                 {/* The spectra's own two. Their ramp comes from the theme, so they are given no colour field. */}
                 {isSpectrumTemplate(drawingTemplate.id) && <>
@@ -3485,9 +3555,10 @@ export const EditJobApp: React.FC = () => {
                   </EditorField>
                   <EditorToggle label="SEGMENTED" checked={drawingTune.segmented} onChange={(checked) => updatePreset({ eqSegmented: checked })} reason="Break each bar into a stack of blocks with thin dark lines between them, so the drawing reads as a panel of lamps rather than a solid column. The lines are aligned from the top so no block is cut off." />
                 </>}
-                {/* The scope's own three. Its colour is three channel contrasts rather than a hex, so that comes
-                    from the theme; the fade is the inverse of the persistence, and the mono branch is the filter's
-                    business rather than a knob — see `drawingSoundIsMono`. */}
+                {/* The scope's own four. Its colour is three channel contrasts rather than a hex, so that comes
+                    from the theme; the fade is the inverse of the persistence; and TRUE STEREO is the one thing
+                    about the sound itself — off, the ring is synthesised from a single channel, which is what a
+                    scope on a mono sound needs and what a container's channel count cannot tell you. */}
                 {drawingTemplate.id === 'scope' && <>
                   <div className="editor-field">
                     <span><span className="editor-label">TRACE</span></span>
@@ -3501,6 +3572,7 @@ export const EditJobApp: React.FC = () => {
                       {SCOPE_DRAWS.map((draw) => <option key={draw} value={draw}>{draw.toUpperCase()}</option>)}
                     </select>
                   </EditorField>
+                  <EditorToggle label="TRUE STEREO" checked={drawingTune.trueStereo} onChange={(checked) => updatePreset({ scopeTrueStereo: checked })} reason="Plot the sound's own two channels against each other. Off — the default — the scope is drawn from a single mixed-down channel, opened into a ring with a quarter-cycle of phase, because a polar scope on a sound whose two channels are the same draws a spoke rather than a ring, and a mono file stored as stereo is the commonest case of that. Turn it on for genuinely wide music." />
                 </>}
               </>}
             </>}

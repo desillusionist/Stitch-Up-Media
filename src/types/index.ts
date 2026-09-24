@@ -82,7 +82,15 @@ export interface EncodingPreset {
    * otherwise. `still` is never chosen where there is none, and `visualization` draws the export's own
    * mix — see `visualizationGraph`.
    */
-  audioPicture?: 'black' | 'still' | 'visualization'
+  audioPicture?: 'black' | 'still' | 'visualization' | 'custom'
+  /**
+   * The picture a job with sound is given when its picture source is a CUSTOM image.
+   *
+   * A file the user picked, shown as the export's whole picture — held for the length of the sound and scaled
+   * into the frame with its shape kept, exactly as the still a job was covered with is. It is deliberately NOT
+   * a drawing's background: this is the picture, with nothing drawn over it.
+   */
+  audioPictureImage?: string
   /**
    * Which drawing, when the picture source is a visualization. Absent means the waveform.
    *
@@ -121,8 +129,14 @@ export interface EncodingPreset {
   waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
   /** The waveform templates' weight: a thin line, or the full filled drawing. Absent means the fill. */
   waveWeight?: 'line' | 'fill'
-  /** The waveform templates: each channel drawn in its own half of the frame. */
-  waveMirror?: boolean
+  /**
+   * How many waveforms a waveform template draws. Absent means one.
+   *
+   * ONE mixes the sound down before the filter, which is what makes the drawing a single shape; TWO hands the
+   * filter the stereo pair and asks it for a row each. See `WAVE_CHANNELS` for why the count is a downmix
+   * rather than a filter setting.
+   */
+  waveChannels?: 1 | 2
   /** The spectra's amplitude scale. Absent means logarithmic. */
   spectrumScale?: 'lin' | 'sqrt' | 'cbrt' | 'log' | '4thrt' | '5thrt'
   /** The spectra's colour saturation. Absent means ffmpeg's own. */
@@ -133,6 +147,14 @@ export interface EncodingPreset {
   scopeZoom?: number
   /** The scope's draw mode. Absent means a continuous trace. */
   scopeDraw?: 'dot' | 'line'
+  /**
+   * Whether the scope is fed the sound's own two channels rather than a synthesised ring. Absent means OFF.
+   *
+   * OFF is the default because a polar scope plots one channel against the other, so a sound whose channels
+   * are the same draws a spoke — and a mono signal in a stereo container is the commonest case of that. TRUE
+   * STEREO is for genuinely wide music, whose two channels are worth plotting against each other.
+   */
+  scopeTrueStereo?: boolean
   /** What the drawing sits on. Absent means black. */
   visualizationBackgroundColor?: string
   /**

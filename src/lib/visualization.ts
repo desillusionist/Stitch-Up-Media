@@ -49,7 +49,7 @@ export const VISUALIZATIONS: VisualizationTemplate[] = [
 /** The two templates built out of EQ bars, which share every one of their knobs and their geometry. */
 export const isBarsTemplate = (template: Visualization): boolean => template === 'eq' || template === 'mirrored-bars'
 
-/** The two waveforms, which share the amplitude scale, the weight and the mirror. */
+/** The two waveforms, which share the amplitude scale, the weight and how many waveforms they draw. */
 export const isWaveTemplate = (template: Visualization): boolean => template === 'waveform' || template === 'waveform-scroll'
 
 /** The two spectra, which share the amplitude scale and the saturation — their ramp comes from the theme. */
@@ -354,14 +354,6 @@ export interface VisualizationRequest {
   progressLine?: boolean
   /** The palette and the knobs, resolved by the caller from the preset — see `drawingTuneOf`. */
   tune?: DrawingTune
-  /**
-   * Whether the sound being drawn is MONO, which only the polar scope reads — see `drawingSoundIsMono`.
-   *
-   * The caller is the one holding the probes, and the export's own channel count is not the answer: the
-   * drawing is made from the untouched half of the mix, which keeps its sources' layout, so a mono file
-   * written out as stereo is still a mono file to draw. Hence an answer rather than a guess.
-   */
-  mono?: boolean
 }
 
 /**
@@ -457,6 +449,41 @@ export const WAVE_DEFAULT_WEIGHT: WaveWeight = 'fill'
 export type ScopeDraw = 'dot' | 'line'
 export const SCOPE_DRAWS: ScopeDraw[] = ['line', 'dot']
 export const SCOPE_DEFAULT_DRAW: ScopeDraw = 'line'
+/**
+ * How many waveforms a waveform template draws.
+ *
+ * ONE is the default, and it is what makes the drawing a single shape: `showwaves` and `showwavespic` DRAW A
+ * CHANNEL PER ROW, so a stereo input fills the frame with two of them however `split_channels` is set —
+ * measured, a stereo source inks the whole frame height where the same sound downmixed inks the middle of it.
+ * So `1` is a real downmix to mono rather than a setting on the filter, and the two templates agree because
+ * they are handed the same thing. `2` hands them the stereo pair and asks the filter to split it, which is
+ * the look for a sound whose channels differ.
+ */
+export type WaveChannels = 1 | 2
+export const WAVE_CHANNELS: WaveChannels[] = [1, 2]
+export const WAVE_DEFAULT_CHANNELS: WaveChannels = 1
+/**
+ * The rate a stream is mixed down to one channel at, layout-agnostically.
+ *
+ * `aformat` rather than `pan`: a `pan` has to name the input's channels, so it has to be told what it is being
+ * handed, and this is the one thing in a drawing that should not depend on the input's layout. Measured, the
+ * filter collapses a stereo pair to one row and leaves a mono stream alone.
+ */
+export const MONO_MIX = 'aformat=channel_layouts=mono'
+/**
+ * How many entries a colour list is written with.
+ *
+ * `colors` is a list indexed BY CHANNEL, and a list shorter than the input leaves the channels it does not
+ * cover drawn in the filter's own default. That is the whole of the white bars: measured, one entry with a
+ * stereo input puts pure white (255,255,255) in the frame where the theme's own green belongs, and a list
+ * long enough for every channel puts `#9fbf9a` there and nothing else. Eight is the widest layout ffmpeg
+ * names, so eight entries cover every case a sound can arrive in; a mono input ignores the rest.
+ */
+export const COLOUR_LIST_LENGTH = 8
+
+/** One colour, repeated for as many channels as a filter may be handed — see `COLOUR_LIST_LENGTH`. */
+export const colourList = (colour: string, count: number = COLOUR_LIST_LENGTH): string =>
+  new Array(Math.max(1, count)).fill(colour).join('|')
 export const SCOPE_MIN_ZOOM = 0.2
 export const SCOPE_MAX_ZOOM = 10
 export const SCOPE_DEFAULT_ZOOM = 1
@@ -516,42 +543,54 @@ export interface DrawingTune {
   theme: DrawingTheme
   waveScale: WaveScale
   waveWeight: WaveWeight
-  waveMirror: boolean
+  waveChannels: WaveChannels
   spectrumScale: SpectrumScale
   spectrumSaturation: number
   segmented: boolean
   scopePersist: number
   scopeZoom: number
   scopeDraw: ScopeDraw
+  /**
+   * Whether the scope is fed the sound's own two channels rather than a synthesised ring.
+   *
+   * OFF by default, and that is the correction of a wrong guess: a polar scope plots one channel against the
+   * other, so a sound whose channels are the SAME draws a fixed-angle spoke however many channels its
+   * container has — and a mono signal stored as stereo is the commonest case of that by far. Measured, that
+   * sound reaches one column band of twenty as a spoke and fourteen as a ring. So the ring is what a scope
+   * draws unless it is told otherwise, and TRUE STEREO is the opt-in for genuinely wide music.
+   */
+  trueStereo: boolean
 }
 
 export const DEFAULT_TUNE: DrawingTune = {
   theme: 'green',
   waveScale: WAVE_DEFAULT_SCALE,
   waveWeight: WAVE_DEFAULT_WEIGHT,
-  waveMirror: false,
+  waveChannels: WAVE_DEFAULT_CHANNELS,
   spectrumScale: SPECTRUM_DEFAULT_SCALE,
   spectrumSaturation: SPECTRUM_DEFAULT_SATURATION,
   segmented: false,
   scopePersist: SCOPE_DEFAULT_PERSIST,
   scopeZoom: SCOPE_DEFAULT_ZOOM,
   scopeDraw: SCOPE_DEFAULT_DRAW,
+  trueStereo: false,
 }
 
 /** A preset's knobs, resolved with the defaults filled in and every figure held to what the filters take. */
 export const drawingTuneOf = (preset: Pick<EncodingPreset,
-  'drawingTheme' | 'waveScale' | 'waveWeight' | 'waveMirror' | 'spectrumScale' | 'spectrumSaturation' |
-  'eqSegmented' | 'scopePersist' | 'scopeZoom' | 'scopeDraw'>): DrawingTune => ({
+  'drawingTheme' | 'waveScale' | 'waveWeight' | 'waveChannels' | 'spectrumScale' | 'spectrumSaturation' |
+  'eqSegmented' | 'scopePersist' | 'scopeZoom' | 'scopeDraw' | 'scopeTrueStereo'>): DrawingTune => ({
   theme: themeFor(preset.drawingTheme).id,
   waveScale: WAVE_SCALES.includes(preset.waveScale as WaveScale) ? (preset.waveScale as WaveScale) : WAVE_DEFAULT_SCALE,
   waveWeight: preset.waveWeight === 'line' ? 'line' : WAVE_DEFAULT_WEIGHT,
-  waveMirror: preset.waveMirror === true,
+  waveChannels: preset.waveChannels === 2 ? 2 : WAVE_DEFAULT_CHANNELS,
   spectrumScale: SPECTRUM_SCALES.includes(preset.spectrumScale as SpectrumScale) ? (preset.spectrumScale as SpectrumScale) : SPECTRUM_DEFAULT_SCALE,
   spectrumSaturation: clampSaturation(preset.spectrumSaturation ?? SPECTRUM_DEFAULT_SATURATION),
   segmented: preset.eqSegmented === true,
   scopePersist: clampScopePersist(preset.scopePersist ?? SCOPE_DEFAULT_PERSIST),
   scopeZoom: clampScopeZoom(preset.scopeZoom ?? SCOPE_DEFAULT_ZOOM),
   scopeDraw: preset.scopeDraw === 'dot' ? 'dot' : SCOPE_DEFAULT_DRAW,
+  trueStereo: preset.scopeTrueStereo === true,
 })
 
 /** Everything one drawing is made from: the template, the two sizes, the palette and the knobs. */
@@ -565,8 +604,6 @@ interface DrawingRequest {
   color: string
   tune: DrawingTune
   eq: EqStyle
-  /** Whether the sound being drawn is MONO — the one thing the polar scope has to know about it. */
-  mono: boolean
 }
 
 /**
@@ -614,8 +651,17 @@ const drawingFilters = (request: DrawingRequest): string => {
   const { template, fps, color, eq, tune } = request
   const size = drawingSize(request)
   const theme = themeFor(tune.theme)
-  const wave = `scale=${tune.waveScale}:draw=${tune.waveWeight === 'fill' ? 'full' : 'scale'}:split_channels=${tune.waveMirror ? 1 : 0}`
-  if (isBarsTemplate(template)) return `showfreqs=s=${size}:mode=bar:ascale=${eq.amplitude}:fscale=${eq.frequency}:minamp=${eq.sensitivity}:rate=${fps}:colors=${color}`
+  // ONE waveform or two, which is a DOWNMIX rather than a filter option: the two filters draw a channel per
+  // row, so a stereo input fills the frame with two rows whichever way `split_channels` is set. Measured, a
+  // stereo source inks the whole frame height and the same sound downmixed inks the middle of it. So `1`
+  // mixes down and asks for no split, and `2` hands over the pair and asks it to split them.
+  const twoWaveforms = tune.waveChannels === 2
+  const waveLead = twoWaveforms ? '' : `${MONO_MIX},`
+  const wave = `scale=${tune.waveScale}:draw=${tune.waveWeight === 'fill' ? 'full' : 'scale'}:split_channels=${twoWaveforms ? 1 : 0}`
+  // A colour LIST, one entry per channel the filter may be handed: a short list leaves the channels it does
+  // not cover in the filter's own default, which is how a stereo source came to be drawn in white.
+  const colors = colourList(color)
+  if (isBarsTemplate(template)) return `showfreqs=s=${size}:mode=bar:ascale=${eq.amplitude}:fscale=${eq.frequency}:minamp=${eq.sensitivity}:rate=${fps}:colors=${colors}`
   if (template === 'scope') {
     // The scope's colour is three channel CONTRASTS rather than a hex — it has no colour option — so the theme
     // is what decides it, and the fade is the inverse of the persistence.
@@ -625,8 +671,8 @@ const drawingFilters = (request: DrawingRequest): string => {
   }
   if (template === 'spectrum') return `showspectrumpic=s=${size}:mode=combined:color=${theme.ramp}:saturation=${tune.spectrumSaturation}:scale=${tune.spectrumScale}:legend=0`
   if (template === 'spectrum-scroll') return `showspectrum=s=${size}:mode=combined:color=${theme.ramp}:saturation=${tune.spectrumSaturation}:scale=${tune.spectrumScale}:slide=scroll,fps=${fps}`
-  if (template === 'waveform-scroll') return `showwaves=s=${size}:mode=cline:${wave}:rate=${fps}:colors=${color}`
-  return `showwavespic=s=${size}:${wave}:colors=${color}`
+  if (template === 'waveform-scroll') return `${waveLead}showwaves=s=${size}:mode=cline:${wave}:rate=${fps}:colors=${colors}`
+  return `${waveLead}showwavespic=s=${size}:${wave}:colors=${colors}`
 }
 
 /**
@@ -707,15 +753,18 @@ const drawingStage = (template: Visualization, frame: { width: number; height: n
 /**
  * The chains that draw one template's picture to `target`, at the frame's own size.
  *
- * Three templates need more than a filter: the SCOPE on a MONO sound is opened into quadrature first (see
- * below), and the MIRRORED BARS come to the frame as two halves rather than one.
+ * Two templates need more than a filter: the MIRRORED BARS come to the frame as two halves rather than one,
+ * and the SCOPE is opened into a ring first — see below, where the whole of that is.
  */
 const drawingChains = (request: DrawingRequest, input: string, filters: string, target: string): string[] => {
   const stage = drawingStage(request.template, request.frame, request.eq, request.tune)
   const drawn = `${filters},scale=${stage.scale.width}:${stage.scale.height}:flags=${stage.flags}`
-  if (request.template === 'scope' && request.mono) {
+  if (request.template === 'scope' && !request.tune.trueStereo) {
+    // One channel, then two that are a quarter of a cycle apart. The mix comes FIRST so the pair is built
+    // from the sound rather than from the container: a mono signal stored as stereo has two identical
+    // channels, and two identical channels are what draws a spoke.
     return [
-      `${input}asplit=2[scopeQ1][scopeQ2]`,
+      `${input}${MONO_MIX},asplit=2[scopeQ1][scopeQ2]`,
       '[scopeQ1]anull[scopeI]',
       '[scopeQ2]aphaseshift=shift=0.25[scopeQ]',
       `[scopeI][scopeQ]join=inputs=2:channel_layout=stereo,${drawn}${stage.finish(target)}`,
@@ -732,18 +781,16 @@ const drawingChains = (request: DrawingRequest, input: string, filters: string, 
 }
 
 /**
- * Why a MONO sound is opened into quadrature for the SCOPE, and why it is the drawing's business and not a
- * knob: a polar scope plots one channel against the other, so two IDENTICAL channels — which is what a mono
- * source duplicates to — draw a flat diagonal line instead of a ring. The sound is split, one half is shifted
- * a quarter of a cycle (`aphaseshift`'s own unit is a cycle, so 0.25 is 90°), and the halves are joined back
- * into a stereo pair, which opens the mono out into a ring. The branch is by LAYOUT alone, because nobody can
- * be expected to know which of their files are mono; stereo is fed straight through, untouched.
+ * The quarter-cycle the scope's synthesised pair is opened with.
+ *
+ * A polar scope plots one channel against the other, so a sound whose channels are the SAME draws a
+ * fixed-angle spoke: the sound is mixed to one channel, split, and one half is shifted a quarter of a cycle
+ * (`aphaseshift`'s own unit is a cycle, so 0.25 is 90°), and the halves are joined into a stereo pair, which
+ * opens it out into a ring. This filter and its unit were both checked on this build rather than assumed, and
+ * the branch is demonstrably live: measured, the same sound reaches one column band of twenty as a spoke and
+ * fourteen as a ring, so the filter is doing the work rather than passing the pair through untouched.
  */
 export const SCOPE_QUADRATURE_SHIFT = 0.25
-
-/** Whether a drawing's sound is mono, from the channel counts of the sources that make it up. */
-export const drawingSoundIsMono = (channelCounts: number[]): boolean =>
-  channelCounts.length > 0 && channelCounts.every((count) => count <= 1)
 
 /**
  * What the editor's own still of a drawing is asked for: the same template, colour and background the
@@ -766,8 +813,6 @@ export interface VisualizationStillRequest {
   eq?: EqStyle
   /** The palette and the knobs. Absent means the defaults — see `DEFAULT_TUNE`. */
   tune?: DrawingTune
-  /** Whether the sound being drawn is mono. Only the polar scope reads it — see `drawingSoundIsMono`. */
-  mono?: boolean
 }
 
 /**
@@ -779,11 +824,11 @@ export interface VisualizationStillRequest {
  * scroll or a scope from being photographed at the one moment it is empty.
  */
 export const visualizationStillGraph = (request: VisualizationStillRequest): string => {
-  const { template, width, height, fps, color, sources, background, progressLine, eq, tune, mono } = request
+  const { template, width, height, fps, color, sources, background, progressLine, eq, tune } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
   const style = eq ?? DEFAULT_EQ_STYLE
   const knobs = tune ?? DEFAULT_TUNE
-  const drawing: DrawingRequest = { template, canvas, frame: { width, height }, fps, color, tune: knobs, eq: style, mono: Boolean(mono) }
+  const drawing: DrawingRequest = { template, canvas, frame: { width, height }, fps, color, tune: knobs, eq: style }
   const mixed = '[mixed]'
   const listening = sources.length === 1
     ? `[${sources[0]}]anull${mixed}`
@@ -823,7 +868,7 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
  * own size.
  */
 export const visualizationGraph = (request: VisualizationRequest): string => {
-  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine, eq, tune, mono } = request
+  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine, eq, tune } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
   const drawing: DrawingRequest = {
     template,
@@ -833,7 +878,6 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
     color,
     tune: tune ?? DEFAULT_TUNE,
     eq: eq ?? DEFAULT_EQ_STYLE,
-    mono: Boolean(mono),
   }
   const listened = sources.length === 1
     ? `[${sources[0]}]asplit=2[mixA][mixV]`
