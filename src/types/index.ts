@@ -8,6 +8,15 @@ export interface MediaStreamInfo {
   channels?: number
   sampleRate?: number
   language?: string
+  /**
+   * How many bits one sample is, where the container records it.
+   *
+   * A PCM or FLAC file carries it; a lossy codec has no such thing, which is why this is absent rather than
+   * zero for an mp3 — the absence is the fact, and a `0 BIT` would be a claim about the file.
+   */
+  bitDepth?: number
+  /** The speaker layout where the file names one (`stereo`, `5.1`). `unknown` is answered as none. */
+  channelLayout?: string
 }
 
 export interface MediaProbeInfo {
@@ -56,6 +65,14 @@ export interface EncodingPreset {
   outputMode?: 'video' | 'audio'
   audioFormat?: 'aac' | 'mp3' | 'opus' | 'pcm' | 'flac'
   audioSampleRate?: number
+  /**
+   * How many channels the export writes. Absent means whatever the path would have written anyway.
+   *
+   * The monitor's own `-ac` for every path that owns the output layout, so a 5.1 source can be folded to
+   * stereo without a second encode. It is capped at stereo for the same reason the drawing's own graph
+   * lays its audio out as mono or stereo: the two halves of one stream cannot be laid out differently.
+   */
+  audioChannels?: 1 | 2
   imageOutputMode?: 'sequence' | 'still'
   gifMode?: 'regular' | 'loop' | 'bounce'
   /**

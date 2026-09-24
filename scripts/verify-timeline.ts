@@ -13,11 +13,12 @@ import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepH
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, drawingCanvas, drawingColorOf, drawingPictureFor, drawingSoundIsMono, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
-import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor } from '../src/lib/previewSpeed'
+import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
+import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
-import { EncodingPreset, QueueTask, SourceFit } from '../src/types'
+import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 
 /**
@@ -1610,7 +1611,7 @@ console.log('\n== the preview speed ==')
 {
   // PREVIEW ONLY: this is the monitor\u2019s own playbackRate and a multiplier on the fallback clock. Nothing
   // here reaches ffmpeg — an export at an altered speed would be a different render, `setpts` and `atempo`.
-  check('the speeds the monitor offers', PREVIEW_SPEEDS.join(','), '0.5,1,1.5,2,3')
+  check('the speeds the monitor offers', PREVIEW_SPEEDS.join(','), '0.5,1,1.5,2,3,4')
   check('and it opens at ordinary speed', DEFAULT_PREVIEW_SPEED, 1)
   check('a speed that is not offered is answered with the ordinary one', clampPreviewSpeed(7), DEFAULT_PREVIEW_SPEED)
   check('and so is nonsense', clampPreviewSpeed('nonsense'), DEFAULT_PREVIEW_SPEED)
@@ -1630,6 +1631,64 @@ console.log('\n== the preview speed ==')
   const both = advanceClock(null, { from: 0, now: 1000, key: 'a', reverse: false, shuttleRate: 2, speed: 2 })
   const bothAfter = advanceClock(both.anchor, { from: 0, now: 2000, key: 'a', reverse: false, shuttleRate: 2, speed: 2 })
   near('a shuttle and a speed compose', bothAfter.value, 4)
+
+  // The WHEEL over the monitor climbs the same ladder the selector offers, one rung per tick either way, and
+  // it STOPS at the ends rather than wrapping: a wheel that jumped from 4x back to 0.5x would change something
+  // the reader did not ask for at the moment they asked for nothing more.
+  check('a wheel up climbs one rung', steppedPreviewSpeed(1, 1), 1.5)
+  check('and again, all the way to the top', [1, 1.5, 2, 3, 4].map((rate) => steppedPreviewSpeed(rate, 1)), [1.5, 2, 3, 4, 4])
+  check('a wheel down drops one rung', steppedPreviewSpeed(2, -1), 1.5)
+  check('and again, all the way to the bottom', [4, 3, 2, 1.5, 1].map((rate) => steppedPreviewSpeed(rate, -1)), [3, 2, 1.5, 1, 0.5])
+  check('and the bottom is the bottom rather than a wrap', steppedPreviewSpeed(0.5, -1), 0.5)
+  check('a speed the list does not carry is stepped from the ordinary one', steppedPreviewSpeed(7, 1), 1.5)
+
+  // The pitch rule, which is stated once because the element’s property is the INVERSE of the phrase: a steady
+  // speed is pitch-corrected — the same voice at a different tempo — while a fast-forward raises it, which is
+  // what a tape transport does and what a shuttle is imitating.
+  check('a steady speed keeps its pitch', preservesPitchFor(0), true)
+  check('and so does a 2x preview, which is a viewing speed rather than a shuttle', [playbackRateFor(0, 2), preservesPitchFor(0)], [2, true])
+  check('a shuttle at ordinary speed still keeps it, because it is not a fast-forward', preservesPitchFor(1), true)
+  check('a fast-forward raises it', preservesPitchFor(2), false)
+  check('and so does the top of the ladder', preservesPitchFor(8), false)
+  check('reverse keeps the property, but it is paused rather than played so nothing is heard', preservesPitchFor(-4), true)
+}
+
+console.log('\n== what a sound is, and what the export will make of it ==')
+{
+  // The facts are read off a probe, and every part of them is optional because ffprobe genuinely does not know
+  // some of them: a lossy file has no sample size at all, and a great many wavs name no channel layout. An
+  // absent figure is left OUT of the line rather than shown as a zero, which would be a claim about the file
+  // rather than a gap in it. The figures these cases are built from are ones this machine's ffprobe answers —
+  // measured on a 16-bit wav, a 24-bit one, a 5.1 one, an mp3, a FLAC and an AAC.
+  const sound = (stream: Partial<MediaStreamInfo>): MediaProbeInfo => ({
+    format: 'wav', duration: 5, size: 0, bitrate: 0, videoStreams: [], audioStreams: [{ codec: 'pcm_s16le', ...stream }],
+  })
+  const silent: MediaProbeInfo = { format: 'png', duration: 0, size: 0, bitrate: 0, videoStreams: [], audioStreams: [] }
+
+  check('a 16-bit stereo wav reads as its rate, its sample size and its layout', audioFacts(sound({ channels: 2, sampleRate: 48000, bitDepth: 16 })), '48 KHZ \u00b7 16 BIT \u00b7 STEREO')
+  check('a 24-bit one at 44.1 reads as that', audioFacts(sound({ channels: 2, sampleRate: 44100, bitDepth: 24 })), '44.1 KHZ \u00b7 24 BIT \u00b7 STEREO')
+  check('a file that names its layout is believed over its count', audioFacts(sound({ channels: 6, sampleRate: 48000, bitDepth: 16, channelLayout: '5.1' })), '48 KHZ \u00b7 16 BIT \u00b7 5.1')
+  check('and one that names none has its count spoken for it', audioFacts(sound({ channels: 6, sampleRate: 48000 })), '48 KHZ \u00b7 6 CH')
+  // A lossy file has no sample size, and the line leaves it out rather than claiming zero bits of one.
+  check('a lossy file loses the part the container does not carry', audioFacts(sound({ codec: 'mp3', channels: 2, sampleRate: 48000 })), '48 KHZ \u00b7 STEREO')
+  check('and its codec and bitrate read on their own line', audioCodecFacts(sound({ codec: 'mp3', channels: 2, bitrate: '320k' })), 'MP3 \u00b7 320K')
+  check('one and two channels are spelled out rather than counted', [channelFacts({ codec: 'x', channels: 1 }), channelFacts({ codec: 'x', channels: 2 })], ['MONO', 'STEREO'])
+  check('and a rate reads in kHz without a trailing zero', [kilohertz(48000), kilohertz(44100)], ['48', '44.1'])
+  check('a source with no sound in it has no facts to show', [audioFacts(silent), audioCodecFacts(silent), probeHasAudio(silent)], [null, null, false])
+  check('which is how a caller knows not to offer a sound control', probeHasAudio(sound({ channels: 2 })), true)
+  check('a probe that never arrived says nothing rather than guessing', audioFacts(undefined), null)
+
+  // The output channel count, which is a CHOICE rather than a fact, and which stores nothing at all for SOURCE:
+  // every path that owns the output layout has an answer of its own — a stitch follows the widest source it was
+  // given — and a stereo written here would override that answer with a figure nobody chose.
+  check('the layouts the editor offers', AUDIO_CHANNELS.map((option) => option.name), ['SOURCE', 'MONO', 'STEREO'])
+  check('a preset that says nothing asks for nothing', outputChannels({}), undefined)
+  check('and one asking for mono gets one', outputChannels({ audioChannels: 1 }), 1)
+  check('and for stereo, two', [outputChannels({ audioChannels: 2 }), channelLayoutFor(2)], [2, 'stereo'])
+  check('a mono layout is named for the graph', channelLayoutFor(1), 'mono')
+  check('a figure that is not on the list falls back to SOURCE rather than to two', clampAudioChannels(6), 0)
+  check('as does nonsense', clampAudioChannels('nonsense'), 0)
+  check('and the two that are on it are kept', [clampAudioChannels(1), clampAudioChannels(2)], [1, 2])
 }
 
 console.log('\n== whether an export draws its own sound ==')

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { nextShuttleRate } from '../lib/shuttleRates'
 import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
-import { DEFAULT_PREVIEW_SPEED, PreviewSpeed, clampPreviewSpeed, playbackRateFor } from '../lib/previewSpeed'
+import { DEFAULT_PREVIEW_SPEED, PreviewSpeed, clampPreviewSpeed, playbackRateFor, preservesPitchFor } from '../lib/previewSpeed'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
 const DRIFT_TOLERANCE = 0.25
@@ -219,8 +219,9 @@ export const useConsolidatedPlayback = (
     // The shuttle's rate and the speed being watched at, composed — see `playbackRateFor`. Reverse has no
     // native rate, so the element is left at 1x (times the speed) and stepped to paint the frames instead.
     video.playbackRate = playbackRateFor(shuttleRef.current, speedRef.current)
-    // Pitch-corrected, so a 0.5x or a 2x preview is the same voice at a different tempo rather than tape.
-    video.preservesPitch = true
+    // Pitch-corrected for a steady speed, raised for a fast-forward — see `preservesPitchFor`, which is where
+    // the whole of that distinction lives.
+    video.preservesPitch = preservesPitchFor(shuttleRef.current)
   }, [])
 
   const onLoaded = useCallback(() => {
@@ -392,20 +393,20 @@ export const useConsolidatedPlayback = (
     // credit the paused wall time and jump the playhead forward. Resuming is safe
     // because the anchor is rebuilt from the position the playhead already holds.
     anchorRef.current = null
-    // Added tracks accompany forward playback, where they can stay in step. Slow
-    // motion is followed by rate rather than being dropped, so the two never drift.
-    // A shuttle past normal speed and reverse are silent: audio cannot follow either.
-    const magnitude = Math.abs(shuttleRate) || 1
-    // What an added track is played at: the same composed rate the picture element is given, so the two
-    // never drift apart. Whether it is HEARD is still the shuttle's question — audio cannot follow a shuttle
-    // past normal speed — while a preview speed above 1x keeps its tracks, pitch-corrected.
+    // Added tracks accompany FORWARD playback at any rate, where they can stay in step — a fast-forward is
+    // heard as a fast-forward, with its pitch raised, which is what a tape transport sounds like and what the
+    // pitch rule beside it is for. REVERSE is the only case that is silent: an element cannot run backwards,
+    // so there is nothing playing at all, and the picture is repainted by seeking instead.
+    //
+    // What an added track is played at: the same composed rate the picture element is given, so the two never
+    // drift apart.
     const rate = playbackRateFor(shuttleRate, speed)
-    const audible = playing && shuttleRate >= 0 && magnitude <= 1
+    const audible = playing && shuttleRate >= 0
     lanesRef.current.forEach((lane) => {
       const element = audioElements.current?.[lane.id]
       if (!element) return
       element.playbackRate = rate
-      element.preservesPitch = true
+      element.preservesPitch = preservesPitchFor(shuttleRate)
       if (audible) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })

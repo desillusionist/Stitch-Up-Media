@@ -5,7 +5,8 @@ import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_DEFAULT_BARS, EQ_DEFAULT_GAP, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
-import { PREVIEW_SPEEDS, speedLabel } from '../lib/previewSpeed'
+import { PREVIEW_SPEEDS, speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
+import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -352,6 +353,16 @@ export const EditJobApp: React.FC = () => {
    */
   const stillFrameRef = useRef<HTMLImageElement | null>(null)
   const [probedTiming, setProbedTiming] = useState<Record<string, SourceTiming>>({})
+  /**
+   * The whole probe of each source, kept for the lines that DESCRIBE a file rather than time it.
+   *
+   * The effect below has always read a probe to decide whether a source has sound and how long it is, and it
+   * then threw everything else away. The audio facts — the rate, the sample size, the channels — are in the
+   * same answer, and four places want them: the MEDIA INFO inspector, the line under the monitor, the AUDIO
+   * tab, and a clip's own line in the simple view. Reading them off a second probe would be a second ffprobe
+   * per source for facts the window already had.
+   */
+  const [sourceProbes, setSourceProbes] = useState<Record<string, MediaProbeInfo>>({})
   /** Sources whose target has been resolved, keyed by source and rate. A generated
    *  clip belongs to a rate, so a rate change is a different target entirely. */
   const resolvedTargetsRef = useRef<Record<string, true>>({})
@@ -666,6 +677,11 @@ export const EditJobApp: React.FC = () => {
       }))
       setSourceAudio((current) => ({ ...current, ...Object.fromEntries(entries.map(([sourcePath, info]) => [sourcePath, Boolean(info?.audioStreams?.length)])) }))
       setSourceVideo((current) => ({ ...current, ...Object.fromEntries(entries.map(([sourcePath, info]) => [sourcePath, Boolean(info?.videoStreams?.length)])) }))
+      // The whole answer, kept for the lines that describe a file rather than time it — see `sourceProbes`.
+      setSourceProbes((current) => ({
+        ...current,
+        ...Object.fromEntries(entries.filter(([, info]) => Boolean(info)).map(([sourcePath, info]) => [sourcePath, info as MediaProbeInfo])),
+      }))
     })
     return () => { cancelled = true }
   }, [probeSignature])
@@ -775,6 +791,34 @@ export const EditJobApp: React.FC = () => {
   /** The shape a thumbnail is drawn in, which is the output frame's rather than the clip's. */
   const frameAspect = outputFrame ? outputFrame.width / outputFrame.height : 16 / 9
   const focusedSource = draft ? (draft.sourcePaths[focusedSourceIndex] || draft.sourcePaths[0]) : undefined
+  /**
+   * The source the window is DESCRIBING: the clip the MEDIA INFO inspector is on where it is open, and the one
+   * under the playhead otherwise.
+   *
+   * Derived here, above the early return, because the probe that fills `sourceProbes` is an effect and no hook
+   * can live past that return — which is the shape of the fault that once made this window come up blank with
+   * nothing on it but its traffic lights. The inspector's own source is the same answer worked out again below,
+   * from the same two things.
+   */
+  const describedSource = (() => {
+    const lane = inspectorOpen && selected ? model?.lanes.find((candidate) => candidate.id === selected.laneId) : undefined
+    return lane?.segments[selected?.segmentIndex ?? 0]?.sourcePath ?? focusedSource ?? null
+  })()
+  /**
+   * The facts about that source, which is not always a source a lane was built from: in a stitch or a combo the
+   * inspector can be opened on any clip, and the one under the playhead moves with playback. A probe is shared
+   * and remembered, so where the effect above has already asked this costs no second ffprobe.
+   */
+  const describedProbesRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (!describedSource || describedProbesRef.current.has(describedSource)) return
+    describedProbesRef.current.add(describedSource)
+    let cancelled = false
+    void probeSource(describedSource).then((info) => {
+      if (!cancelled && info) setSourceProbes((current) => (current[describedSource] ? current : { ...current, [describedSource]: info }))
+    })
+    return () => { cancelled = true }
+  }, [describedSource])
   // A sequence is named after its whole range rather than the one frame that stands in
   // for it, the same way the queue's cards name it.
   const focusedSequence = draft && focusedSource ? sequenceFor(draft, focusedSource) : undefined
@@ -1237,10 +1281,11 @@ export const EditJobApp: React.FC = () => {
    * focused range slider stays live, because placing the playhead leaves focus on
    * the scrubber, and treating that as typing swallowed every shortcut.
    *
-   * The arrow keys follow the frame-accurate helper. Left and right step exactly one
-   * frame; up and down move to the edges of the clip under the playhead, and pressing
-   * again walks to the neighbouring clip's edge, which is the helper's jump-to-start
-   * and jump-to-end widened to a timeline with many clips.
+   * LEFT and RIGHT SHUTTLE, exactly as J and L do — the same keys under another name, because a reader who
+   * reaches for an arrow means what a reader who reaches for J or L means. Frame stepping keeps its own two
+   * homes: the transport's own FRAME buttons, and the quick tap that a K+shuttle makes. UP and DOWN still move
+   * to the edges of the clip under the playhead, and pressing again walks to the neighbouring clip's edge,
+   * which is the frame-accurate helper's jump-to-start and jump-to-end widened to a timeline with many clips.
    */
   const heldKeysRef = useRef({ k: false })
   const slowMotionRef = useRef(false)
@@ -1290,11 +1335,6 @@ export const EditJobApp: React.FC = () => {
         playbackRef.current.toggle()
         return
       }
-      if (code === 'ArrowLeft' || code === 'ArrowRight') {
-        event.preventDefault()
-        playbackRef.current.step((code === 'ArrowRight' ? 1 : -1) / stepFpsRef.current)
-        return
-      }
       if (code === 'ArrowUp' || code === 'ArrowDown') {
         event.preventDefault()
         jumpToClipEdge(code === 'ArrowDown' ? 1 : -1)
@@ -1308,9 +1348,12 @@ export const EditJobApp: React.FC = () => {
         if (!event.repeat) { heldKeysRef.current.k = true; playbackRef.current.pause() }
         return
       }
-      if ((code !== 'KeyJ' && code !== 'KeyL') || event.repeat) return
+      // The arrows are the shuttle keys under another name: Left is J and Right is L, so the whole of the
+      // ladder below applies to either pair, taps and slow motion included.
+      const key = code === 'ArrowLeft' ? 'KeyJ' : code === 'ArrowRight' ? 'KeyL' : code
+      if ((key !== 'KeyJ' && key !== 'KeyL') || event.repeat) return
       event.preventDefault()
-      const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
+      const direction: 1 | -1 = key === 'KeyL' ? 1 : -1
       if (heldKeysRef.current.k) {
         clearTap()
         tapTimerRef.current = window.setTimeout(() => {
@@ -1325,8 +1368,9 @@ export const EditJobApp: React.FC = () => {
     const onKeyUp = (event: KeyboardEvent) => {
       const code = event.code
       if (code === 'KeyK') { heldKeysRef.current.k = false; return }
-      if (code !== 'KeyJ' && code !== 'KeyL') return
-      const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
+      const key = code === 'ArrowLeft' ? 'KeyJ' : code === 'ArrowRight' ? 'KeyL' : code
+      if (key !== 'KeyJ' && key !== 'KeyL') return
+      const direction: 1 | -1 = key === 'KeyL' ? 1 : -1
       if (tapTimerRef.current != null) {
         // Released before the threshold, so it was a tap: step one whole frame.
         clearTap()
@@ -1372,6 +1416,19 @@ export const EditJobApp: React.FC = () => {
     const eased = Math.tanh(Math.abs(event.deltaY) / 6)
     const step = (1 / Math.max(1, stepFpsRef.current)) * (0.35 + 1.65 * eased)
     playback.seek(playback.position + (event.deltaY < 0 ? step : -step))
+  }
+
+  /**
+   * Wheel over the MONITOR changes the SPEED being watched at, as the selector beside it does.
+   *
+   * It replaces a wheel-scrub, and that is no loss: the seek bar under the transport is the monitor's own
+   * scrubber, and the timeline's lanes still scrub on the wheel, so the one gesture that had no home was this
+   * one. The ladder is climbed and STOPS at its ends rather than wrapping, and it is the same ladder the
+   * selector offers, so the two can never disagree about what a rung is.
+   */
+  const speedByWheel = (event: React.WheelEvent<HTMLElement>) => {
+    if (event.deltaY === 0) return
+    playback.setSpeed(steppedPreviewSpeed(playback.speed, event.deltaY < 0 ? 1 : -1))
   }
 
   // Mutes are applied to the elements directly and never reach the task. The
@@ -1642,6 +1699,10 @@ export const EditJobApp: React.FC = () => {
   const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
   const inspectedEditable = Boolean(inspectedSegment && (inspectedSegment.still || inspectedSegment.sequence))
   const inspectedProbe = inspectedSource ? probedTiming[inspectedSource] : undefined
+  /** The whole probe of the same source, for the lines that describe the file rather than time it. */
+  const inspectedInfo = inspectedSource ? sourceProbes[inspectedSource] : undefined
+  const inspectedAudioFacts = audioFacts(inspectedInfo)
+  const inspectedAudioCodec = audioCodecFacts(inspectedInfo)
 
   /** Transitions are keyed by the clip BEFORE the boundary, like trim points, and by the edge. */
   const applyTransition = (key: string, type: TransitionType, duration = 0.5) => {
@@ -1816,6 +1877,12 @@ export const EditJobApp: React.FC = () => {
     if (segment.still) parts.push(`STILL @ ${Math.round(sourceFps(draft, segment.sourcePath, undefined, resolveTiming))}FPS`)
     if (segment.fadeIn) parts.push(`FADE IN ${segment.fadeIn.toFixed(2)}s`)
     if (segment.fadeOut) parts.push(`FADE OUT ${segment.fadeOut.toFixed(2)}s`)
+    // What the source's own sound IS, for a clip that is nothing but sound: the line already says how long the
+    // clip is, and the facts about the file it came from are the other half of what a reader wants off the
+    // same line. A clip with a picture adds nothing here — the strip shows it, and this line is the width of a
+    // clip's box.
+    const sound = sourceAudio[segment.sourcePath] && !sourceVideo[segment.sourcePath] ? audioFacts(sourceProbes[segment.sourcePath]) : null
+    if (sound) parts.push(sound)
     return parts.join(' // ')
   }
   const segmentLabel = (segment: TimelineSegment) => {
@@ -2059,7 +2126,18 @@ export const EditJobApp: React.FC = () => {
 
   const laneGap = (lane: TimelineLane) => Math.max(0, duration - lane.duration)
   const activeSegmentKey = playback.segment?.key
-  const resolutionLabel = draft.sourceInfo?.videoStreams?.[0]?.resolution
+  /**
+   * What the monitor's own line says the source is: the shape of a picture, and the facts about the sound
+   * where there is no picture.
+   *
+   * An audio file has no resolution at all, so that line used to read `SOURCE` — three words that describe
+   * nothing about the file in hand — where `48 KHZ · 24 BIT · STEREO` is something a reader can act on. The
+   * probe is the one this window already made, so nothing here is a second read of any file.
+   */
+  const focusedProbe = focusedSource ? sourceProbes[focusedSource] : undefined
+  const focusedSoundLine = focusedProbe && !focusedProbe.videoStreams?.length ? audioFacts(focusedProbe) : null
+  const resolutionLabel = focusedProbe?.videoStreams?.[0]?.resolution
+    || draft.sourceInfo?.videoStreams?.[0]?.resolution
     || draft.sourceMetadata?.[focusedSource ?? '']?.resolution
     || (draft.preset.width && draft.preset.height ? `${draft.preset.width}×${draft.preset.height}` : 'SOURCE')
 
@@ -2669,6 +2747,27 @@ export const EditJobApp: React.FC = () => {
   const stillIntoWav = container === 'wav' && hasStill
   /** The drawing's own background, as the one choice the editor and the encoder share. */
   const backgroundKind = visualizationBackgroundKind(draft.preset)
+  /**
+   * The sound the AUDIO tab is about: the one under the playhead where that is a sound, and the job's first
+   * sound otherwise. A job of one audio file gives the same answer either way.
+   */
+  const tabAudioSource = (focusedSource && probeHasAudio(sourceProbes[focusedSource]) ? focusedSource : null)
+    ?? [...draft.sourcePaths, ...(draft.additionalAudioTracks ?? []).map((track) => track.path)].find((source) => probeHasAudio(sourceProbes[source]))
+    ?? null
+  const tabAudioProbe = tabAudioSource ? sourceProbes[tabAudioSource] : undefined
+  const tabAudioFacts = audioFacts(tabAudioProbe)
+  const tabAudioCodec = audioCodecFacts(tabAudioProbe)
+  /**
+   * A channel count as the preset stores it.
+   *
+   * SOURCE stores NOTHING rather than a figure, which is the only honest way to say it: every path that owns
+   * the output layout has an answer of its own — a stitch follows the widest source it was given — and a two
+   * written here would override that answer with one the user never chose.
+   */
+  const chooseAudioChannels = (value: string) => {
+    const channels = clampAudioChannels(value)
+    updatePreset({ audioChannels: channels === 1 || channels === 2 ? channels : undefined })
+  }
   /** Picks the image a drawing sits on, and stores it on the preset the export reads. */
   const chooseBackgroundImage = async () => {
     const chosen = await window.electronAPI?.selectImage()
@@ -2694,7 +2793,7 @@ export const EditJobApp: React.FC = () => {
       <main className="editor-main">
         <section className="editor-preview">
           <div className="panel-kicker">PREVIEW // ASSEMBLED OUTPUT</div>
-          <div className="editor-screen" onWheel={scrubByWheel}>
+          <div className="editor-screen" onWheel={speedByWheel}>
             {/* The media sits in its own measured stage, so the output frame outline can
                 be drawn around the picture rather than around the panel. The stage is also the
                 pan surface: everything drawn lives in one layer inside it and moves together
@@ -2782,15 +2881,26 @@ export const EditJobApp: React.FC = () => {
                 </div>}
               </div>
             </div>
-            <small>{focusedLabel} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS` : ''}</small>
+            <small>{focusedLabel} • {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS` : ''}</small>
             <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` · USED ${stamp(activeSegment.sourceIn)} → ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} · OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
+            {/* What the transport is doing. A single line, and the one place it is said: the pause glyph that
+                used to sit among the buttons said the same thing a second time, next to a PLAY toggle that
+                already carries the state. */}
+            <b className="transport-state">{playback.playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>
           </div>
           <div className="transport">
             <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
             <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playback.playing ? '||' : '\u25b6'}] PLAY</button>
             <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
             <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 ? ' is-fast' : ''}`}>
-              {playback.shuttleRate > 0 ? `\u25b6 ${playback.shuttleRate}\u00d7` : playback.shuttleRate < 0 ? `\u25c0 ${Math.abs(playback.shuttleRate)}\u00d7` : playback.playing ? '\u25b6 1\u00d7' : '\u275a\u275a'}
+              {/* The SHUTTLE's own rate, and nothing at all when there is no shuttle: the readout is about the
+                  transport being driven, and an idle transport is already saying so under the monitor. A
+                  preview being WATCHED at another speed is not a shuttle, so that branch shows the speed the
+                  element is actually running at rather than a flat 1x. */}
+              {playback.shuttleRate > 0 ? `\u25b6 ${playback.shuttleRate}\u00d7`
+                : playback.shuttleRate < 0 ? `\u25c0 ${Math.abs(playback.shuttleRate)}\u00d7`
+                  : playback.playing ? `\u25b6 ${speedLabel(playback.speed)}`
+                    : null}
             </span>
             {/* The speed the monitor is WATCHED at, which is not the shuttle and never the export. It is a
                 property set on the element (pitch-corrected) and a multiplier on the fallback clock, so both
@@ -2847,6 +2957,11 @@ export const EditJobApp: React.FC = () => {
               <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the media info inspector" title="Close">&times;</button>
               <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
               <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
+              {/* What the sound IS, which an inspector of an audio file had nothing to say about: the rate,
+                  the sample size and the channels, and then how it is written. A lossy file has no sample
+                  size and says so by leaving it out rather than by claiming zero bits. */}
+              {inspectedAudioFacts && <EditorRow label="AUDIO" value={inspectedAudioFacts} reason="The file's own audio: its sample rate, its sample size, and its channel layout or count." />}
+              {inspectedAudioCodec && <EditorRow label="AUDIO CODEC" value={inspectedAudioCodec} />}
               <EditorRow
                 label="USED"
                 value={inspectedSegment ? `${stamp(inspectedSegment.duration)}${inspectedSegment.trimmed ? ` OF ${stamp(sourceDuration(draft, inspectedSource, undefined, resolveTiming))} FROM ${stamp(inspectedSegment.sourceIn)}` : ''}` : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
@@ -2885,7 +3000,7 @@ export const EditJobApp: React.FC = () => {
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
-          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. J / L SHUTTLE AND SPEED UP ON REPEAT; K+J OR K+L IS SLOW MOTION; A QUICK TAP STEPS ONE FRAME. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
+          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. J / L OR \u2190 / \u2192 SHUTTLE AND SPEED UP ON REPEAT; K+J OR K+L IS SLOW MOTION; A QUICK TAP STEPS ONE FRAME. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
         </section>
 
         <section className="timeline-panel">
@@ -3257,9 +3372,24 @@ export const EditJobApp: React.FC = () => {
           </>}
 
           {tab === 'AUDIO' && <>
+            {/* What the file IS, above what the export will make of it: the two are read together, and the
+                answer comes off the probe this window already made for the source under the playhead. */}
+            <EditorRow
+              label="SOURCE AUDIO"
+              value={tabAudioSource ? (tabAudioFacts ?? 'NO SOUND') : 'PROBING...'}
+              reason={tabAudioSource && tabAudioCodec ? `${sourceName(tabAudioSource)} — ${tabAudioCodec}.` : undefined}
+            />
             <EditorField label="CODEC" reason={audioReason}><select value={draft.preset.audioCodec} disabled={audioDisabled} onChange={(event) => updatePreset({ audioCodec: event.target.value as EncodingPreset['audioCodec'] })}>{AUDIO_CODECS.map((name) => <option key={name} value={name}>{name.toUpperCase()}</option>)}</select></EditorField>
             <EditorField label="BITRATE" reason={audioReason}><input type="text" className="editor-input" value={draft.preset.audioBitrate ?? ''} placeholder="SOURCE \u00b7 E.G. 320K" disabled={audioDisabled || draft.preset.audioCodec === 'copy' || draft.preset.audioCodec === 'pcm'} onChange={(event) => updatePreset({ audioBitrate: event.target.value.trim() || undefined })} /></EditorField>
             <EditorField label="SAMPLE RATE" reason={audioReason}><select value={draft.preset.audioSampleRate ?? 0} disabled={audioDisabled} onChange={(event) => updatePreset({ audioSampleRate: Number(event.target.value) || undefined })}><option value={0}>SOURCE</option><option value={44100}>44.1 KHZ</option><option value={48000}>48 KHZ</option><option value={96000}>96 KHZ</option></select></EditorField>
+            {/* The one audio setting about the SHAPE of the stream rather than its quality, and the only one
+                offered for a job that has sound in it: a job with none has nothing to lay out, and the field
+                would be a choice about a stream that is never written. */}
+            {jobSound && <EditorField label="CHANNELS" hint={draft.preset.audioChannels ? undefined : 'FROM THE SOURCE'} reason="How many channels the export writes. SOURCE keeps the path's own answer \u2014 a stitch follows the widest source it was given \u2014 and MONO or STEREO folds the mix down without a second encode. Two is the most this can ask for, because the drawing's own graph lays the stream it writes out as mono or stereo and the two halves of one split cannot be laid out differently.">
+              <select value={String(clampAudioChannels(draft.preset.audioChannels))} disabled={audioDisabled} onChange={(event) => chooseAudioChannels(event.target.value)}>
+                {AUDIO_CHANNELS.map((option) => <option key={option.value} value={String(option.value)}>{option.name}</option>)}
+              </select>
+            </EditorField>}
             <EditorRow label="TRACKS" value={draft.additionalAudioTracks?.length ? `${draft.additionalAudioTracks.length + 1} (EMBEDDED + ${draft.additionalAudioTracks.length})` : '1 EMBEDDED'} />
             <div className="editor-note">&gt; ADDING AND REORDERING TRACKS ARRIVES WITH THE TRACK EDITOR.</div>
             {/* What a sound-only job is given to show. Every setting below it only exists while the

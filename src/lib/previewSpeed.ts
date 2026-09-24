@@ -10,7 +10,7 @@
  * transport is being driven right now, this says what speed the viewer wants to watch at, and the two
  * multiply. A speed of 0.5x with no shuttle is a half-speed preview; a shuttle of 2x at 1x is the ramp.
  */
-export const PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3] as const
+export const PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4] as const
 
 export type PreviewSpeed = (typeof PREVIEW_SPEEDS)[number]
 
@@ -48,3 +48,35 @@ export const playbackRateFor = (shuttleRate: number, speed: number): number => {
 
 /** The label a speed is shown by: `1×`, `1.5×`, `0.5×`. */
 export const speedLabel = (rate: number): string => `${rate}\u00d7`
+
+/**
+ * The next speed up or down the ladder, for a wheel over the monitor.
+ *
+ * It STOPS at the ends rather than wrapping: a wheel that jumped from the fastest speed back to a quarter of
+ * it would be a control that changes something the reader did not ask for at the moment they asked for
+ * nothing more. The ladder is the same one the selector offers, so the two always agree about what a rung is.
+ */
+export const steppedPreviewSpeed = (current: number, direction: 1 | -1): PreviewSpeed => {
+  const rungs = PREVIEW_SPEEDS as readonly number[]
+  const index = rungs.indexOf(clampPreviewSpeed(current))
+  return PREVIEW_SPEEDS[Math.max(0, Math.min(PREVIEW_SPEEDS.length - 1, index + direction))]
+}
+
+/**
+ * Whether a shuttle fast-forwards with its pitch raised.
+ *
+ * A tape transport run fast raises the pitch, and a shuttle is exactly that — so the pitch follows the SHUTTLE
+ * and not the speed being watched at. A steady speed from the selector stays pitch-corrected, because that is
+ * a viewing preference rather than a fast-forward: the same voice at a different tempo. Flip this one constant
+ * and the two become one rule.
+ */
+export const SHUTTLE_RAISES_PITCH = true
+
+/**
+ * What `preservesPitch` is set to for a given shuttle.
+ *
+ * The element's property is the INVERSE of the phrase — `preservesPitch = false` is the raised pitch — so the
+ * whole rule is stated here once rather than at each of the three places an element is given a rate.
+ */
+export const preservesPitchFor = (shuttleRate: number): boolean =>
+  !(SHUTTLE_RAISES_PITCH && shuttleRate > 1)

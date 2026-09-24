@@ -25,6 +25,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const { execFile } = require('node:child_process')
 const { FFmpegEngine } = require('./.engine.cjs')
+const { probeFile } = require('./.probe.cjs')
 const viz = require('./.visualization.cjs')
 
 const run = (command, args, options = {}) => new Promise((resolve, reject) => {
@@ -42,13 +43,16 @@ const probeValue = async (file, entries) => {
 }
 
 /**
- * The language tag on the file's first AUDIO stream.
+ /** The language tag on the file's first AUDIO stream.
  *
  * Asked of the audio streams by name rather than read off the front of the list: the mp4 muxer writes
  * `und` on the video stream of a file nothing was said about, so the first tag in the file belongs to
  * the picture and says nothing at all about the track under test.
  */
 const audioLanguage = async (file) => String(await run('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream_tags=language', '-of', 'default=noprint_wrappers=1:nokey=1', file])).trim()
+
+/** How many channels the file's AUDIO stream has, which is the one thing an output-layout choice changes. */
+const audioChannels = async (file) => Number(await run('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=channels', '-of', 'default=noprint_wrappers=1:nokey=1', file]))
 
 /** One pixel of the frame at a time, as three numbers: what the picture there actually is. */
 const pixelAt = async (file, time) => {
@@ -238,6 +242,15 @@ const main = async () => {
   const broadband = path.join(root, 'broadband.wav')
   await runFfmpeg(['-f', 'lavfi', '-i', 'anoisesrc=color=pink:sample_rate=48000:duration=5', '-c:a', 'pcm_s16le', broadband])
 
+  // A GENUINELY stereo sound and a lossy one, for the two things the probe's own figures are asked about: a
+  // PCM file carries its sample size and a lossy one has none to carry. Two different tones joined rather than
+  // one tone upmixed, because `-ac 2` duplicates a single signal and two identical channels is the case the
+  // scope's quadrature exists for.
+  const stereo16 = path.join(root, 'stereo16.wav')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=330:sample_rate=48000:duration=5', '-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=48000:duration=5', '-filter_complex', '[0:a][1:a]join=inputs=2:channel_layout=stereo', '-c:a', 'pcm_s16le', stereo16])
+  const lossy = path.join(root, 'lossy.mp3')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=5', '-c:a', 'libmp3lame', '-b:a', '320k', lossy])
+
   // WHAT THE EDITOR IS SHOWN. The monitor's still is built by the same module as the export's picture, and
   // the one thing that can go wrong with it is the MOMENT it is photographed: a drawing that moves has an
   // EMPTY canvas at t=0 — its content arrives as it scrolls or fills — so a still asked for at the start is
@@ -270,6 +283,22 @@ const main = async () => {
       check('and its very first frame is empty, which is the whole reason for the warm-up', (await brightestStill(atStart)) < 40, true)
     }
   }
+
+  // WHAT THE PROBE ANSWERS ABOUT A SOUND. The sample size in particular is asked for in two places, because
+  // ffprobe fills in a different field for a PCM file than for a FLAC, and each is either a figure or an
+  // absence — a lossy file has no sample size at all and the line that shows it leaves that part out rather
+  // than claiming zero bits of one. Four places read these figures, so one arriving as `undefined` would be
+  // missing from all four at once.
+  console.log('\n== what the probe says a sound is ==')
+  const sixteen = (await probeFile(stereo16)).audioStreams[0]
+  check('a 16-bit wav reports its sample rate', sixteen.sampleRate, 48000)
+  check('and its channels', sixteen.channels, 2)
+  check('and its sample size, which the container carries', sixteen.bitDepth, 16)
+  check('and its codec', sixteen.codec, 'pcm_s16le')
+  const compressed = (await probeFile(lossy)).audioStreams[0]
+  check('a lossy file reports its rate too', compressed.sampleRate, 48000)
+  check('and its codec', compressed.codec, 'mp3')
+  check('but no sample size, because it has none to report', compressed.bitDepth, undefined)
 
   const engine = new FFmpegEngine()
   const encode = (task) => new Promise((resolve, reject) => engine.runTask(task, () => {}, resolve, reject))
@@ -701,6 +730,37 @@ const main = async () => {
       drawn: true,
       segmented: true,
     },
+    {
+      // THE OUTPUT'S OWN CHANNEL COUNT, which is a CHOICE rather than a fact about the file: this is the same
+      // stereo sound as the case above, asked to be written as ONE channel. The pair is what makes it a test of
+      // the control rather than of the fixture — with nothing asked for the source's layout stands, which is
+      // what every job saved before this control off the list still gets.
+      name: 'a stereo sound exported as mono',
+      preset: { ...preset, audioChannels: 1 },
+      task: {
+        id: 'chan-mono', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [stereo16],
+        outputDirectory: root, outputFilename: 'chan-mono.mp4', preset,
+      },
+      output: path.join(root, 'chan-mono.mp4'),
+      expectedSeconds: 5,
+      soundOnly: true,
+      channels: 1,
+    },
+    {
+      // And the control for it: the same sound, nothing asked for, so the source's own two channels stand.
+      name: 'the same stereo sound with no channel count asked for',
+      preset: { ...preset },
+      task: {
+        id: 'chan-source', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [stereo16],
+        outputDirectory: root, outputFilename: 'chan-source.mp4', preset,
+      },
+      output: path.join(root, 'chan-source.mp4'),
+      expectedSeconds: 5,
+      soundOnly: true,
+      channels: 2,
+    },
   ]
 
   for (const item of cases) {
@@ -721,6 +781,7 @@ const main = async () => {
       check('a sound file exported as video carries a picture', kinds.includes('video'), true)
       check('and it carries the sound it came from', kinds.includes('audio'), true)
       if (kinds.includes('video')) check('and the picture it was given is black', isBlack(await pixelAt(item.output, 2)), true)
+      if (item.channels) check(`and its sound is written as ${item.channels} channel(s)`, await audioChannels(item.output), item.channels)
       continue
     }
     if (item.noPicture) {

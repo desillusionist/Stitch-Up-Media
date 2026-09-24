@@ -57,13 +57,23 @@ export function probeFile(filePath: string): Promise<MediaProbeInfo> {
 
       const audioStreams = (data.streams || [])
         .filter((s: ffmpeg.FfprobeStream) => s.codec_type === 'audio')
-        .map((s: ffmpeg.FfprobeStream) => ({
-          codec: s.codec_name || 'unknown',
-          channels: s.channels,
-          sampleRate: s.sample_rate ? Number(s.sample_rate) : undefined,
-          bitrate: s.bit_rate ? `${Math.round(Number(s.bit_rate) / 1000)}k` : undefined,
-          language: (s.tags as any)?.language || 'und',
-        }))
+        .map((s: ffmpeg.FfprobeStream) => {
+          // Read as numbers, because ffprobe answers `N/A` and `0` for figures it cannot give: a lossy codec
+          // has no bits per sample at all, and a wav written without a layout says `unknown` rather than
+          // stereo. Each of those is an ABSENCE, and a zero or the word `unknown` shown as a fact would be a
+          // claim about the file. `bits_per_sample` is the container's own figure and the one a PCM file
+          // fills in; `bits_per_raw_sample` is the decoder's, which is what FLAC has.
+          const sampleBits = Number(s.bits_per_raw_sample) || s.bits_per_sample || 0
+          return {
+            codec: s.codec_name || 'unknown',
+            channels: s.channels,
+            sampleRate: s.sample_rate ? Number(s.sample_rate) : undefined,
+            bitrate: s.bit_rate ? `${Math.round(Number(s.bit_rate) / 1000)}k` : undefined,
+            language: (s.tags as any)?.language || 'und',
+            bitDepth: sampleBits > 0 ? sampleBits : undefined,
+            channelLayout: s.channel_layout && s.channel_layout !== 'unknown' ? s.channel_layout : undefined,
+          }
+        })
 
       let dpi: string | undefined
       let colorProfile: string | undefined

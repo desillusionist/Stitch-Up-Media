@@ -134,6 +134,14 @@ const backgroundSelect = () => [...document.querySelectorAll('.editor-field')]
   .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('BACKGROUND'))
   ?.querySelector('select') as HTMLSelectElement | null
 
+/** The AUDIO tab's channel count, which is the one audio setting about the stream's SHAPE. */
+const channelsSelect = () => [...document.querySelectorAll('.editor-field')]
+  .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('CHANNELS'))
+  ?.querySelector('select') as HTMLSelectElement | null
+
+/** The speeds the monitor is watched at, which the wheel over it climbs. */
+const speedSelect = () => document.querySelector('.transport-speed select') as HTMLSelectElement | null
+
 /** Whether the monitor is drawing the still it was handed, found by the name the window gives it. */
 const monitorDrawing = () => Boolean(document.querySelector('img[alt="DRAWING THE SOUND"]'))
 
@@ -196,6 +204,14 @@ const drive = async () => {
     settings: Boolean(document.querySelector('.export-sidebar')),
     laneLabels: document.querySelectorAll('.timeline-lane-head').length,
     clips: document.querySelectorAll('.timeline-clip').length,
+    // WHAT THE TRANSPORT SAYS. Two halves of one question: the state has to be stated somewhere — the readout
+    // under the monitor — and it must NOT be said a second time by a pause glyph among the buttons. The rate
+    // readout is read as its own text so that an idle transport saying NOTHING is what is asserted.
+    transport: {
+      state: document.querySelector('.transport-state')?.textContent ?? null,
+      rate: document.querySelector('.transport-rate')?.textContent ?? null,
+      speeds: [...(speedSelect()?.options ?? [])].map((option) => option.value),
+    },
   }
 
   // The lone-sound job. The container the window is on is read BEFORE switching tabs, because the tab
@@ -218,7 +234,10 @@ const drive = async () => {
       visuals: audioTask.sourcePaths.map(mediaKind),
     },
     audioFields: labelsOf('.editor-field'),
+    // The ROWS, which are a different shape: the source's own facts are one, and TRACKS is the other.
+    audioRows: labelsOf('.editor-row'),
     audioToggles: labelsOf('.editor-toggle'),
+    channels: channelsSelect() ? { value: channelsSelect()?.value, options: [...(channelsSelect()?.options ?? [])].map((option) => option.value) } : null,
     pictureSource,
     background: background ? [...background.options].map((option) => option.value) : null,
     drawnFields: soundSelect ? labelsOf('.editor-field') : null,
@@ -281,6 +300,14 @@ const drive = async () => {
     mirrorToggles: templates ? labelsOf('.editor-toggle') : null,
     mirrorStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
   }
+  // The output channel count, chosen the way a user chooses it, so the patch proves the control reaches the
+  // encoder rather than merely rendering. A stereo source asked for MONO is the case the encoder harness
+  // reads off the finished file; this is the half a window can be wrong about on its own.
+  const channels = channelsSelect()
+  if (channels) choose(channels, '1')
+  await wait(120)
+  result.audio = { ...(result.audio as object), channelsAfterChoosing: channelsSelect()?.value ?? null }
+
   // What the choice becomes: the patch the window hands the queue, which is where the drawing has to
   // arrive for the encoder to be asked for it at all. `check-tail` proves the encoder then draws; this is
   // the half a window can be wrong about on its own.
@@ -288,8 +315,8 @@ const drive = async () => {
   const apply = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
   ;(apply as HTMLButtonElement | undefined)?.click()
   await wait(150)
-  const patch = applied[applied.length - 1] as { preset?: { audioPicture?: string } } | undefined
-  result.audio = { ...(result.audio as object), appliedPicture: patch?.preset?.audioPicture ?? null }
+  const patch = applied[applied.length - 1] as { preset?: { audioPicture?: string; audioChannels?: number } } | undefined
+  result.audio = { ...(result.audio as object), appliedPicture: patch?.preset?.audioPicture ?? null, appliedChannels: patch?.preset?.audioChannels ?? null }
 
   // The JOINED job. The tab is already on AUDIO, so its picture settings are what is on screen once the
   // new draft has arrived.

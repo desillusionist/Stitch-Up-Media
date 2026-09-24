@@ -11,6 +11,7 @@ import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingSoundIsMono, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
+import { channelLayoutFor, outputChannels } from '../../src/lib/audioFacts'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -240,7 +241,7 @@ export class FFmpegEngine {
     // EVERY audio stream of the input, which is fine for a lone sound file and wrong the moment one is
     // not, while `[0:a:0]` is the one stream this path means. The drawing is laid out to the same rate
     // and channel count every other path writes, because the two halves of one split cannot differ.
-    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, 2, expectedSeconds, drawingSoundIsMono(sourceChannels))
+    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, this.exportChannels(task.preset, 2), expectedSeconds, drawingSoundIsMono(sourceChannels))
     else if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
@@ -395,10 +396,13 @@ export class FFmpegEngine {
     // A drawing's own graph resamples and lays the audio out, so the chain is not written twice: the
     // graph's half of the split and this one would fight over the same output stream.
     if (!stitchDraws && task.preset.container !== 'gif' && task.preset.imageOutputMode !== 'sequence' && carriesMainAudio) {
+      // A stitch's own answer is the WIDEST source it was given, so a job that names no channel count keeps
+      // that rather than being folded to stereo by a figure nobody asked for.
+      const channels = this.exportChannels(task.preset, targetChannels)
       cmd.outputOptions([
         `-ar ${targetSampleRate}`,
-        `-ac ${targetChannels}`,
-        `-af aresample=${targetSampleRate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${targetChannels === 1 ? 'mono' : 'stereo'}`,
+        `-ac ${channels}`,
+        `-af aresample=${targetSampleRate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${channelLayoutFor(channels)}`,
         ...(targetBitrate > 0 ? [`-b:a ${Math.max(128000, targetBitrate)}`] : []),
       ])
     }
@@ -409,7 +413,7 @@ export class FFmpegEngine {
     if (stitchPictured) {
       // Every normalized source is written as stereo before it is joined, so the concatenated stream the
       // drawing is made from is a stereo one whatever the files were — the scope is drawn straight.
-      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, targetChannels, clipDurations.reduce((total, clip) => total + clip, 0), false)
+      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, this.exportChannels(task.preset, targetChannels), clipDurations.reduce((total, clip) => total + clip, 0), false)
       else this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
     }
 
@@ -629,7 +633,7 @@ export class FFmpegEngine {
       // The audible tracks are what the drawing is made from, so the scope is opened into quadrature only
       // when every one of them is a single channel — the same question asked of the export's own mix.
       const mono = drawingSoundIsMono(extraAudioChannels)
-      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, 2, expectedSeconds, mono)
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, this.exportChannels(task.preset, 2), expectedSeconds, mono)
     }
     const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
@@ -686,7 +690,8 @@ export class FFmpegEngine {
     }
     if (task.preset.audioCodec === 'copy') cmd.audioCodec('aac')
     // The drawing's own graph resamples and lays the audio out, so the chain is not written twice.
-    if (!pictured) cmd.outputOptions(['-ar 48000', '-ac 2', '-af aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo'])
+    const channels = this.exportChannels(task.preset, 2)
+    if (!pictured) cmd.outputOptions([`-ar 48000`, `-ac ${channels}`, `-af aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=${channelLayoutFor(channels)}`])
     cmd.outputOptions(outputOptions)
 
     cmd
@@ -782,6 +787,18 @@ export class FFmpegEngine {
 
   private pictureRateFor(preset: EncodingPreset): number {
     return preset.fps && preset.fps > 0 ? preset.fps : 30
+  }
+
+  /**
+   * How many channels a path writes: the job's own answer where it has one, and the path's own otherwise.
+   *
+   * Every path that owns the output layout has a fallback of its own — a stitch follows the widest source it
+   * was given, the others write stereo — and a preset that says nothing keeps that fallback rather than
+   * overriding it with a figure the user never chose. This is also the figure the drawing's own graph is laid
+   * out to, because the two halves of one split cannot be laid out differently.
+   */
+  private exportChannels(preset: EncodingPreset, fallback: number): number {
+    return outputChannels(preset) ?? fallback
   }
 
   /**
@@ -922,6 +939,9 @@ export class FFmpegEngine {
     if (preset.imageOutputMode === 'sequence') cmd.outputOptions(['-vsync 0', '-an'])
     else if (preset.audioEnabled === false) cmd.outputOptions(['-an'])
     if (preset.audioSampleRate) cmd.audioFrequency(preset.audioSampleRate)
+    // How many channels the export writes, where the job has been asked. Absent means the path's own answer,
+    // which is what keeps a job saved before this control off the list encoding exactly as it did.
+    if (preset.audioChannels) cmd.audioChannels(preset.audioChannels)
     // `-vf` is emitted once, from one chain. Setting it twice leaves only the last one
     // standing, which used to drop a named resolution the moment a caller added a
     // filter of its own.

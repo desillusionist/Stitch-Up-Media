@@ -56,6 +56,17 @@ app.whenReady().then(async () => {
     if (!rendered || !rendered.monitor) problems.push('the monitor was not drawn')
     if (!rendered || !rendered.settings) problems.push('the export settings were not drawn')
     if (!rendered || rendered.clips < 1) problems.push('the timeline drew no clip for its one source')
+    // WHAT THE TRANSPORT SAYS, and where it says it. The state belongs under the monitor on one line, and the
+    // buttons must not state it a second time: an idle transport leaves the rate readout EMPTY, which is what
+    // the pause glyph that used to sit there prevented. The speeds are read as well, because the wheel over the
+    // monitor climbs this very list and the two have to be one list rather than two that agree today.
+    const transport = rendered && rendered.transport
+    if (!transport) problems.push('the monitor said nothing about what the transport was doing')
+    else {
+      if (transport.state !== '\u25a0 PAUSED') problems.push(`an idle monitor reads ${JSON.stringify(transport.state)} rather than a pause`)
+      if (String(transport.rate).trim() !== '') problems.push(`an idle transport still shows a rate of ${JSON.stringify(transport.rate)}, which is the pause glyph over again`)
+      if (String(transport.speeds) !== '0.5,1,1.5,2,3,4') problems.push(`the speed selector offers ${JSON.stringify(transport.speeds)} rather than the ladder the wheel climbs`)
+    }
     // The picture settings, which are the one part of the settings that is CONDITIONAL. A section that
     // is gated has two ways to be missing and they need different answers, so what is asserted here is
     // both sides of the gate: the inputs the window derived, and what the tab drew with them. If the
@@ -133,6 +144,19 @@ app.whenReady().then(async () => {
           if (!audio.eqFields.some((label) => label.startsWith(expected))) problems.push(`choosing the EQ drew no ${expected} control`)
         }
       }
+      // WHAT THE SOUND IS, on the tab that is about the sound, and how many channels it is written as. The
+      // facts are a ROW rather than a field — they describe the file rather than offer a choice — and the
+      // channel count is a field, offered because this job has sound in it. A job with none is offered none.
+      if (!audio.audioRows || !audio.audioRows.some((label) => label.startsWith('SOURCE AUDIO'))) problems.push('the AUDIO tab said nothing about what the source\u2019s own audio is')
+      if (!audio.channels) problems.push('the AUDIO tab offered no channel count for a job that has sound in it')
+      else {
+        if (String(audio.channels.options) !== '0,1,2') problems.push(`the channel count offers ${JSON.stringify(audio.channels.options)} rather than SOURCE, MONO and STEREO`)
+        if (audio.channels.value !== '0') problems.push(`a job that says nothing starts on channel count ${audio.channels.value} rather than the source\u2019s own`)
+      }
+      // And the choice reaches the encoder: SOURCE stores nothing at all rather than a figure, and a figure
+      // chosen is the figure sent.
+      if (audio.channelsAfterChoosing !== '1') problems.push(`choosing MONO left the field on ${String(audio.channelsAfterChoosing)}`)
+      if (audio.appliedChannels !== 1) problems.push(`choosing MONO sent ${String(audio.appliedChannels)} rather than one channel`)
       // The segments, which are the bars' own and are one level further along than a field: the LED-panel look.
       if (!audio.eqSegments || !audio.eqSegments.includes('SEGMENTED')) problems.push('the bars were offered no segment control')
       // The SCOPE's own three, and its own canvas. It is the one drawing that is a different shape inside the
