@@ -73,7 +73,7 @@ export interface EncodingPreset {
    * editor can show a still of exactly what will be written; the last three draw an instant at a time. See
    * `VISUALIZATIONS` for the table the editor and the encoder both read.
    */
-  visualization?: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll'
+  visualization?: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope'
   /** The colour the drawing is made in, as ffmpeg takes it. Absent means the app's green. */
   visualizationColor?: string
   /**
@@ -91,6 +91,31 @@ export interface EncodingPreset {
   eqFrequency?: 'lin' | 'log' | 'rlog'
   /** The EQ's minimum amplitude — how quiet a frequency may be and still be drawn. Absent means ffmpeg's own. */
   eqSensitivity?: number
+  /**
+   * The palette a drawing is made in. Absent means the app's own green.
+   *
+   * It sets the COLOUR (unless the job names one of its own) and, for the two spectra — which colour
+   * themselves by intensity rather than by a hex — which monochrome ramp they are drawn with.
+   */
+  drawingTheme?: 'green' | 'amber'
+  /** The EQ and the mirrored bars: dividers across the bars, so each becomes a stack of blocks. */
+  eqSegmented?: boolean
+  /** The waveform templates' amplitude scale. Absent means linear. */
+  waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
+  /** The waveform templates' weight: a thin line, or the full filled drawing. Absent means the fill. */
+  waveWeight?: 'line' | 'fill'
+  /** The waveform templates: each channel drawn in its own half of the frame. */
+  waveMirror?: boolean
+  /** The spectra's amplitude scale. Absent means logarithmic. */
+  spectrumScale?: 'lin' | 'sqrt' | 'cbrt' | 'log' | '4thrt' | '5thrt'
+  /** The spectra's colour saturation. Absent means ffmpeg's own. */
+  spectrumSaturation?: number
+  /** The scope's persistence, 0 to 1: how long its trace lasts. Absent means a long trail. */
+  scopePersist?: number
+  /** The scope's zoom, 1 being unframed. Absent means 1. */
+  scopeZoom?: number
+  /** The scope's draw mode. Absent means a continuous trace. */
+  scopeDraw?: 'dot' | 'line'
   /** What the drawing sits on. Absent means black. */
   visualizationBackgroundColor?: string
   /**

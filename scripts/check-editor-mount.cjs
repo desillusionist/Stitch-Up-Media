@@ -77,9 +77,30 @@ app.whenReady().then(async () => {
       // fault this is here to catch, and it is the SAME fault one level down.
       if (!audio.drawnFields) problems.push('choosing the drawing changed nothing at all')
       else {
-        for (const expected of ['TEMPLATE', 'COLOUR', 'BACKGROUND']) {
+        for (const expected of ['TEMPLATE', 'THEME', 'COLOUR', 'BACKGROUND']) {
           if (!audio.drawnFields.some((label) => label.startsWith(expected))) problems.push(`choosing the drawing drew no ${expected} control`)
         }
+      }
+      // The palette, which every template reads and which is offered whatever the template is — a colour the
+      // job names for itself wins over it, but a job that names none takes its own colour FROM it, so a
+      // template without a colour field still has a palette behind it.
+      if (!audio.themeOptions) problems.push('the drawing has no palette at all')
+      else if (String(audio.themeOptions) !== 'green,amber') problems.push(`the palette offers ${JSON.stringify(audio.themeOptions)} rather than the app's two phosphors`)
+      // The waveform's own knobs, which only the two waveforms take.
+      if (!audio.drawnToggles) problems.push('the drawing drew no toggles at all')
+      else {
+        if (!audio.drawnToggles.includes('MIRROR CHANNELS')) problems.push('the waveform was offered no channel mirror')
+        if (!audio.drawnToggles.includes('PROGRESS LINE')) problems.push('the waveform picture was offered no progress line')
+        if (audio.drawnToggles.includes('SEGMENTED')) problems.push('the waveform was offered the bars\u2019 own segment control')
+      }
+      // And the tune actually reaches the encoder. The request carries the RESOLVED palette and knobs, so this
+      // is what the export will be drawn with, defaults included — a knob the editor draws and never sends is
+      // the same fault as a knob it holds and never draws, one level further along.
+      const tuneAsk = audio.drawingStill
+      if (tuneAsk) {
+        if (tuneAsk.theme !== 'green') problems.push(`the still was asked for theme ${String(tuneAsk.theme)} rather than the app's green`)
+        if (tuneAsk.waveScale !== 'lin' || tuneAsk.waveWeight !== 'fill' || tuneAsk.waveMirror !== false) problems.push(`the still was asked for a waveform of ${String(tuneAsk.waveScale)}/${String(tuneAsk.waveWeight)}/mirror ${String(tuneAsk.waveMirror)}`)
+        if (tuneAsk.segmented !== false) problems.push(`the still was asked for segments it did not ask for: ${String(tuneAsk.segmented)}`)
       }
       if (audio.audioToggles.some((label) => label === 'COVER ART')) problems.push('cover art was offered for a container that holds a picture, not artwork')
       // What the drawing sits on, which is the choice this pass extended. A job with no still in it must not
@@ -112,6 +133,36 @@ app.whenReady().then(async () => {
           if (!audio.eqFields.some((label) => label.startsWith(expected))) problems.push(`choosing the EQ drew no ${expected} control`)
         }
       }
+      // The segments, which are the bars' own and are one level further along than a field: the LED-panel look.
+      if (!audio.eqSegments || !audio.eqSegments.includes('SEGMENTED')) problems.push('the bars were offered no segment control')
+      // The SCOPE's own three, and its own canvas. It is the one drawing that is a different shape inside the
+      // frame, so it is the one most likely to be drawn by a path of its own — and the pole it must not miss is
+      // that a sound of one channel is opened into a ring rather than drawn as a spoke, which is a branch the
+      // encoder takes from a probe rather than a control at all.
+      if (!audio.scopeFields) problems.push('the scope template could not be chosen at all')
+      else {
+        for (const expected of ['TEMPLATE', 'THEME', 'TRACE', 'DRAW']) {
+          if (!audio.scopeFields.some((label) => label.startsWith(expected))) problems.push(`choosing the scope drew no ${expected} control`)
+        }
+        if (audio.scopeFields.some((label) => label.startsWith('MIRROR CHANNELS'))) problems.push('the scope was offered the waveform\u2019s own mirror')
+      }
+      const scopeAsk = audio.scopeStill
+      if (!scopeAsk) problems.push('the monitor asked for no still once the scope was chosen')
+      else {
+        if (scopeAsk.template !== 'scope') problems.push(`the still asked for once the scope was chosen was of ${String(scopeAsk.template)}`)
+        if (scopeAsk.scopeDraw !== 'line' || scopeAsk.scopeZoom !== 1 || scopeAsk.scopePersist !== 0.88) problems.push(`the scope's still was asked for ${String(scopeAsk.scopeDraw)}/${String(scopeAsk.scopeZoom)}/persistence ${String(scopeAsk.scopePersist)} rather than the defaults`)
+      }
+      // MIRRORED BARS shares the EQ's whole set: if the pair ever came apart, the knobs would be missing from
+      // one of them and this is where it would show.
+      if (!audio.mirrorFields) problems.push('the mirrored bars could not be chosen at all')
+      else {
+        for (const expected of ['BAR COUNT', 'AMPLITUDE', 'FREQUENCY', 'SENSITIVITY']) {
+          if (!audio.mirrorFields.some((label) => label.startsWith(expected))) problems.push(`choosing the mirrored bars drew no ${expected} control, which the two bar drawings share`)
+        }
+        if (!audio.mirrorToggles || !audio.mirrorToggles.includes('SEGMENTED')) problems.push('the mirrored bars were offered no segment control, which the bars share')
+      }
+      const mirrorAsk = audio.mirrorStill
+      if (!mirrorAsk || mirrorAsk.template !== 'mirrored-bars') problems.push('the monitor asked for no still of the mirrored bars')
       const eqAsk = audio.eqStill
       if (!eqAsk) problems.push('the monitor asked for no still once the EQ was chosen')
       else {

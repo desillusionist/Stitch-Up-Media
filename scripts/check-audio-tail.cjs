@@ -25,6 +25,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const { execFile } = require('node:child_process')
 const { FFmpegEngine } = require('./.engine.cjs')
+const viz = require('./.visualization.cjs')
 
 const run = (command, args, options = {}) => new Promise((resolve, reject) => {
   execFile(command, args, { maxBuffer: 64 * 1024 * 1024, ...options }, (error, stdout, stderr) => {
@@ -136,6 +137,61 @@ const frameAverages = async (file, time) => {
   return { y: Number(text.match(/YAVG=([\d.]+)/)?.[1] ?? 0), u: Number(text.match(/UAVG=([\d.]+)/)?.[1] ?? 0), v: Number(text.match(/VAVG=([\d.]+)/)?.[1] ?? 0) }
 }
 
+/**
+ * The brightest luma in a still.
+ *
+ * A still is ONE frame and there is nothing to seek to, and an input seek over one finds it less reliably
+ * than not seeking at all — measured: `-ss 0` before the input of a single-frame JPEG finds no frame and the
+ * probe reads black, which is how a still that was perfectly drawn went on being reported as blank.
+ */
+const brightestStill = async (file) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', file, '-frames:v', '1', '-vf', 'signalstats,metadata=print:file=-', '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
+}
+
+/**
+ * How far a frame is from being its own mirror about the horizontal centre line.
+ *
+ * The MIRRORED BARS drawing is `vstack(vflip(bars), bars)`, which is exactly symmetric, so blended against its
+ * own vflip it reads nearly nothing — while the plain bars, which grow from one edge of the frame, read high.
+ * The pair is what makes this a test of the MIRROR rather than of a drawing that happens to be even: measured
+ * on broadband noise, the mirrored frame reads 56 and the plain one 228.
+ */
+const mirrorDelta = async (file, time) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-filter_complex', '[0:v]split[a][b];[b]vflip[c];[a][c]blend=all_mode=difference,signalstats,metadata=print:file=-', '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
+}
+
+/** How bright a narrow band of ROWS is, at a y in PIXELS — the horizontal counterpart of `stripLuma`, which
+ *  is how a divider drawn across the bars is read: the row a line is on is dark, the row between two is not.
+ *
+ * The format is set first because a row one pixel tall cannot be cropped out of a chroma-subsampled frame:
+ * measured, `crop=iw:1` on a yuv420p input is refused outright — the chroma plane has no half-row to give it
+ * and the filter reports a height of zero — while the same crop on the same frame as rgb24 is fine. */
+const rowStripLuma = async (file, time, y, height = 1) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `format=rgb24,crop=iw:${height}:0:${y},signalstats,metadata=print:file=-`, '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
+}
+
+/**
+ * How many of a frame's column bands carry any ink at all — the width of what is drawn.
+ *
+ * This is how the polar scope is asked whether a MONO sound was opened into a ring: a scope plots one channel
+ * against the other, so two identical channels draw a flat spoke and a quadrature pair draws a ring, and the
+ * only difference visible from outside is how far across the frame the drawing reaches. Measured on a mono
+ * source: one band of twenty with the quadrature off, eight with it on, and eleven for a genuinely stereo one.
+ *
+ * Twenty narrow probes rather than one averaged row, because the trace is a couple of pixels wide and any
+ * averaging that would fit in one pass dilutes it to nothing — which is exactly the reading that made the
+ * spoke look like an empty frame in the first place.
+ */
+const inkedBands = async (file, time, bands = 20) => {
+  const width = 1 / bands
+  const probes = await Promise.all(Array.from({ length: bands }, (_, index) =>
+    columnLuma(file, time, (index * width).toFixed(4)).catch(() => 0)))
+  return probes.filter((luma) => luma > 60).length
+}
+
 const failures = []
 const check = (label, actual, expected) => {
   const ok = typeof expected === 'number' ? Math.abs(actual - expected) <= 0.25 : actual === expected
@@ -181,6 +237,39 @@ const main = async () => {
   // black, which would make "the bar under this column is drawn" a question about the fixture's frequency.
   const broadband = path.join(root, 'broadband.wav')
   await runFfmpeg(['-f', 'lavfi', '-i', 'anoisesrc=color=pink:sample_rate=48000:duration=5', '-c:a', 'pcm_s16le', broadband])
+
+  // WHAT THE EDITOR IS SHOWN. The monitor's still is built by the same module as the export's picture, and
+  // the one thing that can go wrong with it is the MOMENT it is photographed: a drawing that moves has an
+  // EMPTY canvas at t=0 — its content arrives as it scrolls or fills — so a still asked for at the start is
+  // black. That was reported twice as the monitor being broken when it was the SAMPLE that was wrong, so a
+  // blank frame fails here rather than shipping again.
+  console.log('\n== what the editor is shown of each drawing ==')
+  // The warm-up is an OUTPUT seek, exactly as `main.ts` writes it. An INPUT seek shifts the audio while the
+  // drawing's own frames keep their position, so the overlay's first frame has nothing to composite and the
+  // still comes out black — which is the same symptom from a different cause.
+  const stillGraph = (template, seconds) => viz.visualizationStillGraph({
+    template, width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', tune: viz.drawingTuneOf({}),
+  }).replace('$SECONDS', String(seconds))
+  for (const template of viz.VISUALIZATIONS.map((entry) => entry.id)) {
+    const canvas = viz.drawingCanvas(1920, 1080, viz.templateMaxEdge(template))
+    const warmup = viz.stillWarmupSeconds(template, 5, canvas.width, 30)
+    const shot = path.join(root, `still-${template}.jpg`)
+    try {
+      await runFfmpeg(['-i', broadband, '-filter_complex', stillGraph(template, warmup), '-map', '[out]', '-ss', warmup.toFixed(3), '-frames:v', '1', '-q:v', '3', shot])
+    } catch (error) {
+      check(`a still of the ${template} drawing is drawn at all (${String(error.message).split('\n')[0]})`, false, true)
+      continue
+    }
+    const lit = await brightestStill(shot)
+    check(`a still of the ${template} drawing is inked (warm-up ${warmup}s, brightest ${lit})`, lit > 60, true)
+    // And the guard itself: the scrolling waveform's first frame really is empty, which is why the warm-up
+    // exists — so the case above is a measurement and not a coincidence.
+    if (template === 'waveform-scroll') {
+      const atStart = path.join(root, 'still-waveform-scroll-0.jpg')
+      await runFfmpeg(['-i', broadband, '-filter_complex', stillGraph(template, 0), '-map', '[out]', '-ss', '0', '-frames:v', '1', '-q:v', '3', atStart])
+      check('and its very first frame is empty, which is the whole reason for the warm-up', (await brightestStill(atStart)) < 40, true)
+    }
+  }
 
   const engine = new FFmpegEngine()
   const encode = (task) => new Promise((resolve, reject) => engine.runTask(task, () => {}, resolve, reject))
@@ -546,6 +635,72 @@ const main = async () => {
       expectedSeconds: 5,
       noPicture: true,
     },
+    {
+      // MIRRORED BARS. The drawing is two half-drawings stacked about the centre line, one the flip of the
+      // other, so the frame is its own mirror — and that is a measurement rather than a claim: blended against
+      // its own vflip the frame reads nearly nothing, while the plain bars beside it read high. The pair is
+      // what makes this a test of the MIRROR and not of a drawing that happens to be even.
+      name: 'a sound file drawn as mirrored bars',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'mirrored-bars', fps: 30 },
+      task: {
+        id: 'viz-mirror', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [broadband],
+        outputDirectory: root, outputFilename: 'viz-mirror.mp4', preset,
+      },
+      output: path.join(root, 'viz-mirror.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      mirrored: true,
+    },
+    {
+      // The control for the case above: the SAME sound, the same bars, without the mirror — so what the pair
+      // proves is the mirror and not the drawing being dark.
+      name: 'the same sound drawn as plain bars rather than mirrored',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'eq', fps: 30 },
+      task: {
+        id: 'viz-plain-bars', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [broadband],
+        outputDirectory: root, outputFilename: 'viz-plain-bars.mp4', preset,
+      },
+      output: path.join(root, 'viz-plain-bars.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      plainBars: true,
+    },
+    {
+      // RADIAL SCOPE on a MONO sound, which is the case the quadrature branch exists for. A scope plots one
+      // channel against the other, and this fixture is a single channel the encoder duplicates — two IDENTICAL
+      // channels, which draw a flat spoke rather than a ring, and a reader reported exactly that. Measured
+      // with the branch on, eight column bands of twenty are inked; with it off, one.
+      name: 'a mono sound drawn as a radial scope',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'scope', fps: 30 },
+      task: {
+        id: 'viz-scope', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [broadband],
+        outputDirectory: root, outputFilename: 'viz-scope.mp4', preset,
+      },
+      output: path.join(root, 'viz-scope.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      scopeRing: true,
+    },
+    {
+      // The EQ with SEGMENTED on, which is the LED-panel look: dividers across every bar, so each is a stack of
+      // blocks. What is asserted is that the drawing still reaches the frame and that the last block is not cut
+      // off — a grid aligned from an edge rather than to a height the frame divides into leaves the top block
+      // half-drawn, which reads as a bright line along the top.
+      name: 'a sound file drawn as segmented bars',
+      preset: { ...preset, audioPicture: 'visualization', visualization: 'eq', fps: 30, eqSegmented: true },
+      task: {
+        id: 'viz-segments', type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [broadband],
+        outputDirectory: root, outputFilename: 'viz-segments.mp4', preset,
+      },
+      output: path.join(root, 'viz-segments.mp4'),
+      expectedSeconds: 5,
+      drawn: true,
+      segmented: true,
+    },
   ]
 
   for (const item of cases) {
@@ -615,6 +770,33 @@ const main = async () => {
       if (item.eqSolid) {
         const inBar = await stripLuma(item.output, 1, item.eqSolid.bar)
         check(`with no gap the column the gap would blank is drawn (${inBar})`, inBar > 60, true)
+      }
+      if (item.mirrored) {
+        // The drawing is its own mirror about the centre line, and its own reflection is what it is compared
+        // to — so this says the mirror is exact rather than that the two halves are merely alike.
+        const delta = await mirrorDelta(item.output, 2)
+        check(`the frame is its own mirror about the centre line (vflip difference ${delta})`, delta < 100, true)
+      }
+      if (item.plainBars) {
+        // And the same bars drawn the plain way are NOT symmetric, which is what makes the case above a
+        // measurement: the only difference between the two jobs is the mirror.
+        const delta = await mirrorDelta(item.output, 2)
+        check(`and the same bars unmirrored are not symmetric (vflip difference ${delta})`, delta > 150, true)
+      }
+      if (item.scopeRing) {
+        // A spoke reaches one column band of twenty and a ring reaches several. Measured on this fixture: one
+        // with the quadrature off, eight with it on — so four is the floor and the figure is printed beside it.
+        const bands = await inkedBands(item.output, 2)
+        check(`a mono sound is opened into a ring rather than drawn as a spoke (${bands} of 20 bands inked)`, bands >= 4, true)
+      }
+      if (item.segmented) {
+        // The dividers fall on a height the frame divides exactly into, so they sit at multiples of eight — and
+        // they are read near the BASELINE, where the bars certainly are: the bars grow up from the bottom and
+        // the top of the frame is above the tallest of them, so a row near the top is empty either way. Row
+        // 896 is a divider and row 900 is the middle of the block below it, four rows apart and the same bar.
+        const atDivider = await rowStripLuma(item.output, 2, 896)
+        const inBlock = await rowStripLuma(item.output, 2, 900)
+        check(`a segmented drawing has a dark divider across the bars (${atDivider}) with a drawn block between them (${inBlock})`, atDivider < 40 && inBlock > 60, true)
       }
       if (item.sweepsAgainst) {
         // The line's column at one time, and the column it will have left by the other. Both are in the BLACK

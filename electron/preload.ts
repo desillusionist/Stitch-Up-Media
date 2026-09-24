@@ -13,7 +13,7 @@ export interface IElectronAPI {
    */
   visualizationStill: (options: {
     sources: string[]
-    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll'
+    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope'
     color?: string
     background?: 'colour' | 'still' | 'image'
     backgroundColor?: string
@@ -23,12 +23,23 @@ export interface IElectronAPI {
     fps?: number
     /** Whether the design carries the sweeping progress line, pinned at the left in a still. */
     progressLine?: boolean
-    /** The EQ drawing's own knobs — read only when the template is EQ. */
+    /** The EQ drawing's own knobs — read only when the template is one of the two bar drawings. */
     bars?: number
     gap?: number
     amplitude?: 'lin' | 'sqrt' | 'cbrt' | 'log'
     frequency?: 'lin' | 'log' | 'rlog'
     sensitivity?: number
+    /** The palette, and the knobs each template reads — see `drawingTuneOf`. */
+    theme?: 'green' | 'amber'
+    segmented?: boolean
+    waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
+    waveWeight?: 'line' | 'fill'
+    waveMirror?: boolean
+    spectrumScale?: 'lin' | 'sqrt' | 'cbrt' | 'log' | '4thrt' | '5thrt'
+    spectrumSaturation?: number
+    scopePersist?: number
+    scopeZoom?: number
+    scopeDraw?: 'dot' | 'line'
   }) => Promise<string | null>
   expandMediaPaths: (paths: string[]) => Promise<string[]>
   createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>

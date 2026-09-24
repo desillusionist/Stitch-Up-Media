@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DEFAULT_EQ_STYLE, EQ_DEFAULT_BARS, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, clampEqBars, clampEqGap, clampEqSensitivity, drawingCanvas, drawingPictureFor, eqStyleOf, progressLineWidth, stillWarmupSeconds, templateFor, templateMaxEdge, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
+import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, drawingCanvas, drawingColorOf, drawingPictureFor, drawingSoundIsMono, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor } from '../src/lib/previewSpeed'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
@@ -1272,7 +1272,11 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   const lone = visualizationGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
   check('a lone sound is split into the drawing and the export', lone.includes('[0:a]asplit=2[mixA][mixV]'), true)
   check('and the export\u2019s audio comes from the mix', lone.includes('[mixA]aresample=48000'), true)
-  check('the drawing is made at the capped canvas', lone.includes('showwavespic=s=1280x720:colors=#9fbf9a'), true)
+  check('the drawing is made at the capped canvas', lone.includes('showwavespic=s=1280x720:scale=lin:draw=full:split_channels=0:colors=#9fbf9a'), true)
+  // The waveform's own three knobs are on the filter, and the FILLED draw is the default: measured, the
+  // lighter `scale` draw covers about a fifth of what `full` does at a 1080-row frame, which is why the
+  // editor's monitor read as blank when the lighter one was used.
+  check('and drawn with the weight it was given', drawingTuneOf({}).waveWeight, 'fill')
   // The one difference between the editor's still and the export's picture: a PICTURE is one frame, so it is
   // held for the sound's length. Without the loop the export would be ONE frame of video, whatever the sound.
   check('and held for the whole of the sound it is drawn from', lone.includes(',loop=loop=-1:size=1,scale=1920:1080'), true)
@@ -1316,7 +1320,7 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   // Its own two quirks: `showspectrum` has no rate option, so the rate is imposed after it, and its
   // colouring is ffmpeg's own ramp, so the hex this app offers is not passed to it.
   const spectrum = visualizationGraph({ template: 'spectrum', width: 1920, height: 1080, fps: 24, color: '#ff0000', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
-  check('the spectrum is drawn as a picture of the whole sound', spectrum.includes('showspectrumpic=s=1280x720:mode=combined:color=intensity:scale=log:legend=0'), true)
+  check('the spectrum is drawn as a picture of the whole sound', spectrum.includes('showspectrumpic=s=1280x720:mode=combined:color=green:saturation=1:scale=log:legend=0'), true)
   check('and it is not handed a colour it cannot use', spectrum.includes('colors=#ff0000'), false)
   // Its legend band occupies the right-hand edge, so with the default the picture does not reach its own
   // frame: measured, the right-hand column reads black with `legend=1` and 196 with `legend=0`.
@@ -1330,12 +1334,13 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   check('the scrolling spectrum is told to slide, which is what fills its frame', scrolled.includes('slide=scroll'), true)
   // And the scrolling WAVEFORM is drawn on a smaller canvas than everything else, which is measured too: at
   // exactly 1280 wide with this app's own green, `showwaves` in `cline` mode draws a PURPLE line. It is drawn
-  // as a SOLID FILL rather than a stroke — `cline` is a centred line per sample, which draws the envelope's
-  // outline and leaves the middle hollow, and it is `line` that fills a column to the peak. That is also
-  // what the still waveform's `showwavespic` draws, so the two agree.
+  // as a FILL — `cline` is a centred line per sample, and with `draw=full` it inks the whole envelope, which is
+  // what the still waveform's `showwavespic` draws, so the two agree. It was briefly `mode=line`, and the
+  // measurement is why it is not: `line` covers about a FIFTH of what `cline` does at a 1080-row frame, so the
+  // monitor showed a strip of sparse dashes.
   const scrollingWave = visualizationGraph({ template: 'waveform-scroll', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 })
-  check('the scrolling waveform draws on its own, smaller canvas', scrollingWave.includes('showwaves=s=960x540:mode=line:rate=30:colors=#9fbf9a'), true)
-  check('and it is a solid fill rather than the stroke `cline` draws', scrollingWave.includes('mode=cline'), false)
+  check('the scrolling waveform draws on its own, smaller canvas', scrollingWave.includes('showwaves=s=960x540:mode=cline:scale=lin:draw=full:split_channels=0:rate=30:colors=#9fbf9a'), true)
+  check('and it is the filled drawing, not the lighter stroke', scrollingWave.includes('draw=full'), true)
   check('and a moving drawing is NOT held, because it moves', scrollingWave.includes('loop='), false)
 
   // A stitch draws the CONCATENATED stream it writes, named down to its index: `[0:a]` would stand
@@ -1360,9 +1365,9 @@ console.log('\n== what a drawing sits on ==')
 
   // The still the editor looks at, built by the same module as the export so the two cannot drift.
   const wave = visualizationStillGraph({ template: 'waveform', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000' })
-  check('a waveform still is the whole file in one picture', wave.includes('showwavespic=s=1280x720:colors=#9fbf9a'), true)
+  check('a waveform still is the whole file in one picture', wave.includes('showwavespic=s=1280x720:scale=lin:draw=full:split_channels=0:colors=#9fbf9a'), true)
   check('laid on the colour it was given', wave.includes('color=c=#000000:s=1920x1080:r=30[bg]'), true)
-  check('drawn at the capped canvas and scaled up', wave.includes('[draw]scale=1920:1080:flags=lanczos[scaled]'), true)
+  check('drawn at the capped canvas and scaled up', wave.includes('scale=1920:1080:flags=lanczos[scaled]'), true)
   check('and flattened into one picture', wave.includes('[plate]format=yuv420p[out]'), true)
   check('with the drawing and the plate brought together first', wave.includes('[bg][scaled]overlay=shortest=1[plate]'), true)
   // The still shows the bar PINNED AT THE LEFT rather than guessing at a moment: the sweep is what playback
@@ -1379,7 +1384,7 @@ console.log('\n== what a drawing sits on ==')
   check('and wider at 4K, in proportion', progressLineWidth(2160), 13)
   check('never thinner than two pixels, even on a tiny frame', progressLineWidth(10) >= 2, true)
   const spec = visualizationStillGraph({ template: 'spectrum', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a'], background: { input: 1 } })
-  check('a spectrum still is the whole sound in one picture too', spec.includes('showspectrumpic=s=720x1280:mode=combined:color=intensity:scale=log:legend=0'), true)
+  check('a spectrum still is the whole sound in one picture too', spec.includes('showspectrumpic=s=720x1280:mode=combined:color=green:saturation=1:scale=log:legend=0'), true)
   check('and the still has no loop, because a still is one frame', spec.includes('loop='), false)
   check('several sources are summed before it', spec.includes('[0:a][1:a]amix=inputs=2:normalize=0'), true)
   check('and an uploaded image is the background by input', spec.includes('[1:v]scale=1080:1920,setsar=1[bg]'), true)
@@ -1387,8 +1392,11 @@ console.log('\n== what a drawing sits on ==')
   // The template table, which is what keeps "the editor offers a colour" and "the encoder is given one" from
   // disagreeing: the two spectra colour themselves by intensity and take no colour of their own.
   check('the waveform is what a job gets unless it asks for something else', templateFor(undefined).id, 'waveform')
-  check('the two pictures come first, then the three that move', VISUALIZATIONS.map((template) => template.kind), ['picture', 'picture', 'moving', 'moving', 'moving'])
-  check('the colour field is offered exactly where a colour does something', VISUALIZATIONS.map((template) => template.colour), [true, false, true, true, false])
+  check('the two pictures come first, then the five that move', VISUALIZATIONS.map((template) => template.kind), ['picture', 'picture', 'moving', 'moving', 'moving', 'moving', 'moving'])
+  check('the colour field is offered exactly where a colour does something', VISUALIZATIONS.map((template) => template.colour), [true, false, true, true, false, true, false])
+  check('and the two bar drawings are the pair that share their knobs', VISUALIZATIONS.filter((template) => isBarsTemplate(template.id)).map((template) => template.id), ['eq', 'mirrored-bars'])
+  check('the two waveforms are a pair too', VISUALIZATIONS.filter((template) => isWaveTemplate(template.id)).map((template) => template.id), ['waveform', 'waveform-scroll'])
+  check('and the two spectra', VISUALIZATIONS.filter((template) => isSpectrumTemplate(template.id)).map((template) => template.id), ['spectrum', 'spectrum-scroll'])
   check('a job saved with a template that is still there keeps it', templateFor('spectrum-scroll').id, 'spectrum-scroll')
   check('and one naming nothing falls back rather than crashing', templateFor(undefined).id, 'waveform')
 
@@ -1400,6 +1408,8 @@ console.log('\n== what a drawing sits on ==')
   check('nor does a spectrum picture need one', stillWarmupSeconds('spectrum', 4, 1280, 30), 0)
   check('a scrolling waveform is sampled away from its empty first frame', stillWarmupSeconds('waveform-scroll', 4, 960, 30), 2)
   check('the bars too', stillWarmupSeconds('eq', 4, 1280, 30), 2)
+  check('and the mirrored bars', stillWarmupSeconds('mirrored-bars', 4, 1280, 30), 2)
+  check('and the scope, which has no trace at all at t=0', stillWarmupSeconds('scope', 4, 1280, 30), 2)
   check('a scrolling spectrum waits for its window to fill', stillWarmupSeconds('spectrum-scroll', 5, 1280, 30), 2.5)
   check('but never past the middle of the sound', stillWarmupSeconds('waveform-scroll', 3, 960, 30), 1.5)
   check('and a one-second one is sampled at its own middle, its window never filling', stillWarmupSeconds('spectrum-scroll', 1, 1280, 30), 0.5)
@@ -1444,7 +1454,7 @@ console.log('\n== the EQ drawing\u2019s own knobs ==')
   // is the one that is encoded — including the bar count and the gap, which are graph-level facts.
   const eqStill = visualizationStillGraph({ template: 'eq', width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', eq: { ...DEFAULT_EQ_STYLE, bars: 32, gap: 4 } })
   check('the still draws the same bars', eqStill.includes('showfreqs=s=32x1080:mode=bar'), true)
-  check('and the same chunky stretch', eqStill.includes('[draw]scale=1920:1080:flags=neighbor'), true)
+  check('and the same chunky stretch', eqStill.includes(',scale=1920:1080:flags=neighbor,pad=1920:1080:0:0:color=black'), true)
   check('and the same gap', eqStill.includes('drawgrid='), true)
 
   // The knobs, held to what the filter takes. One bar is not a spectrum and a thousand-pixel gap is nothing
@@ -1466,6 +1476,134 @@ console.log('\n== the EQ drawing\u2019s own knobs ==')
   check('and about the amplitude scale', spoken.amplitude, 'cbrt')
   check('and about the frequency scale', spoken.frequency, 'log')
   check('and about the sensitivity', spoken.sensitivity, 1e-8)
+}
+
+console.log('\n== the bar drawings\u2019 geometry, and the panel of lights ==')
+{
+  // Uneven bars and a gap that drifts off its bar are one arithmetic fault, and this is the whole of the fix:
+  // `showfreqs` draws one bar per output column, so `frameWidth / bars` is a fractional bar and the remainder
+  // lands unevenly on the last one. So the drawing is made at exactly `bars` pixels, stretched to a WHOLE
+  // number of pixels per bar, and the strip that leaves over is centred on a black pad rather than stretched
+  // across the frame — and the gap grid is then drawn from the PAD's own origin, so every gap lands on a bar
+  // boundary and every bar is the same width, the last one included.
+  const settings = { width: 1920, height: 1080, fps: 30, color: '#ffffff', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 }
+  // 1920 / 64 is exactly 30, so the strip is the frame and the pad has nothing to do.
+  const exact = visualizationGraph({ ...settings, template: 'eq', eq: { ...DEFAULT_EQ_STYLE, bars: 64 } })
+  check('a bar count that divides the frame needs no pad', exact.includes(',scale=1920:1080:flags=neighbor,pad=1920:1080:0:0:color=black'), true)
+  check('and its bars are a whole number of pixels wide', Math.floor(1920 / 64) * 64 === 1920, true)
+  // 1920 / 7 is not: 274 pixels per bar leaves two over, and the 1918-wide strip is centred.
+  const odd = visualizationGraph({ ...settings, template: 'eq', eq: { ...DEFAULT_EQ_STYLE, bars: 7, gap: 6 } })
+  check('a bar count that does not divide it is drawn at a whole number of pixels per bar', odd.includes(',scale=1918:1080:flags=neighbor'), true)
+  check('and the strip that leaves over is centred on a black pad rather than stretched', odd.includes(',pad=1920:1080:1:0:color=black'), true)
+  check('with the gap grid drawn from the pad, so the first gap is on the first bar\u2019s boundary', odd.includes('drawgrid=x=1:y=99999:w=274:h=99999:t=6:c=black'), true)
+  // A gap is a share of a bar, so on a bar two pixels wide it is most of the bar and the drawing becomes a
+  // comb. Past three pixels it is turned off rather than drawn.
+  const dense = visualizationGraph({ ...settings, width: 1280, template: 'eq', eq: { ...DEFAULT_EQ_STYLE, bars: 512, gap: 8 } })
+  check('a bar under three pixels wide drops its gap rather than becoming a comb', dense.includes('drawgrid'), false)
+  check('which is what the three-pixel floor is for', EQ_MIN_BAR_PX, 3)
+  check('and a bar of exactly three keeps it', visualizationGraph({ ...settings, width: 1536, template: 'eq', eq: { ...DEFAULT_EQ_STYLE, bars: 512, gap: 4 } }).includes('drawgrid'), true)
+
+  // SEGMENTED is the same grid turned sideways: dividers across every bar, so each becomes a stack of blocks.
+  // The divider height is a figure the frame divides EXACTLY into, because a grid aligned from an edge leaves
+  // the far block cut off — and a cut-off top block is the first thing a reader would notice.
+  const segmented = visualizationGraph({ ...settings, template: 'eq', eq: DEFAULT_EQ_STYLE, tune: { ...DEFAULT_TUNE, segmented: true } })
+  check('a segmented drawing puts a divider across every block', segmented.includes(',drawgrid=x=99999:y=0:w=99999:h=8:t=1:c=black'), true)
+  check('at a height the frame divides exactly into', 1080 / segmentHeight(1080), 135)
+  check('and again at 720', 720 / segmentHeight(720), 90)
+  check('and it is off unless it is asked for', visualizationGraph({ ...settings, template: 'eq', eq: DEFAULT_EQ_STYLE }).includes('drawgrid'), false)
+}
+
+console.log('\n== mirrored bars ==')
+{
+  // The mirror is two half-drawings rather than one, and that is arithmetic rather than taste: the bars are
+  // made at HALF the frame's height, one copy is flipped, and the two are stacked about the centre line, so
+  // the bars grow both ways from it. The pair is exactly symmetric, which is what the encoder harness reads
+  // off a decoded frame — a vflip difference of nearly nothing against the plain drawing's large one.
+  const settings = { width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 }
+  const mirrored = visualizationGraph({ ...settings, template: 'mirrored-bars', eq: DEFAULT_EQ_STYLE })
+  check('a mirrored drawing is made at half the frame\u2019s height', mirrored.includes('showfreqs=s=64x540:mode=bar'), true)
+  check('and stretched to the frame\u2019s full width', mirrored.includes(',scale=1920:540:flags=neighbor'), true)
+  check('then stacked under its own reflection', mirrored.includes('split[halfAbove][halfBelow];[halfAbove]vflip[flipped];[flipped][halfBelow]vstack'), true)
+  check('which makes up the frame\u2019s height again', mirrored.includes('vstack,pad=1920:1080:0:0:color=black[w]'), true)
+  check('and two half-heights are the whole height', 2 * 540, 1080)
+  // The editor's still is built by the same builder, so the two cannot be different drawings.
+  const mirroredStill = visualizationStillGraph({ ...settings, template: 'mirrored-bars', sources: ['0:a'], eq: DEFAULT_EQ_STYLE })
+  check('and the editor\u2019s still is the same two halves', mirroredStill.includes('[flipped][halfBelow]vstack,pad=1920:1080:0:0:color=black[scaled]'), true)
+  // Everything the bars share, the mirror inherits — it is one geometry with the mirror applied to it.
+  const mirroredKnobs = visualizationGraph({ ...settings, template: 'mirrored-bars', eq: { ...DEFAULT_EQ_STYLE, bars: 128, gap: 6 }, tune: { ...DEFAULT_TUNE, segmented: true } })
+  check('the mirror inherits the bar count and the gap', mirroredKnobs.includes('showfreqs=s=128x540:mode=bar') && mirroredKnobs.includes('drawgrid=x=0:y=99999:w=15:h=99999:t=6:c=black'), true)
+  check('and the segments too', mirroredKnobs.includes(',drawgrid=x=99999:y=0:w=99999:h=8:t=1:c=black'), true)
+}
+
+console.log('\n== the polar scope ==')
+{
+  // A scope plots one channel against the other, which is why its canvas is SQUARE — stretched to a 16:9
+  // frame a ring would be an ellipse — and why a mono sound cannot be fed straight in. And its colour is
+  // three channel CONTRASTS rather than a hex, so it comes from the theme.
+  const settings = { width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 }
+  const scope = visualizationGraph({ ...settings, template: 'scope', tune: DEFAULT_TUNE, mono: false })
+  check('a stereo scope is drawn straight, with no quadrature in front of it', scope.includes('aphaseshift'), false)
+  check('as a polar trace at the frame\u2019s rate and draw mode', scope.includes('avectorscope=mode=polar:rate=30:draw=line:zoom=1'), true)
+  check('on a square canvas the frame\u2019s short side gives it', scope.includes(':s=1080x1080'), true)
+  check('padded either side, so a ring stays a ring', scope.includes(',pad=1920:1080:420:0:color=black[w]'), true)
+  check('coloured by the theme\u2019s own channel contrasts, because a scope has no colour option', scope.includes('rc=0:gc=200:bc=0'), true)
+  check('and faded by the inverse of the persistence', scope.includes('rf=31:gf=31:bf=31'), true)
+  check('the default persistence is a long trail', scopeFade(SCOPE_DEFAULT_PERSIST), 31)
+  check('full persistence is no fade at all, which is an endless trail', scopeFade(1), 0)
+  check('and none is the shortest trail the filter has', scopeFade(0), 255)
+  check('the square is the frame\u2019s short side', scopeSide({ width: 1920, height: 1080 }), 1080)
+  check('a portrait frame is squared on its own short side', scopeSide({ width: 1080, height: 1920 }), 1080)
+  check('and a 4K frame is still drawn at the cap, like every other drawing', scopeSide({ width: 3840, height: 2160 }), DRAWING_MAX_EDGE)
+
+  // The mono branch. Two IDENTICAL channels draw a flat diagonal rather than a ring, so the sound is split,
+  // one half is shifted a quarter of a cycle — `aphaseshift`'s own unit is a cycle — and the halves are joined
+  // back into a stereo pair. Measured on the encoder harness: the same mono file drawn with the branch on inks
+  // eight of twenty column bands, and with it off exactly one.
+  const scopeMono = visualizationGraph({ ...settings, template: 'scope', tune: DEFAULT_TUNE, mono: true })
+  check('a mono sound is split before it is drawn', scopeMono.includes('[mixV]asplit=2[scopeQ1][scopeQ2]'), true)
+  check('and one half is shifted a quarter of a cycle', scopeMono.includes('[scopeQ2]aphaseshift=shift=0.25[scopeQ]'), true)
+  check('and the halves are joined into a stereo pair, which is what opens it into a ring', scopeMono.includes('[scopeI][scopeQ]join=inputs=2:channel_layout=stereo,avectorscope='), true)
+  check('the quadrature is the drawing\u2019s own, so the export\u2019s audio is the untouched mono mix', scopeMono.includes('[mixA]aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo[aout]'), true)
+  check('a sound of one channel is mono', drawingSoundIsMono([1]), true)
+  check('and one of two is not', drawingSoundIsMono([2]), false)
+  check('nor is a set with any stereo in it', drawingSoundIsMono([1, 2]), false)
+  check('and an unknown layout is drawn as a stereo one rather than guessed at as mono', drawingSoundIsMono([]), false)
+  check('the editor\u2019s still is opened out the same way', visualizationStillGraph({ ...settings, template: 'scope', sources: ['0:a'], mono: true }).includes('aphaseshift=shift=0.25'), true)
+}
+
+console.log('\n== the theme, and the knobs each template reads ==')
+{
+  // The palette is one answer the editor and the encoder both read, and it settles TWO things: the colour the
+  // templates that take one are drawn in, and the monochrome ramp the two spectra colour themselves with.
+  check('a job that names no theme gets the green', themeFor(undefined).id, 'green')
+  check('and one naming amber gets the CRT amber', themeFor('amber').color, '#c5b879')
+  check('the two ramps are single-hue, one per theme', DRAWING_THEMES.map((theme) => theme.ramp), ['green', 'fiery'])
+  check('and neither of them is a rainbow', DRAWING_THEMES.some((theme) => theme.ramp.includes('rainbow')), false)
+  check('the theme decides the colour where the job names none', drawingColorOf({ drawingTheme: 'amber' }), '#c5b879')
+  check('and the job\u2019s own colour wins where it names one', drawingColorOf({ drawingTheme: 'amber', visualizationColor: '#ff0000' }), '#ff0000')
+  const settings = { width: 1920, height: 1080, fps: 30, color: '#ffffff', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 }
+  check('so an amber spectrum is drawn on the warm ramp', visualizationGraph({ ...settings, template: 'spectrum', sources: ['0:a'], tune: drawingTuneOf({ drawingTheme: 'amber' }) }).includes(':color=fiery:'), true)
+  check('and a green one on the green', visualizationGraph({ ...settings, template: 'spectrum', sources: ['0:a'], tune: drawingTuneOf({}) }).includes(':color=green:'), true)
+
+  // The waveform's own three: how the amplitude is scaled, how heavy the drawing is, and whether the channels
+  // are drawn in their own halves. All three are the filter's own options, passed through.
+  const lighter = visualizationGraph({ ...settings, template: 'waveform', sources: ['0:a'], tune: drawingTuneOf({ waveScale: 'log', waveWeight: 'line', waveMirror: true }) })
+  check('the waveform\u2019s amplitude scale is passed through', lighter.includes('showwavespic=s=1280x720:scale=log'), true)
+  check('and its weight is one of ffmpeg\u2019s two draw modes', lighter.includes('draw=scale'), true)
+  check('and the mirror is the filter\u2019s own channel split', lighter.includes('split_channels=1'), true)
+  check('the default weight is the filled draw', drawingTuneOf({}).waveWeight, 'fill')
+  check('because the lighter one is what reads as a blank monitor on a 1080-row frame', drawingTuneOf({ waveWeight: 'line' }).waveWeight, 'line')
+  check('and an amplitude scale the job says nothing about is linear', drawingTuneOf({}).waveScale, 'lin')
+
+  // And the spectra's own two. `sat` is a multiplier rather than an on/off, and 0 is a grey ramp.
+  const saturated = visualizationGraph({ ...settings, template: 'spectrum', sources: ['0:a'], tune: drawingTuneOf({ spectrumScale: 'cbrt', spectrumSaturation: 3 }) })
+  check('the spectrum\u2019s own scale and saturation are passed through', saturated.includes('saturation=3:scale=cbrt'), true)
+  check('a saturation past what the filter takes is held to it', clampSaturation(99), 10)
+  check('and one below it likewise', clampSaturation(-99), 0)
+  check('the scope\u2019s zoom is held between its own two ends', [clampScopeZoom(99), clampScopeZoom(0.05)], [10, 0.2])
+  check('and a zoom of nothing means nothing, so it falls back rather than shrinking to a dot', clampScopeZoom(0), 1)
+  check('and its persistence between none and all', [clampScopePersist(9), clampScopePersist(-9)], [1, 0])
+  check('every knob has a default, so a job that says nothing about one still draws', Object.keys(DEFAULT_TUNE).length >= 10, true)
 }
 
 console.log('\n== the preview speed ==')

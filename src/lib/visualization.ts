@@ -40,9 +40,20 @@ export const VISUALIZATIONS: VisualizationTemplate[] = [
   { id: 'waveform', name: 'WAVEFORM', kind: 'picture', colour: true },
   { id: 'spectrum', name: 'SPECTRUM', kind: 'picture', colour: false },
   { id: 'eq', name: 'EQ BARS', kind: 'moving', colour: true },
+  { id: 'mirrored-bars', name: 'MIRRORED BARS', kind: 'moving', colour: true },
+  { id: 'scope', name: 'RADIAL SCOPE', kind: 'moving', colour: false },
   { id: 'waveform-scroll', name: 'WAVEFORM \u00b7 SCROLL', kind: 'moving', colour: true },
   { id: 'spectrum-scroll', name: 'SPECTRUM \u00b7 SCROLL', kind: 'moving', colour: false },
 ]
+
+/** The two templates built out of EQ bars, which share every one of their knobs and their geometry. */
+export const isBarsTemplate = (template: Visualization): boolean => template === 'eq' || template === 'mirrored-bars'
+
+/** The two waveforms, which share the amplitude scale, the weight and the mirror. */
+export const isWaveTemplate = (template: Visualization): boolean => template === 'waveform' || template === 'waveform-scroll'
+
+/** The two spectra, which share the amplitude scale and the saturation — their ramp comes from the theme. */
+export const isSpectrumTemplate = (template: Visualization): boolean => template === 'spectrum' || template === 'spectrum-scroll'
 
 /** The template table's answer for one id, for a preset that was saved before a template existed. */
 export const templateFor = (id: Visualization | undefined): VisualizationTemplate =>
@@ -52,6 +63,43 @@ export const templateFor = (id: Visualization | undefined): VisualizationTemplat
 export const VISUALIZATION_COLOR = '#9fbf9a'
 /** And what it starts on: the black the export letterboxes with. */
 export const VISUALIZATION_BACKGROUND = '#000000'
+
+/**
+ * The palettes a drawing may be made in, as one answer the editor and the encoder both read.
+ *
+ * Two, and both of them the app's own phosphors: the restrained green the drawings are drawn in by default,
+ * and the amber the app gives its actions and its trim. No rainbow and no per-bar gradients — a drawing is
+ * instrumentation, and a palette per bar would make it a different thing.
+ *
+ * A theme sets the COLOUR, and for the two spectra — which colour themselves by intensity rather than by a
+ * hex, which is why they are offered no colour field — it picks the monochrome ffmpeg ramp they are drawn
+ * with: `green`, and the warm `fiery` for amber. Both are single-hue ramps, so the identity holds.
+ */
+export type DrawingTheme = 'green' | 'amber'
+
+export interface DrawingThemeOption {
+  id: DrawingTheme
+  name: string
+  /** The colour the templates that take one are drawn in. */
+  color: string
+  /** The ramp the spectra colour themselves with. */
+  ramp: string
+  /** The scope's own colouring, which is three channel contrasts rather than a hex. */
+  scopeChannels: { red: number; green: number; blue: number }
+}
+
+export const DRAWING_THEMES: DrawingThemeOption[] = [
+  { id: 'green', name: 'MONO GREEN', color: VISUALIZATION_COLOR, ramp: 'green', scopeChannels: { red: 0, green: 200, blue: 0 } },
+  { id: 'amber', name: 'AMBER CRT', color: '#c5b879', ramp: 'fiery', scopeChannels: { red: 220, green: 150, blue: 0 } },
+]
+
+/** The theme's own answer for an id, for a preset that was saved before themes existed. */
+export const themeFor = (id: DrawingTheme | undefined): DrawingThemeOption =>
+  DRAWING_THEMES.find((theme) => theme.id === id) ?? DRAWING_THEMES[0]
+
+/** The colour a drawing is made in: the job's own where it named one, and the theme's otherwise. */
+export const drawingColorOf = (preset: Pick<EncodingPreset, 'visualizationColor' | 'drawingTheme'>): string =>
+  preset.visualizationColor || themeFor(preset.drawingTheme).color
 /**
  * What a drawing's progress line is drawn in: the app's action accent, amber.
  *
@@ -304,6 +352,16 @@ export interface VisualizationRequest {
    * preference.
    */
   progressLine?: boolean
+  /** The palette and the knobs, resolved by the caller from the preset — see `drawingTuneOf`. */
+  tune?: DrawingTune
+  /**
+   * Whether the sound being drawn is MONO, which only the polar scope reads — see `drawingSoundIsMono`.
+   *
+   * The caller is the one holding the probes, and the export's own channel count is not the answer: the
+   * drawing is made from the untouched half of the mix, which keeps its sources' layout, so a mono file
+   * written out as stereo is still a mono file to draw. Hence an answer rather than a guess.
+   */
+  mono?: boolean
 }
 
 /**
@@ -377,44 +435,157 @@ export const eqStyleOf = (preset: Pick<EncodingPreset, 'eqBars' | 'eqGap' | 'eqA
   sensitivity: clampEqSensitivity(preset.eqSensitivity ?? EQ_MAX_SENSITIVITY),
 })
 
-/** Everything one drawing is made from: the template, the two sizes, and the style. */
-interface DrawingRequest {
-  template: Visualization
-  /** The bounded canvas the drawing is made on, which is what every template but the EQ uses. */
-  canvas: { width: number; height: number }
-  /** The frame the drawing is scaled up to, which the EQ measures a bar and its gap in. */
-  frame: { width: number; height: number }
-  fps: number
-  color: string
-  eq: EqStyle
+/** The waveform templates' amplitude scales, and the spectra's — the two filters have different lists. */
+export type WaveScale = NonNullable<EncodingPreset['waveScale']>
+export type SpectrumScale = NonNullable<EncodingPreset['spectrumScale']>
+export const WAVE_SCALES: WaveScale[] = ['lin', 'log', 'sqrt', 'cbrt']
+export const SPECTRUM_SCALES: SpectrumScale[] = ['lin', 'sqrt', 'cbrt', 'log', '4thrt', '5thrt']
+export const WAVE_DEFAULT_SCALE: WaveScale = 'lin'
+export const SPECTRUM_DEFAULT_SCALE: SpectrumScale = 'log'
+/**
+ * How heavy a waveform's drawing is.
+ *
+ * The two settings of ffmpeg's own `draw`: `scale` divides each drawn sample by the number of samples sharing
+ * its column, which draws the light marks of a thin line, and `full` draws every sample directly, which fills
+ * the envelope. The FILL is the default because the light one is what reads as a blank monitor on a 1080-row
+ * frame: measured on broadband material, the lighter drawing covers about a fifth of what the fuller one does.
+ */
+export type WaveWeight = 'line' | 'fill'
+export const WAVE_WEIGHTS: WaveWeight[] = ['fill', 'line']
+export const WAVE_DEFAULT_WEIGHT: WaveWeight = 'fill'
+/** The scope's draw modes — a continuous trace, or dots. */
+export type ScopeDraw = 'dot' | 'line'
+export const SCOPE_DRAWS: ScopeDraw[] = ['line', 'dot']
+export const SCOPE_DEFAULT_DRAW: ScopeDraw = 'line'
+export const SCOPE_MIN_ZOOM = 0.2
+export const SCOPE_MAX_ZOOM = 10
+export const SCOPE_DEFAULT_ZOOM = 1
+/** How long the scope's trace lasts, 0 to 1. High, because a scope with no trail is a single bright dot. */
+export const SCOPE_DEFAULT_PERSIST = 0.88
+/** The widest and narrowest a spectrum's colour may be pushed. */
+export const SPECTRUM_MIN_SATURATION = 0
+export const SPECTRUM_MAX_SATURATION = 10
+export const SPECTRUM_DEFAULT_SATURATION = 1
+/** How tall one block of a segmented drawing is, before its lines are taken out of the frame. */
+export const SEGMENT_PX = 8
+/** How thick a segment divider is, and how thick a bar's edge may be. */
+export const SEGMENT_DIVIDER = 1
+/**
+ * How narrow a bar may be before a gap stops meaning anything.
+ *
+ * A gap is a share of a bar, so on a bar three pixels wide it is most of the bar and the drawing becomes a
+ * comb. Past this the gaps are turned off rather than drawn, so a dense spectrum reads as a spectrum.
+ */
+export const EQ_MIN_BAR_PX = 3
+
+/** The height one block of a segmented drawing gets, so the blocks tile the frame exactly and none is cut. */
+export const segmentHeight = (height: number): number => height / Math.max(1, Math.round(height / SEGMENT_PX))
+
+const evenNumber = (value: number): number => Math.max(2, Math.round(value / 2) * 2)
+
+/** The square a polar scope is drawn on: the frame's short side, capped like every other canvas. */
+export const scopeSide = (frame: { width: number; height: number }): number =>
+  Math.max(2, Math.min(Math.min(frame.width, frame.height), DRAWING_MAX_EDGE))
+
+/** The scope's fade, which is the inverse of its persistence: a long trail is a small fade. */
+export const scopeFade = (persist: number): number => Math.round((1 - clampScopePersist(persist)) * 255)
+
+export const clampScopePersist = (value: unknown): number => {
+  const persist = Number(value)
+  return Number.isFinite(persist) ? Math.max(0, Math.min(1, persist)) : SCOPE_DEFAULT_PERSIST
+}
+
+export const clampScopeZoom = (value: unknown): number => {
+  const zoom = Number(value)
+  return Number.isFinite(zoom) && zoom > 0 ? Math.max(SCOPE_MIN_ZOOM, Math.min(SCOPE_MAX_ZOOM, zoom)) : SCOPE_DEFAULT_ZOOM
+}
+
+export const clampSaturation = (value: unknown): number => {
+  const saturation = Number(value)
+  return Number.isFinite(saturation) ? Math.max(SPECTRUM_MIN_SATURATION, Math.min(SPECTRUM_MAX_SATURATION, saturation)) : SPECTRUM_DEFAULT_SATURATION
 }
 
 /**
- * The size a drawing is MADE at — the bar count by the frame's own height, for the EQ.
+ * Everything about a drawing that is neither its template nor its size: the palette and the knobs.
  *
- * Height rather than the bounded canvas because the stretch to the frame is nearest-neighbour: drawing at the
- * frame's full height leaves the vertical axis at one pixel per row, so the frequency resolution is untouched
- * and only the bars are made chunky. Every other template is made at the capped canvas and scaled up
- * smoothly, which is what `drawingCanvas` explains.
+ * One object rather than a dozen arguments, because the editor and the encoder both resolve a preset into it
+ * with `drawingTuneOf` and neither of them then has to know what a template's defaults are — which is what
+ * keeps a knob the editor draws from ever being a knob the encoder ignores.
  */
-const drawingSize = (template: Visualization, canvas: { width: number; height: number }, frame: { width: number; height: number }, eq: EqStyle): string =>
-  template === 'eq' ? `${eq.bars}x${frame.height}` : `${canvas.width}x${canvas.height}`
+export interface DrawingTune {
+  theme: DrawingTheme
+  waveScale: WaveScale
+  waveWeight: WaveWeight
+  waveMirror: boolean
+  spectrumScale: SpectrumScale
+  spectrumSaturation: number
+  segmented: boolean
+  scopePersist: number
+  scopeZoom: number
+  scopeDraw: ScopeDraw
+}
+
+export const DEFAULT_TUNE: DrawingTune = {
+  theme: 'green',
+  waveScale: WAVE_DEFAULT_SCALE,
+  waveWeight: WAVE_DEFAULT_WEIGHT,
+  waveMirror: false,
+  spectrumScale: SPECTRUM_DEFAULT_SCALE,
+  spectrumSaturation: SPECTRUM_DEFAULT_SATURATION,
+  segmented: false,
+  scopePersist: SCOPE_DEFAULT_PERSIST,
+  scopeZoom: SCOPE_DEFAULT_ZOOM,
+  scopeDraw: SCOPE_DEFAULT_DRAW,
+}
+
+/** A preset's knobs, resolved with the defaults filled in and every figure held to what the filters take. */
+export const drawingTuneOf = (preset: Pick<EncodingPreset,
+  'drawingTheme' | 'waveScale' | 'waveWeight' | 'waveMirror' | 'spectrumScale' | 'spectrumSaturation' |
+  'eqSegmented' | 'scopePersist' | 'scopeZoom' | 'scopeDraw'>): DrawingTune => ({
+  theme: themeFor(preset.drawingTheme).id,
+  waveScale: WAVE_SCALES.includes(preset.waveScale as WaveScale) ? (preset.waveScale as WaveScale) : WAVE_DEFAULT_SCALE,
+  waveWeight: preset.waveWeight === 'line' ? 'line' : WAVE_DEFAULT_WEIGHT,
+  waveMirror: preset.waveMirror === true,
+  spectrumScale: SPECTRUM_SCALES.includes(preset.spectrumScale as SpectrumScale) ? (preset.spectrumScale as SpectrumScale) : SPECTRUM_DEFAULT_SCALE,
+  spectrumSaturation: clampSaturation(preset.spectrumSaturation ?? SPECTRUM_DEFAULT_SATURATION),
+  segmented: preset.eqSegmented === true,
+  scopePersist: clampScopePersist(preset.scopePersist ?? SCOPE_DEFAULT_PERSIST),
+  scopeZoom: clampScopeZoom(preset.scopeZoom ?? SCOPE_DEFAULT_ZOOM),
+  scopeDraw: preset.scopeDraw === 'dot' ? 'dot' : SCOPE_DEFAULT_DRAW,
+})
+
+/** Everything one drawing is made from: the template, the two sizes, the palette and the knobs. */
+interface DrawingRequest {
+  template: Visualization
+  /** The bounded canvas the drawing is made on, which is what the templates that use one are made at. */
+  canvas: { width: number; height: number }
+  /** The frame the drawing is scaled up to, which is where every template ends up. */
+  frame: { width: number; height: number }
+  fps: number
+  color: string
+  tune: DrawingTune
+  eq: EqStyle
+  /** Whether the sound being drawn is MONO — the one thing the polar scope has to know about it. */
+  mono: boolean
+}
 
 /**
- * How a drawing reaches the frame. The EQ is stretched nearest-neighbour so its bars stay chunky; everything
- * else is scaled smoothly, because a waveform has no detail an upscale can lose.
- */
-const drawingScaleFlags = (template: Visualization): string => (template === 'eq' ? 'neighbor' : 'lanczos')
-
-/**
- * The EQ's gap, as a grid drawn over the stretched bars.
+ * The size a drawing is MADE at.
  *
- * `showfreqs` has no gap, so the cells are cut afterwards: a grid whose cell is one bar and whose thickness is
- * the gap, with its horizontal rule put a long way off the frame so only the vertical lines are drawn at all.
- * Nothing is returned when there is no gap, which is the common case.
+ * The bars templates are made one pixel per bar at the frame's own height — or at half of it when the drawing
+ * is to be mirrored, because the mirror stacks two of them — and the scope is made square. Everything else is
+ * made at the capped canvas and scaled up smoothly, which is what `drawingCanvas` explains.
  */
-const drawingGapFilter = (template: Visualization, frameWidth: number, eq: EqStyle): string =>
-  template === 'eq' && eq.gap > 0 ? `,drawgrid=x=0:y=99999:w=${Math.max(1, Math.round(frameWidth / eq.bars))}:h=99999:t=${eq.gap}:c=black` : ''
+const drawingSize = (request: DrawingRequest): string => {
+  const { template, frame, eq } = request
+  if (isBarsTemplate(template)) return `${eq.bars}x${barsDrawHeight(template, frame.height)}`
+  if (template === 'scope') return `${scopeSide(frame)}x${scopeSide(frame)}`
+  return `${request.canvas.width}x${request.canvas.height}`
+}
+
+/** The height a bars drawing is made at: the frame's, or half of it when it is to be mirrored. */
+const barsDrawHeight = (template: Visualization, frameHeight: number): number =>
+  template === 'mirrored-bars' ? evenNumber(frameHeight / 2) : Math.max(2, frameHeight)
 
 /**
  * One template's filter — the ONE its preview and its export are both made from.
@@ -424,32 +595,38 @@ const drawingGapFilter = (template: Visualization, frameWidth: number, eq: EqSty
  * picture template draws the whole sound into a single frame here; a moving one draws an instant.
  *
  * `showspectrum` and `showspectrumpic` are the odd ones twice over. They have no colour of their own — the
- * ramp is ffmpeg's `color=intensity`, which is why the editor offers them no colour field — and the
- * scrolling one has to be told to SLIDE, because left on its default it draws one column per emitted frame
- * into a frame nothing ever fills: measured, a four-second tone reads a maximum luma of 16 (black) in the
- * right-hand column at one second, two seconds and at the end, while `slide=scroll` reads 233 to 235 at
- * every one of them. The picture one needs `legend=0` for the same kind of reason: its legend band occupies
- * the right-hand edge, so with the default the picture does not reach its own frame.
+ * ramp is ffmpeg's `color`, which is why the editor offers them no colour field — and the scrolling one has to
+ * be told to SLIDE, because left on its default it draws one column per emitted frame into a frame nothing
+ * ever fills: measured, a four-second tone reads a maximum luma of 16 (black) in the right-hand column at one
+ * second, two seconds and at the end, while `slide=scroll` reads 233 to 235 at every one of them. The picture
+ * one needs `legend=0` for the same kind of reason: its legend band occupies the right-hand edge, so with the
+ * default the picture does not reach its own frame. Their ramp comes from the THEME, and both themes' ramps
+ * are single-hue — green, and the warm `fiery` for amber — because a rainbow would make a drawing a different
+ * thing from the instrumentation the rest of it is.
  *
- * The scrolling WAVEFORM draws a SOLID fill rather than a stroke. `mode=cline` — a centred line per sample —
- * is a stroke: measured on broadband material it draws a bright core with hollow shoulder work, and on a
- * quiet passage it draws nothing but the outline, which is the "stroked outline around its filled shape" it
- * was reported as. `mode=line` draws a vertical line from the centre to each sample, so a column fills to the
- * peak and the drawing is solid to its own envelope — which is also exactly what the still WAVEFORM's
- * `showwavespic` draws, so the two waveform templates now agree on what a waveform looks like.
+ * The scrolling WAVEFORM fills rather than strokes, and the measurement is worth keeping: `mode=line` (a
+ * vertical line per sample) covers about a FIFTH of what `mode=cline` (a centred one) does at a 1080-row
+ * frame, which is why the lighter mode read as a blank monitor — so the fill is `cline` with `draw=full`,
+ * and the WEIGHT knob is what makes it lighter. `draw=full` is the heavier of ffmpeg's two draw modes and is
+ * its own recommendation for a high sample-per-column count, which is what a 30fps drawing of 48kHz audio is.
  */
 const drawingFilters = (request: DrawingRequest): string => {
-  const { template, fps, color, eq } = request
-  const size = drawingSize(template, request.canvas, request.frame, eq)
-  // The EQ's own knobs, all four of them, on the filter that has them: the amplitude and frequency scales,
-  // the sensitivity floor, and the colour. How MANY bars and how far apart they are is not a filter option —
-  // it is the size it is drawn at and the grid drawn over it, which is what `drawingSize` and
-  // `drawingGapFilter` are for.
-  if (template === 'eq') return `showfreqs=s=${size}:mode=bar:ascale=${eq.amplitude}:fscale=${eq.frequency}:minamp=${eq.sensitivity}:rate=${fps}:colors=${color}`
-  if (template === 'spectrum') return `showspectrumpic=s=${size}:mode=combined:color=intensity:scale=log:legend=0`
-  if (template === 'spectrum-scroll') return `showspectrum=s=${size}:mode=combined:color=intensity:scale=log:slide=scroll,fps=${fps}`
-  if (template === 'waveform-scroll') return `showwaves=s=${size}:mode=line:rate=${fps}:colors=${color}`
-  return `showwavespic=s=${size}:colors=${color}`
+  const { template, fps, color, eq, tune } = request
+  const size = drawingSize(request)
+  const theme = themeFor(tune.theme)
+  const wave = `scale=${tune.waveScale}:draw=${tune.waveWeight === 'fill' ? 'full' : 'scale'}:split_channels=${tune.waveMirror ? 1 : 0}`
+  if (isBarsTemplate(template)) return `showfreqs=s=${size}:mode=bar:ascale=${eq.amplitude}:fscale=${eq.frequency}:minamp=${eq.sensitivity}:rate=${fps}:colors=${color}`
+  if (template === 'scope') {
+    // The scope's colour is three channel CONTRASTS rather than a hex — it has no colour option — so the theme
+    // is what decides it, and the fade is the inverse of the persistence.
+    const fade = scopeFade(tune.scopePersist)
+    const channels = theme.scopeChannels
+    return `avectorscope=mode=polar:rate=${fps}:draw=${tune.scopeDraw}:zoom=${tune.scopeZoom}:rc=${channels.red}:gc=${channels.green}:bc=${channels.blue}:rf=${fade}:gf=${fade}:bf=${fade}:s=${size}`
+  }
+  if (template === 'spectrum') return `showspectrumpic=s=${size}:mode=combined:color=${theme.ramp}:saturation=${tune.spectrumSaturation}:scale=${tune.spectrumScale}:legend=0`
+  if (template === 'spectrum-scroll') return `showspectrum=s=${size}:mode=combined:color=${theme.ramp}:saturation=${tune.spectrumSaturation}:scale=${tune.spectrumScale}:slide=scroll,fps=${fps}`
+  if (template === 'waveform-scroll') return `showwaves=s=${size}:mode=cline:${wave}:rate=${fps}:colors=${color}`
+  return `showwavespic=s=${size}:${wave}:colors=${color}`
 }
 
 /**
@@ -463,6 +640,110 @@ const exportDrawingFilters = (request: DrawingRequest): string => {
   const drawn = drawingFilters(request)
   return templateFor(request.template).kind === 'picture' ? `${drawn},loop=loop=-1:size=1` : drawn
 }
+
+/**
+ * The chains that bring a drawn picture to the frame: what to scale it to, and what to do at the frame's size.
+ *
+ * Three templates need more than a scale, and each of them for a reason that is arithmetic rather than taste:
+ *
+ * - The BARS templates are where the bar count and the gap become exact. `showfreqs` draws one bar per output
+ *   column, so the count IS the width and a fractional column is a bar that is not quite where the next one
+ *   starts. So the drawing is made one pixel per bar and stretched nearest-neighbour to a WHOLE number of
+ *   pixels per bar (`floor(frameWidth / bars)`), which leaves a strip narrower than the frame; that strip is
+ *   centred on a black pad rather than stretched over it, which is what keeps the last bar the same width as
+ *   the first. The grids are then drawn from the PAD's own origin, so a gap lands on a bar boundary instead of
+ *   drifting off it towards the right-hand end — the two faults reported as uneven bars and misaligned gaps.
+ * - MIRRORED BARS is the same drawing mirrored: the two halves are stacked about the centre line, so the bars
+ *   grow both ways from it. That is why its drawing is made at HALF the frame's height and the mirror's second
+ *   copy makes up the rest.
+ * - The SCOPE is a CIRCLE, so it is drawn square and centred: stretched to a 16:9 frame the ring would be an
+ *   ellipse. The square is the frame's short side, padded with the background either side of it.
+ */
+interface DrawingStage {
+  /** The size the drawing is scaled to, after which `finish` takes it to the frame. */
+  scale: { width: number; height: number }
+  flags: string
+  /**
+   * The suffix from the scaled drawing to `target`: the padding, the grids, and the label.
+   *
+   * It carries its OWN leading comma when it has anything to add, because one of the three chains it is used
+   * in has already spent a comma on the filter before it and the other two have not. A suffix that led with
+   * a bare filter name would join onto the scale's options and be read as one of them — which is how
+   * `flags=neighborpad=…` happens.
+   */
+  finish: (target: string) => string
+  /** Whether the drawing is mirrored about its centre, which needs two chains rather than a suffix. */
+  mirror: boolean
+}
+
+const drawingStage = (template: Visualization, frame: { width: number; height: number }, eq: EqStyle, tune: DrawingTune): DrawingStage => {
+  if (template === 'scope') {
+    const side = scopeSide(frame)
+    const x = Math.max(0, Math.round((frame.width - side) / 2))
+    return { scale: { width: side, height: side }, flags: 'lanczos', finish: (target) => `,pad=${frame.width}:${frame.height}:${x}:0:color=black${target}`, mirror: false }
+  }
+  if (isBarsTemplate(template)) {
+    const barPx = Math.max(1, Math.floor(frame.width / eq.bars))
+    const strip = Math.max(1, barPx * eq.bars)
+    const pad = Math.max(0, Math.round((frame.width - strip) / 2))
+    // The gap is a share of a bar, so it stops meaning anything on a bar a couple of pixels wide: past that it
+    // is turned off rather than drawn as a comb.
+    const gap = eq.gap > 0 && barPx >= EQ_MIN_BAR_PX ? `,drawgrid=x=${pad}:y=99999:w=${barPx}:h=99999:t=${eq.gap}:c=black` : ''
+    // The segment dividers are drawn with a height the frame divides EXACTLY into, so every block is whole —
+    // the top one included, which a grid aligned from the baseline would leave cut off.
+    const segments = tune.segmented ? `,drawgrid=x=99999:y=0:w=99999:h=${segmentHeight(frame.height)}:t=${SEGMENT_DIVIDER}:c=black` : ''
+    return {
+      scale: { width: strip, height: barsDrawHeight(template, frame.height) },
+      flags: 'neighbor',
+      finish: (target) => `,pad=${frame.width}:${frame.height}:${pad}:0:color=black${gap}${segments}${target}`,
+      mirror: template === 'mirrored-bars',
+    }
+  }
+  // Everything else is drawn at the frame's own size already, so there is nothing between the scale and the
+  // label and the suffix is the label alone — no comma, nothing to join.
+  return { scale: { ...frame }, flags: 'lanczos', finish: (target) => target, mirror: false }
+}
+
+/**
+ * The chains that draw one template's picture to `target`, at the frame's own size.
+ *
+ * Three templates need more than a filter: the SCOPE on a MONO sound is opened into quadrature first (see
+ * below), and the MIRRORED BARS come to the frame as two halves rather than one.
+ */
+const drawingChains = (request: DrawingRequest, input: string, filters: string, target: string): string[] => {
+  const stage = drawingStage(request.template, request.frame, request.eq, request.tune)
+  const drawn = `${filters},scale=${stage.scale.width}:${stage.scale.height}:flags=${stage.flags}`
+  if (request.template === 'scope' && request.mono) {
+    return [
+      `${input}asplit=2[scopeQ1][scopeQ2]`,
+      '[scopeQ1]anull[scopeI]',
+      '[scopeQ2]aphaseshift=shift=0.25[scopeQ]',
+      `[scopeI][scopeQ]join=inputs=2:channel_layout=stereo,${drawn}${stage.finish(target)}`,
+    ]
+  }
+  if (stage.mirror) {
+    return [
+      `${input}${drawn},split[halfAbove][halfBelow]`,
+      '[halfAbove]vflip[flipped]',
+      `[flipped][halfBelow]vstack${stage.finish(target)}`,
+    ]
+  }
+  return [`${input}${drawn}${stage.finish(target)}`]
+}
+
+/**
+ * Why a MONO sound is opened into quadrature for the SCOPE, and why it is the drawing's business and not a
+ * knob: a polar scope plots one channel against the other, so two IDENTICAL channels — which is what a mono
+ * source duplicates to — draw a flat diagonal line instead of a ring. The sound is split, one half is shifted
+ * a quarter of a cycle (`aphaseshift`'s own unit is a cycle, so 0.25 is 90°), and the halves are joined back
+ * into a stereo pair, which opens the mono out into a ring. The branch is by LAYOUT alone, because nobody can
+ * be expected to know which of their files are mono; stereo is fed straight through, untouched.
+ */
+export const SCOPE_QUADRATURE_SHIFT = 0.25
+
+/** Whether a drawing's sound is mono, from the channel counts of the sources that make it up. */
+export const drawingSoundIsMono = (channelCounts: number[]): boolean =>
+  channelCounts.length > 0 && channelCounts.every((count) => count <= 1)
 
 /**
  * What the editor's own still of a drawing is asked for: the same template, colour and background the
@@ -483,24 +764,30 @@ export interface VisualizationStillRequest {
   progressLine?: boolean
   /** The EQ's own knobs, when the template is one. Absent means the defaults — see `DEFAULT_EQ_STYLE`. */
   eq?: EqStyle
+  /** The palette and the knobs. Absent means the defaults — see `DEFAULT_TUNE`. */
+  tune?: DrawingTune
+  /** Whether the sound being drawn is mono. Only the polar scope reads it — see `drawingSoundIsMono`. */
+  mono?: boolean
 }
 
 /**
  * The one drawing the editor LOOKS at, as a single still rather than as an export.
  *
  * The templates are built from the same filters the export uses, at the same bounded canvas, so what the
- * editor judges is what they will get. Two of them have no still of their own and are captured as a frame
- * of the drawing after its warm-up — see `stillWarmupSeconds`. A waveform does have one: `showwavespic`
- * draws the whole file as one picture, which is a truer thing to look at than one frame of a line.
+ * editor judges is what they will get. Every template but the two PICTURES has no still of its own and is
+ * captured as a frame of the drawing after its warm-up — see `stillWarmupSeconds`, which is what keeps a
+ * scroll or a scope from being photographed at the one moment it is empty.
  */
 export const visualizationStillGraph = (request: VisualizationStillRequest): string => {
-  const { template, width, height, fps, color, sources, background, progressLine, eq } = request
+  const { template, width, height, fps, color, sources, background, progressLine, eq, tune, mono } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
   const style = eq ?? DEFAULT_EQ_STYLE
-  const drawing: DrawingRequest = { template, canvas, frame: { width, height }, fps, color, eq: style }
-  const listened = sources.length === 1
-    ? `[${sources[0]}]${drawingFilters(drawing)}[draw]`
-    : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0,${drawingFilters(drawing)}[draw]`
+  const knobs = tune ?? DEFAULT_TUNE
+  const drawing: DrawingRequest = { template, canvas, frame: { width, height }, fps, color, tune: knobs, eq: style, mono: Boolean(mono) }
+  const mixed = '[mixed]'
+  const listening = sources.length === 1
+    ? `[${sources[0]}]anull${mixed}`
+    : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0${mixed}`
   const base = typeof background === 'string'
     ? `color=c=${background}:s=${width}x${height}:r=${fps}[bg]`
     : `[${background.input}:v]scale=${width}:${height},setsar=1[bg]`
@@ -508,8 +795,8 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
   // show that the design has a bar in it. Pinned left is also the one moment the export's own picture shares.
   const line = progressLine ? progressLineGraph(template, height, fps, 0, true) : null
   return [
-    listened,
-    `[draw]scale=${width}:${height}:flags=${drawingScaleFlags(template)}${drawingGapFilter(template, width, style)}[scaled]`,
+    listening,
+    ...drawingChains(drawing, mixed, drawingFilters(drawing), '[scaled]'),
     base,
     '[bg][scaled]overlay=shortest=1[plate]',
     ...(line
@@ -536,10 +823,18 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
  * own size.
  */
 export const visualizationGraph = (request: VisualizationRequest): string => {
-  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine, eq } = request
+  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine, eq, tune, mono } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
-  const style = eq ?? DEFAULT_EQ_STYLE
-  const drawing: DrawingRequest = { template, canvas, frame: { width, height }, fps, color, eq: style }
+  const drawing: DrawingRequest = {
+    template,
+    canvas,
+    frame: { width, height },
+    fps,
+    color,
+    tune: tune ?? DEFAULT_TUNE,
+    eq: eq ?? DEFAULT_EQ_STYLE,
+    mono: Boolean(mono),
+  }
   const listened = sources.length === 1
     ? `[${sources[0]}]asplit=2[mixA][mixV]`
     : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0,asplit=2[mixA][mixV]`
@@ -554,7 +849,9 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
     // The export's own audio, resampled and laid out exactly as the path that asked for the drawing
     // writes it, and cut from the mix rather than from the files.
     `[mixA]aresample=${rate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${channels === 1 ? 'mono' : 'stereo'}[aout]`,
-    `[mixV]${exportDrawingFilters(drawing)},scale=${width}:${height}:flags=${drawingScaleFlags(template)}${drawingGapFilter(template, width, style)}[w]`,
+    // The drawing, through the very chains the editor's own still is built from — the scale, the mirror and
+    // the bars' stretch and grids included — so a knob the editor draws is a knob the encoder honours.
+    ...drawingChains(drawing, '[mixV]', exportDrawingFilters(drawing), '[w]'),
     base,
     '[bg][w]overlay=shortest=1[plate]',
     ...(line

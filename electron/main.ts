@@ -10,7 +10,7 @@ import { resolveByteRange, mimeTypeFor } from './mediaRange'
 import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/filmstrip'
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { clipFilters } from '../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, drawingCanvas, eqStyleOf, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, drawingCanvas, drawingColorOf, drawingSoundIsMono, drawingTuneOf, eqStyleOf, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { runFfmpeg } from './ffmpeg/run'
 import { spawn, execFileSync } from 'node:child_process'
@@ -426,7 +426,7 @@ app.whenReady().then(() => {
    */
   ipcMain.handle('visualization-still', async (_, options: {
     sources: string[]
-    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll'
+    template: 'waveform' | 'spectrum' | 'eq' | 'waveform-scroll' | 'spectrum-scroll' | 'mirrored-bars' | 'scope'
     color?: string
     background?: 'colour' | 'still' | 'image'
     backgroundColor?: string
@@ -436,12 +436,23 @@ app.whenReady().then(() => {
     fps?: number
     /** Whether the design carries the sweeping progress line, pinned at the left in a still. */
     progressLine?: boolean
-    /** The EQ drawing's own knobs — read only when the template is EQ. */
+    /** The EQ drawing's own knobs — read only when the template is one of the two bar drawings. */
     bars?: number
     gap?: number
     amplitude?: 'lin' | 'sqrt' | 'cbrt' | 'log'
     frequency?: 'lin' | 'log' | 'rlog'
     sensitivity?: number
+    /** The palette, and the knobs each template reads — see `drawingTuneOf`. */
+    theme?: 'green' | 'amber'
+    segmented?: boolean
+    waveScale?: 'lin' | 'log' | 'sqrt' | 'cbrt'
+    waveWeight?: 'line' | 'fill'
+    waveMirror?: boolean
+    spectrumScale?: 'lin' | 'sqrt' | 'cbrt' | 'log' | '4thrt' | '5thrt'
+    spectrumSaturation?: number
+    scopePersist?: number
+    scopeZoom?: number
+    scopeDraw?: 'dot' | 'line'
   }) => {
     const sources = (options.sources ?? []).filter((source) => { try { return fs.statSync(source).isFile() } catch { return false } })
     // Nothing to draw from is not an error: a job whose sound has not been probed yet simply has no still
@@ -459,8 +470,17 @@ app.whenReady().then(() => {
       // drawn from — a frame asked for after a source has ended is a frame that arrives empty. The window's
       // own fill time is the drawing CANVAS's, since that is the width the scrolling filters fill a column of.
       let shortest = Number.POSITIVE_INFINITY
+      // The sources' channel counts, which is the one thing the polar scope has to know: two identical
+      // channels draw a flat line rather than a ring, so a mono sound is opened into quadrature and a stereo
+      // one is fed straight. Read from the probes this handler is already making, and left empty when they
+      // fail — an unknown layout is drawn as a stereo one rather than guessed at as a mono one.
+      const channelCounts: number[] = []
       for (const source of sources) {
-        try { shortest = Math.min(shortest, Number((await probeFile(source)).duration || 0)) } catch { /* an unreadable length leaves the others */ }
+        try {
+          const probe = await probeFile(source)
+          shortest = Math.min(shortest, Number(probe.duration || 0))
+          for (const stream of probe.audioStreams) if (stream.channels) channelCounts.push(stream.channels)
+        } catch { /* an unreadable length leaves the others */ }
       }
       const canvasWidth = drawingCanvas(width, height, templateMaxEdge(options.template)).width
       const warmup = Number.isFinite(shortest) && shortest > 0 ? stillWarmupSeconds(options.template, shortest, canvasWidth, fps) : 0
@@ -472,11 +492,26 @@ app.whenReady().then(() => {
         width,
         height,
         fps,
-        color: options.color || VISUALIZATION_COLOR,
+        // The theme decides the colour where the job named none of its own — the one answer the editor's own
+        // colour placeholder is read from too, so the field and the still cannot disagree.
+        color: drawingColorOf({ visualizationColor: options.color, drawingTheme: options.theme }),
         sources: sources.map((_, index) => `${index}:a`),
         background,
         progressLine: options.progressLine,
         eq: eqStyleOf({ eqBars: options.bars, eqGap: options.gap, eqAmplitude: options.amplitude, eqFrequency: options.frequency, eqSensitivity: options.sensitivity }),
+        tune: drawingTuneOf({
+          drawingTheme: options.theme,
+          waveScale: options.waveScale,
+          waveWeight: options.waveWeight,
+          waveMirror: options.waveMirror,
+          spectrumScale: options.spectrumScale,
+          spectrumSaturation: options.spectrumSaturation,
+          eqSegmented: options.segmented,
+          scopePersist: options.scopePersist,
+          scopeZoom: options.scopeZoom,
+          scopeDraw: options.scopeDraw,
+        }),
+        mono: drawingSoundIsMono(channelCounts),
       })
       args.push('-filter_complex', graph, '-map', '[out]')
       if (warmup > 0.001) args.push('-ss', warmup.toFixed(3))

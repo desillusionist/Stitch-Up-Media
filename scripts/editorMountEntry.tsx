@@ -222,6 +222,9 @@ const drive = async () => {
     pictureSource,
     background: background ? [...background.options].map((option) => option.value) : null,
     drawnFields: soundSelect ? labelsOf('.editor-field') : null,
+    // The toggles the drawing brings with it, which are the one control that is not a FIELD: the progress
+    // line, which only a picture takes, and the waveform's own channel mirror.
+    drawnToggles: soundSelect ? labelsOf('.editor-toggle') : null,
   }
   // What the monitor DID. The still is asked for over IPC and delayed, so this waits past the debounce;
   // the request itself is recorded too, because a monitor that could not play a stubbed file would
@@ -249,7 +252,34 @@ const drive = async () => {
   result.audio = {
     ...(result.audio as object),
     eqFields: templates ? labelsOf('.editor-field') : null,
+    eqSegments: templates ? labelsOf('.editor-toggle') : null,
     eqStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
+  }
+  // The palette, which every template reads, and which is the one control that settles a colour the job may
+  // not have named itself — so it has to be there for every template, not only the ones with a colour field.
+  const themes = [...document.querySelectorAll('select')]
+    .find((select) => [...(select as HTMLSelectElement).options].some((option) => option.value === 'amber')) as HTMLSelectElement | undefined
+  result.audio = { ...(result.audio as object), themeOptions: themes ? [...themes.options].map((option) => option.value) : null }
+
+  // The SCOPE, whose three knobs are its own and whose canvas is a SQUARE — the one drawing that is a
+  // different shape inside the frame, so the one most likely to be drawn by a path of its own.
+  if (templates) choose(templates, 'scope')
+  await wait(600)
+  result.audio = {
+    ...(result.audio as object),
+    scopeFields: templates ? labelsOf('.editor-field') : null,
+    scopeStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
+  }
+
+  // And MIRRORED BARS, which is the same geometry as the EQ with the mirror applied to it: if the two did not
+  // share their knobs, this is where the pair would come apart.
+  if (templates) choose(templates, 'mirrored-bars')
+  await wait(600)
+  result.audio = {
+    ...(result.audio as object),
+    mirrorFields: templates ? labelsOf('.editor-field') : null,
+    mirrorToggles: templates ? labelsOf('.editor-toggle') : null,
+    mirrorStill: stillRequests.length ? stillRequests[stillRequests.length - 1] : null,
   }
   // What the choice becomes: the patch the window hands the queue, which is where the drawing has to
   // arrive for the encoder to be asked for it at all. `check-tail` proves the encoder then draws; this is

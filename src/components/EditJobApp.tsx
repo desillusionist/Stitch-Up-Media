@@ -4,7 +4,7 @@ import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, Queu
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
-import { DRAWING_STILL_SETTLE_MS, EQ_AMPLITUDE_SCALES, EQ_DEFAULT_BARS, EQ_DEFAULT_GAP, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATION_COLOR, VISUALIZATIONS, clampEqBars, clampEqGap, clampEqSensitivity, drawingPictureFor, eqStyleOf, templateFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
+import { DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_DEFAULT_BARS, EQ_DEFAULT_GAP, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampSaturation, clampScopePersist, clampScopeZoom, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { PREVIEW_SPEEDS, speedLabel } from '../lib/previewSpeed'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
@@ -1429,13 +1429,27 @@ export const EditJobApp: React.FC = () => {
   // Whether the drawing being judged is a PICTURE with the sweeping line on it. Only a picture takes one — a
   // drawing that moves is its own progress — and only the preset decides whether it is on.
   const drawingLine = Boolean(draft && templateFor(draft.preset.visualization).kind === 'picture' && visualizationProgressLine(draft.preset))
+  /**
+   * The palette and every knob the chosen template reads, resolved once.
+   *
+   * One object because it answers three questions with the same figures: what the monitor's still is drawn
+   * with, when that still has to be redrawn, and — through the encoder's own `drawingTuneOf` — what the
+   * export will be drawn with. Naming them here instead is how a knob the editor draws becomes a knob the
+   * export ignores.
+   */
+  const drawingTune = draft ? drawingTuneOf(draft.preset) : DEFAULT_TUNE
+  /** The chosen drawing, resolved once, so the knob rows below and the monitor agree on which set applies. */
+  const drawingTemplate = templateFor(draft?.preset.visualization)
   const drawingStillKey = JSON.stringify([
     drawingPicture.draws ? drawingPicture.sources : [],
     draft?.preset.visualization ?? 'waveform',
+    // The whole resolved tune, so the theme, the weight, the mirror, the spectrum's scale and saturation,
+    // the segments and the scope's own three all redraw the still without any of them being named here.
+    drawingTune,
     draft?.preset.visualizationColor ?? '',
     drawingLine,
     // The EQ's own knobs are part of the design too, so a change to one redraws the still. They are named
-    // whether or not the template is the EQ, which costs one redraw if they are set and then left behind.
+    // whether or not the template is a bar drawing, which costs one redraw if they are set and then left behind.
     draft?.preset.eqBars ?? '',
     draft?.preset.eqGap ?? '',
     draft?.preset.eqAmplitude ?? '',
@@ -1463,6 +1477,10 @@ export const EditJobApp: React.FC = () => {
         // will actually draw with — the defaults included. The export resolves them from the preset by the same
         // function, so the design judged here and the design written cannot disagree about an unset knob.
         ...(draft ? eqStyleOf(draft.preset) : {}),
+        // The palette and the knobs, resolved rather than raw — the same object the key above is built from,
+        // and the same one the encoder resolves from the preset, so the design judged here is the design
+        // written. Its field names are the request's own, which is the point of naming them together.
+        ...drawingTune,
         ...(outputFrame ? { width: outputFrame.width, height: outputFrame.height } : {}),
         fps: draft?.preset.fps ?? 30,
       }).then((url) => { if (!cancelled) setDrawingStill(url) }).catch(() => { if (!cancelled) setDrawingStill(null) })
@@ -2766,7 +2784,6 @@ export const EditJobApp: React.FC = () => {
             </div>
             <small>{focusedLabel} • {resolutionLabel}{duration > 0 ? ` • ${Math.round(fps)} FPS` : ''}</small>
             <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` · USED ${stamp(activeSegment.sourceIn)} → ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} · OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
-            <b>{playback.playing ? '\u25b6 PLAYING' : '\u25a0 PAUSED'}</b>
           </div>
           <div className="transport">
             <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
@@ -3261,8 +3278,13 @@ export const EditJobApp: React.FC = () => {
                     {VISUALIZATIONS.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
                   </select>
                 </EditorField>
-                {templateFor(draft.preset.visualization).colour && <EditorField label="COLOUR" reason="The colour the drawing is made in, as a hex figure. The two spectra colour themselves by intensity and take no colour of their own, so they are not offered one.">
-                  <input type="text" className="editor-input" value={draft.preset.visualizationColor ?? ''} placeholder={VISUALIZATION_COLOR.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
+                <EditorField label="THEME" reason="The palette the drawing is made in: the app's own green, or the amber of a CRT. It settles the colour the drawing is drawn in unless the job names one of its own, and the ramp the two spectra colour themselves with — which is why those two are offered no colour field.">
+                  <select value={drawingTune.theme} onChange={(event) => updatePreset({ drawingTheme: event.target.value as NonNullable<EncodingPreset['drawingTheme']> })}>
+                    {DRAWING_THEMES.map((theme) => <option key={theme.id} value={theme.id}>{theme.name}</option>)}
+                  </select>
+                </EditorField>
+                {templateFor(draft.preset.visualization).colour && <EditorField label="COLOUR" reason="The colour the drawing is made in, as a hex figure. Left blank it is the theme's own, and the two spectra colour themselves by intensity and take no colour of their own, so they are not offered one.">
+                  <input type="text" className="editor-input" value={draft.preset.visualizationColor ?? ''} placeholder={themeFor(draft.preset.drawingTheme).color.toUpperCase()} onChange={(event) => updatePreset({ visualizationColor: event.target.value.trim() || undefined })} />
                 </EditorField>}
                 <EditorField label="BACKGROUND" reason="What the drawing sits on: a flat colour, the still the job already has, or an image of your own. The image is scaled to the frame and the drawing is laid over it.">
                   <select value={backgroundKind} onChange={(event) => updatePreset({ visualizationBackground: event.target.value as NonNullable<EncodingPreset['visualizationBackground']> })}>
@@ -3278,11 +3300,39 @@ export const EditJobApp: React.FC = () => {
                 {/* Only the PICTURES get a line: a drawing that moves is already showing where the sound is,
                     and a bar over one would be a second answer to the same question. */}
                 {templateFor(draft.preset.visualization).kind === 'picture' && <EditorToggle label="PROGRESS LINE" checked={visualizationProgressLine(draft.preset)} onChange={(checked) => updatePreset({ visualizationProgressLine: checked })} reason="A bar that sweeps across the picture from the left edge to the right as the sound plays, which is what a podcast video looks like. The two pictures are one frame held for the length of the sound, so without it the video sits motionless; it is off where the drawing already moves." />}
-                {/* The EQ's own knobs, and only for the EQ. Its bars are drawn one pixel each and STRETCHED to
-                    the frame, so the count is what makes them chunky; the gap is a grid drawn over that, which
-                    is the only way to open one in a filter that has no concept of it. The rest are the
-                    filter's own knobs, passed through unchanged. */}
-                {draft.preset.visualization === 'eq' && <>
+                {/* The waveform's own three: how the amplitude is scaled, how heavy the drawing is, and whether
+                    the two channels are drawn in their own halves of the frame. */}
+                {isWaveTemplate(drawingTemplate.id) && <>
+                  <EditorField label="AMPLITUDE" reason="How the sound's own level is turned into the height of the drawing. Logarithmic makes the quiet end visible, which is what a waveform of speech is normally read with; linear draws the levels as they are.">
+                    <select value={drawingTune.waveScale} onChange={(event) => updatePreset({ waveScale: event.target.value as NonNullable<EncodingPreset['waveScale']> })}>
+                      {WAVE_SCALES.map((scale) => <option key={scale} value={scale}>{scale.toUpperCase()}</option>)}
+                    </select>
+                  </EditorField>
+                  <EditorField label="WEIGHT" reason="How much of the drawing is inked. FILLED is the whole envelope and is what the monitor shows and what the static waveform already draws; LINE is the lighter stroke, which covers about a fifth of what the filled drawing does at a 1080-row frame.">
+                    <select value={drawingTune.waveWeight} onChange={(event) => updatePreset({ waveWeight: event.target.value as NonNullable<EncodingPreset['waveWeight']> })}>
+                      {WAVE_WEIGHTS.map((weight) => <option key={weight} value={weight}>{weight === 'fill' ? 'FILLED' : 'LINE'}</option>)}
+                    </select>
+                  </EditorField>
+                  <EditorToggle label="MIRROR CHANNELS" checked={drawingTune.waveMirror} onChange={(checked) => updatePreset({ waveMirror: checked })} reason="Draw the two channels in their own halves of the frame rather than summed into one drawing, so a stereo difference is visible as two shapes." />
+                </>}
+                {/* The spectra's own two. Their ramp comes from the theme, so they are given no colour field. */}
+                {isSpectrumTemplate(drawingTemplate.id) && <>
+                  <EditorField label="AMPLITUDE" reason="How a band's level is turned into its colour. Logarithmic is what a spectrogram is normally read with, because it makes the quiet bands visible; linear shows the levels as they are.">
+                    <select value={drawingTune.spectrumScale} onChange={(event) => updatePreset({ spectrumScale: event.target.value as NonNullable<EncodingPreset['spectrumScale']> })}>
+                      {SPECTRUM_SCALES.map((scale) => <option key={scale} value={scale}>{scale.toUpperCase()}</option>)}
+                    </select>
+                  </EditorField>
+                  <div className="editor-field">
+                    <span><span className="editor-label">SATURATION</span></span>
+                    <NumberField min={SPECTRUM_MIN_SATURATION} max={SPECTRUM_MAX_SATURATION} step={1} className="editor-input" value={drawingTune.spectrumSaturation} onValue={(value) => updatePreset({ spectrumSaturation: clampSaturation(value) })} title="How far a band's colour is pushed: 0 is a grey ramp, 1 is the theme's own, and higher pushes it further still." />
+                  </div>
+                </>}
+                {/* The bars' own knobs. Their bars are drawn one pixel each and STRETCHED to the frame, so the
+                    count is what makes them chunky; the gap is a grid drawn over that, which is the only way to
+                    open one in a filter that has no concept of it. The segments are the same trick turned
+                    sideways, which is what makes the drawing read as a panel of blocks rather than a bar chart.
+                    The rest are the filter's own knobs, passed through unchanged. */}
+                {isBarsTemplate(drawingTemplate.id) && <>
                   <div className="editor-field">
                     <span><span className="editor-label">BAR COUNT</span></span>
                     <div className="exact-row">
@@ -3302,6 +3352,24 @@ export const EditJobApp: React.FC = () => {
                   </EditorField>
                   <EditorField label="SENSITIVITY" reason="The floor below which a frequency is not drawn: the smaller the figure, the more of the quiet detail is shown. It is a fraction of full scale, so the useful figures are small — 0.000001 is ffmpeg's own floor and the least sensitive this can be asked to be.">
                     <NumberField min={EQ_MIN_SENSITIVITY} max={EQ_MAX_SENSITIVITY} step={0.0000001} className="editor-input" value={draft.preset.eqSensitivity ?? EQ_MAX_SENSITIVITY} onValue={(value) => updatePreset({ eqSensitivity: clampEqSensitivity(value) })} title="The minimum amplitude a frequency must reach to be drawn" />
+                  </EditorField>
+                  <EditorToggle label="SEGMENTED" checked={drawingTune.segmented} onChange={(checked) => updatePreset({ eqSegmented: checked })} reason="Break each bar into a stack of blocks with thin dark lines between them, so the drawing reads as a panel of lamps rather than a solid column. The lines are aligned from the top so no block is cut off." />
+                </>}
+                {/* The scope's own three. Its colour is three channel contrasts rather than a hex, so that comes
+                    from the theme; the fade is the inverse of the persistence, and the mono branch is the filter's
+                    business rather than a knob — see `drawingSoundIsMono`. */}
+                {drawingTemplate.id === 'scope' && <>
+                  <div className="editor-field">
+                    <span><span className="editor-label">TRACE</span></span>
+                    <div className="exact-row">
+                      <label className="mini-field"><span>PERSISTENCE</span><NumberField min={0} max={1} step={0.01} className="editor-input" value={drawingTune.scopePersist} onValue={(value) => updatePreset({ scopePersist: clampScopePersist(value) })} title="How long the trace lasts: 0 is a single bright dot, and a long trail is what a phosphor scope looks like." /></label>
+                      <label className="mini-field"><span>ZOOM</span><NumberField min={SCOPE_MIN_ZOOM} max={SCOPE_MAX_ZOOM} step={0.1} className="editor-input" value={drawingTune.scopeZoom} onValue={(value) => updatePreset({ scopeZoom: clampScopeZoom(value) })} title="How far the trace is magnified about the centre." /></label>
+                    </div>
+                  </div>
+                  <EditorField label="DRAW" reason="A continuous trace, or a trail of dots with the samples' own spacing in it.">
+                    <select value={drawingTune.scopeDraw} onChange={(event) => updatePreset({ scopeDraw: event.target.value as NonNullable<EncodingPreset['scopeDraw']> })}>
+                      {SCOPE_DRAWS.map((draw) => <option key={draw} value={draw}>{draw.toUpperCase()}</option>)}
+                    </select>
                   </EditorField>
                 </>}
               </>}

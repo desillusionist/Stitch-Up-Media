@@ -10,7 +10,7 @@ import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
-import { VISUALIZATION_BACKGROUND, VISUALIZATION_COLOR, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
+import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingSoundIsMono, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -203,12 +203,18 @@ export class FFmpegEngine {
     let sourceSize: { width: number; height: number } | null = sequence?.width && sequence?.height
       ? { width: sequence.width, height: sequence.height }
       : null
+    // The channel counts of the sound being drawn, which is the one thing a polar scope has to know about
+    // its input: two identical channels draw a flat line rather than a ring. Taken from the probe this path
+    // already makes, and left empty when it fails — an unknown layout is drawn as a stereo one, because a
+    // wrong quadrant on a stereo file is worse than a plain scope on a mono one.
+    let sourceChannels: number[] = []
     try {
       const probe = await probeFile(source)
       expectedSeconds = segmentTiming(
         sourceDuration(task, source, sequence, () => ({ duration: Number(probe.duration || 0) })),
         trim,
       ).duration
+      sourceChannels = probe.audioStreams.map((stream) => stream.channels || 0).filter((count) => count > 0)
       const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
       if (!sourceSize && resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
         sourceSize = { width: resolution[0], height: resolution[1] }
@@ -234,7 +240,7 @@ export class FFmpegEngine {
     // EVERY audio stream of the input, which is fine for a lone sound file and wrong the moment one is
     // not, while `[0:a:0]` is the one stream this path means. The drawing is laid out to the same rate
     // and channel count every other path writes, because the two halves of one split cannot differ.
-    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, 2, expectedSeconds)
+    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, 2, expectedSeconds, drawingSoundIsMono(sourceChannels))
     else if (soundOnly) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
@@ -401,7 +407,9 @@ export class FFmpegEngine {
     // files, because a stitch plays its sources one after another and the picture has to show that
     // rather than a mix of them. Black remains the answer when nothing was asked for.
     if (stitchPictured) {
-      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, targetChannels, clipDurations.reduce((total, clip) => total + clip, 0))
+      // Every normalized source is written as stereo before it is joined, so the concatenated stream the
+      // drawing is made from is a stereo one whatever the files were — the scope is drawn straight.
+      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, targetChannels, clipDurations.reduce((total, clip) => total + clip, 0), false)
       else this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
     }
 
@@ -543,6 +551,10 @@ export class FFmpegEngine {
     // video's own answer comes from the probe below. Guessed at rather than probed, the tags that name
     // each track's language would be written against a stream that may not exist.
     let videoHasAudio = !isStillCover && !isSequenceVideo
+    // The added tracks' channel counts, which the polar scope's mono branch is decided from. Collected here
+    // because this path already probes every one of them, and empty when the probe fails — an unknown layout
+    // is drawn as a stereo one rather than guessed at as a mono one.
+    let extraAudioChannels: number[] = []
     try {
       const videoProbe = await probeFile(videoSource)
       probedDuration = Number(videoProbe.duration || 0)
@@ -554,6 +566,9 @@ export class FFmpegEngine {
         videoSize = { width: videoSequence.width, height: videoSequence.height }
       }
       const audioProbes = await Promise.all(extraAudios.map((track) => probeFile(track.path)))
+      extraAudioChannels = audioProbes
+        .flatMap((probe) => probe.audioStreams.map((stream) => stream.channels || 0))
+        .filter((count) => count > 0)
       longestAudioDuration = audioProbes.reduce((max, probe, index) => {
         const point = this.trimPoint(task, extraAudios[index].path, 0)
         const full = Number(probe.duration || 0)
@@ -611,7 +626,10 @@ export class FFmpegEngine {
     ]
     const pictured = drawsSound && audible.length > 0
     if (pictured) {
-      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, 2, expectedSeconds)
+      // The audible tracks are what the drawing is made from, so the scope is opened into quadrature only
+      // when every one of them is a single channel — the same question asked of the export's own mix.
+      const mono = drawingSoundIsMono(extraAudioChannels)
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, 2, expectedSeconds, mono)
     }
     const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
@@ -781,14 +799,14 @@ export class FFmpegEngine {
    * `duration` is how long the export's sound runs — what the progress line sweeps across — and the line's
    * own on/off comes from the preset, so the default lives in one place rather than at each call site.
    */
-  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number): void {
+  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number, mono: boolean): void {
     const { width, height } = this.frameBoxFor(preset)
     const graph = visualizationGraph({
       template: preset.visualization ?? 'waveform',
       width,
       height,
       fps: this.pictureRateFor(preset),
-      color: preset.visualizationColor || VISUALIZATION_COLOR,
+      color: drawingColorOf(preset),
       sources,
       background,
       rate,
@@ -796,6 +814,8 @@ export class FFmpegEngine {
       duration,
       progressLine: visualizationProgressLine(preset),
       eq: eqStyleOf(preset),
+      tune: drawingTuneOf(preset),
+      mono,
     })
     cmd.outputOptions([`-filter_complex ${graph}`, '-map [v]', '-map [aout]', '-shortest'])
   }

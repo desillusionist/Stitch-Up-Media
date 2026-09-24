@@ -18,6 +18,7 @@ scripts/.mediaRange.cjs
 scripts/.monitor-repro.js
 scripts/.monitor-repro.html
 scripts/.engine.cjs
+scripts/.visualization.cjs
 # The compact scale's arithmetic harness (see `npm run check-scale`)
 scripts/.check-scale
 # The strip's runtime harness (see `npm run check-sync`)
