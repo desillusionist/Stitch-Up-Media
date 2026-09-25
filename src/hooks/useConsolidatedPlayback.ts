@@ -452,16 +452,20 @@ export const useConsolidatedPlayback = (
     // pitch rule beside it is for. REVERSE is the only case that is silent: an element cannot run backwards,
     // so there is nothing playing at all, and the picture is repainted by seeking instead.
     //
-    // What an added track is played at: the same composed rate the picture element is given, so the two never
-    // drift apart.
-    const rate = playbackRateFor(shuttleRate, speed)
-    const audible = playing && shuttleRate >= 0
+    // What an added track is played at: the composed rate the picture element is given, so the two never drift
+    // apart — EXCEPT in reverse, where an element cannot run at a negative rate. There the shuttle's MAGNITUDE
+    // is used and the track plays FORWARD while the anchored clock walks the playhead back, the clock's own
+    // drift correction pulling it onto the playhead as it goes. That is a rewind rather than a true reversal —
+    // the same trade a backward scrub makes, and for the same reason — and it is deliberately audible: pausing
+    // the track outright, which is what this was, is why J had no sound at all.
+    const reverse = shuttleRate < 0
+    const rate = reverse ? (Math.abs(shuttleRate) || 1) * speed : playbackRateFor(shuttleRate, speed)
     lanesRef.current.forEach((lane) => {
       const element = audioElements.current?.[lane.id]
       if (!element) return
       element.playbackRate = rate
       element.preservesPitch = preservesPitchFor(shuttleRate)
-      if (audible) void element.play().catch(() => { /* element may still be loading */ })
+      if (playing) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
   }, [playing, shuttleRate, speed, segment?.key, audioLaneSignature, audioElements, applyPendingSeek, applyRate, startPlayback])

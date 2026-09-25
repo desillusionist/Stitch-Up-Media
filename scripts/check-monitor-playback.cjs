@@ -144,8 +144,10 @@ const scrubMeasure = `(async () => {
  */
 const keysMeasure = `(async () => {
   const v = document.querySelector('video')
+  const a = window.__audio
   const p = window.__playback
   if (!v || !p) return { HARNESS_ERROR: 'no video element or playback hook' }
+  if (!a) return { HARNESS_ERROR: 'the added track never mounted' }
   try {
     await new Promise((resolve, reject) => {
       if (v.readyState >= 2) return resolve()
@@ -178,10 +180,22 @@ const keysMeasure = `(async () => {
   await sleep(40)
   const speedAfterPlay = live().speed
   live().pause()
+  // REVERSE MUST BE AUDIBLE. J used to pause the slaved track outright, so a backward shuttle was silent; the
+  // track is driven by rate now, and while the playhead walks BACK it is still running — a rewind rather than a
+  // true reversal, which is all an element can do.
+  live().setShuttleRate(-1)
+  await sleep(150)
+  const revStart = live().position
+  await sleep(600)
+  const revEnd = live().position
+  const revPlaying = !a.paused
+  const revRate = a.playbackRate
+  live().pause()
   return {
     slowPlaying,
     slowAdvanced: +(slowEnd - slowStart).toFixed(3),
     speedSet, speedAfterStop, speedAfterPlay,
+    revPlaying, revAdvanced: +(revEnd - revStart).toFixed(3), revRate: +revRate.toFixed(3),
   }
 })()`
 
@@ -298,6 +312,9 @@ app.whenReady().then(async () => {
     if (keys.speedSet !== 2) problems.push(`setting the shared speed left it at ${keys.speedSet}x rather than 2x`)
     if (keys.speedAfterStop !== 1) problems.push(`a STOP did not put the shared speed back: it stayed at ${keys.speedAfterStop}x`)
     if (keys.speedAfterPlay !== 1) problems.push(`PLAY/PAUSE did not put the shared speed back: it stayed at ${keys.speedAfterPlay}x`)
+    // REVERSE IS AUDIBLE: the slaved track keeps running while the playhead walks back.
+    if (!keys.revPlaying) problems.push('a backward shuttle (J) left the added track PAUSED, so it was silent')
+    if (!(keys.revAdvanced < -0.2)) problems.push(`a backward shuttle did not walk the playhead back: it moved ${keys.revAdvanced}s over 0.6s`)
   } else if (results.keys) {
     problems.push(`the keys could not be measured: ${results.keys.HARNESS_ERROR}`)
   }
