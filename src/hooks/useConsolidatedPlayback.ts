@@ -589,7 +589,10 @@ export const useConsolidatedPlayback = (
   const beginScrub = useCallback(() => {
     if (scrubbingRef.current) return
     scrubbingRef.current = true
-    scrubTickRef.current = null
+    // Seeded with where and when the GESTURE began, not left empty: the very first tick then has a previous
+    // tick to measure its velocity against, so the sound is driven at the wheel's speed from the first event
+    // rather than lagging for two of them and having to be corrected.
+    scrubTickRef.current = { at: performance.now(), position: stateRef.current.position, rate: 1 }
     resumeAfterScrubRef.current = stateRef.current.playing && shuttleRef.current >= 0
     if (!resumeAfterScrubRef.current) return
     lanesRef.current.forEach((lane) => {
@@ -638,9 +641,18 @@ export const useConsolidatedPlayback = (
    */
   const scrubBy = useCallback((delta: number) => { beginScrub(); positionScrub(stateRef.current.position + delta) }, [beginScrub, positionScrub])
 
+  /**
+   * Sets the shuttle rate, and — for any rate that actually drives the transport — makes it RUN.
+   *
+   * The slow motion (K+J / K+L) sets a rate while the transport is paused, because K pauses: without the run
+   * here the readout showed 0.5x while the playhead stood perfectly still, which is exactly the fault reported.
+   * A rate of ZERO only clears the shuttle, so a release after the slow motion leaves ordinary playback going
+   * rather than stopping it.
+   */
   const setShuttleRate = useCallback((rate: number) => {
     setShuttleRateState(rate)
     anchorRef.current = null
+    if (rate !== 0) setPlaying(true)
   }, [])
 
   /**
@@ -672,14 +684,23 @@ export const useConsolidatedPlayback = (
       anchorRef.current = null
     }, []),
     error,
+    /**
+     * Play or pause, and put the transport back to ORDINARY while doing it.
+     *
+     * A stop or a play is a return to normal, so it clears the shuttle AND the shared speed that L accelerates
+     * through — otherwise a speed L left at 2x (or 4x, or 8x) survived the stop and the next play, and the only
+     * way back to 1x was to pick it from the selector. See `accelerate`, which is what set it.
+     */
     toggle: useCallback(() => {
       if (!playable) return
       setShuttleRate(0)
+      setSpeedState(DEFAULT_PREVIEW_SPEED)
       if (stateRef.current.playing) { setPlaying(false); return }
       restartIfFinished(1)
       setPlaying(true)
     }, [playable, setShuttleRate, restartIfFinished]),
-    pause: useCallback(() => { setShuttleRate(0); setPlaying(false) }, [setShuttleRate]),
+    /** A stop: the same return to ordinary as PLAY/PAUSE, with the transport left stopped. */
+    pause: useCallback(() => { setShuttleRate(0); setSpeedState(DEFAULT_PREVIEW_SPEED); setPlaying(false) }, [setShuttleRate]),
     seek,
     scrub,
     scrubBy,

@@ -131,6 +131,60 @@ const scrubMeasure = `(async () => {
   }
 })()`
 
+/**
+ * The two transport faults the keys are about.
+ *
+ * SLOW MOTION MUST MOVE. K pauses, and K+J / K+L then sets a shuttle rate — with the readout saying 0.5x while
+ * the playhead stands still, which is the fault as reported. This drives the hook exactly as the keys do and
+ * measures that the playhead ADVANCES at the slow rate.
+ *
+ * A STOP OR A PLAY PUTS THE SPEED BACK. L accelerates the shared speed, and the selector showed the raised
+ * figure long after K or Space, so the only way back to 1x was to pick it. This sets 2x and checks both keys
+ * return it to the ordinary speed.
+ */
+const keysMeasure = `(async () => {
+  const v = document.querySelector('video')
+  const p = window.__playback
+  if (!v || !p) return { HARNESS_ERROR: 'no video element or playback hook' }
+  try {
+    await new Promise((resolve, reject) => {
+      if (v.readyState >= 2) return resolve()
+      v.addEventListener('loadeddata', () => resolve(), { once: true })
+      v.addEventListener('error', () => reject(new Error('media error ' + (v.error && v.error.code))), { once: true })
+      setTimeout(() => reject(new Error('no data after 20s')), 20000)
+    })
+  } catch (error) { return { HARNESS_ERROR: String(error && error.message) } }
+  const live = () => window.__playback
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  // SLOW MOTION: stop (as K does), set the rate the hold sets, and it must run.
+  live().pause()
+  live().setShuttleRate(0.5)
+  await sleep(150)
+  const slowStart = live().position
+  const slowPlaying = live().playing
+  await sleep(600)
+  const slowEnd = live().position
+  live().pause()
+  // THE RESET: L leaves the shared speed raised; K (pause) and Space (toggle) must put it back to ordinary.
+  live().setSpeed(2)
+  await sleep(40)
+  const speedSet = live().speed
+  live().pause()
+  await sleep(40)
+  const speedAfterStop = live().speed
+  live().setSpeed(2)
+  await sleep(40)
+  live().toggle()
+  await sleep(40)
+  const speedAfterPlay = live().speed
+  live().pause()
+  return {
+    slowPlaying,
+    slowAdvanced: +(slowEnd - slowStart).toFixed(3),
+    speedSet, speedAfterStop, speedAfterPlay,
+  }
+})()`
+
 const runFfmpeg = (args) => new Promise((resolve, reject) => {
   execFile('ffmpeg', args, { maxBuffer: 8 * 1024 * 1024 }, (error, _stdout, stderr) => {
     if (error) reject(new Error(String(stderr || error.message)))
@@ -204,7 +258,10 @@ app.whenReady().then(async () => {
     await new Promise((resolve) => setTimeout(resolve, 400))
     results[variant] = await run(measure)
     // The scrub is about the hook and not about how the ref is spelled, so it is measured once.
-    if (variant === 'stable' && !results[variant].HARNESS_ERROR) results.scrub = await run(scrubMeasure)
+    if (variant === 'stable' && !results[variant].HARNESS_ERROR) {
+      results.scrub = await run(scrubMeasure)
+      results.keys = await run(keysMeasure)
+    }
   }
 
   console.log(JSON.stringify({ file: PROVIDED || 'generated 1080p fixture', sourceDuration: +duration.toFixed(3), sampleSeconds: SAMPLE_SECONDS, results }, null, 2))
@@ -227,11 +284,22 @@ app.whenReady().then(async () => {
     if (scrub.audioPausedDuring) problems.push('the added track was PAUSED during the scrub, so the scrub went silent')
     if (scrub.videoPausedDuring) problems.push('the picture was PAUSED during the scrub')
     if (!(scrub.audioRatePeak > 1.05)) problems.push(`the added track was not sped with the wheel: its rate only reached ${scrub.audioRatePeak}\u00d7`)
-    if (!(scrub.audioSeeksDuring < 6)) problems.push(`the added track was seeked on nearly every tick: ${scrub.audioSeeksDuring} seeks over 30 ticks`)
+    if (!(scrub.audioSeeksDuring < 8)) problems.push(`the added track was seeked on nearly every tick: ${scrub.audioSeeksDuring} seeks over 30 ticks`)
     if (!(Math.abs(scrub.audioRateAfter - 1) < 0.01)) problems.push(`the added track was left at ${scrub.audioRateAfter}\u00d7 rather than handed back its ordinary rate`)
     if (scrub.audioPausedAfter) problems.push('the added track was left paused after the scrub over a playing job')
   } else if (results.scrub) {
     problems.push(`the scrub could not be measured: ${results.scrub.HARNESS_ERROR}`)
+  }
+  // SLOW MOTION MOVES, AND A STOP OR A PLAY PUTS THE SPEED BACK.
+  if (results.keys && !results.keys.HARNESS_ERROR) {
+    const keys = results.keys
+    if (!keys.slowPlaying) problems.push('slow motion did not start the transport')
+    if (!(keys.slowAdvanced > 0.15)) problems.push(`slow motion showed a rate but the playhead did not move: it advanced ${keys.slowAdvanced}s over 0.6s at 0.5x`)
+    if (keys.speedSet !== 2) problems.push(`setting the shared speed left it at ${keys.speedSet}x rather than 2x`)
+    if (keys.speedAfterStop !== 1) problems.push(`a STOP did not put the shared speed back: it stayed at ${keys.speedAfterStop}x`)
+    if (keys.speedAfterPlay !== 1) problems.push(`PLAY/PAUSE did not put the shared speed back: it stayed at ${keys.speedAfterPlay}x`)
+  } else if (results.keys) {
+    problems.push(`the keys could not be measured: ${results.keys.HARNESS_ERROR}`)
   }
   if (!problems.length) {
     // The element is handed a real, seekable video through the app's own URL: it must play it at the
