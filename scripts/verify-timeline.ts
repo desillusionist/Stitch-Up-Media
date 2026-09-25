@@ -12,7 +12,7 @@ import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MI
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
 import { presetSummary } from '../src/lib/presetSummary'
-import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeChannelsOf, scopeFade, scopeSide, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
+import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, scopeTint, scopeTintFilter, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
 import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
@@ -1620,11 +1620,12 @@ console.log('\n== the LED templates ==')
   check('the editor\u2019s still is built through the same chains', visualizationStillGraph({ ...settings, template: 'matrix-panel', sources: ['0:a'], eq: panelEq, tune: drawingTuneOf({ visualization: 'matrix-panel' }) }).includes('[panel][active]blend=all_mode=lighten:shortest=1'), true)
 }
 
-console.log('\n== the polar scope ==')
+console.log('\n== the vector scope ==')
 {
   // A scope plots one channel against the other, which is why its canvas is SQUARE — stretched to a 16:9
-  // frame a ring would be an ellipse — and why a mono sound cannot be fed straight in. And its colour is
-  // three channel CONTRASTS rather than a hex, so it comes from the theme.
+  // frame a circle would be an ellipse — and why a mono sound cannot be fed straight in. The pair is traced as
+  // a LISSAJOUS, so the figure is a circle whose radius is the amplitude and sits ON the centre of the canvas;
+  // the polar mode read the same pair as an angle and a distance and drew a fountain rising from the baseline.
   const settings = { width: 1920, height: 1080, fps: 30, color: '#9fbf9a', sources: ['0:a'], background: '#000000', rate: 48000, channels: 2 }
   // The ring is what a scope draws UNLESS it is told otherwise, and that is the correction of a wrong guess: a
   // container's channel count is not its content, so a mono signal stored as stereo — the commonest case by
@@ -1635,18 +1636,23 @@ console.log('\n== the polar scope ==')
   check('and the sound is mixed to ONE channel first, so the pair is built from the sound', scope.includes('[mixV]aformat=channel_layouts=mono,asplit=2[scopeQ1][scopeQ2]'), true)
   check('and one half is shifted a quarter of a cycle', scope.includes('[scopeQ2]aphaseshift=shift=0.25[scopeQ]'), true)
   check('and the halves are joined into a stereo pair, which is what opens it into a ring', scope.includes('[scopeI][scopeQ]join=inputs=2:channel_layout=stereo,avectorscope='), true)
-  check('as a polar trace at the frame\u2019s rate and draw mode', scope.includes('avectorscope=mode=polar:rate=30:draw=line:zoom=1'), true)
-  check('on a square canvas the frame\u2019s short side gives it', scope.includes(':s=1080x1080'), true)
+  check('as a lissajous trace at the frame rate and draw mode', scope.includes('avectorscope=mode=lissajous:rate=30:draw=dot:zoom=1'), true)
+  check('on a square canvas the frame short side gives it', scope.includes(':s=1080x1080'), true)
   check('padded either side, so a ring stays a ring', scope.includes(',pad=1920:1080:420:0:color=black[w]'), true)
-  check('coloured by the drawing own colour, because a scope has no colour option of its own', scope.includes('rc=159:gc=191:bc=154'), true)
-  // Where the colour comes from: the drawing's own, so a scope follows the COLOUR field as every other
-  // template does. All three channels are set, and that is the whole of the stray-purple fix — a contrast left
-  // at zero carries only the near-black rounding of the trace, which lands as magenta specks.
-  check('the contrasts are the colour own three channels', scopeChannelsOf('#9fbf9a'), { red: 159, green: 191, blue: 154 })
-  check('and a custom colour is what the trace is drawn in', visualizationGraph({ ...settings, template: 'scope', color: '#00ff00', tune: DEFAULT_TUNE }).includes('rc=0:gc=255:bc=0'), true)
-  check('while an unreadable colour falls back to the app own green', scopeChannelsOf('nonsense'), { red: 159, green: 191, blue: 154 })
-  check('and faded by the inverse of the persistence', scope.includes('rf=31:gf=31:bf=31'), true)
-  check('the default persistence is a long trail', scopeFade(SCOPE_DEFAULT_PERSIST), 31)
+  // Monochrome, then TINTED: a per-channel contrast cannot land on a colour — equal contrasts give a
+  // near-neutral trace however bright they are set, which is why it read as white — so the filter draws a grey
+  // trace and the tint multiplies that grey back up to the drawing's own colour.
+  check('the trace is drawn monochrome rather than coloured by the filter', scope.includes('rc=255:gc=255:bc=255'), true)
+  check('and its chroma is dropped before the tint', scope.includes(',format=gray,format=rgb24,lutrgb='), true)
+  check('which multiplies the grey up to the drawing\u2019s own colour', scope.includes(scopeTintFilter('#9fbf9a')), true)
+  check('the tint is the colour\u2019s own three channels, as shares', scopeTint('#9fbf9a'), { red: 159 / 255, green: 191 / 255, blue: 154 / 255 })
+  check('so a custom colour tints the trace to itself', visualizationGraph({ ...settings, template: 'scope', color: '#ff0000', tune: DEFAULT_TUNE }).includes(scopeTintFilter('#ff0000')), true)
+  check('while an unreadable colour falls back to the app\u2019s own green', scopeTint('nonsense'), scopeTint('#9fbf9a'))
+  check('and faded by the inverse of the persistence', scope.includes('rf=128:gf=128:bf=128'), true)
+  check('the default persistence is a short trail', scopeFade(SCOPE_DEFAULT_PERSIST), 128)
+  check('dots by default, which is the cleaner of the two draws', drawingTuneOf({}).scopeDraw, 'dot')
+  check('and a job that asks for a line gets one', drawingTuneOf({ scopeDraw: 'line' }).scopeDraw, 'line')
+  check('with anything else settling for the default', drawingTuneOf({ scopeDraw: 'nonsense' as never }).scopeDraw, 'dot')
   check('full persistence is no fade at all, which is an endless trail', scopeFade(1), 0)
   check('and none is the shortest trail the filter has', scopeFade(0), 255)
   check('the square is the frame\u2019s short side', scopeSide({ width: 1920, height: 1080 }), 1080)
@@ -1658,7 +1664,7 @@ console.log('\n== the polar scope ==')
   const wide = visualizationGraph({ ...settings, template: 'scope', tune: drawingTuneOf({ scopeTrueStereo: true }) })
   check('TRUE STEREO feeds the sound\u2019s own pair, with no quadrature in front of it', wide.includes('aphaseshift'), false)
   check('and no downmix either', wide.includes('aformat=channel_layouts=mono'), false)
-  check('so the scope is handed the mix as it stands', wide.includes('[mixV]avectorscope=mode=polar'), true)
+  check('so the scope is handed the mix as it stands, and traced the same way', wide.includes('[mixV]avectorscope=mode=lissajous'), true)
   check('and it is off unless it is asked for', drawingTuneOf({}).trueStereo, false)
   check('the editor\u2019s still is opened out the same way', visualizationStillGraph({ ...settings, template: 'scope', sources: ['0:a'] }).includes('aphaseshift=shift=0.25'), true)
 }

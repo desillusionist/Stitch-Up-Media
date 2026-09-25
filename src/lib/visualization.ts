@@ -471,10 +471,18 @@ export const SPECTRUM_DEFAULT_SCALE: SpectrumScale = 'log'
 export type WaveWeight = 'line' | 'fill'
 export const WAVE_WEIGHTS: WaveWeight[] = ['fill', 'line']
 export const WAVE_DEFAULT_WEIGHT: WaveWeight = 'fill'
-/** The scope's draw modes — a continuous trace, or dots. */
+/**
+ * The scope's draw modes — a run of dots, or a continuous trace.
+ *
+ * DOTS are the default, and the reason is measured rather than taste: the trace is a few pixels wide and the
+ * trail is what accumulates it, so a LINE draws a joined-up stroke over everything the signal has been through
+ * — measured on a broadband source, a line inks about seven times what dots ink over the same window — which
+ * is what reads as frantic lines rather than as a rosette. A dot leaves the same figure with space between
+ * its marks.
+ */
 export type ScopeDraw = 'dot' | 'line'
-export const SCOPE_DRAWS: ScopeDraw[] = ['line', 'dot']
-export const SCOPE_DEFAULT_DRAW: ScopeDraw = 'line'
+export const SCOPE_DRAWS: ScopeDraw[] = ['dot', 'line']
+export const SCOPE_DEFAULT_DRAW: ScopeDraw = 'dot'
 /**
  * How many waveforms a waveform template draws.
  *
@@ -520,18 +528,26 @@ export const parseHexColour = (colour: string): { red: number; green: number; bl
 }
 
 /**
- * The polar scope's three channel CONTRASTS, taken from the colour the drawing is made in.
+ * The polar scope's tint, as the share of each channel a monochrome trace is carried to.
  *
- * The scope has no colour option of its own — its output is a per-pixel contrast applied to each channel — so
- * the drawing's colour is what decides it, which is also what makes it follow the COLOUR field rather than a
- * table fixed per theme. All three are set, and none to zero, and that is the whole of the fix for the stray
- * purple: measured, a contrast of zero leaves the channel it belongs to carrying only the near-black rounding
- * of the trace, which lands as magenta specks at (2,0,3) where the same scope with every channel set is green
- * throughout. An unreadable colour falls back to the app's own green, which is the one trace that cannot be
- * wrong; a colour the filters refuse would have failed the drawing a line later anyway.
+ * The scope is drawn MONOCHROME and coloured afterwards, rather than coloured by the filter's own per-channel
+ * contrasts, and the reason is that a contrast per channel cannot be made to land on a colour: equal contrasts
+ * give a near-neutral trace however bright it is asked to be, which is why the drawing read as WHITE. So the
+ * colouring is taken out of the filter's hands — it draws a grey trace, and this multiplies that grey back up
+ * to the drawing's own colour, so the trace IS the theme's green or amber whatever the filter was told. An
+ * unreadable colour falls back to the app's own green, which is the one trace that cannot be wrong.
  */
-export const scopeChannelsOf = (colour: string): { red: number; green: number; blue: number } =>
-  parseHexColour(colour) ?? parseHexColour(VISUALIZATION_COLOR)!
+export const scopeTint = (colour: string): { red: number; green: number; blue: number } => {
+  const channels = parseHexColour(colour) ?? parseHexColour(VISUALIZATION_COLOR)!
+  return { red: channels.red / 255, green: channels.green / 255, blue: channels.blue / 255 }
+}
+
+/** The tint as the one filter that applies it: a multiply of a grey frame's three channels, per pixel. */
+export const scopeTintFilter = (colour: string): string => {
+  const tint = scopeTint(colour)
+  const factor = (value: number) => value.toFixed(4)
+  return `lutrgb=r='val*${factor(tint.red)}':g='val*${factor(tint.green)}':b='val*${factor(tint.blue)}'`
+}
 
 /**
  * One colour, dimmed: the theme's own green taken down to a share of itself.
@@ -554,8 +570,14 @@ export const dimmedColour = (colour: string, share: number): string => {
 export const SCOPE_MIN_ZOOM = 0.2
 export const SCOPE_MAX_ZOOM = 10
 export const SCOPE_DEFAULT_ZOOM = 1
-/** How long the scope's trace lasts, 0 to 1. High, because a scope with no trail is a single bright dot. */
-export const SCOPE_DEFAULT_PERSIST = 0.88
+/**
+ * The contrast every one of the scope's channels is drawn at, so the trace comes out neutral and can be
+ * tinted afterwards. Bright, because the tint only ever takes brightness away: the trace is multiplied down
+ * to the drawing's colour, so the nearer white it starts, the nearer that colour it lands.
+ */
+export const SCOPE_MONO_CONTRAST = 255
+/** How long the scope's trace lasts, 0 to 1. Short, because a long trail is what made the figure busy. */
+export const SCOPE_DEFAULT_PERSIST = 0.5
 /** The widest and narrowest a spectrum's colour may be pushed. */
 export const SPECTRUM_MIN_SATURATION = 0
 export const SPECTRUM_MAX_SATURATION = 10
@@ -779,7 +801,7 @@ export const drawingTuneOf = (preset: Pick<EncodingPreset,
     labels: (preset.eqLabels ?? own.labels) === true,
     scopePersist: clampScopePersist(preset.scopePersist ?? SCOPE_DEFAULT_PERSIST),
     scopeZoom: clampScopeZoom(preset.scopeZoom ?? SCOPE_DEFAULT_ZOOM),
-    scopeDraw: preset.scopeDraw === 'dot' ? 'dot' : SCOPE_DEFAULT_DRAW,
+    scopeDraw: preset.scopeDraw === 'line' ? 'line' : SCOPE_DEFAULT_DRAW,
     trueStereo: preset.scopeTrueStereo === true,
   }
 }
@@ -869,11 +891,15 @@ const drawingFilters = (request: DrawingRequest): string => {
   const colors = colourList(color)
   if (isBarsTemplate(template)) return `showfreqs=s=${size}:mode=bar:ascale=${eq.amplitude}:fscale=${eq.frequency}:minamp=${eq.sensitivity}:rate=${fps}:colors=${colors}`
   if (template === 'scope') {
-    // The scope's colour is three channel CONTRASTS rather than a hex — it has no colour option — so the
-    // drawing's own colour is what decides it, and the fade is the inverse of the persistence.
+    // A LISSAJOUS of the two channels, which is what the quadrature pair is FOR: the signal plotted against a
+    // copy of itself shifted a quarter of a cycle traces a figure whose radius is the amplitude, centred on the
+    // canvas — where the polar mode read the same pair as an angle and a distance and drew a fountain rising
+    // from the baseline. The trace is drawn MONOCHROME and tinted afterwards rather than coloured by the
+    // filter's own contrasts, because equal contrasts give a near-neutral trace however bright they are set,
+    // which is why it read as white; `format=gray` drops the chroma the filter did make and the tint puts the
+    // drawing's own colour back.
     const fade = scopeFade(tune.scopePersist)
-    const channels = scopeChannelsOf(color)
-    return `avectorscope=mode=polar:rate=${fps}:draw=${tune.scopeDraw}:zoom=${tune.scopeZoom}:rc=${channels.red}:gc=${channels.green}:bc=${channels.blue}:rf=${fade}:gf=${fade}:bf=${fade}:s=${size}`
+    return `avectorscope=mode=lissajous:rate=${fps}:draw=${tune.scopeDraw}:zoom=${tune.scopeZoom}:rc=${SCOPE_MONO_CONTRAST}:gc=${SCOPE_MONO_CONTRAST}:bc=${SCOPE_MONO_CONTRAST}:rf=${fade}:gf=${fade}:bf=${fade}:s=${size},format=gray,format=rgb24,${scopeTintFilter(color)}`
   }
   if (template === 'spectrum') return `showspectrumpic=s=${size}:mode=combined:color=${theme.ramp}:saturation=${tune.spectrumSaturation}:scale=${tune.spectrumScale}:legend=0`
   if (template === 'spectrum-scroll') return `showspectrum=s=${size}:mode=combined:color=${theme.ramp}:saturation=${tune.spectrumSaturation}:scale=${tune.spectrumScale}:slide=scroll,fps=${fps}`

@@ -210,7 +210,7 @@ app.whenReady().then(async () => {
       if (!scopeAsk) problems.push('the monitor asked for no still once the scope was chosen')
       else {
         if (scopeAsk.template !== 'scope') problems.push(`the still asked for once the scope was chosen was of ${String(scopeAsk.template)}`)
-        if (scopeAsk.scopeDraw !== 'line' || scopeAsk.scopeZoom !== 1 || scopeAsk.scopePersist !== 0.88) problems.push(`the scope's still was asked for ${String(scopeAsk.scopeDraw)}/${String(scopeAsk.scopeZoom)}/persistence ${String(scopeAsk.scopePersist)} rather than the defaults`)
+        if (scopeAsk.scopeDraw !== 'dot' || scopeAsk.scopeZoom !== 1 || scopeAsk.scopePersist !== 0.5) problems.push(`the scope's still was asked for ${String(scopeAsk.scopeDraw)}/${String(scopeAsk.scopeZoom)}/persistence ${String(scopeAsk.scopePersist)} rather than the defaults`)
       }
       // MIRRORED BARS shares the EQ's whole set: if the pair ever came apart, the knobs would be missing from
       // one of them and this is where it would show.

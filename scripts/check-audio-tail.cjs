@@ -240,18 +240,24 @@ const inkedBands = async (file, time, bands = 20) => {
 }
 
 /**
- * How much of the frame is MAGENTA — blue and red both leading green — as a luma of a mask over it.
+ * The brightest pixel of a MASK laid over the frame, as the luma of the mask.
  *
- * The polar scope's stray purple is exactly this: a trace whose colour lost a channel leaves the near-black
- * rounding of its edges leaning blue and red at once, which is what a green trace must never do. The measure
- * is the mean of a mask that is white only where both lead green, so a green drawing reads the yuv black
- * floor (about 16) and a drawing with the specks reads a little above it. Measured on this fixture: 16.15
- * with a contrast left at zero and 16.00 with every channel set.
+ * `expression` is a `geq` over the RGB frame, drawn into the red channel, so the mask reads a luma well above
+ * the yuv black floor (16) where it fires and the floor itself where it never does — which makes "is there any
+ * such pixel at all" one number. A question about what colour the drawing IS rather than how much of the frame
+ * it covers, which is what these are for: a trace is a few pixels wide and a mean would bury it in the black.
  */
-const magenta = async (file, time) => {
-  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', "format=rgb24,geq=r='gt(r(X,Y),g(X,Y)+6)*gt(b(X,Y),g(X,Y)+6)*255':g=0:b=0,signalstats,metadata=print:file=-", '-f', 'null', '-'])
-  return Math.round(Number(String(out).match(/YAVG=([\d.]+)/)?.[1] ?? 0) * 100) / 100
+const maskBrightest = async (file, time, expression) => {
+  const out = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `format=rgb24,geq=r='${expression}':g=0:b=0,signalstats,metadata=print:file=-`, '-f', 'null', '-'])
+  return Math.round(Number(String(out).match(/YMAX=([\d.]+)/)?.[1] ?? 0))
 }
+
+/** Green leading both other channels: what the theme's own trace is, and what a neutral one is not. */
+const greenBrightest = (file, time) => maskBrightest(file, time, 'gt(g(X,Y),r(X,Y)+2)*gt(g(X,Y),b(X,Y)+2)*255')
+/** Blue and red both leading green: the stray purple, which a green trace cannot produce anywhere. */
+const magentaBrightest = (file, time) => maskBrightest(file, time, 'gt(r(X,Y),g(X,Y)+6)*gt(b(X,Y),g(X,Y)+6)*255')
+/** All three channels bright at once: white, which a trace tinted to a colour never is. */
+const whiteBrightest = (file, time) => maskBrightest(file, time, 'gt(r(X,Y),200)*gt(g(X,Y),200)*gt(b(X,Y),200)*255')
 
 const failures = []
 const check = (label, actual, expected) => {
@@ -1123,14 +1129,26 @@ const main = async () => {
         check(`and the same bars unmirrored are not symmetric (vflip difference ${delta})`, delta > 150, true)
       }
       if (item.scopeRing) {
-        // A spoke reaches one column band of twenty and a ring reaches several. Measured on this fixture: one
-        // with the quadrature off, eight with it on — so four is the floor and the figure is printed beside it.
+        // A lissajous of the quadrature pair traces a circle, so it reaches across the canvas rather than
+        // rising from the baseline. Measured on this fixture: seven column bands of twenty inked.
         const bands = await inkedBands(item.output, 2)
-        check(`a mono sound is opened into a ring rather than drawn as a spoke (${bands} of 20 bands inked)`, bands >= 4, true)
-        // And NO MAGENTA, which is the stray purple: the trace's colour is the whole of the fix, and a
-        // contrast left at zero carries only the near-black rounding of its edges as blue-and-red specks.
-        const purple = await magenta(item.output, 2)
-        check(`and it is green throughout, with no magenta specks (${purple}, the black floor being 16)`, purple <= 16.05, true)
+        check(`the pair is traced as a figure rather than a spoke (${bands} of 20 bands inked)`, bands >= 4, true)
+        // CENTRED, not a pedestal — the whole difference from the polar mode, whose fountain stood ON the
+        // baseline and left the middle of the frame black: here the middle is inked and the very bottom is not.
+        const middle = await bandLuma(item.output, 2, 0.45, 0.55)
+        const bottom = await bandLuma(item.output, 2, 0.8, 1)
+        check(`and it sits on the centre rather than the baseline (middle ${middle}, bottom ${bottom})`, middle > 60 && bottom < 40, true)
+        // THE TRACE IS THE DRAWING'S OWN COLOUR, not the white a per-channel contrast produced: green leads
+        // both other channels somewhere in the frame, and nothing in it is bright in all three at once. The
+        // margin is small on purpose — the theme's green is a desaturated one and 4:2:0 subsampling thins a
+        // thin trace's chroma, so a strict margin finds nothing on some runs; the tint keeps the channels in
+        // proportion however dim a pixel gets, so a small one is still exactly green-minus-neutral.
+        const green = await greenBrightest(item.output, 2)
+        const white = await whiteBrightest(item.output, 2)
+        check(`and the trace is the theme's own green rather than white (green ${green}, white ${white})`, green > 40 && white <= 16, true)
+        // And no magenta, which was the stray purple: blue and red never both lead green anywhere.
+        const purple = await magentaBrightest(item.output, 2)
+        check(`with no magenta specks anywhere (magenta ${purple})`, purple <= 16, true)
       }
       if (item.segmented) {
         // The dividers fall on a height the frame divides exactly into, so they sit at multiples of eight — and
