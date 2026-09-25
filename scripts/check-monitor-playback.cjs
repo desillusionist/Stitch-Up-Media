@@ -66,18 +66,21 @@ const measure = `(async () => {
 })()`
 
 /**
- * A WHEEL GESTURE WHILE PLAYING, which is the two-writers fault this pass fixes.
+ * A WHEEL GESTURE WHILE PLAYING, which is the two-writers fault AND the sound's own behaviour.
  *
  * A wheel fires faster than a render, so the old `seek` path left the auto-advance clock writing the playhead
  * as well and the two fought at every boundary. What is measured here is that the gesture is HONOURED — a delta
- * applied to the hook's own position accumulates rather than being lost — and that the transport RESUMES from
- * the settled playhead rather than stalling. A scrub that is wired but never resumes, or that loses deltas,
- * fails this.
+ * applied to the hook's own position accumulates rather than being lost — that the transport RESUMES from the
+ * settled playhead rather than stalling, and that the SOUND keeps playing through it: the added track is not
+ * paused (which was the regression), it is driven by RATE (so it is sped with the wheel), it is not seeked on
+ * every tick (which was the jog), and it is handed back its ordinary rate at the end.
  */
 const scrubMeasure = `(async () => {
   const v = document.querySelector('video')
+  const a = window.__audio
   const p = window.__playback
   if (!v || !p) return { HARNESS_ERROR: 'no video element or playback hook' }
+  if (!a) return { HARNESS_ERROR: 'the added track never mounted' }
   if (typeof p.scrubBy !== 'function') return { HARNESS_ERROR: 'the playback hook has no scrubBy' }
   try {
     await new Promise((resolve, reject) => {
@@ -93,19 +96,39 @@ const scrubMeasure = `(async () => {
   // re-read from the live handle each time (the hook publishes it every render), while the callbacks are stable.
   const live = () => window.__playback
   const startPos = live().position
+  // Counted from HERE, so the reading is the seeks the GESTURE caused and not the ones a load or the settle did.
+  let audioSeeks = 0
+  a.addEventListener('seeking', () => { audioSeeks += 1 })
+  let audioPausedDuring = false
+  let videoPausedDuring = false
+  let audioRatePeak = 0
   // Thirty ticks, ten milliseconds apart: a flick, and deliberately faster than the render that would carry a
   // rendered position forward — which is exactly why the delta is applied to the hook's own figure.
-  for (let i = 0; i < 30; i++) { live().scrubBy(0.05); await new Promise((resolve) => setTimeout(resolve, 10)) }
+  for (let i = 0; i < 30; i++) {
+    live().scrubBy(0.05)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    if (a.paused) audioPausedDuring = true
+    if (v.paused) videoPausedDuring = true
+    if (a.playbackRate > audioRatePeak) audioRatePeak = a.playbackRate
+  }
+  const audioSeeksDuring = audioSeeks
   const midPos = live().position
   // Let the gesture fall idle and the transport pick up again.
   await new Promise((resolve) => setTimeout(resolve, 500))
   const resumed = live().playing
+  const audioRateAfter = a.playbackRate
+  const audioPausedAfter = a.paused
   const t0 = performance.now(), c0 = v.currentTime
   await new Promise((resolve) => setTimeout(resolve, 700))
   const c1 = v.currentTime
   const resumedRate = (c1 - c0) / ((performance.now() - t0) / 1000)
   live().pause()
-  return { startPos: +startPos.toFixed(3), midPos: +midPos.toFixed(3), scrubDelta: +(midPos - startPos).toFixed(3), resumed, resumedRate: +resumedRate.toFixed(3) }
+  return {
+    startPos: +startPos.toFixed(3), midPos: +midPos.toFixed(3), scrubDelta: +(midPos - startPos).toFixed(3),
+    resumed, resumedRate: +resumedRate.toFixed(3),
+    audioPausedDuring, videoPausedDuring, audioRatePeak: +audioRatePeak.toFixed(3),
+    audioRateAfter: +audioRateAfter.toFixed(3), audioPausedAfter, audioSeeksDuring,
+  }
 })()`
 
 const runFfmpeg = (args) => new Promise((resolve, reject) => {
@@ -169,7 +192,9 @@ app.whenReady().then(async () => {
 
   const win = new BrowserWindow({
     width: 700, height: 500, show: false,
-    webPreferences: { backgroundThrottling: false, nodeIntegration: false, contextIsolation: true },
+    // No gesture is available in a harness, and the added track is deliberately NOT muted — its being audible
+    // during a scrub is the behaviour under test, so autoplay is permitted rather than worked around.
+    webPreferences: { backgroundThrottling: false, nodeIntegration: false, contextIsolation: true, autoplayPolicy: 'no-user-gesture-required' },
   })
   const run = (script) => win.webContents.executeJavaScript(`(() => { try { return ${script} } catch (error) { return { HARNESS_ERROR: String((error && error.stack) || error) } } })()`)
 
@@ -190,13 +215,21 @@ app.whenReady().then(async () => {
     const result = results[name]
     if (result.HARNESS_ERROR) problems.push(`the ${name} run could not be measured: ${result.HARNESS_ERROR}`)
   }
-  // The wheel gesture: the deltas accumulate hand over hand, and the transport resumes from where it settled.
+  // The wheel gesture: the deltas accumulate hand over hand, the transport resumes from where it settled, and
+  // the SOUND keeps up with it — the added track is not paused (the regression), is sped with the wheel, is not
+  // seeked on every tick (the jog), and is handed back its ordinary rate at the end.
   if (results.scrub && !results.scrub.HARNESS_ERROR) {
     const scrub = results.scrub
     // Thirty ticks of 0.05s is 1.5s; a generous window, because the render cadence rounds each landing.
     if (!(Math.abs(scrub.scrubDelta - 1.5) < 0.7)) problems.push(`a wheel gesture of 1.5s moved the playhead ${scrub.scrubDelta}s`)
     if (!scrub.resumed) problems.push('the transport was left stopped after a scrub over a playing job')
     if (!(scrub.resumedRate >= 0.85)) problems.push(`playback did not resume after the scrub: ${scrub.resumedRate}\u00d7`)
+    if (scrub.audioPausedDuring) problems.push('the added track was PAUSED during the scrub, so the scrub went silent')
+    if (scrub.videoPausedDuring) problems.push('the picture was PAUSED during the scrub')
+    if (!(scrub.audioRatePeak > 1.05)) problems.push(`the added track was not sped with the wheel: its rate only reached ${scrub.audioRatePeak}\u00d7`)
+    if (!(scrub.audioSeeksDuring < 6)) problems.push(`the added track was seeked on nearly every tick: ${scrub.audioSeeksDuring} seeks over 30 ticks`)
+    if (!(Math.abs(scrub.audioRateAfter - 1) < 0.01)) problems.push(`the added track was left at ${scrub.audioRateAfter}\u00d7 rather than handed back its ordinary rate`)
+    if (scrub.audioPausedAfter) problems.push('the added track was left paused after the scrub over a playing job')
   } else if (results.scrub) {
     problems.push(`the scrub could not be measured: ${results.scrub.HARNESS_ERROR}`)
   }

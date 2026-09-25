@@ -1328,14 +1328,6 @@ export const EditJobApp: React.FC = () => {
    * jump-to-start and jump-to-end widened to a timeline with many clips.
    */
   const heldKeysRef = useRef({ k: false })
-  /**
-   * Whether a J or L was pressed while K was held, which is what tells a K TAP from a K hold.
-   *
-   * A K held with a direction is the slow motion (tap J/L under it) or the step (release J/L under it); a K
-   * released with no direction under it is a tap, and a tap plays forward. The flag is what keeps a release
-   * after a hold from also counting as a tap and jumping the transport to a fast-forward.
-   */
-  const kDirectedRef = useRef(false)
   const slowMotionRef = useRef(false)
   const tapTimerRef = useRef<number | null>(null)
 
@@ -1401,18 +1393,13 @@ export const EditJobApp: React.FC = () => {
       // these did nothing.
       if (code === 'KeyK') {
         event.preventDefault()
-        // K no longer stops. It arms a tap, which plays forward — the slow motion is a J or an L pressed UNDER
-        // it, and which of the two this was is decided on release. Nothing pauses here, because a tap that had
-        // already stopped the transport could not then play it forward.
-        if (!event.repeat) { heldKeysRef.current.k = true; kDirectedRef.current = false }
+        if (!event.repeat) { heldKeysRef.current.k = true; playbackRef.current.pause() }
         return
       }
       if ((code !== 'KeyJ' && code !== 'KeyL') || event.repeat) return
       event.preventDefault()
       const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
       if (heldKeysRef.current.k) {
-        // A direction under a held K: from here the release is a slow motion or a step, never a tap.
-        kDirectedRef.current = true
         clearTap()
         tapTimerRef.current = window.setTimeout(() => {
           tapTimerRef.current = null
@@ -1421,18 +1408,14 @@ export const EditJobApp: React.FC = () => {
         }, TAP_THRESHOLD_MS)
         return
       }
-      playbackRef.current.shuttle(direction)
+      // L ACCELERATES: from rest it plays, already running it steps the shared speed value up (2x, then 4x, then
+      // 8x, from whatever the selector or the wheel set — see `accelerate`). J keeps the reverse shuttle.
+      if (code === 'KeyL') { playbackRef.current.accelerate(); return }
+      playbackRef.current.shuttle(-1)
     }
     const onKeyUp = (event: KeyboardEvent) => {
       const code = event.code
-      if (code === 'KeyK') {
-        heldKeysRef.current.k = false
-        // A K released with no direction pressed under it is a tap: forward playback, straight onto the
-        // fast-forward rung rather than the ordinary speed (see `nextTapRate`). A hold that carried a
-        // direction has already acted, so it is not read a second time.
-        if (!kDirectedRef.current) playbackRef.current.tapForward()
-        return
-      }
+      if (code === 'KeyK') { heldKeysRef.current.k = false; return }
       if (code !== 'KeyJ' && code !== 'KeyL') return
       const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
       if (tapTimerRef.current != null) {
@@ -3009,11 +2992,10 @@ export const EditJobApp: React.FC = () => {
             <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
             <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playback.playing ? '||' : '>'}] PLAY</button>
             <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
-            <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 ? ' is-fast' : ''}`}>
-              {/* The SHUTTLE's own rate, and nothing at all when there is no shuttle: the readout is about the
-                  transport being driven, and an idle transport is already saying so under the monitor. A
-                  preview being WATCHED at another speed is not a shuttle, so that branch shows the speed the
-                  element is actually running at rather than a flat 1x. */}
+            <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 || (playback.shuttleRate === 0 && playback.playing && playback.speed > 1) ? ' is-fast' : ''}`}>
+              {/* The rate the transport is being driven at: the shuttle's own when one is running, and otherwise
+                  the shared speed value the selector, the wheel and L all write. An idle transport says nothing
+                  here, because the line under the monitor is already saying it is paused. */}
               {playback.shuttleRate > 0 ? `> ${playback.shuttleRate}x`
                 : playback.shuttleRate < 0 ? `< ${Math.abs(playback.shuttleRate)}x`
                   : playback.playing ? `> ${speedLabel(playback.speed)}`
@@ -3125,7 +3107,7 @@ export const EditJobApp: React.FC = () => {
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
-          <div className="editor-note">&gt; SPACE PLAYS OR PAUSES; A TAP OF K PLAYS FORWARD AT 2x, AGAIN FASTER. &lt;- / -&gt; STEP ONE FRAME; J / L SHUTTLE AND SPEED UP ON REPEAT, K+J OR K+L IS SLOW MOTION. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
+          <div className="editor-note">&gt; SPACE PLAYS OR PAUSES, K STOPS. &lt;- / -&gt; STEP ONE FRAME; J SHUTTLES BACK AND L SPEEDS FORWARD (2x, 4x, 8x, FROM WHATEVER THE SPEED IS SET TO); K+J OR K+L IS SLOW MOTION. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
         </section>
 
         <section className="timeline-panel">

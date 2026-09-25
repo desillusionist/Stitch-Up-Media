@@ -65,7 +65,7 @@ app.whenReady().then(async () => {
     else {
       if (transport.state !== '|| PAUSED') problems.push(`an idle monitor reads ${JSON.stringify(transport.state)} rather than a pause`)
       if (String(transport.rate).trim() !== '') problems.push(`an idle transport still shows a rate of ${JSON.stringify(transport.rate)}, which is the pause glyph over again`)
-      if (String(transport.speeds) !== '0.5,1,1.5,2,3,4') problems.push(`the speed selector offers ${JSON.stringify(transport.speeds)} rather than the ladder the wheel climbs`)
+      if (String(transport.speeds) !== '0.5,1,1.5,2,3,4,8') problems.push(`the speed selector offers ${JSON.stringify(transport.speeds)} rather than the ladder the wheel and L climb`)
     }
     // The picture settings, which are the one part of the settings that is CONDITIONAL. A section that
     // is gated has two ways to be missing and they need different answers, so what is asserted here is

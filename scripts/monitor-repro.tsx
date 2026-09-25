@@ -21,6 +21,7 @@ type ReproGlobals = {
   __fps: number
   __playback?: ConsolidatedPlayback
   __video?: HTMLVideoElement | null
+  __audio?: HTMLAudioElement | null
   __renders: number
   __log: Array<{ kind: string; src: string }>
 }
@@ -40,7 +41,13 @@ const logMediaElement = (element: HTMLVideoElement | null, kind: string) => {
 }
 
 const model = {
-  lanes: [{ id: 'main', label: 'VIDEO', kind: 'video' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'main#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceIn: 0, trimmed: false }] }],
+  lanes: [
+    { id: 'main', label: 'VIDEO', kind: 'video' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'main#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceIn: 0, trimmed: false }] },
+    // An ADDED track, which is the lane whose sound the scrub is measured on: over a still or the black tail
+    // there is no video element, so this element is the only thing that can be audible, and it is the one the
+    // per-tick seek used to jog.
+    { id: 'sound', label: 'AUDIO', kind: 'audio' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'sound#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceIn: 0, trimmed: false }] },
+  ],
   duration: globals.__duration,
   unusedVideoSources: [] as string[],
 }
@@ -52,20 +59,28 @@ const model = {
  * during render, which is a new function every time.
  */
 const Monitor: React.FC<{ variant: 'stable' | 'inline' }> = ({ variant }) => {
-  const playback = useConsolidatedPlayback(model, React.useRef<Record<string, HTMLAudioElement | null>>({}), { playable: true, fps: globals.__fps })
+  const audioElements = React.useRef<Record<string, HTMLAudioElement | null>>({})
+  const playback = useConsolidatedPlayback(model, audioElements, { playable: true, fps: globals.__fps })
   globals.__renders += 1
-  React.useEffect(() => { globals.__playback = playback; globals.__video = playback.videoRef.current }, [playback])
+  React.useEffect(() => {
+    globals.__playback = playback
+    globals.__video = playback.videoRef.current
+    globals.__audio = audioElements.current.sound ?? null
+  }, [playback])
   const attach = variant === 'stable'
     ? playback.attachVideo
     : (element: HTMLVideoElement | null) => { playback.attachVideo(element); logMediaElement(element, 'monitor-video') }
-  return <video
-    ref={attach}
-    src={mediaUrl(globals.__file)}
-    preload="metadata"
-    playsInline
-    muted
-    style={{ width: 240, background: '#000' }}
-  />
+  return <>
+    <video
+      ref={attach}
+      src={mediaUrl(globals.__file)}
+      preload="metadata"
+      playsInline
+      muted
+      style={{ width: 240, background: '#000' }}
+    />
+    <audio ref={(element) => { audioElements.current.sound = element }} src={mediaUrl(globals.__file)} preload="auto" />
+  </>
 }
 
 const variant = (new URLSearchParams(window.location.search).get('variant') || 'stable') as 'stable' | 'inline'

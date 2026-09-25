@@ -1,5 +1,6 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
-import { nextShuttleRate, nextTapRate, TAP_FORWARD_RATE } from '../src/lib/shuttleRates'
+import { nextShuttleRate, nextForwardRung, FORWARD_ACCELERATE_RUNGS } from '../src/lib/shuttleRates'
+import { SCRUB_RATE_MAX, SCRUB_RATE_MIN, SCRUB_RATE_SMOOTHING, scrubRateFor } from '../src/lib/scrubAudio'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { PREVIEW_FORMAT_VERSION, dropPreviewsFor, previewKey, rememberedPreviewFor, resolveQuickLookRequest, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey, stillPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
@@ -101,13 +102,28 @@ console.log('\n== the J / K / L ladder ==')
   check('J doubles too, all the way to 8x', reverse, [-1, -2, -4, -8, -8])
   check('reversing starts from the bottom', nextShuttleRate(8, -1), -1)
   check('and forward again', nextShuttleRate(-8, 1), 1)
-  // A TAP of the forward key is its own ladder, starting one rung higher: a tap asks to watch forward rather
-  // than to stop, and the ordinary speed is already one key away, so the fast-forward is what it lands on.
-  check('the forward key\u2019s ladder starts on the second rung', TAP_FORWARD_RATE, 2)
-  check('so a tap from rest plays forward at 2x, not 1x', nextTapRate(0), 2)
-  check('repeated taps climb the same ladder L does', [0, 2, 4, 8].map(nextTapRate), [2, 4, 8, 8])
-  check('a tap from an ordinary forward speed climbs rather than dropping', nextTapRate(1), 2)
-  check('a tap out of reverse starts the forward climb afresh', nextTapRate(-4), 2)
+  // L ACCELERATES through the speed the selector and the wheel own, so a step is the next rung ABOVE wherever
+  // the transport already is — a wheeled 1.5x becomes 2x, a wheeled 3x becomes 4x, never a jump back to 1x.
+  check('the accelerate rungs are the shuttle\u2019s own four', FORWARD_ACCELERATE_RUNGS.join(','), '1,2,4,8')
+  check('from the ordinary speed the next rung is 2x', nextForwardRung(1), 2)
+  check('and again, up to the top', [1, 2, 4].map(nextForwardRung), [2, 4, 8])
+  check('the top rung is the top rather than a wrap', nextForwardRung(8), 8)
+  check('a speed between rungs lands on the next one above it', [1.5, 3].map(nextForwardRung), [2, 4])
+  check('and a slow speed climbs to the first rung', nextForwardRung(0.5), 1)
+}
+
+console.log('\n== how a scrub drives the sound ==')
+{
+  // The sound is driven by RATE that tracks the wheel, so a scrub is heard sped with the scroll. Velocity is in
+  // timeline-seconds per wall-second, so 1 is the sound's own speed.
+  check('a scrub at the sound’s own speed plays it at 1x', scrubRateFor(1, 1), 1)
+  check('a flick of five seconds a second plays it at 5x, smoothed towards it', scrubRateFor(5, 1), 1 + (5 - 1) * SCRUB_RATE_SMOOTHING)
+  check('and a reading the other way is the same magnitude, because an element cannot run backwards', scrubRateFor(-5, 1), scrubRateFor(5, 1))
+  check('the rate is smoothed rather than snapped to the reading', scrubRateFor(5, 1) < 5, true)
+  check('a very slow drag slows the sound to the floor rather than stopping it', scrubRateFor(0.05, 1), SCRUB_RATE_MIN)
+  check('and a very fast flick is held below a scream', scrubRateFor(50, 1) <= SCRUB_RATE_MAX, true)
+  check('a reading of nothing leaves the last rate in place', scrubRateFor(0, 2), 2)
+  check('the floor is the floor', SCRUB_RATE_MIN, 0.5)
 }
 
 console.log('\n== tail seeking on a multi-track lane ==')
@@ -1735,7 +1751,7 @@ console.log('\n== the preview speed ==')
 {
   // PREVIEW ONLY: this is the monitor\u2019s own playbackRate and a multiplier on the fallback clock. Nothing
   // here reaches ffmpeg — an export at an altered speed would be a different render, `setpts` and `atempo`.
-  check('the speeds the monitor offers', PREVIEW_SPEEDS.join(','), '0.5,1,1.5,2,3,4')
+  check('the speeds the monitor offers', PREVIEW_SPEEDS.join(','), '0.5,1,1.5,2,3,4,8')
   check('and it opens at ordinary speed', DEFAULT_PREVIEW_SPEED, 1)
   check('a speed that is not offered is answered with the ordinary one', clampPreviewSpeed(7), DEFAULT_PREVIEW_SPEED)
   check('and so is nonsense', clampPreviewSpeed('nonsense'), DEFAULT_PREVIEW_SPEED)
@@ -1760,9 +1776,9 @@ console.log('\n== the preview speed ==')
   // it STOPS at the ends rather than wrapping: a wheel that jumped from 4x back to 0.5x would change something
   // the reader did not ask for at the moment they asked for nothing more.
   check('a wheel up climbs one rung', steppedPreviewSpeed(1, 1), 1.5)
-  check('and again, all the way to the top', [1, 1.5, 2, 3, 4].map((rate) => steppedPreviewSpeed(rate, 1)), [1.5, 2, 3, 4, 4])
+  check('and again, all the way to the top', [1, 1.5, 2, 3, 4, 8].map((rate) => steppedPreviewSpeed(rate, 1)), [1.5, 2, 3, 4, 8, 8])
   check('a wheel down drops one rung', steppedPreviewSpeed(2, -1), 1.5)
-  check('and again, all the way to the bottom', [4, 3, 2, 1.5, 1].map((rate) => steppedPreviewSpeed(rate, -1)), [3, 2, 1.5, 1, 0.5])
+  check('and again, all the way to the bottom', [8, 4, 3, 2, 1.5, 1].map((rate) => steppedPreviewSpeed(rate, -1)), [4, 3, 2, 1.5, 1, 0.5])
   check('and the bottom is the bottom rather than a wrap', steppedPreviewSpeed(0.5, -1), 0.5)
   check('a speed the list does not carry is stepped from the ordinary one', steppedPreviewSpeed(7, 1), 1.5)
 

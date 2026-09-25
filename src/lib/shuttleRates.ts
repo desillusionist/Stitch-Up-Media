@@ -24,19 +24,20 @@ export const nextShuttleRate = (current: number, direction: 1 | -1): number => {
 }
 
 /**
- * The first rung a tap of the forward key reaches, which is not the ladder's own bottom.
+ * The rungs a forward ACCELERATE lands on, which are the shuttle's own four.
  *
- * A tap of K is a request to watch FORWARD rather than to stop, and the ordinary speed is already one key
- * away (L, or PLAY itself), so the fast-forward is what it asks for: the second rung, not the first.
+ * The step is the next rung ABOVE wherever the transport already is, not the bottom of the ladder, and that is
+ * the whole of why L ramps from the speed the selector or the wheel set rather than jumping back to 1x.
  */
-export const TAP_FORWARD_RATE = FORWARD_RATES[1]
+export const FORWARD_ACCELERATE_RUNGS = FORWARD_RATES
 
 /**
- * The rate a tap of the forward key moves the transport to.
+ * The rate one tap of the forward key moves to: the next rung above the current one, topping out at the last.
  *
- * From rest it lands on the second rung; already forwarding, it climbs the ladder the same way a repeat of
- * L does, so repeated taps speed up. A reverse rate is a tap away from forward, so it starts the climb
- * afresh rather than continuing a ladder it was not on.
+ * A current value that sits between rungs — a wheel at 1.5x — lands on the next rung above it (2x), so the
+ * speed the wheel set is the base the climb starts from.
  */
-export const nextTapRate = (current: number): number =>
-  current > 0 ? nextShuttleRate(current, 1) : TAP_FORWARD_RATE
+export const nextForwardRung = (current: number): number => {
+  const at = Number.isFinite(current) ? current : 0
+  return FORWARD_ACCELERATE_RUNGS.find((rung) => rung > at) ?? FORWARD_ACCELERATE_RUNGS[FORWARD_ACCELERATE_RUNGS.length - 1]
+}

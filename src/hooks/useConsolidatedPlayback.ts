@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
-import { nextShuttleRate, nextTapRate } from '../lib/shuttleRates'
+import { nextShuttleRate, nextForwardRung } from '../lib/shuttleRates'
 import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
 import { DEFAULT_PREVIEW_SPEED, PreviewSpeed, clampPreviewSpeed, playbackRateFor, preservesPitchFor } from '../lib/previewSpeed'
+import { scrubRateFor } from '../lib/scrubAudio'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
 const DRIFT_TOLERANCE = 0.25
@@ -12,10 +13,12 @@ const MEDIA_ERR_ABORTED = 1
  * How long after the last tick of a scrub the gesture is taken to be over.
  *
  * A wheel fires many small events and never says when it has stopped, so the gesture is a gap rather than an
- * event: short enough that playback resumes the moment the reader's hand does, long enough that the frames
- * between two ticks of the same flick are not mistaken for two gestures.
+ * event: short enough that playback resumes the moment the reader's hand does, long enough that a slow turn
+ * between two notches is not mistaken for the end of the gesture.
  */
-const SCRUB_IDLE_MS = 140
+const SCRUB_IDLE_MS = 200
+/** How far a slaved track may drift from the scrubbed playhead before the scrub corrects it with a seek. */
+const SCRUB_DRIFT_SECONDS = 0.25
 
 export interface ConsolidatedPlayback {
   /** Callback ref: also (re)binds load handlers, because the element unmounts for stills. */
@@ -44,12 +47,13 @@ export interface ConsolidatedPlayback {
   /** Ramps the rate in the pressed direction, per the J/K/L ladder. */
   shuttle: (direction: 1 | -1) => void
   /**
-   * A tap of the forward key: forward playback, onto the fast-forward rung rather than the ordinary speed.
+   * A tap of the forward key: PLAY from rest, or the next speed rung up when already running.
    *
-   * It is its own method rather than a call to `shuttle` because the ladder it climbs starts one rung higher —
-   * see `nextTapRate` — and because the two are told apart by the key that asked, not by the rate they land on.
+   * It writes the SAME speed value the selector and the wheel write, and clears the shuttle first, so a tap
+   * ramps from whatever was set there rather than from the shuttle's own ladder. From rest it is simply PLAY
+   * at the ordinary speed; the fast-forward is for a transport already running. See `nextForwardRung`.
    */
-  tapForward: () => void
+  accelerate: () => void
   setShuttleRate: (rate: number) => void
   /**
    * A wheel- or drag-scrub of the playhead.
@@ -128,6 +132,13 @@ export const useConsolidatedPlayback = (
   const scrubbingRef = useRef(false)
   const resumeAfterScrubRef = useRef(false)
   const scrubEndRef = useRef<number | null>(null)
+  /**
+   * The last tick of a scrub: when it happened, where the playhead was left, and the rate the sound is at.
+   *
+   * The velocity between two ticks is what the sound is driven at, so the previous tick is the whole of what
+   * a new one needs to know. Reset at the start of a gesture.
+   */
+  const scrubTickRef = useRef<{ at: number; position: number; rate: number } | null>(null)
   const [position, setPosition] = useState(0)
   const [segmentIndex, setSegmentIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -422,12 +433,14 @@ export const useConsolidatedPlayback = (
   // changes so a junction resumes instead of stalling.
   useEffect(() => {
     const video = videoRef.current
+    // A SCRUB OWNS THE SOUND AND THE PLAY STATE while it is in flight. This effect stands aside so it neither
+    // pauses the picture (which is what silenced a scrub over a still or the tail) nor resets the slaved tracks
+    // to their ordinary rate — the scrub sets that rate itself, and the settle from `finishScrub` puts it back.
+    if (scrubbingRef.current) { anchorRef.current = null; return }
     if (video) {
       // Reverse has no native rate, so the element is paused and stepped instead.
       applyRate()
-      // While a scrub is in flight this effect is skipped from starting playback back up: a scrub that crossed
-      // a cut changes the segment, and resuming here would break the one-writer rule the scrub exists for.
-      if (playing && shuttleRate >= 0 && !scrubbingRef.current) { applyPendingSeek(false); startPlayback() }
+      if (playing && shuttleRate >= 0) { applyPendingSeek(false); startPlayback() }
       else video.pause()
     }
     // Re-anchor whenever the transport moves, or resuming after a pause would
@@ -512,62 +525,106 @@ export const useConsolidatedPlayback = (
     syncAddedAudio(bounded, true)
   }, [indexForTime, syncAddedAudio, applyPendingSeek])
 
-  /** Ends a scrub: the added tracks and, if it was playing, the playback settle once, from the final position. */
+  /**
+   * Ends a scrub: the tracks are put onto the settled playhead and given back their ordinary rate, ONCE.
+   *
+   * Nothing here resumes the picture, because nothing ever paused it: the scrub drives the sound by rate and
+   * leaves the element running, so the picture and its own sound were audible throughout. If the transport was
+   * stopped before the scrub it is stopped here too — a wheel over a paused job is a seek and nothing more.
+   */
   const finishScrub = useCallback(() => {
     if (scrubEndRef.current != null) { window.clearTimeout(scrubEndRef.current); scrubEndRef.current = null }
     if (!scrubbingRef.current) return
     scrubbingRef.current = false
+    scrubTickRef.current = null
     const wasPlaying = resumeAfterScrubRef.current
     resumeAfterScrubRef.current = false
-    // The slaved tracks were re-seeked on every tick of the gesture before this; now they are brought to the
-    // settled playhead ONCE. That single re-seek is what stops the audio breaking up under a wheel.
-    syncAddedAudio(stateRef.current.position, true)
-    anchorRef.current = null
-    if (!wasPlaying) return
-    const video = videoRef.current
-    if (video) { applyPendingSeek(false); startPlayback() }
-    // A main lane that is nothing but sound has no element to resume, but its own added lane does, and the
-    // element-playing effect will not re-run for it because `playing` never changed. So the lanes are resumed
-    // here, at the same composed rate and with the same pitch rule the effect would have used.
+    const settled = stateRef.current.position
+    if (wasPlaying) {
+      const video = videoRef.current
+      if (video) { applyPendingSeek(false); startPlayback() }
+    }
+    // ONE settle: the tracks were driven by rate through the gesture and are now brought onto the settled
+    // playhead and handed back the rate they would have had without the scrub.
+    syncAddedAudio(settled, true)
     const rate = playbackRateFor(shuttleRef.current, speedRef.current)
-    const audible = shuttleRef.current >= 0
     lanesRef.current.forEach((lane) => {
       const element = audioElements.current?.[lane.id]
       if (!element) return
       element.playbackRate = rate
       element.preservesPitch = preservesPitchFor(shuttleRef.current)
-      if (audible) void element.play().catch(() => { /* element may still be loading */ })
+      if (wasPlaying) void element.play().catch(() => { /* element may still be loading */ })
+      else element.pause()
     })
   }, [syncAddedAudio, applyPendingSeek, startPlayback, audioElements])
 
   /**
-   * Starts a scrub if one is not already in flight, remembering whether playback should resume after it.
+   * Drives the slaved tracks to follow a scrub by RATE, correcting with a seek only once one has drifted.
    *
-   * The elements are stood down here so nothing else advances while the reader scrubs. Reverse already runs on
-   * the anchored clock and paints by seeking, so it is left alone — there is nothing playing backwards to stop.
+   * This is the whole of the still/placeholder fix. Driving the sound by per-tick seeks tore the decoder down
+   * and restarted it faster than it could start, which read as a jog; setting the rate and letting the element
+   * play on has no such seam, and because the rate tracks the wheel the sound is sped with the scroll. A seek
+   * is held in reserve for the case the rate cannot keep up — a backward drag, where the element plays forward
+   * while the playhead walks back — and fires only past `SCRUB_DRIFT_SECONDS`, a handful of times at most.
+   */
+  const driveScrubAudio = useCallback((position: number, rate: number) => {
+    lanesRef.current.forEach((lane) => {
+      const element = audioElements.current?.[lane.id]
+      const laneSegment = lane.segments[0]
+      if (!element || !laneSegment) return
+      element.playbackRate = rate
+      element.preservesPitch = true
+      const desired = laneSegment.sourceIn + Math.max(0, Math.min(laneSegment.duration, position - laneSegment.start))
+      if (Math.abs(element.currentTime - desired) > SCRUB_DRIFT_SECONDS) element.currentTime = desired
+    })
+  }, [audioElements])
+
+  /**
+   * Starts a scrub if one is not already in flight, remembering whether playback should pick up after it.
+   *
+   * NOTHING is paused here, and that is the whole of the change from the pass that silenced the sound: the
+   * slaved tracks are only made sure to be running, so the rate the scrub sets has something to act on. Reverse
+   * is left alone — there is nothing playing backwards to drive.
    */
   const beginScrub = useCallback(() => {
     if (scrubbingRef.current) return
     scrubbingRef.current = true
+    scrubTickRef.current = null
     resumeAfterScrubRef.current = stateRef.current.playing && shuttleRef.current >= 0
-    if (shuttleRef.current >= 0) {
-      videoRef.current?.pause()
-      lanesRef.current.forEach((lane) => { audioElements.current?.[lane.id]?.pause() })
-    }
+    if (!resumeAfterScrubRef.current) return
+    lanesRef.current.forEach((lane) => {
+      const element = audioElements.current?.[lane.id]
+      if (!element) return
+      element.preservesPitch = true
+      void element.play().catch(() => { /* element may still be loading */ })
+    })
   }, [audioElements])
 
-  /** Positions the playhead for a scrub and re-arms the idle timer that ends the gesture. */
+  /**
+   * Positions the playhead for a scrub and re-arms the idle timer that ends the gesture.
+   *
+   * The velocity of the wheel — how much timeline the last tick moved, over how long — is what the sound is
+   * driven at, so a slow drag plays slow and a flick plays fast. It is measured between ticks here rather than
+   * asked of the caller: the wheel gives deltas, and only the hook knows how long ago the last one was.
+   */
   const positionScrub = useCallback((seconds: number) => {
     const bounded = Math.max(0, Math.min(stateRef.current.duration, seconds))
-    const index = indexForTime(bounded)
+    const now = performance.now()
+    const tick = scrubTickRef.current
+    const previous = tick?.rate ?? 1
+    const rate = tick ? scrubRateFor((bounded - tick.position) / Math.max(0.008, (now - tick.at) / 1000), previous) : previous
+    scrubTickRef.current = { at: now, position: bounded, rate }
     setPosition(bounded)
-    setSegmentIndex(index)
+    setSegmentIndex(indexForTime(bounded))
     pendingSeekRef.current = bounded
     anchorRef.current = null
+    // The PICTURE is still moved by seeking, which is what it always was and what rode smoothly; the SOUND is
+    // moved by the rate below. `positionScrub` never touches the audio elements.
     applyPendingSeek(false)
+    if (resumeAfterScrubRef.current) driveScrubAudio(bounded, rate)
     if (scrubEndRef.current != null) window.clearTimeout(scrubEndRef.current)
     scrubEndRef.current = window.setTimeout(() => finishScrub(), SCRUB_IDLE_MS)
-  }, [indexForTime, applyPendingSeek, finishScrub])
+  }, [indexForTime, applyPendingSeek, finishScrub, driveScrubAudio])
 
   /** A scrub to an absolute position, which is what a pointer drag reads off the timeline. */
   const scrub = useCallback((seconds: number) => { beginScrub(); positionScrub(seconds) }, [beginScrub, positionScrub])
@@ -640,13 +697,27 @@ export const useConsolidatedPlayback = (
       anchorRef.current = null
       setPlaying(true)
     }, [playable, restartIfFinished]),
-    /** A tap of the forward key. See `nextTapRate` for why it does not start on the ordinary speed. */
-    tapForward: useCallback(() => {
+    /**
+     * A tap of the forward key. From rest it plays; already running it steps the shared speed value up.
+     *
+     * The effective speed is what the climb is measured against, so a wheeled 1.5x becomes 2x and a wheeled 3x
+     * becomes 4x — the value the selector and the wheel own, not the shuttle's ladder. The shuttle is cleared
+     * so that value is the rate itself rather than a multiplier on it; reverse counts as not-forward, so a tap
+     * out of a reverse shuttle starts playing forward.
+     */
+    accelerate: useCallback(() => {
       if (!playable) return
-      restartIfFinished(1)
-      setShuttleRateState((current) => nextTapRate(current))
+      if (!stateRef.current.playing || shuttleRef.current < 0) {
+        restartIfFinished(1)
+        setShuttleRateState(0)
+        anchorRef.current = null
+        setPlaying(true)
+        return
+      }
+      const effective = (shuttleRef.current > 0 ? shuttleRef.current : 1) * speedRef.current
+      setShuttleRateState(0)
+      setSpeedState(clampPreviewSpeed(nextForwardRung(effective)))
       anchorRef.current = null
-      setPlaying(true)
     }, [playable, restartIfFinished]),
     setShuttleRate,
     clearError: useCallback(() => setError(null), []),

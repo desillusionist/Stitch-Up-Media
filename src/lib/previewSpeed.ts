@@ -9,8 +9,12 @@
  * It is also independent of the J/K/L shuttle, which ramps on its own ladder: the shuttle says how fast the
  * transport is being driven right now, this says what speed the viewer wants to watch at, and the two
  * multiply. A speed of 0.5x with no shuttle is a half-speed preview; a shuttle of 2x at 1x is the ramp.
+ *
+ * The top rung is 8x because L accelerates THROUGH this value (see `nextForwardRung`): a speed the key can
+ * reach has to be a speed the selector can show and the wheel can climb, or the three would disagree about
+ * what the transport is doing.
  */
-export const PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4] as const
+export const PREVIEW_SPEEDS = [0.5, 1, 1.5, 2, 3, 4, 8] as const
 
 export type PreviewSpeed = (typeof PREVIEW_SPEEDS)[number]
 
