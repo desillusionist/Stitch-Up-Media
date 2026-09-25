@@ -443,6 +443,55 @@ export const stampPair = (position: number, total: number, fps: number, mode: 'f
 }
 
 /**
+ * The unit a range is measured in, which is the window's setting rather than a fact about the clip.
+ *
+ * A framestamp counts frames and a timestamp prints timecodes, and the two appear in the same place, so the
+ * word naming the figure has to move with the mode rather than being written into either call site.
+ */
+const rangeUnit = (mode: 'framestamp' | 'timestamp'): string => (mode === 'framestamp' ? 'FRAMES' : 'TIME')
+
+/** A length in whichever unit the window is showing, unpadded: a count of frames, or a timecode. */
+const rangeValue = (seconds: number, rate: number, mode: 'framestamp' | 'timestamp'): string =>
+  mode === 'framestamp' ? String(Math.max(0, Math.round(seconds * rate))) : timecode(seconds, rate)
+
+/** What a clip's own run through its source is read from. */
+export interface ClipRangeInput {
+  /** How much of the source the output uses. */
+  usedSeconds: number
+  /** Where in the source that run begins. */
+  sourceIn: number
+  /** The whole source, which is what the clip is a piece of. */
+  totalSeconds: number
+  /** The rate the clip is measured at: the source's own, so the frames are the source's frames. */
+  fps: number
+  mode: 'framestamp' | 'timestamp'
+}
+
+/**
+ * A clip's own run through its source: how much is used, the range it covers, and how much there is of it.
+ *
+ * The range's ends are padded to six digits in frames so the two ends read as a box of digits, while the
+ * counts around it are left unpadded because they are READ as numbers rather than as positions — the same
+ * distinction the scale makes between a mark and a length. It says nothing about TRIMMING: a clip that uses
+ * all of its source draws a range around all of it, which is a fact rather than a fault, and the reader can
+ * see from the range that nothing was taken away.
+ */
+export const clipRangeLabel = ({ usedSeconds, sourceIn, totalSeconds, fps, mode }: ClipRangeInput): string => {
+  const rate = fps > 0 ? Math.round(fps) : 25
+  const padded = (seconds: number) => String(Math.max(0, Math.round(seconds * rate))).padStart(6, '0')
+  const range = mode === 'framestamp'
+    ? `[${padded(sourceIn)}-${padded(sourceIn + usedSeconds)}]`
+    : `[${timecode(sourceIn, rate)}-${timecode(sourceIn + usedSeconds, rate)}]`
+  return `${rangeUnit(mode)}: ${rangeValue(usedSeconds, rate, mode)} ${range} OF ${rangeValue(totalSeconds, rate, mode)}`
+}
+
+/** How long the assembled output is, in the same terms — the other half of the line under the monitor. */
+export const outputRangeLabel = (seconds: number, fps: number, mode: 'framestamp' | 'timestamp'): string => {
+  const rate = fps > 0 ? Math.round(fps) : 25
+  return `TOTAL OUTPUT ${rangeUnit(mode)}: ${rangeValue(seconds, rate, mode)}`
+}
+
+/**
  * Whether a clip uses the whole of its source, which is the same question as whether its trim takes
  * anything away.
  *

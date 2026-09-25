@@ -11,7 +11,7 @@ import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, clipIndexOf, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { sequenceLabel } from '../lib/sequenceLabel'
@@ -2933,7 +2933,7 @@ export const EditJobApp: React.FC = () => {
               </div>
             </div>
             <small>{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
-            <small>{activeSegment ? `CLIP ${stamp(activeSegment.duration)}${activeSegment.trimmed ? ` | USED ${stamp(activeSegment.sourceIn)} -> ${stamp(activeSegment.sourceIn + activeSegment.duration)}` : ''} | OUTPUT ${stamp(duration)}` : `OUTPUT ${stamp(duration)}`}</small>
+            <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.duration, sourceIn: activeSegment.sourceIn, totalSeconds: sourceDuration(draft, activeSegment.sourcePath, undefined, resolveTiming), fps: sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming), mode: timestampMode })} | ${outputRangeLabel(duration, fps, timestampMode)}` : outputRangeLabel(duration, fps, timestampMode)}</small>
             {/* What the transport is doing. A single line, and the one place it is said: the pause glyph that
                 used to sit among the buttons said the same thing a second time, next to a PLAY toggle that
                 already carries the state. */}
@@ -3020,7 +3020,7 @@ export const EditJobApp: React.FC = () => {
               {inspectedAudioCodec && <EditorRow label="AUDIO CODEC" value={inspectedAudioCodec} />}
               <EditorRow
                 label="USED"
-                value={inspectedSegment ? `${stamp(inspectedSegment.duration)}${inspectedSegment.trimmed ? ` OF ${stamp(sourceDuration(draft, inspectedSource, undefined, resolveTiming))} FROM ${stamp(inspectedSegment.sourceIn)}` : ''}` : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
+                value={inspectedSegment ? clipRangeLabel({ usedSeconds: inspectedSegment.duration, sourceIn: inspectedSegment.sourceIn, totalSeconds: sourceDuration(draft, inspectedSegment.sourcePath, undefined, resolveTiming), fps: inspectedFps, mode: timestampMode }) : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
               />
               <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
                 inspectedEditable

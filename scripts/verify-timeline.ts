@@ -17,7 +17,7 @@ import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateF
 import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 
@@ -1951,6 +1951,29 @@ console.log('\n== what a clip says it is ==')
   // The playhead's own line: the unit said once, and the two figures joined by "of".
   check('the playhead line in frames', stampPair(0, 123456 / 30, 30, 'framestamp'), 'FRAME 000000 of 123456')
   check('the playhead line in timecodes', stampPair(1, 60, 30, 'timestamp'), '00:00:01.00 of 00:01:00.00')
+
+  // The clip's own run and the output's total, which are the two halves of the line under the monitor and
+  // the value under USED in MEDIA INFO. The counts are read as numbers and left unpadded; the range's ends
+  // are positions and padded to six digits, so they line up as a box.
+  check('a clip reads as its count, its range and its source',
+    clipRangeLabel({ usedSeconds: 353 / 30, sourceIn: 0, totalSeconds: 11745 / 30, fps: 30, mode: 'framestamp' }),
+    'FRAMES: 353 [000000-000353] OF 11745')
+  check('and the output as its own count', outputRangeLabel(907 / 30, 30, 'framestamp'), 'TOTAL OUTPUT FRAMES: 907')
+  check('a run from the middle draws the range it covers',
+    clipRangeLabel({ usedSeconds: 2, sourceIn: 3, totalSeconds: 10, fps: 25, mode: 'framestamp' }),
+    'FRAMES: 50 [000075-000125] OF 250')
+  check('and the same run in timecodes',
+    clipRangeLabel({ usedSeconds: 2, sourceIn: 3, totalSeconds: 10, fps: 25, mode: 'timestamp' }),
+    'TIME: 00:00:02.00 [00:00:03.00-00:00:05.00] OF 00:00:10.00')
+  check('the output\u2019s unit follows the mode too', outputRangeLabel(2, 25, 'timestamp'), 'TOTAL OUTPUT TIME: 00:00:02.00')
+  // A clip that uses the whole of its source still draws the range: the range spanning everything is a fact
+  // about the clip rather than a fault, and it is what lets the reader see that nothing was taken away.
+  check('a clip that uses all of its source draws the range around it',
+    clipRangeLabel({ usedSeconds: 4, sourceIn: 0, totalSeconds: 4, fps: 25, mode: 'framestamp' }),
+    'FRAMES: 100 [000000-000100] OF 100')
+  check('and a source of no known length is still readable',
+    clipRangeLabel({ usedSeconds: 1, sourceIn: 0, totalSeconds: 0, fps: 25, mode: 'framestamp' }),
+    'FRAMES: 25 [000000-000025] OF 0')
 }
 
 console.log('\n== the waveform ==')
