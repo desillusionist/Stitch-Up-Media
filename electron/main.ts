@@ -141,6 +141,7 @@ app.whenReady().then(() => {
   }
   ipcMain.handle('open-edit-job', async (_, task: QueueTask) => {
     editJobTask = task
+    logEvent('edit-job', 'open requested', { id: task?.id, windowAlive: Boolean(editJobWindow && !editJobWindow.isDestroyed()) })
     if (editJobWindow && !editJobWindow.isDestroyed()) {
       editJobWindow.focus(); sendEditJobTask(); return
     }
@@ -157,7 +158,11 @@ app.whenReady().then(() => {
       event.preventDefault()
       editJobWindow?.webContents.send('edit-job-close-requested')
     })
-    editJobWindow.webContents.once('did-finish-load', () => { editJobReady = true; sendEditJobTask() })
+    editJobWindow.webContents.once('did-finish-load', () => {
+      editJobReady = true
+      logEvent('edit-job', 'did-finish-load, pushing', { id: editJobTask?.id })
+      sendEditJobTask()
+    })
     if (process.env.VITE_DEV_SERVER_URL) await editJobWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}#edit-job`)
     else await editJobWindow.loadFile(path.join(__dirname, '../dist/index.html'), { hash: 'edit-job' })
   })
@@ -170,6 +175,13 @@ app.whenReady().then(() => {
     mainWindow?.webContents.send('edit-job-applied', patch)
     if (close) closeEditJob()
   })
+  // The job the window is editing, for a renderer that has just mounted and cannot be pushed to yet.
+  //
+  // The push on `did-finish-load` races the renderer's own subscription, and a window re-created after a
+  // close loses that race often enough to be seen: the editor came up on its WAITING line with nothing
+  // pushed at it. So the window pulls this on mount and on focus, and the last job opened or synced is
+  // the answer. It is the same object the push would have sent, so the two cannot disagree.
+  ipcMain.handle('get-edit-job-task', async () => editJobTask)
   // The queue pushes editable-field changes here while the editor is open, so the
   // editor never applies edits on top of a stale snapshot. Ignored once the
   // window is gone, which is why no explicit teardown channel is needed.

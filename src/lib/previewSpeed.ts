@@ -65,12 +65,13 @@ export const steppedPreviewSpeed = (current: number, direction: 1 | -1): Preview
 /**
  * Whether a shuttle fast-forwards with its pitch raised.
  *
- * A tape transport run fast raises the pitch, and a shuttle is exactly that — so the pitch follows the SHUTTLE
- * and not the speed being watched at. A steady speed from the selector stays pitch-corrected, because that is
- * a viewing preference rather than a fast-forward: the same voice at a different tempo. Flip this one constant
- * and the two become one rule.
+ * A tape transport run fast raises the pitch, and a shuttle is exactly that — so the pitch would follow the
+ * SHUTTLE and not the speed being watched at. It no longer does: a shuttle now keeps its pitch exactly as the
+ * steady speed from the selector does, because a raised pitch across the whole of a fast-forward reads as a
+ * defect rather than as a tape being wound, and the one place the rule was visible was loud. Flip this one
+ * constant back and every forward rate raises its pitch again, which is the whole of the difference.
  */
-export const SHUTTLE_RAISES_PITCH = true
+export const SHUTTLE_RAISES_PITCH = false
 
 /**
  * What `preservesPitch` is set to for a given shuttle.

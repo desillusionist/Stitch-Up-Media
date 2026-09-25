@@ -24,6 +24,16 @@ window.addEventListener('error', (event) => { errors.push(String(event.message |
 window.addEventListener('unhandledrejection', (event) => { errors.push('unhandled rejection: ' + String(event.reason)) })
 
 const listeners: Array<(task: unknown) => void> = []
+/**
+ * The job the main process is holding, which is what a PULL from the window returns.
+ *
+ * The editor subscribes to a push, and the real main process also sends the job once on load — but that send
+ * races the subscription, which is the fault under test. So the stub answers `getEditJobTask` as well, and the
+ * drive proves the pull carries a re-entry on its own. `heldTask` is what the pull answers with.
+ */
+let heldTask: unknown = null
+/** How many times the window has pulled the job, which is what says the pull is wired at all. */
+let pullCalls = 0
 /** Every still the window has asked for, so a monitor that cannot PLAY a stubbed file is not mistaken for
  * one that was never asked to draw anything. */
 const stillRequests: unknown[] = []
@@ -36,6 +46,9 @@ const bridge = {
     saveTempNextToSource: false, pauseOnHighLoad: false, defaultImageDuration: 10, sequenceFps: 25,
   }),
   onEditJobTask: (callback: (task: unknown) => void) => { listeners.push(callback); return () => undefined },
+  // The pull half of the handshake: the job the main process is holding, which is what a re-created (or
+  // re-focused) window asks for rather than waiting to be pushed to.
+  getEditJobTask: async () => { pullCalls += 1; return heldTask },
   onEditJobApplied: () => () => undefined,
   onSourceTiming: () => () => undefined,
   onSequencePreviewReady: () => () => undefined,
@@ -112,7 +125,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -197,8 +210,11 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** Handing the window a job, which is how a task arrives in the real app too. */
 const arrive = (job: unknown, what: string) => {
+  heldTask = job
   listeners.forEach((listener) => {
-    try { listener(job) } catch (error) { errors.push(`threw on the ${what} job: ` + String(error)) }
+    try { listener(job) } catch (error) {
+      errors.push(`threw on the ${what} job: ` + String(error))
+    }
   })
 }
 
@@ -436,6 +452,22 @@ const drive = async () => {
     },
     audioToggles: labelsOf('.editor-toggle'),
     pictureSource: pictureSourceSelect() ? 'drawn' : null,
+  }
+
+  // RE-ENTRY, with NOTHING pushed. This is the half that closes the race a re-created window loses: the job
+  // has moved in the queue, the window is focused again, and the pull is the only thing that can deliver it.
+  // The task keeps its id and its shape (a multitrack maps one picture, so adding a source would change
+  // nothing on screen) and changes its OUTPUT NAME instead — a figure the summary shows on every tab, so the
+  // render has to show it and cannot do so by luck. `pulls` is asserted too, because a pull that is wired but
+  // never called would pass this by an earlier push.
+  const nameBefore = document.querySelector('.export-summary strong')?.textContent ?? null
+  heldTask = { ...coverTask, outputFilename: 'pulled-by-focus.mp3' }
+  window.dispatchEvent(new Event('focus'))
+  await wait(400)
+  result.reentry = {
+    nameBefore,
+    name: document.querySelector('.export-summary strong')?.textContent ?? null,
+    pulls: pullCalls,
   }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true

@@ -553,54 +553,90 @@ export const EditJobApp: React.FC = () => {
     void window.electronAPI?.getSettings().then((loaded) => { if (loaded) setSettings(loaded) })
   }, [])
 
+  /**
+   * Adopts a job into the window.
+   *
+   * The baseline becomes the queue's own copy and the draft is that copy with whichever edits this window owns
+   * kept on top, so a job arriving twice — once pushed and once pulled — is adopted the same way twice.
+   */
+  const adoptTask = useCallback((incoming: QueueTask) => {
+    const currentDraft = draftRef.current
+    const currentBaseline = baselineRef.current
+    if (!currentDraft || !currentBaseline) {
+      setIncomingConflict(null)
+      baselineRef.current = incoming
+      draftRef.current = incoming
+      setBaseline(incoming)
+      setDraft(incoming)
+      return
+    }
+    const userDirty = windowDirty(currentDraft, currentBaseline)
+    // Only the fields this window owns can conflict; trim points, probe results
+    // and source order arrive from the queue and should just be adopted.
+    if (userDirty && JSON.stringify(editableSlice(incoming)) !== JSON.stringify(editableSlice(currentBaseline))) {
+      setIncomingConflict(incoming)
+    }
+    // A change to the SOURCE LIST moves every clip's place in the job, and a transition, a fit and
+    // a crop are all keyed by that place. The queue re-keys them as it takes a source out, and the
+    // queue's version is the right one: the window's copy was filed against the places the clips
+    // had a moment ago, so keeping it would leave a record sitting on whatever moved into an index
+    // and would leave the removed clip's record behind with nothing to be about.
+    const clipsMoved = JSON.stringify(incoming.sourcePaths) !== JSON.stringify(currentBaseline.sourcePaths)
+      || JSON.stringify(incoming.additionalAudioTracks ?? []) !== JSON.stringify(currentBaseline.additionalAudioTracks ?? [])
+    // ...unless the move is the WINDOW's own. A list this window edited is kept with the records it
+    // re-keyed to match, so the queue confirming the list the window started from cannot put the
+    // sources back. The queue's list is still the one everything else is taken from.
+    const mine = sourceListMoved(currentDraft, currentBaseline)
+    const kept = editableSlice(currentDraft)
+    const merged = !userDirty
+      ? incoming
+      : {
+          ...incoming,
+          ...(clipsMoved && !mine
+            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop }
+            : kept),
+          ...(mine
+            ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
+            : {}),
+        }
+    baselineRef.current = incoming
+    draftRef.current = merged
+    setBaseline(incoming)
+    setDraft(merged)
+  }, [])
+
+  /**
+   * The handshake, from the window's side. The job arrives by PUSH and by PULL, and either alone is enough.
+   *
+   * The push alone is a race: the main process sends the job once, on `did-finish-load`, and that event fires
+   * before React has mounted and subscribed — so on a FRESH window the send lands on nobody and the editor sits
+   * on its WAITING line for good. It is intermittent and it lands on re-entry because re-entering an OPEN
+   * window re-sends to a live listener, while re-entering a CLOSED one builds a new window and races afresh.
+   *
+   * So the window PULLS too: on mount, and again whenever it is focused. The main process still holds the job
+   * it last opened or synced, so the pull is authoritative and a push and a pull of the same job are the same
+   * adoption. Both halves are logged, so the handshake can be read at runtime rather than inferred from timing.
+   */
   useEffect(() => {
     const unsubscribe = window.electronAPI?.onEditJobTask((incoming) => {
-      const currentDraft = draftRef.current
-      const currentBaseline = baselineRef.current
-      if (!currentDraft || !currentBaseline) {
-        setIncomingConflict(null)
-        baselineRef.current = incoming
-        draftRef.current = incoming
-        setBaseline(incoming)
-        setDraft(incoming)
-        return
-      }
-      const userDirty = windowDirty(currentDraft, currentBaseline)
-      // Only the fields this window owns can conflict; trim points, probe results
-      // and source order arrive from the queue and should just be adopted.
-      if (userDirty && JSON.stringify(editableSlice(incoming)) !== JSON.stringify(editableSlice(currentBaseline))) {
-        setIncomingConflict(incoming)
-      }
-      // A change to the SOURCE LIST moves every clip's place in the job, and a transition, a fit and
-      // a crop are all keyed by that place. The queue re-keys them as it takes a source out, and the
-      // queue's version is the right one: the window's copy was filed against the places the clips
-      // had a moment ago, so keeping it would leave a record sitting on whatever moved into an index
-      // and would leave the removed clip's record behind with nothing to be about.
-      const clipsMoved = JSON.stringify(incoming.sourcePaths) !== JSON.stringify(currentBaseline.sourcePaths)
-        || JSON.stringify(incoming.additionalAudioTracks ?? []) !== JSON.stringify(currentBaseline.additionalAudioTracks ?? [])
-      // ...unless the move is the WINDOW's own. A list this window edited is kept with the records it
-      // re-keyed to match, so the queue confirming the list the window started from cannot put the
-      // sources back. The queue's list is still the one everything else is taken from.
-      const mine = sourceListMoved(currentDraft, currentBaseline)
-      const kept = editableSlice(currentDraft)
-      const merged = !userDirty
-        ? incoming
-        : {
-            ...incoming,
-            ...(clipsMoved && !mine
-              ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop }
-              : kept),
-            ...(mine
-              ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
-              : {}),
-          }
-      baselineRef.current = incoming
-      draftRef.current = merged
-      setBaseline(incoming)
-      setDraft(merged)
+      void window.electronAPI?.diagnosticLog('[edit-job] job pushed', { id: incoming?.id })
+      adoptTask(incoming)
     })
-    return () => unsubscribe?.()
-  }, [])
+    const pull = () => {
+      void window.electronAPI?.getEditJobTask().then((task) => {
+        void window.electronAPI?.diagnosticLog('[edit-job] job pulled', { hasTask: Boolean(task), id: task?.id })
+        if (task) adoptTask(task)
+      }).catch((error: unknown) => {
+        void window.electronAPI?.diagnosticLog('[edit-job] pull failed', { error: String(error) })
+      })
+    }
+    pull()
+    window.addEventListener('focus', pull)
+    return () => {
+      unsubscribe?.()
+      window.removeEventListener('focus', pull)
+    }
+  }, [adoptTask])
 
   // Rebuilding is cheap but churns identities, so it is keyed to the inputs that
   // actually change the timeline.
@@ -1292,6 +1328,14 @@ export const EditJobApp: React.FC = () => {
    * jump-to-start and jump-to-end widened to a timeline with many clips.
    */
   const heldKeysRef = useRef({ k: false })
+  /**
+   * Whether a J or L was pressed while K was held, which is what tells a K TAP from a K hold.
+   *
+   * A K held with a direction is the slow motion (tap J/L under it) or the step (release J/L under it); a K
+   * released with no direction under it is a tap, and a tap plays forward. The flag is what keeps a release
+   * after a hold from also counting as a tap and jumping the transport to a fast-forward.
+   */
+  const kDirectedRef = useRef(false)
   const slowMotionRef = useRef(false)
   const tapTimerRef = useRef<number | null>(null)
 
@@ -1357,13 +1401,18 @@ export const EditJobApp: React.FC = () => {
       // these did nothing.
       if (code === 'KeyK') {
         event.preventDefault()
-        if (!event.repeat) { heldKeysRef.current.k = true; playbackRef.current.pause() }
+        // K no longer stops. It arms a tap, which plays forward — the slow motion is a J or an L pressed UNDER
+        // it, and which of the two this was is decided on release. Nothing pauses here, because a tap that had
+        // already stopped the transport could not then play it forward.
+        if (!event.repeat) { heldKeysRef.current.k = true; kDirectedRef.current = false }
         return
       }
       if ((code !== 'KeyJ' && code !== 'KeyL') || event.repeat) return
       event.preventDefault()
       const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
       if (heldKeysRef.current.k) {
+        // A direction under a held K: from here the release is a slow motion or a step, never a tap.
+        kDirectedRef.current = true
         clearTap()
         tapTimerRef.current = window.setTimeout(() => {
           tapTimerRef.current = null
@@ -1376,7 +1425,14 @@ export const EditJobApp: React.FC = () => {
     }
     const onKeyUp = (event: KeyboardEvent) => {
       const code = event.code
-      if (code === 'KeyK') { heldKeysRef.current.k = false; return }
+      if (code === 'KeyK') {
+        heldKeysRef.current.k = false
+        // A K released with no direction pressed under it is a tap: forward playback, straight onto the
+        // fast-forward rung rather than the ordinary speed (see `nextTapRate`). A hold that carried a
+        // direction has already acted, so it is not read a second time.
+        if (!kDirectedRef.current) playbackRef.current.tapForward()
+        return
+      }
       if (code !== 'KeyJ' && code !== 'KeyL') return
       const direction: 1 | -1 = code === 'KeyL' ? 1 : -1
       if (tapTimerRef.current != null) {
@@ -1387,7 +1443,7 @@ export const EditJobApp: React.FC = () => {
       }
       if (slowMotionRef.current) { slowMotionRef.current = false; playbackRef.current.setShuttleRate(0); return }
       // Otherwise the shuttle latches and keeps running after release, so repeated
-      // presses of the same key ramp the speed, and only K or Space stops it.
+      // presses of the same key ramp the speed, and only SPACE stops it — K is a forward tap now, not a stop.
     }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
@@ -1415,6 +1471,11 @@ export const EditJobApp: React.FC = () => {
    * Wheel over the timeline scrubs the playhead, as the helper's strip does: a
    * fraction of a frame per tick, eased with tanh so a flick travels much further
    * than a nudge, and the sign inverted to match the helper's convention.
+   *
+   * It is a SCRUB rather than a seek, which matters only while the transport is running: a plain seek leaves
+   * the auto-advance clock writing the playhead too, and the two fight at every cut — the skimmer loops on the
+   * joint and the slaved audio is re-seeked on every tick. The scrub stands the clock down until the wheel
+   * falls idle, so one writer at a time. See `scrubBy`.
    */
   const scrubByWheel = (event: React.WheelEvent<HTMLElement>) => {
     // Shift and the horizontal axis are left to the browser, so a zoomed-in timeline
@@ -1423,7 +1484,7 @@ export const EditJobApp: React.FC = () => {
     if (event.shiftKey || event.deltaY === 0) return
     const eased = Math.tanh(Math.abs(event.deltaY) / 6)
     const step = (1 / Math.max(1, stepFpsRef.current)) * (0.35 + 1.65 * eased)
-    playback.seek(playback.position + (event.deltaY < 0 ? step : -step))
+    playback.scrubBy(event.deltaY < 0 ? step : -step)
   }
 
   /**
@@ -2100,12 +2161,17 @@ export const EditJobApp: React.FC = () => {
       // whatever the panel is doing — and a timeline shorter than the panel maps no further than
       // its own end rather than across the empty space beside it.
       const seconds = secondsAt(clientX - rect.left, zoom)
-      playback.seek(Math.max(0, Math.min(1, seconds / duration)) * duration)
+      // A scrub rather than a seek, so a drag that begins while the transport is running stands the
+      // auto-advance clock down and takes the playhead itself until the pointer is let go.
+      playback.scrub(Math.max(0, Math.min(1, seconds / duration)) * duration)
     }
     const move = (moveEvent: PointerEvent) => scrubTo(moveEvent.clientX)
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      // The gesture is over the moment the pointer lifts, rather than on a wheel's idle timer: a drag that
+      // stopped moving would otherwise keep the transport stood down for the length of the idle gap.
+      playback.endScrub()
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -3059,7 +3125,7 @@ export const EditJobApp: React.FC = () => {
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}
-          <div className="editor-note">&gt; SPACE PLAYS, K STOPS. &lt;- / -&gt; STEP ONE FRAME; J / L SHUTTLE AND SPEED UP ON REPEAT, K+J OR K+L IS SLOW MOTION. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
+          <div className="editor-note">&gt; SPACE PLAYS OR PAUSES; A TAP OF K PLAYS FORWARD AT 2x, AGAIN FASTER. &lt;- / -&gt; STEP ONE FRAME; J / L SHUTTLE AND SPEED UP ON REPEAT, K+J OR K+L IS SLOW MOTION. THE WHEEL OVER THE MONITOR CHANGES THE SPEED, AND OVER THE TIMELINE IT SCRUBS. IN / OUT POINTS COME FROM THE NATIVE PREVIEW. UNDO AND REDO ARE CMD+Z AND CMD+SHIFT+Z.</div>
         </section>
 
         <section className="timeline-panel">

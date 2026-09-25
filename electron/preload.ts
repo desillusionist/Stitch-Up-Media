@@ -113,6 +113,13 @@ export interface IElectronAPI {
   diagnosticLog: (message: string, details?: unknown) => Promise<void>
   getPathForFile: (file: File) => string
   openEditJob: (task: QueueTask) => Promise<void>
+  /**
+   * The job this window is editing, for a renderer that has just mounted and cannot yet be pushed to.
+   *
+   * The push on load races the window's subscription, which is what left the editor on its WAITING line
+   * on a re-created window. The window pulls this on mount and on focus instead.
+   */
+  getEditJobTask: () => Promise<QueueTask | null>
   onEditJobTask: (callback: (task: QueueTask) => void) => () => void
   syncEditJobTask: (task: QueueTask) => Promise<void>
   applyEditJob: (patch: EditJobPatch, close?: boolean) => Promise<void>
@@ -209,6 +216,7 @@ const api: IElectronAPI = {
   diagnosticLog: (message, details) => ipcRenderer.invoke('diagnostic-log', message, details),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   openEditJob: (task: QueueTask) => ipcRenderer.invoke('open-edit-job', task),
+  getEditJobTask: () => ipcRenderer.invoke('get-edit-job-task'),
   onEditJobTask: (callback) => {
     const handler = (_: any, task: QueueTask) => callback(task)
     ipcRenderer.on('edit-job-task', handler)

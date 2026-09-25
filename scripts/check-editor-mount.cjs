@@ -279,6 +279,17 @@ app.whenReady().then(async () => {
         if (!cover.audioToggles.includes('COVER ART')) problems.push('cover art was not offered for a still in a container that can hold it')
         if (cover.pictureSource) problems.push('a picture source was offered by a container that holds artwork rather than frames')
       }
+      // THE RE-ENTRY. The window is already open, the job has moved in the queue, and NOTHING is pushed: the
+      // pull is the only thing that can deliver it. What is asserted is that a pull happened at all (wired)
+      // and that it reached the render (the summary's own name changed). Either alone would pass while the
+      // other half was broken — a pull never called, or a pull called and ignored.
+      const reentry = result.reentry
+      if (!reentry) problems.push('the re-entry reported nothing at all')
+      else {
+        if (!(reentry.pulls >= 1)) problems.push(`the window never pulled the job it is editing (${reentry.pulls} pulls)`)
+        if (reentry.nameBefore === 'pulled-by-focus.mp3') problems.push('the re-entry name was already on screen, so it proves nothing')
+        if (reentry.name !== 'pulled-by-focus.mp3') problems.push(`a re-entry pulled a job and the window did not adopt it: the summary still reads ${JSON.stringify(reentry.name)}`)
+      }
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

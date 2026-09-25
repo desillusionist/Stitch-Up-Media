@@ -1,5 +1,5 @@
 import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
-import { nextShuttleRate } from '../src/lib/shuttleRates'
+import { nextShuttleRate, nextTapRate, TAP_FORWARD_RATE } from '../src/lib/shuttleRates'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
 import { PREVIEW_FORMAT_VERSION, dropPreviewsFor, previewKey, rememberedPreviewFor, resolveQuickLookRequest, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey, stillPreviewKey } from '../src/lib/quickLookTarget'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
@@ -101,6 +101,13 @@ console.log('\n== the J / K / L ladder ==')
   check('J doubles too, all the way to 8x', reverse, [-1, -2, -4, -8, -8])
   check('reversing starts from the bottom', nextShuttleRate(8, -1), -1)
   check('and forward again', nextShuttleRate(-8, 1), 1)
+  // A TAP of the forward key is its own ladder, starting one rung higher: a tap asks to watch forward rather
+  // than to stop, and the ordinary speed is already one key away, so the fast-forward is what it lands on.
+  check('the forward key\u2019s ladder starts on the second rung', TAP_FORWARD_RATE, 2)
+  check('so a tap from rest plays forward at 2x, not 1x', nextTapRate(0), 2)
+  check('repeated taps climb the same ladder L does', [0, 2, 4, 8].map(nextTapRate), [2, 4, 8, 8])
+  check('a tap from an ordinary forward speed climbs rather than dropping', nextTapRate(1), 2)
+  check('a tap out of reverse starts the forward climb afresh', nextTapRate(-4), 2)
 }
 
 console.log('\n== tail seeking on a multi-track lane ==')
@@ -1759,14 +1766,16 @@ console.log('\n== the preview speed ==')
   check('and the bottom is the bottom rather than a wrap', steppedPreviewSpeed(0.5, -1), 0.5)
   check('a speed the list does not carry is stepped from the ordinary one', steppedPreviewSpeed(7, 1), 1.5)
 
-  // The pitch rule, which is stated once because the element’s property is the INVERSE of the phrase: a steady
-  // speed is pitch-corrected — the same voice at a different tempo — while a fast-forward raises it, which is
-  // what a tape transport does and what a shuttle is imitating.
+  // The pitch rule, which is stated once because the element’s property is the INVERSE of the phrase. A steady
+  // speed keeps its pitch — the same voice at a different tempo — and so now does a fast-forward: the raised
+  // pitch a tape transport would give it read as a fault across the whole of a shuttle, so every forward rate
+  // is pitch-corrected and the one constant above is the whole of the rule.
   check('a steady speed keeps its pitch', preservesPitchFor(0), true)
   check('and so does a 2x preview, which is a viewing speed rather than a shuttle', [playbackRateFor(0, 2), preservesPitchFor(0)], [2, true])
-  check('a shuttle at ordinary speed still keeps it, because it is not a fast-forward', preservesPitchFor(1), true)
-  check('a fast-forward raises it', preservesPitchFor(2), false)
-  check('and so does the top of the ladder', preservesPitchFor(8), false)
+  check('a shuttle at ordinary speed keeps it', preservesPitchFor(1), true)
+  check('a fast-forward keeps it too, rather than raising it', preservesPitchFor(2), true)
+  check('and so does the top of the ladder', preservesPitchFor(8), true)
+  check('every forward rate is pitch-corrected alike', [1, 2, 4, 8].map(preservesPitchFor), [true, true, true, true])
   check('reverse keeps the property, but it is paused rather than played so nothing is heard', preservesPitchFor(-4), true)
 }
 

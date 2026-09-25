@@ -22,3 +22,21 @@ export const nextShuttleRate = (current: number, direction: 1 | -1): number => {
   const index = ladder.indexOf(current)
   return index >= 0 ? ladder[Math.min(index + 1, ladder.length - 1)] : ladder[0]
 }
+
+/**
+ * The first rung a tap of the forward key reaches, which is not the ladder's own bottom.
+ *
+ * A tap of K is a request to watch FORWARD rather than to stop, and the ordinary speed is already one key
+ * away (L, or PLAY itself), so the fast-forward is what it asks for: the second rung, not the first.
+ */
+export const TAP_FORWARD_RATE = FORWARD_RATES[1]
+
+/**
+ * The rate a tap of the forward key moves the transport to.
+ *
+ * From rest it lands on the second rung; already forwarding, it climbs the ladder the same way a repeat of
+ * L does, so repeated taps speed up. A reverse rate is a tap away from forward, so it starts the climb
+ * afresh rather than continuing a ladder it was not on.
+ */
+export const nextTapRate = (current: number): number =>
+  current > 0 ? nextShuttleRate(current, 1) : TAP_FORWARD_RATE

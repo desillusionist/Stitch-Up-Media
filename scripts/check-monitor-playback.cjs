@@ -65,6 +65,49 @@ const measure = `(async () => {
   }
 })()`
 
+/**
+ * A WHEEL GESTURE WHILE PLAYING, which is the two-writers fault this pass fixes.
+ *
+ * A wheel fires faster than a render, so the old `seek` path left the auto-advance clock writing the playhead
+ * as well and the two fought at every boundary. What is measured here is that the gesture is HONOURED — a delta
+ * applied to the hook's own position accumulates rather than being lost — and that the transport RESUMES from
+ * the settled playhead rather than stalling. A scrub that is wired but never resumes, or that loses deltas,
+ * fails this.
+ */
+const scrubMeasure = `(async () => {
+  const v = document.querySelector('video')
+  const p = window.__playback
+  if (!v || !p) return { HARNESS_ERROR: 'no video element or playback hook' }
+  if (typeof p.scrubBy !== 'function') return { HARNESS_ERROR: 'the playback hook has no scrubBy' }
+  try {
+    await new Promise((resolve, reject) => {
+      if (v.readyState >= 2) return resolve()
+      v.addEventListener('loadeddata', () => resolve(), { once: true })
+      v.addEventListener('error', () => reject(new Error('media error ' + (v.error && v.error.code))), { once: true })
+      setTimeout(() => reject(new Error('no data after 20s')), 20000)
+    })
+  } catch (error) { return { HARNESS_ERROR: String(error && error.message) } }
+  p.toggle()
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  // The playback object is re-minted every render, so its fields are a SNAPSHOT: position and playing are
+  // re-read from the live handle each time (the hook publishes it every render), while the callbacks are stable.
+  const live = () => window.__playback
+  const startPos = live().position
+  // Thirty ticks, ten milliseconds apart: a flick, and deliberately faster than the render that would carry a
+  // rendered position forward — which is exactly why the delta is applied to the hook's own figure.
+  for (let i = 0; i < 30; i++) { live().scrubBy(0.05); await new Promise((resolve) => setTimeout(resolve, 10)) }
+  const midPos = live().position
+  // Let the gesture fall idle and the transport pick up again.
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  const resumed = live().playing
+  const t0 = performance.now(), c0 = v.currentTime
+  await new Promise((resolve) => setTimeout(resolve, 700))
+  const c1 = v.currentTime
+  const resumedRate = (c1 - c0) / ((performance.now() - t0) / 1000)
+  live().pause()
+  return { startPos: +startPos.toFixed(3), midPos: +midPos.toFixed(3), scrubDelta: +(midPos - startPos).toFixed(3), resumed, resumedRate: +resumedRate.toFixed(3) }
+})()`
+
 const runFfmpeg = (args) => new Promise((resolve, reject) => {
   execFile('ffmpeg', args, { maxBuffer: 8 * 1024 * 1024 }, (error, _stdout, stderr) => {
     if (error) reject(new Error(String(stderr || error.message)))
@@ -135,14 +178,27 @@ app.whenReady().then(async () => {
     await win.loadFile(htmlPath, { query: { variant } })
     await new Promise((resolve) => setTimeout(resolve, 400))
     results[variant] = await run(measure)
+    // The scrub is about the hook and not about how the ref is spelled, so it is measured once.
+    if (variant === 'stable' && !results[variant].HARNESS_ERROR) results.scrub = await run(scrubMeasure)
   }
 
   console.log(JSON.stringify({ file: PROVIDED || 'generated 1080p fixture', sourceDuration: +duration.toFixed(3), sampleSeconds: SAMPLE_SECONDS, results }, null, 2))
 
   const problems = []
   const stable = results.stable, inline = results.inline
-  for (const [name, result] of Object.entries(results)) {
+  for (const name of ['stable', 'inline']) {
+    const result = results[name]
     if (result.HARNESS_ERROR) problems.push(`the ${name} run could not be measured: ${result.HARNESS_ERROR}`)
+  }
+  // The wheel gesture: the deltas accumulate hand over hand, and the transport resumes from where it settled.
+  if (results.scrub && !results.scrub.HARNESS_ERROR) {
+    const scrub = results.scrub
+    // Thirty ticks of 0.05s is 1.5s; a generous window, because the render cadence rounds each landing.
+    if (!(Math.abs(scrub.scrubDelta - 1.5) < 0.7)) problems.push(`a wheel gesture of 1.5s moved the playhead ${scrub.scrubDelta}s`)
+    if (!scrub.resumed) problems.push('the transport was left stopped after a scrub over a playing job')
+    if (!(scrub.resumedRate >= 0.85)) problems.push(`playback did not resume after the scrub: ${scrub.resumedRate}\u00d7`)
+  } else if (results.scrub) {
+    problems.push(`the scrub could not be measured: ${results.scrub.HARNESS_ERROR}`)
   }
   if (!problems.length) {
     // The element is handed a real, seekable video through the app's own URL: it must play it at the
