@@ -21,6 +21,7 @@
     "check-sync": "swiftc -D QUICKLOOK_SCALE_HARNESS electron/quicklook-preview.swift electron/quicklook-scale.swift scripts/check-quicklook-sync.swift -o scripts/.check-sync -framework AppKit -framework AVKit -framework AVFoundation && scripts/.check-sync",
     "preview": "vite preview",
     "electron:dev": "vite",
+    "icon": "xcrun actool --output-format human-readable-text --notices --warnings --platform macosx --minimum-deployment-target 27.0 --target-device mac --app-icon AppIcon --output-partial-info-plist /tmp/stitchup-appicon-partial.plist --compile build build/AppIcon.icon",
     "dist": "npm run build && electron-builder --mac",
     "dist:dir": "npm run build && electron-builder --mac --dir"
   },
@@ -67,9 +68,18 @@
         "dmg",
         "zip"
       ],
-      "icon": "build/icon.icns",
+      "icon": "build/AppIcon.icns",
       "category": "public.app-category.video",
-      "darkModeSupport": true
+      "darkModeSupport": true,
+      "extendInfo": {
+        "CFBundleIconName": "AppIcon"
+      },
+      "extraResources": [
+        {
+          "from": "build/Assets.car",
+          "to": "Assets.car"
+        }
+      ]
     }
   }
 }
