@@ -67,6 +67,7 @@
         "dmg",
         "zip"
       ],
+      "icon": "build/icon.icns",
       "category": "public.app-category.video",
       "darkModeSupport": true
     }

@@ -88,6 +88,15 @@ function createWindow() {
 app.whenReady().then(() => {
   logEvent('main', 'Application starting', { platform: process.platform, version: process.versions.electron, logFile: getLogFile() })
 
+  // The Dock shows the app BUNDLE's icon, which only exists once packaged — a development run shows the stock
+  // Electron one instead. Pointing it at the same art the bundle carries keeps the running app recognisable
+  // while it is being worked on, and makes a change to the icon visible without a rebuild. Guarded on
+  // `isPackaged`, where the bundle's own icon is already the right one and the file is not laid out the same.
+  if (!app.isPackaged) {
+    const devIcon = path.join(__dirname, '../build/icon.png')
+    if (fs.existsSync(devIcon)) app.dock?.setIcon(devIcon)
+  }
+
   // Streams a local file into a renderer. Byte ranges are resolved here rather
   // than delegated to net.fetch: a media element will not seek at all unless it
   // receives a 206 with Content-Range, so this must be exact.
