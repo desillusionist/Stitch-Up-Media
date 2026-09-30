@@ -179,6 +179,9 @@ final class FilmstripView: NSView {
     var onPlayheadChange: ((Double) -> Void)?
     var onHoverTime: ((Double) -> Void)?
     private var dragging: String?
+    /// Where the pointer was at the last drag event, which is what a step is measured from.
+    private var lastDragX: CGFloat = 0
+    private var lastDragY: CGFloat = 0
     private let isAudio: Bool
     private var peaks: [CGFloat] = []
     private let peakResolution = 2000
@@ -576,6 +579,7 @@ final class FilmstripView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        lastDragX = p.x; lastDragY = p.y
         let inX = screenX(forValue: start)
         let outX = screenX(forValue: end)
         if abs(p.x - inX) < handleGrab { dragging = "in"; selectedHandle = "in"; onHandleSelected?("in") }
@@ -609,13 +613,21 @@ final class FilmstripView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         guard let dragging else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        // The movement is read off where the POINTER IS, step by step, and NOT off the event's own `deltaX`.
+        // A delta is a figure the event system derives from the stream it arrived in, and an event that did not
+        // come from a real drag carries none at all — so a handle could sit under a press and never move by a
+        // pixel. The pointer's own positions are the thing the gesture actually is.
+        let stepX = p.x - lastDragX
+        let stepY = p.y - lastDragY
+        lastDragX = p.x; lastDragY = p.y
         // A hold is abandoned as soon as the pointer MOVES: a press that is going to become a drag is not a
         // press that means to narrow onto anything.
-        if longPressWork != nil, abs(event.deltaX) > 3 || abs(event.deltaY) > 3 { longPressWork?.cancel(); longPressWork = nil }
+        if longPressWork != nil, abs(stepX) > 3 || abs(stepY) > 3 { longPressWork?.cancel(); longPressWork = nil }
         // A handle is moved by the pixels the pointer has moved, at the rate the strip is drawn at: dragging
         // it across a second's worth of strip moves it by exactly a second, at any zoom.
         let rate = stripPxPerSec(zoom)
-        let deltaSeconds = rate > 0 ? Double(event.deltaX) / rate : 0
+        let deltaSeconds = rate > 0 ? Double(stepX) / rate : 0
         switch dragging {
         case "in":
             let t = min(end * sourceDuration - 1.0 / frameRate, max(0, start * sourceDuration + deltaSeconds))
@@ -946,10 +958,13 @@ final class PreviewView: NSView {
     private func showOverlay() { titleHideWork?.cancel(); titleLabel.isHidden = false; dimsLabel.isHidden = false; if !stillMode { timestampLabel.isHidden = false; sourceStampLabel.isHidden = false; zoomLabel.isHidden = false }; scheduleOverlayHide() }
     private func scheduleOverlayHide() { titleHideWork?.cancel(); guard player.rate != 0 else { return }; let work = DispatchWorkItem { [weak self] in self?.titleLabel.isHidden = true; self?.timestampLabel.isHidden = true; self?.sourceStampLabel.isHidden = true; self?.dimsLabel.isHidden = true; self?.zoomLabel.isHidden = true }; titleHideWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.4, execute: work) }
     /// The zoom, as the readout between CUR and SRC: how many times the base rate the strip is drawn at.
+    ///
+    /// It says TL (timeline) so it cannot be read as a zoom of the PICTURE: the strip is the timeline here, and
+    /// a window that already has a picture zoom must not name the two the same.
     private func zoomText() -> String {
         let zoom = filmstrip.zoom
-        guard zoom.isFinite, zoom > 0 else { return "ZOOM —" }
-        return String(format: "ZOOM %.2f×", zoom)
+        guard zoom.isFinite, zoom > 0 else { return "TL ZOOM —" }
+        return String(format: "TL ZOOM %.2f×", zoom)
     }
     override func scrollWheel(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)

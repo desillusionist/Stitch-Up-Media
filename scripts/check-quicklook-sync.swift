@@ -324,6 +324,69 @@ enum CheckQuickLookSync {
         check("a resize keeps a zoom the user chose", abs(resized.zoom - keptZoom) < 1e-9, "\(resized.zoom) was \(keptZoom)")
         check("and the drawing is still inside its own strip", resized.offset >= -1e-6 && resized.offset <= max(0, resized.stripWidth - 1000) + 1e-6, "offset \(resized.offset) of strip \(resized.stripWidth)")
 
+        section("dragging a trim handle")
+        // The one path none of the checks above can reach. Every one of them sets `start`/`end` directly, so a
+        // strip whose handles could not be dragged at all would pass the lot. This sends REAL mouse events
+        // through the window, which is the only way to exercise the press finding the handle under it and the
+        // movement being taken — the whole of what "reposition the in/out points" means.
+        //
+        // A FRESH strip at the overview: the whole source in the room, so both handles are on screen and a
+        // press has something to land on. The strip above has been zoomed and scrolled far from that, and its
+        // in-handle is hundreds of pixels off the left of the window.
+        let dragged = FilmstripView(asset: asset, duration: duration, sourceAspect: 320.0 / 180.0, isAudio: false, frameRate: rate, frame: NSRect(x: 0, y: 0, width: width, height: height))
+        container.addSubview(dragged)
+        dragged.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        dragged.needsLayout = true
+        dragged.layoutSubtreeIfNeeded()
+        pump(0.6)
+        dragged.start = 0.25
+        dragged.end = 0.75
+        dragged.playheadValue = 0.4
+        dragged.selectedHandle = "playhead"
+        pump(0.3)
+
+        func mouse(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat, _ number: Int) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                               context: nil, eventNumber: number, clickCount: 1, pressure: 1)!
+        }
+
+        let inHandleX = dragged.inHandle.frame.midX
+        let outHandleX = dragged.outHandle.frame.midX
+        let midY = dragged.bounds.midY
+        print("  at the overview: in at \(Int(inHandleX))px, out at \(Int(outHandleX))px, of \(Int(width)); \(Int(stripPxPerSec(dragged.zoom)))px/s")
+        check("both handles are inside the window to be dragged", inHandleX > 0 && outHandleX < width, "in \(inHandleX), out \(outHandleX)")
+
+        // What a press over a handle would LAND ON: the overlays and the tiles are drawn on top of the strip, so
+        // the press arrives at one of them and is forwarded to the strip. Printed rather than asserted — the
+        // strip is not required to be the hit view, only to take hold of the handle the press was aimed at.
+        let hit = dragged.hitTest(NSPoint(x: inHandleX, y: midY))
+        print("  a press over the in-handle is hit-tested to \(hit === dragged ? "the strip" : String(describing: type(of: hit!)))")
+
+        let startBefore = dragged.start
+        window.sendEvent(mouse(.leftMouseDown, inHandleX, midY, 1))
+        let grabbed = dragged.selectedHandle
+        window.sendEvent(mouse(.leftMouseDragged, inHandleX + 120, midY, 2))
+        window.sendEvent(mouse(.leftMouseUp, inHandleX + 120, midY, 3))
+        pump(0.2)
+        let movedSeconds = (dragged.start - startBefore) * duration
+        print("  the press selected \(grabbed); a 120px drag moved the in-point \(String(format: "%.3f", movedSeconds))s")
+        check("a press over the in-handle takes hold of it", grabbed == "in", "took \(grabbed)")
+        check("and dragging it moves the in-point", movedSeconds > 0.1, "moved \(movedSeconds)s")
+        check("by the pixels dragged, at the strip's own rate", abs(movedSeconds - 120 / stripPxPerSec(dragged.zoom)) < 0.05, "\(movedSeconds)s for 120px at \(stripPxPerSec(dragged.zoom))px/s")
+
+        // The same gesture in the middle, over a TILE, so the press has to reach the strip through the picture.
+        let skimmerWas = dragged.playheadValue
+        let midX = (inHandleX + outHandleX) / 2
+        window.sendEvent(mouse(.leftMouseDown, midX, midY, 4))
+        let tookSkimmer = dragged.selectedHandle
+        window.sendEvent(mouse(.leftMouseDragged, midX + 60, midY, 5))
+        window.sendEvent(mouse(.leftMouseUp, midX + 60, midY, 6))
+        pump(0.2)
+        print("  a press in the middle selected \(tookSkimmer); the skimmer moved \(String(format: "%.3f", (dragged.playheadValue - skimmerWas) * duration))s")
+        check("a press over a tile takes the skimmer", tookSkimmer == "playhead", "took \(tookSkimmer)")
+        check("and dragging scrubs it", (dragged.playheadValue - skimmerWas) * duration > 0.05, "\(skimmerWas) to \(dragged.playheadValue)")
+
         try? FileManager.default.removeItem(at: root)
         print(failures == 0 ? "\nTHE STRIP IS DRAWN AT THE ZOOM IT SAYS IT IS\n" : "\n\(failures) SYNC PROBLEM(S)\n")
         exit(failures == 0 ? 0 : 1)
