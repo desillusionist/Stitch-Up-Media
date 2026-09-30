@@ -16,6 +16,7 @@
     "verify-fit": "npm run build && esbuild src/lib/sourceFit.ts --bundle --platform=node --format=cjs --outfile=scripts/.sourceFit.cjs --log-level=warning && node scripts/check-fit-chain.cjs",
     "verify-wave": "npm run build && esbuild src/lib/waveform.ts --bundle --platform=node --format=cjs --outfile=scripts/.waveform.cjs --log-level=warning && node scripts/check-waveform.cjs",
     "verify-run": "esbuild electron/ffmpeg/run.ts --bundle --platform=node --format=cjs --outfile=scripts/.ffmpegRun.cjs --log-level=warning && node scripts/check-ffmpeg-run.cjs",
+    "check-proxy": "esbuild electron/previewProxy.ts --bundle --platform=node --format=cjs --outfile=scripts/.previewProxy.cjs --log-level=warning && node scripts/check-preview-proxy.cjs",
     "check-mount": "npm run build && electron scripts/check-editor-mount.cjs",
     "check-scale": "swiftc electron/quicklook-scale.swift scripts/check-quicklook-scale.swift -o scripts/.check-scale && scripts/.check-scale",
     "check-sync": "swiftc -D QUICKLOOK_SCALE_HARNESS electron/quicklook-preview.swift electron/quicklook-scale.swift scripts/check-quicklook-sync.swift -o scripts/.check-sync -framework AppKit -framework AVKit -framework AVFoundation && scripts/.check-sync",

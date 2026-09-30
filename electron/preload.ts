@@ -84,7 +84,14 @@ export interface IElectronAPI {
   onTaskCompleted: (callback: (taskId: string) => void) => () => void
   onTaskError: (callback: (taskId: string, error: string) => void) => () => void
   openPath: (path: string) => Promise<void>
-  quickLook: (path: string, taskId?: string, trimStart?: number, trimEnd?: number, sourceIndex?: number, stillMode?: boolean, screenshotDirectory?: string, timestampDisplayMode?: 'timestamp' | 'framestamp', sequenceFps?: number, sequenceFrameCount?: number) => Promise<void>
+  quickLook: (path: string, taskId?: string, trimStart?: number, trimEnd?: number, sourceIndex?: number, stillMode?: boolean, screenshotDirectory?: string, timestampDisplayMode?: 'timestamp' | 'framestamp', sequenceFps?: number, sequenceFrameCount?: number) => Promise<{ proxyFailed?: boolean }>
+  /**
+   * The file the monitor should play a source from.
+   *
+   * The source itself when a `<video>` can decode it, and otherwise a built-and-remembered H.264 proxy at the
+   * source's own size and rate. `null` means a proxy was needed and could not be built.
+   */
+  previewProxyFor: (filePath: string) => Promise<string | null>
   onQuickLookTrimmed: (callback: (taskId: string, path: string) => void) => () => void
   onQuickLookPoints: (callback: (taskId: string, path: string, start: number, end: number, sourceIndex: number) => void) => () => void
   /** Applies a per-source timing change at once, without waiting for the EDIT JOB to be applied. */
@@ -173,6 +180,7 @@ const api: IElectronAPI = {
   },
   openPath: (path: string) => ipcRenderer.invoke('open-path', path),
   quickLook: (path: string, taskId?: string, trimStart?: number, trimEnd?: number, sourceIndex?: number, stillMode?: boolean, screenshotDirectory?: string, timestampDisplayMode?: 'timestamp' | 'framestamp', sequenceFps?: number, sequenceFrameCount?: number) => ipcRenderer.invoke('quick-look', path, taskId, trimStart, trimEnd, sourceIndex, stillMode, screenshotDirectory, timestampDisplayMode, sequenceFps, sequenceFrameCount),
+  previewProxyFor: (filePath: string) => ipcRenderer.invoke('preview-proxy-for', filePath),
   onQuickLookTrimmed: (callback) => {
     const handler = (_: any, payload: { taskId: string; path: string }) => callback(payload.taskId, payload.path)
     ipcRenderer.on('quicklook-trimmed', handler)

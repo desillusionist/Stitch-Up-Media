@@ -2,7 +2,8 @@ import { advanceClock, elementOwnsPosition } from '../src/lib/playbackClock'
 import { nextShuttleRate, nextForwardRung, FORWARD_ACCELERATE_RUNGS } from '../src/lib/shuttleRates'
 import { SCRUB_RATE_MAX, SCRUB_RATE_MIN, SCRUB_RATE_SMOOTHING, scrubRateFor } from '../src/lib/scrubAudio'
 import { withSourceTiming, sourceTimingOverrides } from '../src/lib/sourceTiming'
-import { PREVIEW_FORMAT_VERSION, dropPreviewsFor, previewKey, rememberedPreviewFor, resolveQuickLookRequest, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey, stillPreviewKey } from '../src/lib/quickLookTarget'
+import { PREVIEW_FORMAT_VERSION, dropPreviewsFor, previewKey, rememberedPreviewFor, rememberedProxyFor, previewProxyKey, resolveQuickLookRequest, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey, stillPreviewKey } from '../src/lib/quickLookTarget'
+import { webviewPlaysVideo } from '../src/lib/previewCodec'
 import { progressPercent, timemarkSeconds } from '../src/lib/progress'
 import { aspectSize, clampCrop, cropBands, cropFilter, cropFractions, cropForProportion, cropPixels, exactSizeFields, fitFrame, fitFrameBy, hasCrop, holdCropShape, insetCrop, keptAspect, outputFrameSize, resolutionBox, resolutionShortSide, resizeCorner, resizeExact, shiftCrop, MAX_CROP } from '../src/lib/outputFrame'
 import { computeFilmstrip, frameKey, thumbnailSignature } from '../src/lib/filmstrip'
@@ -2103,6 +2104,45 @@ void (async () => {
     // And a task that names nothing keeps the queue's own rule: no index, no path, the first source.
     const plain = await resolveQuickLookRequest(task, undefined, {})
     check('a request naming nothing is the job\u2019s first source', plain?.target, '/video-one.mp4')
+  }
+
+  console.log('\n== a source the app\u2019s own webview cannot decode ==')
+  {
+    // A `<video>` is Chromium's decoder, and it knows the codecs a browser knows. FFMPEG reads far more than
+    // that — which is why a Resolume DXV exported perfectly well and previewed as a black frame.
+    check('an ordinary h264 mp4 is played as it is', webviewPlaysVideo({ container: 'mp4', videoCodecs: ['h264'] }), true)
+    check('and a vp9 webm too', webviewPlaysVideo({ container: 'webm', videoCodecs: ['vp9'] }), true)
+    check('a DXV is not', webviewPlaysVideo({ container: 'mov', videoCodecs: ['dxv'] }), false)
+    check('nor a Hap', webviewPlaysVideo({ container: 'mov', videoCodecs: ['hap'] }), false)
+    check('nor ProRes, however ordinary its container', webviewPlaysVideo({ container: 'mov', videoCodecs: ['prores'] }), false)
+    // The container is half the question: Chromium plays the WebM subset of Matroska and not Matroska.
+    check('nor h264 inside the wrong wrapper', webviewPlaysVideo({ container: 'mkv', videoCodecs: ['h264'] }), false)
+    // A codec string carries its profile after a dot, and `avc1.64001f` is still avc1.
+    check('a codec is read past its profile', webviewPlaysVideo({ container: 'mp4', videoCodecs: ['avc1.64001f'] }), true)
+    check('and so is a vp9 one', webviewPlaysVideo({ container: 'webm', videoCodecs: ['vp09.00.10.08'] }), true)
+    // A source with no picture has nothing for the element to fail to decode, and its sound is a different
+    // question answered by a different element.
+    check('a source with no video stream is not a proxy question at all', webviewPlaysVideo({ container: 'wav', videoCodecs: [] }), true)
+
+    // The proxy is remembered on the task under a key of its own, which is what lets a built one be found
+    // rather than rebuilt on the next open.
+    const job = { imageSequencePreviews: { [previewProxyKey('/a.mov')]: '/cache/a.mp4' } } as unknown as QueueTask
+    check('a proxy is found by its source', rememberedProxyFor(job, '/a.mov'), '/cache/a.mp4')
+    check('and a source with none has none', rememberedProxyFor(job, '/b.mov'), undefined)
+    check('the key is not the sequence key', previewProxyKey('/a.mov') === sequencePreviewKey('/a.mov', 24, 240), false)
+
+    // Resolving for such a source asks the bridge to build one and hands the proxy back as the target.
+    const source = { id: 't', type: 'transcode', status: 'pending', progress: 0, sourcePaths: ['/a.mov'], outputDirectory: '/out', outputFilename: 'o.mp4', preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' } } as unknown as QueueTask
+    const asked: string[] = []
+    const builder = { previewProxyFor: async (file: string) => { asked.push(file); return '/cache/built.mp4' }, pathExists: async () => false }
+    const proxied = await resolveQuickLookRequest(source, builder, { sourceIndex: 0, needsPreviewProxy: true })
+    check('a source that needs a proxy asks for one', asked, ['/a.mov'])
+    check('and the proxy is what the monitor is handed', proxied?.target, '/cache/built.mp4')
+    check('reported back so the caller remembers it', proxied?.regeneratedPreview?.path, '/cache/built.mp4')
+    // A source the element can play is handed over as itself and nothing is built.
+    const untouched = { previewProxyFor: async () => { throw new Error('nothing should have been built') }, pathExists: async () => false }
+    const kept = await resolveQuickLookRequest(source, untouched, { sourceIndex: 0 })
+    check('a source that needs no proxy is handed over as itself', kept?.target, '/a.mov')
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

@@ -8,7 +8,8 @@ import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES
 import { PREVIEW_SPEEDS, speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
-import { rememberedPreviewFor, resolveQuickLookRequest } from '../lib/quickLookTarget'
+import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } from '../lib/quickLookTarget'
+import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
 import { buildTimeline, canApplyClipFit, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
@@ -872,11 +873,16 @@ export const EditJobApp: React.FC = () => {
     const task = draftRef.current
     if (!task) { setMediaTargets({}); return }
     const wanted = new Map<string, string>()
-    Array.from(new Set(task.sourcePaths)).forEach((sourcePath) => {
+    Array.from(new Set([...task.sourcePaths, ...(task.additionalAudioTracks || []).map((track) => track.path)])).forEach((sourcePath) => {
       const sequence = sequenceFor(task, sourcePath)
-      if (!sequence) return
-      const rate = sourceFps(task, sourcePath, sequence, resolveTiming)
-      wanted.set(`${sourcePath}\u0000${rate}`, sourcePath)
+      if (sequence) {
+        const rate = sourceFps(task, sourcePath, sequence, resolveTiming)
+        wanted.set(`${sourcePath}\u0000${rate}`, sourcePath)
+        return
+      }
+      // A source the webview cannot decode needs a PROXY resolved before the monitor can draw it. Nothing is
+      // resolved for one it CAN decode: its own file is the target and there is nothing to build.
+      if (needsProxyFor(sourcePath)) wanted.set(`${sourcePath}\u0000proxy`, sourcePath)
     })
     if (!wanted.size) return
     const missing = [...wanted.keys()].filter((key) => resolvedTargetsRef.current[key] === undefined)
@@ -884,7 +890,7 @@ export const EditJobApp: React.FC = () => {
     let cancelled = false
     void Promise.all(missing.map(async (key) => {
       const sourcePath = wanted.get(key) as string
-      const request = await resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: Math.max(0, task.sourcePaths.indexOf(sourcePath)) })
+      const request = await resolveQuickLookRequest(task, window.electronAPI, { sourceIndex: Math.max(0, task.sourcePaths.indexOf(sourcePath)), needsPreviewProxy: needsProxyFor(sourcePath) })
       return [key, sourcePath, request] as const
     })).then((entries) => {
       if (cancelled) return
@@ -906,7 +912,7 @@ export const EditJobApp: React.FC = () => {
       setMediaTargets((current) => ({ ...current, ...resolved }))
     })
     return () => { cancelled = true }
-  }, [timelineSignature, probedTiming])
+  }, [timelineSignature, probedTiming, sourceProbes])
 
   // The lane area's width, watched rather than assumed. A ResizeObserver rather than a window
   // resize listener, because the lane also changes when the window is merely re-laid out.
@@ -1069,9 +1075,27 @@ export const EditJobApp: React.FC = () => {
     if (resolved) return resolved.path
     if (!draft) return segment.sourcePath
     const sequence = sequenceFor(draft, segment.sourcePath)
-    if (!sequence) return segment.sourcePath
+    if (!sequence) {
+      // A source a `<video>` cannot decode — a DXV, a Hap, a ProRes — plays through a PROXY, and until one is
+      // resolved the monitor must say PREPARING rather than hand the element a file it will refuse to open.
+      if (needsProxyFor(segment.sourcePath)) return rememberedProxyFor(draft, segment.sourcePath) ?? null
+      return segment.sourcePath
+    }
     const rate = sourceFps(draft, segment.sourcePath, sequence, resolveTiming)
     return rememberedPreviewFor(draft, segment.sourcePath, rate) ?? null
+  }
+  /**
+   * Whether a source has to be played through a proxy because the app's own webview cannot decode it.
+   *
+   * Read off the probe the window already has rather than asked of main, which would be a round trip per
+   * source for a fact in hand. Answered `false` for a source not yet probed: its own file is the target until
+   * the probe says otherwise, and guessing would only cost the moment the probe takes to arrive.
+   */
+  const needsProxyFor = (sourcePath: string): boolean => {
+    const probe = sourceProbes[sourcePath]
+    if (!probe) return false
+    const container = sourcePath.split('.').pop() || ''
+    return !webviewPlaysVideo({ container, videoCodecs: (probe.videoStreams || []).map((stream) => stream.codec) })
   }
   /**
    * A frame already fetched.
@@ -2200,7 +2224,11 @@ export const EditJobApp: React.FC = () => {
     const clip = playback.segment?.still ? playback.segment : undefined
     const helperFps = request.sequenceFps ?? (clip ? fps : undefined)
     const helperFrames = request.sequenceFrameCount ?? (clip ? Math.max(1, Math.round(stillSecondsFor(draft, clip.sourcePath) * fps)) : undefined)
-    void window.electronAPI?.quickLook(request.target, draft.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings?.screenshotDirectory, settings?.timestampDisplayMode || 'timestamp', helperFps, helperFrames)
+    void window.electronAPI?.quickLook(request.target, draft.id, request.trimIn, request.trimOut, request.sourceIndex, request.stillMode, settings?.screenshotDirectory, settings?.timestampDisplayMode || 'timestamp', helperFps, helperFrames).then((result) => {
+      // A source that had to be played through a proxy and could not be: said out loud rather than shown as a
+      // window that opened on nothing.
+      if (result?.proxyFailed) setPreviewNotice('COULD NOT BUILD A PREVIEW OF THIS SOURCE, SO NOTHING WAS SHOWN. THE FFMPEG ERROR IS IN THE LOG.')
+    })
   }
 
   const laneGap = (lane: TimelineLane) => Math.max(0, duration - lane.duration)

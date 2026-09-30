@@ -13,6 +13,7 @@ import { clipFilters } from '../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingCanvas, drawingColorOf, drawingTuneOf, eqStyleOf, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { runFfmpeg } from './ffmpeg/run'
+import { previewProxyFor, PreviewProxyDeps } from './previewProxy'
 import { spawn, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
@@ -53,6 +54,30 @@ let editJobClosing = false
 // Whether the renderer is up and listening. Before it is, there is nobody to ask, so a close is let
 // through rather than swallowed by a question that no window is there to put.
 let editJobReady = false
+
+/** Where the record of generated files lives, so the cache-clear knows which temp files are ours. */
+const generatedPreviewRegistry = () => path.join(app.getPath('userData'), 'generated-preview-paths.json')
+
+/** Records a generated file — a sequence clip, a still's clip or a preview proxy — as ours to delete. */
+const registerGeneratedPreview = (filePath: string) => {
+  try {
+    const registry = generatedPreviewRegistry()
+    const current = fs.existsSync(registry) ? JSON.parse(fs.readFileSync(registry, 'utf8')) : []
+    fs.mkdirSync(path.dirname(registry), { recursive: true })
+    fs.writeFileSync(registry, JSON.stringify([...new Set([...(Array.isArray(current) ? current : []), filePath])]), 'utf8')
+  } catch { /* a registry that cannot be written is a file the cache-clear will miss */ }
+}
+
+/** What the proxy builder needs to know: where generated files go, and how one is recorded as ours. */
+const previewProxyDeps = (): PreviewProxyDeps => {
+  const settings = queueManager?.getSettings()
+  return {
+    cacheDirectory: settings?.cacheDirectory,
+    saveTempNextToSource: settings?.saveTempNextToSource,
+    registryPath: path.join(app.getPath('userData'), 'preview-proxy-cache.json'),
+    register: registerGeneratedPreview,
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -584,12 +609,7 @@ app.whenReady().then(() => {
       : (settings?.cacheDirectory || path.join(os.tmpdir(), 'Stitch Up Media'))
     fs.mkdirSync(cacheRoot, { recursive: true })
     const previewPath = path.join(cacheRoot, `stitch-up-image-sequence-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`)
-    const previewRegistry = path.join(app.getPath('userData'), 'generated-preview-paths.json')
-    try {
-      const current = fs.existsSync(previewRegistry) ? JSON.parse(fs.readFileSync(previewRegistry, 'utf8')) : []
-      fs.mkdirSync(path.dirname(previewRegistry), { recursive: true })
-      fs.writeFileSync(previewRegistry, JSON.stringify([...new Set([...(Array.isArray(current) ? current : []), previewPath])]), 'utf8')
-    } catch {}
+    registerGeneratedPreview(previewPath)
     const listPath = `${previewPath}.txt`
     const rate = options?.fps && options.fps > 0 ? options.fps : 25
     // A lone image becomes a clip of the requested length, so a still can be
@@ -704,7 +724,23 @@ app.whenReady().then(() => {
     const result = await dialog.showSaveDialog({ defaultPath: currentPath, filters: [{ name: container.toUpperCase(), extensions: [container] }] })
     return result.canceled ? null : result.filePath
   })
+  // A source a `<video>` cannot decode is played through a PROXY, and this is the one place every route
+  // into the frame-accurate helper passes: the queue rail, the editor, the clip menu. A DXV, a Hap, a
+  // ProRes — FFMPEG reads them and Chromium does not, so the helper used to be handed a file AVFoundation
+  // could not open either, and it showed a black window with no explanation at all. The proxy is built at
+  // the SOURCE's rate and size, so the helper's frame grid and in/out points still mean the source's frames.
+  //
+  // `null` is the one answer that has to be said out loud rather than played a black frame about.
   ipcMain.handle('quick-look', async (_, targetPath: string, taskId?: string, trimStart?: number, trimEnd?: number, sourceIndex?: number, stillMode?: boolean, screenshotDirectory?: string, timestampDisplayMode?: 'timestamp' | 'framestamp', sequenceFps?: number, sequenceFrameCount?: number) => {
+    const helperTarget = await previewProxyFor(targetPath, previewProxyDeps())
+    if (helperTarget == null) {
+      logEvent('quick-look', 'preview proxy could not be built', { targetPath })
+      return { proxyFailed: true }
+    }
+    // The helper reports the file it was GIVEN, and it was given the proxy; the in/out points it reports
+    // belong to the SOURCE, so the path is mapped back before it is forwarded. Filing them against the
+    // proxy would lose them the moment the proxy was rebuilt.
+    const reportPath = (reported: string) => (helperTarget !== targetPath && reported === helperTarget ? targetPath : reported)
     const helperSourceName = stillMode ? 'quicklook-lite.swift' : 'quicklook-preview.swift'
     // Packaged builds unpack the Swift helpers from the asar archive: swiftc runs
     // as a native process and cannot read a path inside app.asar, and Electron's
@@ -752,7 +788,7 @@ app.whenReady().then(() => {
         } catch { /* a temp directory that cannot be listed is not a reason to refuse to open a window */ }
       }
       fs.chmodSync(helper, 0o755)
-      const child = spawn(helper, [targetPath, taskId || '', trimStart == null ? '' : String(trimStart), trimEnd == null ? '' : String(trimEnd), sourceIndex == null ? '0' : String(sourceIndex), stillMode ? 'still' : '', screenshotDirectory || '', timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp', sequenceFps == null ? '' : String(sequenceFps), sequenceFrameCount == null ? '' : String(sequenceFrameCount)], {
+      const child = spawn(helper, [helperTarget, taskId || '', trimStart == null ? '' : String(trimStart), trimEnd == null ? '' : String(trimEnd), sourceIndex == null ? '0' : String(sourceIndex), stillMode ? 'still' : '', screenshotDirectory || '', timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp', sequenceFps == null ? '' : String(sequenceFps), sequenceFrameCount == null ? '' : String(sequenceFrameCount)], {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -768,7 +804,7 @@ app.whenReady().then(() => {
           const separator = payload.indexOf(':')
           const returnedTaskId = separator >= 0 ? payload.slice(0, separator) : ''
           const returnedPath = separator >= 0 ? payload.slice(separator + 1) : payload
-          if (returnedTaskId && returnedPath) mainWindow?.webContents.send('quicklook-trimmed', { taskId: returnedTaskId, path: returnedPath })
+          if (returnedTaskId && returnedPath) mainWindow?.webContents.send('quicklook-trimmed', { taskId: returnedTaskId, path: reportPath(returnedPath) })
         }
         if (line.startsWith('STITCH_POINTS:')) {
           const payload = line.slice('STITCH_POINTS:'.length)
@@ -778,17 +814,24 @@ app.whenReady().then(() => {
           const end = Number(parts.pop())
           const start = Number(parts.pop())
           const returnedPath = parts.join(':')
-          if (returnedTaskId && returnedPath && Number.isFinite(start) && Number.isFinite(end)) mainWindow?.webContents.send('quicklook-points', { taskId: returnedTaskId, path: returnedPath, start, end, sourceIndex: Number.isFinite(sourceIndex) ? sourceIndex : 0 })
+          if (returnedTaskId && returnedPath && Number.isFinite(start) && Number.isFinite(end)) mainWindow?.webContents.send('quicklook-points', { taskId: returnedTaskId, path: reportPath(returnedPath), start, end, sourceIndex: Number.isFinite(sourceIndex) ? sourceIndex : 0 })
         }
       })
       child.stderr?.on('data', (chunk: Buffer) => {
         const message = String(chunk).trim()
         if (message) logEvent('quick-look', 'native helper stderr', { message, targetPath })
       })
+      return { proxyFailed: false }
     } catch (error) {
       logEvent('quick-look', 'native helper failed to start', { error: String(error), targetPath })
+      return { proxyFailed: false }
     }
   })
+
+  // The file the editor's monitor should play a source from: the source itself when a `<video>` can decode
+  // it, and otherwise a built-and-remembered H.264 proxy. `null` means a proxy was needed and could not be
+  // built, which is the one answer the window has to say out loud rather than play a black frame about.
+  ipcMain.handle('preview-proxy-for', async (_, filePath: string) => previewProxyFor(filePath, previewProxyDeps()))
 
   ipcMain.handle('open-path', async (_, targetPath: string) => {
     shell.openPath(targetPath)

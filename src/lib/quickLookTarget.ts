@@ -1,11 +1,14 @@
 import { QueueTask } from '../types'
 import { mediaKind } from './mediaKind'
 import { isStillFrameJob, sequenceFor, sourceFps, stillSecondsFor } from './timelineModel'
+import { previewProxySpec } from './previewCodec'
 
 /** The subset of the preload bridge this helper needs. */
 export interface QuickLookBridge {
   pathExists?: (filePath: string) => Promise<boolean>
   createImageSequencePreview?: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>
+  /** The file a source should be played from: itself, or a built-and-remembered H.264 proxy. */
+  previewProxyFor?: (filePath: string) => Promise<string | null>
 }
 
 export interface QuickLookRequest {
@@ -83,6 +86,18 @@ export const sequencePreviewKey = (sourcePath: string, rate: number, frameCount:
 export const stillPreviewKey = (sourcePath: string, rate: number, seconds: number): string =>
   previewKey(sourcePath, stillSpec(rate, seconds))
 
+/**
+ * The key a preview PROXY is held under.
+ *
+ * A proxy is not built at a rate or a length — it is the source's own frames at the source's own rate — so
+ * its key carries only the format version, and a proxy written by an older build is not this source's proxy.
+ */
+export const previewProxyKey = (sourcePath: string): string => previewKey(sourcePath, previewProxySpec())
+
+/** The proxy a task already has for a source, so a built one is drawn without asking anybody. */
+export const rememberedProxyFor = (task: QueueTask, sourcePath: string | undefined): string | undefined =>
+  sourcePath ? task.imageSequencePreviews?.[previewProxyKey(sourcePath)] : undefined
+
 /** The logical source a cache key belongs to. */
 export const sourceOfPreviewKey = (key: string): string => key.split(PREVIEW_SPEC)[0]
 
@@ -143,7 +158,7 @@ export const rememberedPreviewFor = (task: QueueTask, sourcePath: string | undef
 export const resolveQuickLookRequest = async (
   task: QueueTask,
   bridge: QuickLookBridge | undefined,
-  options: { sourceIndex?: number; sourcePath?: string; preferOutput?: boolean; preferTimedStill?: boolean } = {},
+  options: { sourceIndex?: number; sourcePath?: string; preferOutput?: boolean; preferTimedStill?: boolean; needsPreviewProxy?: boolean } = {},
 ): Promise<QuickLookRequest | null> => {
   const explicitIndex = options.sourceIndex != null || options.sourcePath != null || task.quickLookSourceIndex != null
   const sourceIndex = options.sourceIndex ?? task.quickLookSourceIndex ?? 0
@@ -203,7 +218,24 @@ export const resolveQuickLookRequest = async (
   }
 
   const wantsOutput = options.preferOutput === true || (!explicitIndex && task.status === 'done')
-  const target = existingPreview || (wantsOutput ? `${task.outputDirectory}/${task.outputFilename}` : sourceTarget)
+
+  // A source the webview cannot decode — a DXV, a Hap, a ProRes — is played through a PROXY built once at the
+  // source's own rate and size. Asked for rather than assumed: the caller knows the probe's `codec`, and this
+  // helper knows only where the proxy is remembered and where a new one is filed.
+  const wantsProxy = options.needsPreviewProxy === true && !sequence && !standaloneImage
+  const proxyKey = wantsProxy && sourceTarget ? previewProxyKey(sourceTarget) : undefined
+  let proxyPath = proxyKey ? task.imageSequencePreviews?.[proxyKey] : undefined
+  let regeneratedProxy: QuickLookRequest['regeneratedPreview']
+  if (proxyKey && sourceTarget && (!proxyPath || !(await bridge?.pathExists?.(proxyPath)))) {
+    const built = await bridge?.previewProxyFor?.(sourceTarget)
+    // `built === sourceTarget` means a `<video>` CAN play the file after all, and no proxy was written.
+    if (built && built !== sourceTarget) {
+      proxyPath = built
+      regeneratedProxy = { sourceTarget: proxyKey, path: built }
+    }
+  }
+
+  const target = proxyPath || existingPreview || (wantsOutput ? `${task.outputDirectory}/${task.outputFilename}` : sourceTarget)
   if (!target) return null
 
   // Trim points belong to the logical source occurrence, not the temporary preview.
@@ -227,7 +259,7 @@ export const resolveQuickLookRequest = async (
     trimOut: points?.out,
     sequenceFps: sequence?.fps,
     sequenceFrameCount: sequence?.frameCount,
-    regeneratedPreview,
+    regeneratedPreview: regeneratedProxy ?? regeneratedPreview,
     previewUnavailable: previewUnavailable || undefined,
   }
 }
