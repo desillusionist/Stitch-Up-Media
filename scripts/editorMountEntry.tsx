@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { EditJobApp } from '../src/components/EditJobApp'
 import { mediaKind } from '../src/lib/mediaKind'
 import { outputKind, outputTakesArt } from '../src/lib/outputKind'
+import { MAX_CLIP_SPEED } from '../src/lib/clipSpeed'
 
 /**
  * Renders the EDIT JOB window for real, in a page, and reports what it drew.
@@ -209,24 +210,77 @@ const clickTab = (name: string) => {
 /**
  * The PROPERTIES drawer, opened the way a reader opens it: a right-click on a clip, then the menu item.
  *
- * What it measures is the whole of the pass's claim, and it is read off real layout rather than a
- * stylesheet: that the rows OVERFLOW (so the drawer really does need the scrollbar it was given),
- * that the scroller holds the five-row cap, and that the close button is OUTSIDE the scroller and still
- * on screen after the list has been scrolled to the bottom. The drawer is closed again on the way out,
- * so the jobs driven after this one are measured with nothing extra on screen.
+ * What it measures is the whole of this pass's claim, and it is read off real layout rather than a
+ * stylesheet: that the rows OVERFLOW (so the drawer really does need the scrollbar it was given), that
+ * the scroller holds the five-row cap, that the close button is clear of both the rows and the
+ * scroller's own bar and stays on screen while the list moves, that a value field is a TEXT field (the
+ * only kind that does not take the wheel for a stepper), and that the two retiming options come out
+ * only where they mean something. The speed it sets to ask that last question is put back, so the
+ * drawer leaves the draft as it found it and the jobs driven after this one are unaffected.
  */
-const measureInspector = () => {
+const setNativeValue = (field: HTMLInputElement, next: string) => {
+  // The native setter, so React's own value tracking sees the change and fires onChange.
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+  setter?.call(field, next)
+  field.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+const measureInspector = async () => {
   const box = document.querySelector('.media-inspector') as HTMLElement | null
   const scroller = document.querySelector('.inspector-scroll') as HTMLElement | null
   const close = document.querySelector('.inspector-close') as HTMLElement | null
   if (!box || !scroller || !close) return { opened: false }
   const row = parseFloat(getComputedStyle(box).getPropertyValue('--inspector-row')) || 0
   const rows = scroller.querySelectorAll('.editor-row, .editor-field, .editor-toggle').length
-  const closeVisible = () => close.getBoundingClientRect().bottom <= box.getBoundingClientRect().bottom + 0.5
+  const closeRect = close.getBoundingClientRect()
+  const overlaps = (other: DOMRect) => !(closeRect.right <= other.left || closeRect.left >= other.right || closeRect.bottom <= other.top || closeRect.top >= other.bottom)
+  const closeVisible = () => closeRect.bottom <= box.getBoundingClientRect().bottom + 0.5
   const beforeScroll = closeVisible()
   scroller.scrollTop = scroller.scrollHeight
   const afterScroll = closeVisible()
   scroller.scrollTop = 0
+  const controls = [...scroller.querySelectorAll('input, .editor-select-trigger')] as HTMLElement[]
+  const overlapsAControl = controls.some((control) => overlaps(control.getBoundingClientRect()))
+  const fieldLabels = [...scroller.querySelectorAll('.editor-field > span')].map((span) => (span.textContent ?? '').trim())
+  const speedField = scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
+  // One question about the retiming options, asked at a speed where they mean something and then undone.
+  const offered = () => ({
+    interpolation: fieldLabels.some((label) => label.startsWith('INTERPOLATION')),
+    maintainPitch: labelsOf('.inspector-scroll .editor-toggle').some((label) => label.startsWith('MAINTAIN AUDIO PITCH')),
+  })
+  const atOwnSpeed = offered()
+  let atTwice = null
+  let steppedUp: string | null = null
+  let atCeiling: string | null = null
+  let steppedPastCeiling: string | null = null
+  if (speedField) {
+    const speed = () => scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
+    const press = (key: string) => speed()?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    setNativeValue(speedField, '2')
+    await wait(80)
+    const labels = [...scroller.querySelectorAll('.editor-field > span')].map((span) => (span.textContent ?? '').trim())
+    atTwice = {
+      interpolation: labels.some((label) => label.startsWith('INTERPOLATION')),
+      maintainPitch: labelsOf('.inspector-scroll .editor-toggle').some((label) => label.startsWith('MAINTAIN AUDIO PITCH')),
+    }
+    // The arrow keys stand in for the stepper a text field no longer has, so they are read here: one step
+    // of `step`, and a press at the ceiling leaving the figure where it is rather than running past it.
+    press('ArrowUp')
+    await wait(80)
+    steppedUp = speed()?.value ?? null
+    setNativeValue(speed() ?? speedField, String(MAX_CLIP_SPEED * 99))
+    await wait(80)
+    // Left, so the figure the caller clamped is what the field shows rather than the digits just typed:
+    // a value field keeps an entry's own text while it is being typed, clamp and all.
+    speed()?.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    await wait(80)
+    atCeiling = speed()?.value ?? null
+    press('ArrowUp')
+    await wait(80)
+    steppedPastCeiling = speed()?.value ?? null
+    setNativeValue(speed() ?? speedField, '1')
+    await wait(80)
+  }
   ;(close as HTMLButtonElement).click()
   return {
     opened: true,
@@ -236,8 +290,18 @@ const measureInspector = () => {
     scrollHeight: scroller.scrollHeight,
     overflowY: getComputedStyle(scroller).overflowY,
     closeOutsideScroller: !scroller.contains(close),
+    closeAboveScroller: closeRect.bottom <= scroller.getBoundingClientRect().top + 0.5,
+    closeOverlapsAControl: overlapsAControl,
     closeVisible: beforeScroll,
     closeVisibleAfterScroll: afterScroll,
+    // Every value field is a text field, which is the guarantee the wheel needed. The read-only stamps
+    // (the FPS one) are left out: there is no figure to step in them, so no stepper to take a wheel.
+    valueFieldTypes: ([...scroller.querySelectorAll('input:not([readonly])')] as HTMLInputElement[]).map((input) => `${input.type}/${input.inputMode}`),
+    atOwnSpeed,
+    atTwice,
+    steppedUp,
+    atCeiling,
+    steppedPastCeiling,
   }
 }
 

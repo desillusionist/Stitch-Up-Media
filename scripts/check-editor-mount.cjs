@@ -269,7 +269,8 @@ app.whenReady().then(async () => {
         if (!stitch.pictureSource) problems.push('the picture source control was not drawn for a stitch of sounds')
         else if (!stitch.pictureSource.options.includes('visualization')) problems.push('a stitch of sounds is offered no drawing, so it can only ever export black')
         // THE PROPERTIES DRAWER, whose cap is the whole of this pass: it must scroll rather than grow, hold
-        // the five-row figure, and keep its close button out of the scrolled list and on screen throughout.
+        // the five-row figure, keep its close button clear of the rows AND of the scroller's own bar, and
+        // offer the two retiming options only where they mean something.
         const inspector = stitch.inspector
         if (!inspector || !inspector.opened) problems.push(`the PROPERTIES drawer never opened from the clip menu: ${JSON.stringify(inspector && inspector.reason)}`)
         else {
@@ -278,8 +279,26 @@ app.whenReady().then(async () => {
           if (!(inspector.rows >= 6)) problems.push(`only ${inspector.rows} rows were drawn, too few to overflow the cap`)
           if (Math.abs(inspector.clientHeight - inspector.cap) > 1) problems.push(`the drawer shows ${inspector.clientHeight}px of rows rather than its five-row cap of ${inspector.cap}px`)
           if (!inspector.closeOutsideScroller) problems.push('the close button is inside the scrolled list, so it scrolls out of reach')
+          if (!inspector.closeAboveScroller) problems.push('the close button is not clear of the scroller, so it sits over the rows or their bar')
+          if (inspector.closeOverlapsAControl) problems.push('the close button overlaps a value field, which is the overlap this pass removes')
           if (!inspector.closeVisible) problems.push('the close button is not on screen when the drawer opens')
           if (!inspector.closeVisibleAfterScroll) problems.push('the close button leaves the screen once the list is scrolled')
+          // A value field is a TEXT field: a number input takes the wheel for its stepper, which stops the
+          // drawer scrolling under the pointer and creeps the figure while the reader is only scrolling past.
+          const numeric = inspector.valueFieldTypes.filter((kind) => !String(kind).startsWith('text/decimal'))
+          if (numeric.length) problems.push(`${numeric.length} value field(s) are not text/decimal inputs: ${numeric.join(', ')}`)
+          // The retiming options, asked either side of a speed being set. This clip is a SOUND, so the
+          // interpolation — which fills the frames a speed leaves out — has no meaning for it and must not
+          // be offered, while the pitch, which a sound has, must be.
+          if (!inspector.atTwice) problems.push('the drawer offered no speed field to ask the retiming options of')
+          else {
+            if (inspector.atTwice.interpolation) problems.push('INTERPOLATION is offered for a clip of sound, which has no frames to fill')
+            if (!inspector.atTwice.maintainPitch) problems.push('MAINTAIN AUDIO PITCH is not offered for a clip of sound, which is the one case it is for')
+          }
+          // The arrow keys, which are the stepping a text field would otherwise lose with its stepper.
+          if (inspector.steppedUp !== '2.05') problems.push(`an arrow key moved the speed to ${JSON.stringify(inspector.steppedUp)} rather than one 0.05 step from 2`)
+          if (inspector.atCeiling !== '16') problems.push(`a speed past the ceiling reads ${JSON.stringify(inspector.atCeiling)} rather than being held at 16`)
+          if (inspector.steppedPastCeiling !== '16') problems.push(`an arrow key at the ceiling moved the speed to ${JSON.stringify(inspector.steppedPastCeiling)}`)
         }
       }
       // And the opposite side of the gate. A container that holds artwork rather than frames must offer

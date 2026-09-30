@@ -112,7 +112,11 @@ export class FFmpegEngine {
       // The clip's own speed, retiming the picture and the sound by the one figure. Empty at the clip's
       // own speed, so a job that has never been retimed is handed the same filters it always was.
       const clipSpeed = speedFor(task, source, clipIndex)
-      const speedVideo = speedVideoFilters(clipSpeed.speed, clipSpeed.interpolation, outputRate)
+      // A clip with no picture has no frames to fill, so blending is a filter with nothing to do that is
+      // not written for one. The size being unknown is what says so: an audio source has no video stream
+      // to take a frame size from, which is the same thing the fit above already has to allow for.
+      const hasPicture = Boolean(sourceSize && sourceSize.width > 0 && sourceSize.height > 0)
+      const speedVideo = speedVideoFilters(clipSpeed.speed, hasPicture ? clipSpeed.interpolation : 'sampling', outputRate)
       const speedAudio = speedAudioFilters(clipSpeed.speed, clipSpeed.maintainPitch !== false, 48000)
       const videoFilters = [
         ...(placement ?? [
@@ -265,8 +269,9 @@ export class FFmpegEngine {
     // and pad rather than being added after them, so the clip is not framed twice.
     const clipChain = this.clipFraming(task, source, sourceSize)
     // The retiming joins the same chain the framing does, after it: the picture is placed first and
-    // then moved to where it falls at the new speed, which is the order the normalizer uses too.
-    const speedVideo = speedVideoFilters(clipSpeed.speed, clipSpeed.interpolation, task.preset.fps || 0)
+    // then moved to where it falls at the new speed, which is the order the normalizer uses too. A job
+    // whose visual is a sound file has no picture to fill between frames, so blending is not asked of it.
+    const speedVideo = speedVideoFilters(clipSpeed.speed, soundOnly ? 'sampling' : clipSpeed.interpolation, task.preset.fps || 0)
     const speedAudio = speedAudioFilters(clipSpeed.speed, clipSpeed.maintainPitch !== false, task.preset.audioSampleRate || 48000)
     this.applyPresetToCommand(cmd, task.preset, [...pictureFilters, ...speedVideo], {
       ...(clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) }),

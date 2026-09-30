@@ -516,9 +516,13 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    Only in the video row, where the audio is embedded and would otherwise be invisible. */
 .clip-audio { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--crt-green); opacity: .85; pointer-events: none; }
 .clip-audio.is-muted { background: var(--ui-muted); opacity: .5; }
-/* The inspector's own close, in the corner of a box that is otherwise all readouts. */
-.media-inspector { position: relative; }
-.inspector-close { position: absolute; top: 4px; right: 5px; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 11px; line-height: 1; }
+/* The PROPERTIES drawer's own head: the drawer is otherwise all readouts, so its title and its close
+   are the two things that are not one. Both are IN FLOW, above the scroller, which is what keeps the ×
+   out of the rows' way and off the scroller's own bar — pinned to the corner, as it was, it sat over
+   the first field's box and the bar together. */
+.inspector-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; padding-bottom: 5px; border-bottom: 1px dashed var(--ui-border-dim); }
+.inspector-title { color: var(--ui-muted); font-size: 9px; letter-spacing: .1em; }
+.inspector-close { width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 11px; line-height: 1; }
 .inspector-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .timeline-clip-name { display: block; padding: 4px 6px 0; color: var(--ui-foreground); font-size: 10px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -600,18 +604,14 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .boundary-clamped { color: var(--ui-encoding); font-size: 8px; }
 /* PROPERTIES: the facts about the source under the playhead, and the two of them that are choices
    rather than facts — a still's length, and any clip's speed. */
-.media-inspector { --inspector-row: 31px; position: relative; display: grid; gap: 0; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--ui-border); background: var(--ui-panel-inset); }
+.media-inspector { --inspector-row: 31px; display: grid; gap: 0; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--ui-border); background: var(--ui-panel-inset); }
 /* The rows are capped to five and scroll past that. Without the cap the drawer grew by a row every time
    a field was added to it, and the monitor it hangs under was pushed out of the window by the list meant
    to describe the clip in it. Five rows is enough to read a clip by and small enough to leave the
-   picture alone; the figure carries the row's own rule, so five rows is five rows. The close is NOT in
-   this scroller — it is a sibling — so it stays reachable wherever the list has been scrolled to. */
+   picture alone; the figure carries the row's own rule, so five rows is five rows. */
 .inspector-scroll { max-height: calc(5 * var(--inspector-row)); overflow-y: auto; overflow-x: hidden; }
 .media-inspector .editor-row, .media-inspector .editor-field, .media-inspector .editor-toggle { box-sizing: border-box; min-height: var(--inspector-row); padding: 4px 0; }
 .media-inspector .editor-field > span { justify-content: flex-start; gap: 8px; }
-/* The close is pinned to the box's own corner rather than to the scrolled list, which is what keeps it
-   in place while the rows move under it. */
-.media-inspector > .inspector-close { z-index: 2; }
 .boundary-close { margin-left: auto; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 12px; line-height: 1; }
 .boundary-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; object-fit: contain; cursor: pointer; }

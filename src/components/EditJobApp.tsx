@@ -1807,6 +1807,17 @@ export const EditJobApp: React.FC = () => {
   const inspectedSpeed: ClipSpeed = inspectedSegment
     ? { speed: inspectedSegment.speed, interpolation: inspectedSegment.speedInterpolation, maintainPitch: inspectedSegment.maintainPitch }
     : DEFAULT_CLIP_SPEED
+  /**
+   * Whether the clip being described has a picture and a sound, which is what each retiming option needs.
+   *
+   * Interpolation fills the frames a speed leaves out, so it is a question with no answer about a clip
+   * that has no frames — asked of the same rule the timeline uses to tell a picture from a track, so the
+   * two cannot disagree about what a clip is. The pitch rides a SOUND, which only a probe can answer for
+   * a video that may or may not carry one; `undefined` — a source not yet read — counts as having one, so
+   * the switch is offered a moment before the probe lands rather than flickering out and back.
+   */
+  const inspectedHasPicture = Boolean(inspectedSource) && mediaKind(inspectedSource as string) !== 'audio'
+  const inspectedHasSound = inspectedSource ? sourceAudio[inspectedSource] !== false : false
 
   /** Transitions are keyed by the clip BEFORE the boundary, like trim points, and by the edge. */
   const applyTransition = (key: string, type: TransitionType, duration = 0.5) => {
@@ -3132,7 +3143,12 @@ export const EditJobApp: React.FC = () => {
           </div>
           {inspectorOpen && inspectedSource && (
             <div className="media-inspector">
-              <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the properties inspector" title="Close">x</button>
+              {/* The drawer's own head. It is outside the scroller, so the × sits above the rows and
+                  above the scroller's own bar rather than in the corner they are drawn in. */}
+              <div className="inspector-head">
+                <span className="inspector-title">PROPERTIES</span>
+                <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the properties inspector" title="Close">x</button>
+              </div>
               <div className="inspector-scroll">
                 <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
                 <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
@@ -3183,7 +3199,7 @@ export const EditJobApp: React.FC = () => {
                         ? <NumberField className="editor-input" min={1} step={1} value={Math.max(1, Math.round(inspectedSegment.duration * rate))} onValue={(frames) => applyDuration(frames / rate)} ariaLabel="The length this clip occupies on the timeline" />
                         : <NumberField className="editor-input" min={0.01} step={0.05} value={Math.round(inspectedSegment.duration * 1000) / 1000} onValue={applyDuration} ariaLabel="The length this clip occupies on the timeline" />}
                     </EditorField>
-                    {inspectedSpeed.speed !== 1 && <EditorField label="INTERPOLATION" hint="EXPORT" reason="What fills the frames a speed leaves out or repeats. SAMPLING keeps whichever source frame the output instant lands on, which is cheap and can judder; BLENDING averages the neighbours so a slowed clip reads as movement. It changes the picture only, and only in the written file.">
+                    {inspectedSpeed.speed !== 1 && inspectedHasPicture && <EditorField label="INTERPOLATION" hint="EXPORT" reason="What fills the frames a speed leaves out or repeats. SAMPLING keeps whichever source frame the output instant lands on, which is cheap and can judder; BLENDING averages the neighbours so a slowed clip reads as movement. It changes the picture only, and only in the written file. A clip with no picture has no frames to fill, so the choice is not offered for one.">
                       <EditorSelect
                         value={inspectedSpeed.interpolation}
                         options={[{ value: 'sampling', label: 'SAMPLING' }, { value: 'blending', label: 'BLENDING' }]}
@@ -3191,11 +3207,11 @@ export const EditJobApp: React.FC = () => {
                         ariaLabel="What fills the frames a speed change leaves out"
                       />
                     </EditorField>}
-                    {inspectedSpeed.speed !== 1 && <EditorToggle
+                    {inspectedSpeed.speed !== 1 && inspectedHasSound && <EditorToggle
                       label="MAINTAIN AUDIO PITCH"
                       checked={inspectedSpeed.maintainPitch !== false}
                       onChange={(checked) => setClipSpeed(inspectedSource, inspectedClipIndex, { maintainPitch: checked })}
-                      reason="On, the sound is retimed with atempo and keeps its own pitch. Off, asetrate shifts the sample rate instead, so the pitch rises and falls with the speed the way a tape's does."
+                      reason="On, the sound is retimed with atempo and keeps its own pitch. Off, asetrate shifts the sample rate instead, so the pitch rises and falls with the speed the way a tape's does. A clip with no sound has no pitch to keep, so the switch is not offered for one."
                     />}
                   </>
                 })()}
