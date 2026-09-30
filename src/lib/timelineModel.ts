@@ -2,6 +2,7 @@ import { ClipTransition, EncodingPreset, QueueTask, SequenceInput } from '../typ
 import { CropFractions } from './outputFrame'
 import { mediaKind } from './mediaKind'
 import { outputCarriesPicture } from './outputKind'
+import { DEFAULT_CLIP_SPEED, clipDurationFor, speedFor } from './clipSpeed'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
 const DEFAULT_STILL_SECONDS = 10
@@ -11,8 +12,24 @@ export interface TimelineSegment {
   sourcePath: string
   /** Offset on the consolidated timeline, in seconds. */
   start: number
-  /** How long this segment contributes to the finished output. */
+  /** How long this segment contributes to the finished output, in TIMELINE seconds. */
   duration: number
+  /**
+   * How much of the SOURCE the output uses, in seconds.
+   *
+   * The same figure as `duration` at the clip's own speed, and the trimmed length the encoder asks
+   * ffmpeg for when a speed divides it: `duration` is the timeline length, this is the run through
+   * the source those two figures are two views of. Everything a clip says about its SOURCE — how much
+   * of it is kept, the range a strip samples across, whether the trim took anything away — reads
+   * this, and everything about the timeline reads `duration`.
+   */
+  sourceUsedSeconds: number
+  /** The rate the clip is played at. 1 is its own speed, and an absent record leaves it here. */
+  speed: number
+  /** What fills the frames a non-unit speed leaves out or repeats. */
+  speedInterpolation: 'sampling' | 'blending'
+  /** Whether the sound keeps its own pitch while it is sped. */
+  maintainPitch: boolean
   /** Offset inside the source file where playback begins. */
   sourceIn: number
   trimmed: boolean
@@ -263,6 +280,22 @@ export const usesClipFraming = (task: QueueTask, sourcePath: string | undefined,
   Boolean(sourceFitFor(task, sourcePath, index)) && canApplyClipFit(task.preset)
 
 /**
+ * Whether a clip's speed can actually reach the export, which is what decides whether it is offered.
+ *
+ * Speed is written as a filter chain, and the two paths that can carry one are the concatenating
+ * normalizer (every clip of a stitch, and every visual of a combo that joins its visuals) and the
+ * single-visual TRANSCODE. Everywhere else the picture is a graph's own or one of several muxed
+ * streams, and a clip retimed on screen but not in the file would be worse than a clip that cannot be
+ * retimed at all — so the model, the editor and the encoder ask this one question, and a job whose
+ * answer is no is drawn and written at the clip's own speed whichever record it carries.
+ */
+export const canApplyClipSpeed = (task: Pick<QueueTask, 'type' | 'sourcePaths' | 'preset'>, sourcePath: string | undefined): boolean => {
+  if (clipsConcatenate(task)) return true
+  if (task.type !== 'transcode') return false
+  return Boolean(sourcePath) && mediaKind(sourcePath as string) !== 'audio' && !isStillFrameJob(task as QueueTask)
+}
+
+/**
  * The crop that applies to one clip, in the left/top/right/bottom form the controls and the filter
  * both work in: the clip's own if it has one, and the job's if it has not.
  */
@@ -395,11 +428,20 @@ const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: n
   const full = sourceDuration(task, sourcePath, sequence, options.resolveTiming)
   const timing = segmentTiming(full, trimFor(task, sourcePath, index))
   const isStill = !sequence && mediaKind(sourcePath) === 'image'
+  // The trim is measured in SOURCE seconds — that is what the encoder asks ffmpeg for — and the
+  // timeline length is that divided by the speed. At the clip's own speed the two are the same number,
+  // which is what every reader of `duration` before speed existed still gets. The speed is only read
+  // where the export can carry one, so a drawn timeline can never show a retiming the file will not.
+  const speed = canApplyClipSpeed(task, sourcePath) ? speedFor(task, sourcePath, index) : DEFAULT_CLIP_SPEED
   return {
     key: `${sourcePath}#${index}`,
     sourcePath,
     start,
-    duration: timing.duration,
+    duration: clipDurationFor(timing.duration, speed.speed),
+    sourceUsedSeconds: timing.duration,
+    speed: speed.speed,
+    speedInterpolation: speed.interpolation,
+    maintainPitch: speed.maintainPitch !== false,
     sourceIn: timing.sourceIn,
     trimmed: timing.trimmed,
     sequence: sequence ? { frames: sequence.frameCount, fps: sequence.fps } : undefined,
@@ -497,10 +539,12 @@ export const outputRangeLabel = (seconds: number, fps: number, mode: 'framestamp
  *
  * A trim that spans the source IS the source, and a still's chosen length is the whole of it in the same
  * way. Saying "trimmed" or drawing a range around all of it is saying something the numbers contradict —
- * and it is said in two places: the clip's tooltip and the line inside the clip's own box.
+ * and it is said in two places: the clip's tooltip and the line inside the clip's own box. It is asked
+ * of the SOURCE run rather than of the timeline length, because it is a question about the trim and a
+ * speed changes the timeline length without touching what was kept.
  */
-export const usesAllSource = (segment: Pick<TimelineSegment, 'duration' | 'sourceIn'>, totalSeconds: number): boolean =>
-  segment.sourceIn <= 1e-6 && segment.duration >= totalSeconds - 1e-6
+export const usesAllSource = (segment: Pick<TimelineSegment, 'sourceUsedSeconds' | 'sourceIn'>, totalSeconds: number): boolean =>
+  segment.sourceIn <= 1e-6 && segment.sourceUsedSeconds >= totalSeconds - 1e-6
 
 /** What a clip's tooltip needs to say, in the terms the window is showing lengths in. */
 export interface ClipSummaryInput {
@@ -536,7 +580,7 @@ export const clipSummary = ({ totalSeconds, fps, usedSeconds, sourceIn, trimmed,
   // A trim that takes NOTHING away is not a trim: a range that spans the whole source IS the source, and
   // "2160 trimmed frames [0000-2160]" about a clip that uses all of it is a range drawn around everything.
   // A still is the same case — its chosen length is the whole of it — so it says source too.
-  if (!trimmed || usesAllSource({ duration: usedSeconds, sourceIn }, totalSeconds)) return `${whole} at ${rate} fps | source`
+  if (!trimmed || usesAllSource({ sourceUsedSeconds: usedSeconds, sourceIn }, totalSeconds)) return `${whole} at ${rate} fps | source`
   const used = mode === 'framestamp' ? `${frames(usedSeconds)} trimmed frames` : `${timecode(usedSeconds, rate)} trimmed`
   // The range is padded to four digits in frames, because a range is read as a box of digits rather
   // than as two numbers, and a ragged box is read twice.

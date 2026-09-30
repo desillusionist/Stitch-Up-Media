@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { nextShuttleRate, nextForwardRung } from '../lib/shuttleRates'
 import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
-import { DEFAULT_PREVIEW_SPEED, PreviewSpeed, clampPreviewSpeed, playbackRateFor, preservesPitchFor } from '../lib/previewSpeed'
+import { DEFAULT_PREVIEW_SPEED, MAX_PLAYBACK_RATE, PreviewSpeed, clampPreviewSpeed, playbackRateFor, preservesPitchFor } from '../lib/previewSpeed'
+import { sourceTimeAt, timelineTimeAt } from '../lib/clipSpeed'
 import { scrubRateFor } from '../lib/scrubAudio'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
@@ -209,7 +210,10 @@ export const useConsolidatedPlayback = (
       const element = audioElements.current?.[lane.id]
       const laneSegment = lane.segments[0]
       if (!element || !laneSegment) return
-      const desired = laneSegment.sourceIn + Math.max(0, Math.min(laneSegment.duration, seconds - laneSegment.start))
+      // The track's own speed maps the timeline offset onto the source: a clip retimed to 2x is two
+      // source seconds in for every one the playhead has crossed, which is the same mapping the
+      // picture element is given and the same one the encoder writes — see `sourceTimeAt`.
+      const desired = sourceTimeAt(seconds, laneSegment)
       if (force || Math.abs(element.currentTime - desired) > DRIFT_TOLERANCE) element.currentTime = desired
     })
   }, [audioElements])
@@ -244,7 +248,7 @@ export const useConsolidatedPlayback = (
       return
     }
     try {
-      video.currentTime = current.sourceIn + Math.max(0, Math.min(current.duration, desired - current.start))
+      video.currentTime = sourceTimeAt(desired, current)
       // Cleared only once it lands, so readPosition knows to hold rather than
       // report the element's old clock while a crossing is in flight.
       pendingSeekRef.current = null
@@ -266,12 +270,16 @@ export const useConsolidatedPlayback = (
   const applyRate = useCallback(() => {
     const video = videoRef.current
     if (!video) return
-    // The shuttle's rate and the speed being watched at, composed — see `playbackRateFor`. Reverse has no
-    // native rate, so the element is left at 1x (times the speed) and stepped to paint the frames instead.
-    video.playbackRate = playbackRateFor(shuttleRef.current, speedRef.current)
-    // Pitch-corrected for a steady speed, raised for a fast-forward — see `preservesPitchFor`, which is where
-    // the whole of that distinction lives.
-    video.preservesPitch = preservesPitchFor(shuttleRef.current)
+    const current = stateRef.current.segment
+    // The shuttle's rate and the speed being watched at, composed — see `playbackRateFor` — then the
+    // CLIP's own speed, which is what makes a sped clip play fast in the monitor as it does in the
+    // file. Reverse has no native rate, so the element is left at the clip's rate and stepped to paint
+    // the frames instead.
+    const clip = current && current.speed > 0 ? current.speed : 1
+    video.playbackRate = playbackRateFor(shuttleRef.current, speedRef.current * clip)
+    // Pitch-corrected for a steady speed, raised for a fast-forward — see `preservesPitchFor` — and
+    // raised again for a clip that asked for its pitch to ride the speed.
+    video.preservesPitch = preservesPitchFor(shuttleRef.current) && (!current || current.maintainPitch !== false)
   }, [])
 
   const onLoaded = useCallback(() => {
@@ -399,7 +407,7 @@ export const useConsolidatedPlayback = (
       const owns = elementOwnsPosition(current, snapshot.position, { readyState: video.readyState, ended: video.ended, clock: video.currentTime })
       if (owns) {
         anchorRef.current = null
-        return current.start + Math.max(0, video.currentTime - current.sourceIn)
+        return timelineTimeAt(video.currentTime, current)
       }
       // The element finished this source, or the playhead is beyond it: an added
       // track can outlast the video, so the tail runs on the anchored clock,
@@ -422,7 +430,7 @@ export const useConsolidatedPlayback = (
     const current = stateRef.current.segment
     if (!video || !current || current.still || video.readyState < 1) return
     if (loadedSourceRef.current !== current.sourcePath) return
-    const target = current.sourceIn + Math.max(0, Math.min(current.duration, seconds - current.start))
+    const target = sourceTimeAt(seconds, current)
     // Half a frame of slack keeps a paused playhead from seeking on every tick while
     // still landing on each frame the clock walks through.
     if (Math.abs(video.currentTime - target) < 0.5 / fpsRef.current) return
@@ -459,12 +467,17 @@ export const useConsolidatedPlayback = (
     // the same trade a backward scrub makes, and for the same reason — and it is deliberately audible: pausing
     // the track outright, which is what this was, is why J had no sound at all.
     const reverse = shuttleRate < 0
-    const rate = reverse ? (Math.abs(shuttleRate) || 1) * speed : playbackRateFor(shuttleRate, speed)
+    const composed = reverse ? (Math.abs(shuttleRate) || 1) * speed : playbackRateFor(shuttleRate, speed)
     lanesRef.current.forEach((lane) => {
       const element = audioElements.current?.[lane.id]
       if (!element) return
-      element.playbackRate = rate
-      element.preservesPitch = preservesPitchFor(shuttleRate)
+      // The lane's clip carries its own speed, and the track is driven at the composed rate times it, so
+      // a retimed track is heard as fast as the picture beside it plays. Its pitch follows the same rule
+      // the picture element's does: kept unless the clip asked for it to ride the speed.
+      const laneSegment = lane.segments[0]
+      const clip = laneSegment && laneSegment.speed > 0 ? laneSegment.speed : 1
+      element.playbackRate = Math.min(MAX_PLAYBACK_RATE, composed * clip)
+      element.preservesPitch = preservesPitchFor(shuttleRate) && (!laneSegment || laneSegment.maintainPitch !== false)
       if (playing) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
@@ -555,8 +568,10 @@ export const useConsolidatedPlayback = (
     lanesRef.current.forEach((lane) => {
       const element = audioElements.current?.[lane.id]
       if (!element) return
-      element.playbackRate = rate
-      element.preservesPitch = preservesPitchFor(shuttleRef.current)
+      const laneSegment = lane.segments[0]
+      const clip = laneSegment && laneSegment.speed > 0 ? laneSegment.speed : 1
+      element.playbackRate = Math.min(MAX_PLAYBACK_RATE, rate * clip)
+      element.preservesPitch = preservesPitchFor(shuttleRef.current) && (!laneSegment || laneSegment.maintainPitch !== false)
       if (wasPlaying) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
@@ -576,9 +591,10 @@ export const useConsolidatedPlayback = (
       const element = audioElements.current?.[lane.id]
       const laneSegment = lane.segments[0]
       if (!element || !laneSegment) return
-      element.playbackRate = rate
+      const laneClip = laneSegment.speed > 0 ? laneSegment.speed : 1
+      element.playbackRate = Math.min(MAX_PLAYBACK_RATE, rate * laneClip)
       element.preservesPitch = true
-      const desired = laneSegment.sourceIn + Math.max(0, Math.min(laneSegment.duration, position - laneSegment.start))
+      const desired = sourceTimeAt(position, laneSegment)
       if (Math.abs(element.currentTime - desired) > SCRUB_DRIFT_SECONDS) element.currentTime = desired
     })
   }, [audioElements])

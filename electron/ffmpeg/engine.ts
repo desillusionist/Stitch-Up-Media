@@ -5,6 +5,7 @@ import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
 import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
+import { clipDurationFor, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
@@ -108,6 +109,11 @@ export class FFmpegEngine {
       if ((fit || crop) && !placement) {
         logEvent('ffmpeg', 'clip crop or fit could not be applied; using the default fit', { taskId: task.id, source, clipIndex })
       }
+      // The clip's own speed, retiming the picture and the sound by the one figure. Empty at the clip's
+      // own speed, so a job that has never been retimed is handed the same filters it always was.
+      const clipSpeed = speedFor(task, source, clipIndex)
+      const speedVideo = speedVideoFilters(clipSpeed.speed, clipSpeed.interpolation, outputRate)
+      const speedAudio = speedAudioFilters(clipSpeed.speed, clipSpeed.maintainPitch !== false, 48000)
       const videoFilters = [
         ...(placement ?? [
           // No size to work the crop out against, so it is asked for in the source's own terms — the
@@ -117,12 +123,16 @@ export class FFmpegEngine {
           `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black`,
           'setsar=1',
         ]),
+        // The speed sits between the framing and the rate: every frame is moved to where it falls at
+        // the new speed, and the `fps` filter beside it then keeps whichever frame the output instant
+        // lands on — which is what makes the written file's frame count the timeline's own.
+        ...speedVideo,
         `fps=${outputRate}`,
         ...fades.video,
       ]
       command.videoCodec('libx264').outputOptions([`-vf ${videoFilters.join(',')}`, '-preset veryfast', '-pix_fmt yuv420p', '-video_track_timescale 90000'])
       command.audioCodec('aac').audioFrequency(48000).audioChannels(2)
-        .outputOptions([`-af ${['aresample=48000:async=1', 'aformat=sample_fmts=fltp:channel_layouts=stereo', ...fades.audio].join(',')}`, '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
+        .outputOptions([`-af ${['aresample=48000:async=1', ...speedAudio, 'aformat=sample_fmts=fltp:channel_layouts=stereo', ...fades.audio].join(',')}`, '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
         .on('end', () => resolve()).on('error', reject).save(output)
     })
   }
@@ -196,9 +206,12 @@ export class FFmpegEngine {
     const isSequence = Boolean(sequence)
     const isStillImage = !isSequence && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(source)
     const trim = this.trimPoint(task, source, 0)
-    // The length the finished file will have, for the progress readout: the same rule the
-    // timeline uses, backed by a probe of the one source.
+    // The clip's own speed, retiming the picture and the sound by the one figure. It is read here
+    // rather than beside the filters because the length the progress bar sweeps across is the clip's
+    // TIMELINE length, which the speed decides.
+    const clipSpeed = speedFor(task, source, 0)
     let expectedSeconds = 0
+    let sourceHasAudio = false
     // The source's own pixel size, from the probe this path already makes: a fit is worked out from
     // the clip's shape and the frame rather than by ffmpeg from the stream, so it needs the shape.
     let sourceSize: { width: number; height: number } | null = sequence?.width && sequence?.height
@@ -208,10 +221,11 @@ export class FFmpegEngine {
     // container holds — see `TRUE STEREO` on the preset — so the drawing no longer depends on a probe.
     try {
       const probe = await probeFile(source)
-      expectedSeconds = segmentTiming(
+      sourceHasAudio = probe.audioStreams.length > 0
+      expectedSeconds = clipDurationFor(segmentTiming(
         sourceDuration(task, source, sequence, () => ({ duration: Number(probe.duration || 0) })),
         trim,
-      ).duration
+      ).duration, clipSpeed.speed)
       const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
       if (!sourceSize && resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
         sourceSize = { width: resolution[0], height: resolution[1] }
@@ -250,10 +264,20 @@ export class FFmpegEngine {
     // there is nothing to normalize it against. The chain STANDS IN for the job's own crop, scale
     // and pad rather than being added after them, so the clip is not framed twice.
     const clipChain = this.clipFraming(task, source, sourceSize)
-    this.applyPresetToCommand(cmd, task.preset, pictureFilters, {
+    // The retiming joins the same chain the framing does, after it: the picture is placed first and
+    // then moved to where it falls at the new speed, which is the order the normalizer uses too.
+    const speedVideo = speedVideoFilters(clipSpeed.speed, clipSpeed.interpolation, task.preset.fps || 0)
+    const speedAudio = speedAudioFilters(clipSpeed.speed, clipSpeed.maintainPitch !== false, task.preset.audioSampleRate || 48000)
+    this.applyPresetToCommand(cmd, task.preset, [...pictureFilters, ...speedVideo], {
       ...(clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) }),
       ...(draws ? { graphOwnsPicture: true } : {}),
     })
+    // The sound is retimed beside the picture, in the same terms: `atempo` keeps the pitch, or
+    // `asetrate` shifts it with the speed. A stream-copied sound cannot be filtered at all and a
+    // source with no sound has nothing to retime, so the chain is only written where it applies.
+    if (speedAudio.length && sourceHasAudio && !draws && task.preset.audioCodec !== 'copy' && task.preset.audioEnabled !== false) {
+      cmd.outputOptions([`-af ${speedAudio.join(',')}`])
+    }
     // A muted lane is one the export does not carry, so its audio is dropped outright rather than
     // encoded and left silent: a file with no audio stream says so without being listened to.
     if (laneIsMuted(task, MAIN_LANE_ID)) cmd.outputOptions(['-an'])
@@ -342,10 +366,13 @@ export class FFmpegEngine {
       // Clip lengths use the same precedence as the timeline, backed by the probes
       // already fetched here, so the encoder and the drawn ramps agree on timing.
       const probeDurations = new Map(probes.map((probe, index) => [task.sourcePaths[index], Number(probe.duration || 0)]))
-      clipDurations = task.sourcePaths.map((source, index) => segmentTiming(
+      // The length each clip OCCUPIES is the trimmed source length divided by its speed, which is the
+      // figure the fades are placed against and the figure the whole output is summed from. The trim
+      // itself stays in SOURCE seconds and reaches ffmpeg through `applyTrimInput`.
+      clipDurations = task.sourcePaths.map((source, index) => clipDurationFor(segmentTiming(
         sourceDuration(task, source, this.sequenceFor(task, source), (sourcePath) => ({ duration: probeDurations.get(sourcePath) ?? 0 })),
         this.trimPoint(task, source, index),
-      ).duration)
+      ).duration, speedFor(task, source, index).speed))
     } catch (error) {
       targetFps = targetFps || 30
       logEvent('ffmpeg', 'stitch canvas probe failed; using defaults', { taskId: task.id, error: String(error) })
@@ -475,10 +502,10 @@ export class FFmpegEngine {
         const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
         if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) sourceSize = { width: resolution[0], height: resolution[1] }
       } catch { /* fall back to configured timing */ }
-      clipDurations.push(segmentTiming(
+      clipDurations.push(clipDurationFor(segmentTiming(
         sourceDuration(task, source, this.sequenceFor(task, source), () => ({ duration: probeDuration })),
         this.trimPoint(task, source, index),
-      ).duration)
+      ).duration, speedFor(task, source, index).speed))
       sourceSizes.push(sourceSize)
     }
     const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)), { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })

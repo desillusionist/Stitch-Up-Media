@@ -16,10 +16,11 @@ import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/out
 import { presetSummary } from '../src/lib/presetSummary'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, scopeTint, scopeTintFilter, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
+import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurationFor, clipSpeedLabel, sourceTimeAt, speedAudioFilters, speedFor, speedVideoFilters, timelineTimeAt, trimmedForDuration } from '../src/lib/clipSpeed'
 import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 
@@ -79,8 +80,8 @@ console.log('\n== fallback clock: direction and rebasing ==')
 
 console.log('\n== which clock owns the playhead ==')
 {
-  const clip = { key: 'clip', sourcePath: '/a.mp4', start: 0, duration: 10, sourceIn: 0, trimmed: false }
-  const still = { key: 'still', sourcePath: '/a.png', start: 10, duration: 10, sourceIn: 0, trimmed: false, still: true }
+  const clip = { key: 'clip', sourcePath: '/a.mp4', start: 0, duration: 10, sourceUsedSeconds: 10, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false }
+  const still = { key: 'still', sourcePath: '/a.png', start: 10, duration: 10, sourceUsedSeconds: 10, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false, still: true }
   const ready = { readyState: 2, ended: false, clock: 3 }
 
   check('a ready element owns its own segment', elementOwnsPosition(clip, 3, ready), true)
@@ -1985,7 +1986,7 @@ console.log('\n== what a clip says it is ==')
   check('the playhead line in timecodes', stampPair(1, 60, 30, 'timestamp'), '00:00:01.00 of 00:01:00.00')
 
   // The clip's own run and the output's total, which are the two halves of the line under the monitor and
-  // the value under USED in MEDIA INFO. The counts are read as numbers and left unpadded; the range's ends
+  // the value under USED in PROPERTIES. The counts are read as numbers and left unpadded; the range's ends
   // are positions and padded to six digits, so they line up as a box.
   check('a clip reads as its count, its range and its source',
     clipRangeLabel({ usedSeconds: 353 / 30, sourceIn: 0, totalSeconds: 11745 / 30, fps: 30, mode: 'framestamp' }),
@@ -2143,6 +2144,113 @@ void (async () => {
     const untouched = { previewProxyFor: async () => { throw new Error('nothing should have been built') }, pathExists: async () => false }
     const kept = await resolveQuickLookRequest(source, untouched, { sourceIndex: 0 })
     check('a source that needs no proxy is handed over as itself', kept?.target, '/a.mov')
+  }
+
+  console.log('\n== a clip\u2019s own speed ==')
+  {
+    check('a speed below the floor is the clip\u2019s own', clampClipSpeed(0), 1)
+    check('and above the ceiling is held at it', clampClipSpeed(999), MAX_CLIP_SPEED)
+    check('and a negative speed is nonsense too', clampClipSpeed(-2), 1)
+    check('a rate inside the range is kept as it is', clampClipSpeed(1.5), 1.5)
+    check('and the floor itself is allowed', clampClipSpeed(MIN_CLIP_SPEED), MIN_CLIP_SPEED)
+
+    // `atempo` takes one factor in [0.5, 2], so anything past either end is a chain of them whose
+    // PRODUCT is the speed — which is what keeps a pitch-corrected sound exactly as long as the picture.
+    check('a speed inside the range is one link', atempoChain(1.5), [1.5])
+    check('twice the speed is one at the top', atempoChain(2), [2])
+    check('four times is two of them', atempoChain(4), [2, 2])
+    check('eight times is three', atempoChain(8), [2, 2, 2])
+    check('half speed is one at the bottom', atempoChain(0.5), [0.5])
+    check('a quarter is two halves', atempoChain(0.25), [0.5, 0.5])
+    const product = (factors: number[]) => factors.reduce((total, factor) => total * factor, 1)
+    check('a speed that is neither is split, and the product is still the speed', Math.abs(product(atempoChain(3)) - 3) < 1e-9, true)
+    check('and so is a slow one', Math.abs(product(atempoChain(0.3)) - 0.3) < 1e-9, true)
+    check('and a very fast one', Math.abs(product(atempoChain(16)) - 16) < 1e-9, true)
+
+    // The two halves of one retiming, empty at the clip's own speed so an untouched export is untouched.
+    check('a clip at its own speed is handed no picture filter', speedVideoFilters(1, 'sampling', 30), [])
+    check('and no sound filter either', speedAudioFilters(1, true), [])
+    check('a sped picture is a setpts', speedVideoFilters(2, 'sampling', 30), ['setpts=(PTS-STARTPTS)/2'])
+    check('blending adds the interpolator at the output rate', speedVideoFilters(2, 'blending', 30), ['setpts=(PTS-STARTPTS)/2', 'minterpolate=fps=30:mi_mode=blend'])
+    check('and blending without a known rate is just the setpts', speedVideoFilters(2, 'blending', 0), ['setpts=(PTS-STARTPTS)/2'])
+    check('a pitch-kept sound is the atempo chain', speedAudioFilters(4, true), ['atempo=2', 'atempo=2'])
+    check('a pitch-let-go sound shifts the sample rate instead', speedAudioFilters(2, false, 48000), ['asetrate=96000', 'aresample=48000'])
+
+    // The relationship the inspector edits from either end.
+    check('a clip\u2019s length is the trim over the speed', clipDurationFor(10, 2), 5)
+    check('and a length asks for the speed that needs it', trimmedForDuration(5, 2), 10)
+    check('a record is the clip\u2019s own speed when there is none', speedFor({}, '/a.mp4', 0).speed, 1)
+    check('a record is found by its clip\u2019s key', speedFor({ sourceSpeed: { '/a.mp4#1': { speed: 2, interpolation: 'sampling' } } }, '/a.mp4', 1).speed, 2)
+    check('and by the path alone as a job-wide fallback', speedFor({ sourceSpeed: { '/a.mp4': { speed: 2, interpolation: 'sampling' } } }, '/a.mp4', 3).speed, 2)
+    check('a nonsense record reads as the clip\u2019s own speed', speedFor({ sourceSpeed: { '/a.mp4#0': { speed: 0, interpolation: 'sampling' } } }, '/a.mp4', 0).speed, 1)
+    check('a rate reads the way the monitor spells one', clipSpeedLabel(0.5), '0.5x')
+  }
+
+  console.log('\n== a sped clip on the timeline ==')
+  {
+    const speedTask = {
+      id: 's', type: 'stitch', status: 'pending', progress: 0,
+      sourcePaths: ['/a.mp4', '/b.mp4'], outputDirectory: '/out', outputFilename: 'o.mp4',
+      preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source', fps: 30 },
+      // a is ten seconds and run at twice its speed; b is left alone.
+      sourceSpeed: { '/a.mp4#0': { speed: 2, interpolation: 'sampling' } },
+    } as unknown as QueueTask
+    const timing = (path: string) => ({ duration: path === '/a.mp4' ? 10 : 4 })
+    const built = buildTimeline(speedTask, { resolveTiming: timing })
+    const clips = built.lanes[0].segments
+    check('a clip at 2x takes half the timeline it would', clips[0].duration, 5)
+    check('and it still uses the whole of its source', clips[0].sourceUsedSeconds, 10)
+    check('its speed rides on the segment', clips[0].speed, 2)
+    check('the clip after it starts where the sped one ended', clips[1].start, 5)
+    check('an untouched clip keeps its own speed', clips[1].duration, 4)
+    check('and the output is the sped total', built.duration, 9)
+    // A trim and a speed compose: what the trim keeps is what the speed then divides.
+    const trimmed = buildTimeline({ ...speedTask, trimPoints: { '/a.mp4#0': { in: 2, out: 8 } } } as unknown as QueueTask, { resolveTiming: timing })
+    check('a trimmed clip at 2x is the trim over two', trimmed.lanes[0].segments[0].duration, 3)
+    check('while the source run it keeps is the trim itself', trimmed.lanes[0].segments[0].sourceUsedSeconds, 6)
+
+    // The mapping the MONITOR plays by, which is the same one the encoder's filters produce: at 2x the
+    // source is two seconds in for every one the timeline has crossed, and reading the element's clock
+    // back gives the timeline instant it belongs to. This is the acceptance criterion, checked as
+    // arithmetic rather than taken on trust.
+    const span = { start: 5, duration: 5, sourceIn: 2, speed: 2 }
+    check('a timeline instant maps to the source instant the speed puts it at', sourceTimeAt(6, span), 4)
+    check('and the end of the clip maps to the end of the source run it keeps', sourceTimeAt(10, span), 12)
+    check('reading the clock back gives the timeline instant again', timelineTimeAt(sourceTimeAt(7.5, span), span), 7.5)
+    check('and at a clip\u2019s own speed both are the plain offset', [sourceTimeAt(6, { ...span, speed: 1 }), timelineTimeAt(6, { ...span, speed: 1 })], [3, 9])
+    check('a timeline instant before the clip clamps to its in point', sourceTimeAt(1, span), 2)
+
+    // Where the encoder can carry a speed and where it cannot. The drawn timeline reads the record only
+    // where the export does, so a speed that cannot be written is not drawn either.
+    check('a stitch can carry a clip speed', canApplyClipSpeed(speedTask, '/a.mp4'), true)
+    const multi = { ...speedTask, type: 'multitrack' } as unknown as QueueTask
+    check('a multi-track job cannot', canApplyClipSpeed(multi, '/a.mp4'), false)
+    check('and the drawn timeline ignores a record it cannot encode', buildTimeline(multi, { resolveTiming: timing }).lanes[0].segments[0].duration, 10)
+    const convert = { ...speedTask, type: 'transcode', sourcePaths: ['/a.mp4'] } as unknown as QueueTask
+    check('a single visual convert can', canApplyClipSpeed(convert, '/a.mp4'), true)
+    const soundConvert = { ...speedTask, type: 'transcode', sourcePaths: ['/a.wav'] } as unknown as QueueTask
+    check('a sound convert cannot', canApplyClipSpeed(soundConvert, '/a.wav'), false)
+  }
+
+  console.log('\n== a clip\u2019s speed follows the clip ==')
+  {
+    const job = {
+      id: 'r', type: 'stitch', status: 'pending', progress: 0,
+      sourcePaths: ['/a.mp4', '/b.mp4', '/c.mp4'], outputDirectory: '/o', outputFilename: 'o.mp4',
+      preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+      sourceSpeed: { '/a.mp4#0': { speed: 2, interpolation: 'sampling' } },
+    } as unknown as QueueTask
+    // A reorder re-keys the records onto the places the clips now have, so the speed rides with its clip
+    // rather than staying on an index that now belongs to another one.
+    const reordered = withSourceList(job, ['/c.mp4', '/a.mp4', '/b.mp4'])
+    check('a reorder moves a clip\u2019s speed with it', reordered?.sourceSpeed?.['/a.mp4#1']?.speed, 2)
+    check('and leaves nothing on the place it left', reordered?.sourceSpeed?.['/a.mp4#0'], undefined)
+    // A removal from the end leaves the earlier clip's record where it is; a removal of the clip itself
+    // takes its record with it.
+    const dropped = removeSourceFromTask(job, '/c.mp4', 2)
+    check('removing a later clip leaves an earlier clip\u2019s speed alone', dropped?.sourceSpeed?.['/a.mp4#0']?.speed, 2)
+    const gone = removeSourceFromTask(job, '/a.mp4', 0)
+    check('removing the clip itself takes its speed with it', gone?.sourceSpeed, undefined)
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

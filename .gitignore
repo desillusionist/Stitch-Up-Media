@@ -10,6 +10,7 @@ release/
 scripts/.verify-timeline.cjs
 scripts/.filmstrip.cjs
 scripts/.sourceFit.cjs
+scripts/.clipSpeed.cjs
 scripts/.timelineScale.cjs
 scripts/.waveform.cjs
 scripts/.ffmpegRun.cjs

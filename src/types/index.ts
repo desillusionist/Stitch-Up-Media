@@ -303,6 +303,32 @@ export interface ClipTransition {
   /** Length of the fade on each side of the boundary, in seconds. */
   duration: number
 }
+
+/**
+ * How fast one clip runs, and how the frames it does not have are made up.
+ *
+ * SPEED multiplies the clip's own time: the source is read at its native rate and the timeline it
+ * occupies is `trimmed length / speed`, so 2x of a ten-second trim is five seconds of output. It is
+ * the one number the encoder, the monitor, the thumbnails and the filmstrip all read, which is what
+ * keeps a preview from disagreeing with the file it previews.
+ *
+ * INTERPOLATION decides what fills the gap a speed leaves: `sampling` keeps whichever source frame
+ * the output instant lands on (ffmpeg's own `setpts` behaviour, and the cheap one), while `blending`
+ * averages the neighbours so a slowed clip reads as movement rather than as judder. It affects the
+ * PICTURE only; the sound is retimed the same way either way.
+ *
+ * MAINTAIN PITCH keeps the sound at its own pitch while it is sped (`atempo`), which is the default
+ * and what one expects of a speed change. Turned off, the sample rate is shifted instead (`asetrate`)
+ * so the pitch rises and falls with the speed, the way a tape does.
+ */
+export interface ClipSpeed {
+  /** Forward playback rate. 1 is the clip's own speed; above 1 is faster, below 1 is slower. */
+  speed: number
+  /** What fills the frames a speed change leaves out or repeats. */
+  interpolation: 'sampling' | 'blending'
+  /** Absent is the default: keep the sound at its own pitch. */
+  maintainPitch?: boolean
+}
 export interface SequenceInput {
   dir: string
   pattern: string
@@ -377,6 +403,11 @@ export interface QueueTask {
    */
   sourceCrop?: Record<string, SourceCrop>
   /**
+   * How fast each clip runs, keyed by the clip that owns it, mirroring how trimPoints are keyed.
+   * Absent means the clip's own speed, which is 1.
+   */
+  sourceSpeed?: Record<string, ClipSpeed>
+  /**
    * Lanes whose audio the export does NOT carry, by lane id.
    *
    * The same toggle that silences a lane while monitoring decides whether it reaches the output, so
@@ -405,6 +436,8 @@ export interface EditJobPatch {
   sourceFit?: Record<string, SourceFit>
   /** Per-clip source crop, keyed like the fit and carried whole rather than interpreted. */
   sourceCrop?: Record<string, SourceCrop>
+  /** Per-clip speed, keyed like the fit and carried whole rather than interpreted. */
+  sourceSpeed?: Record<string, ClipSpeed>
   /** Lanes whose audio the export does not carry, carried whole like the fit. */
   mutedLanes?: Record<string, boolean>
   /**

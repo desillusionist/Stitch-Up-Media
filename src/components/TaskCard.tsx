@@ -200,10 +200,10 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     const metadata = sourceMetadata[`${source}#${index}`] || task.sourceMetadata?.[source]
     const standaloneStill = isImageSource(source) && !sequence
     // A still has no rate of its own, so it reports the one it will be rendered at, which
-    // is the same number the EDIT JOB's clip line and MEDIA INFO show. A probe of a JPEG
+    // is the same number the EDIT JOB's clip line and PROPERTIES show. A probe of a JPEG
     // can carry a rate of its own, so it is deliberately not consulted here.
     const fps = sequence?.fps || (standaloneStill ? sourceFps(task, source) : metadata?.fps)
-    // A still's clip has a length as well as a rate, and both are settable from MEDIA INFO,
+    // A still's clip has a length as well as a rate, and both are settable from PROPERTIES,
     // so the brief line reports the length it will actually contribute.
     const stillLength = standaloneStill ? stillSecondsFor(task, source) : undefined
     const point = trimFor(source, index)

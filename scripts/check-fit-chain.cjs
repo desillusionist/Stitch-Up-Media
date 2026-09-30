@@ -13,6 +13,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { clipFilters, croppedSize, fitFilters, fitPlacement } = require('./.sourceFit.cjs')
+const { speedAudioFilters, speedVideoFilters } = require('./.clipSpeed.cjs')
 
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'fit-chain-'))
 const frame = { width: 1920, height: 1080 }
@@ -204,6 +205,40 @@ check('so all three of its bands are still there', shrunken.colours, ['red', 'gr
 const filled = through(tall, { mode: 'width', offset: { x: 0, y: 0 }, insets: { l: 0.1, t: 0, r: 0.1, b: 0 } })
 check('a fill fit fills the box the margins leave', spanX(filled, 540), [192, 1727])
 check('and covers it top to bottom', spanY(filled, 960), [0, 1079])
+
+console.log('\n== a clip at another speed, through ffmpeg ==')
+{
+  // The claim is a claim about TIME, so it is read off a real file rather than a filter string: how
+  // many frames come out and how long the result runs. `setpts` is the whole of the speed, and the
+  // `fps` filter beside it is the one the normalizer appends, so the pair here is the pair the encoder
+  // writes for a clip on the stitch path.
+  const source = path.join(work, 'speed-src.mp4')
+  run(['-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=30:duration=2', '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast', source])
+  const framesOf = (file) => Number(execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', file], { encoding: 'utf8' }).trim())
+  const secondsOf = (file) => Number(JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', file], { encoding: 'utf8' })).format.duration)
+  /** The file one speed produces, through the same `setpts` + `fps` pair the normalizer writes. */
+  const sped = (rate, interpolation = 'sampling') => {
+    const filters = [...speedVideoFilters(rate, interpolation, 30), 'fps=30'].join(',')
+    const file = path.join(work, `speed-${rate}.mp4`)
+    run(['-i', source, '-vf', filters, '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-preset', 'ultrafast', file])
+    return { frames: framesOf(file), seconds: secondsOf(file) }
+  }
+  check('the clip at its own speed has every frame it started with', sped(1).frames, 60)
+  const twice = sped(2)
+  check('twice the speed keeps half the frames', twice.frames, 30)
+  check('and the file runs for half as long', Math.abs(twice.seconds - 1) < 0.1, true)
+  const half = sped(0.5)
+  check('half the speed doubles the frames', half.frames, 120)
+  check('and the file runs for twice as long', Math.abs(half.seconds - 4) < 0.2, true)
+
+  // The sound half: `atempo` changes the tempo and nothing else, so the tone comes out the shorter
+  // length the picture did, at its own pitch. The chain is read from the module the encoder imports.
+  const tone = path.join(work, 'tone.wav')
+  run(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2', tone])
+  const spedTone = path.join(work, 'tone-sped.wav')
+  run(['-i', tone, '-af', speedAudioFilters(2, true, 48000).join(','), spedTone])
+  check('a pitch-kept sound is sped to the picture\u2019s own length', Math.abs(secondsOf(spedTone) - 1) < 0.05, true)
+}
 
 console.log(failures === 0 ? '\nALL CHAINS PASSED\n' : `\n${failures} CHAIN(S) FAILED\n`)
 fs.rmSync(work, { recursive: true, force: true })

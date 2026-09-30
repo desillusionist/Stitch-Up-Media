@@ -1,18 +1,19 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, Lock, RotateCcw, Unlink, Unlock, ZoomIn, ZoomOut } from 'lucide-react'
-import { AppSettings, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
+import { AppSettings, ClipSpeed, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { PREVIEW_SPEEDS, speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
+import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, speedFor } from '../lib/clipSpeed'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
 import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } from '../lib/quickLookTarget'
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { sequenceLabel } from '../lib/sequenceLabel'
@@ -86,14 +87,15 @@ const editableSlice = (task: QueueTask) => ({
   // disabled and the change could not be committed at all.
   sourceFit: task.sourceFit,
   sourceCrop: task.sourceCrop,
+  sourceSpeed: task.sourceSpeed,
   mutedLanes: task.mutedLanes,
-  // Per-source timing is editable from MEDIA INFO, so the window owns it too.
+  // Per-source timing is editable from PROPERTIES, so the window owns it too.
   sourceMetadata: task.sourceMetadata,
   sequenceInput: task.sequenceInput,
   sequenceInputs: task.sequenceInputs,
 })
 
-/** The rates the MEDIA INFO inspector offers, matching the queue's own list. */
+/** The rates the PROPERTIES inspector offers, matching the queue's own list. */
 const FPS_CHOICES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]
 
 const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
@@ -125,7 +127,7 @@ const windowDirty = (draft: QueueTask, baseline: QueueTask) => isDirty(draft, ba
  * What a right-click on the timeline was on.
  *
  * A clip offers the two things that are about the clip itself: its frame-accurate preview and
- * its media info. A lane head offers the two ways to draw its clips, since that is a property
+ * its properties. A lane head offers the two ways to draw its clips, since that is a property
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
@@ -325,7 +327,7 @@ export const EditJobApp: React.FC = () => {
   /** Set when a still could not be turned into a clip, so the monitor is not lying. */
   const [previewNotice, setPreviewNotice] = useState<string | null>(null)
   /**
-   * The clip whose MEDIA INFO inspector is open, by the lane it is on and its place in that lane.
+   * The clip whose PROPERTIES inspector is open, by the lane it is on and its place in that lane.
    *
    * Not an index into `sourcePaths`: an audio track is not one of those, so a menu opened on one could
    * only name the job's first video — and the inspector then described a file the user had not asked
@@ -341,7 +343,7 @@ export const EditJobApp: React.FC = () => {
    * selected changes what is described.
    */
   const [selected, setSelected] = useState<{ laneId: string; segmentIndex: number } | null>(null)
-  /** Whether the MEDIA INFO inspector is showing. It describes whatever is selected. */
+  /** Whether the PROPERTIES inspector is showing. It describes whatever is selected. */
   const [inspectorOpen, setInspectorOpen] = useState(false)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
   const draftRef = useRef<QueueTask | null>(null)
@@ -360,7 +362,7 @@ export const EditJobApp: React.FC = () => {
    *
    * The effect below has always read a probe to decide whether a source has sound and how long it is, and it
    * then threw everything else away. The audio facts — the rate, the sample size, the channels — are in the
-   * same answer, and four places want them: the MEDIA INFO inspector, the line under the monitor, the AUDIO
+   * same answer, and four places want them: the PROPERTIES inspector, the line under the monitor, the AUDIO
    * tab, and a clip's own line in the simple view. Reading them off a second probe would be a second ffprobe
    * per source for facts the window already had.
    */
@@ -594,7 +596,7 @@ export const EditJobApp: React.FC = () => {
       : {
           ...incoming,
           ...(clipsMoved && !mine
-            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop }
+            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed }
             : kept),
           ...(mine
             ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
@@ -644,7 +646,7 @@ export const EditJobApp: React.FC = () => {
   const timelineSignature = draft ? JSON.stringify([
     draft.type, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
     draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo,
-    draft.preset.fps, draft.stillImageDuration, draft.transitions,
+    draft.preset.fps, draft.stillImageDuration, draft.transitions, draft.sourceSpeed,
   ]) : ''
 
   // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source without intrinsic
@@ -830,7 +832,7 @@ export const EditJobApp: React.FC = () => {
   const frameAspect = outputFrame ? outputFrame.width / outputFrame.height : 16 / 9
   const focusedSource = draft ? (draft.sourcePaths[focusedSourceIndex] || draft.sourcePaths[0]) : undefined
   /**
-   * The source the window is DESCRIBING: the clip the MEDIA INFO inspector is on where it is open, and the one
+   * The source the window is DESCRIBING: the clip the PROPERTIES inspector is on where it is open, and the one
    * under the playhead otherwise.
    *
    * Derived here, above the early return, because the probe that fills `sourceProbes` is an effect and no hook
@@ -993,15 +995,17 @@ export const EditJobApp: React.FC = () => {
   const planFor = (segment: TimelineSegment) => {
     const shape = sourceShape[segment.sourcePath]
     if (!shape || segment.duration <= 0) return undefined
-    // The lane's width is the clip's trimmed length at the timeline's rate, which is a function of
+    // The lane's width is the clip's TIMELINE length at the timeline's rate, which is a function of
     // the zoom alone: nothing here is read from the window, so a resize cannot re-lay a strip out.
+    // The SAMPLES are the source run the clip uses, so a sped clip's tiles show the frames its export
+    // will: the strip packs the same frames into a shorter lane rather than sampling a shorter run.
     return computeFilmstrip({
       laneWidth: laneWidthFor(segment.duration, zoom),
       thumbHeight: FILMSTRIP_CLIP_HEIGHT,
       outAspect: frameAspect,
       fps: stripFpsFor(segment),
       inSec: segment.sourceIn,
-      outSec: segment.sourceIn + segment.duration,
+      outSec: segment.sourceIn + segment.sourceUsedSeconds,
     })
   }
   /**
@@ -1778,7 +1782,7 @@ export const EditJobApp: React.FC = () => {
   const mainLane = model.lanes[0]
   const cuts = (mainLane?.segments ?? []).slice(0, -1).map((clip, index) => ({ index, sourcePath: clip.sourcePath }))
 
-  // MEDIA INFO reads the source under the playhead, which is the one the inspector was
+  // PROPERTIES reads the source under the playhead, which is the one the inspector was
   // opened on. A source with an intrinsic rate shows it; a still or a sequence, whose
   // rate is a choice rather than a fact about the file, can have it changed here.
   const inspectedSegment = selected ? model?.lanes.find((lane) => lane.id === selected.laneId)?.segments[selected.segmentIndex] : undefined
@@ -1791,6 +1795,18 @@ export const EditJobApp: React.FC = () => {
   const inspectedInfo = inspectedSource ? sourceProbes[inspectedSource] : undefined
   const inspectedAudioFacts = audioFacts(inspectedInfo)
   const inspectedAudioCodec = audioCodecFacts(inspectedInfo)
+  /**
+   * The clip the inspector is describing, as the key its speed is filed under.
+   *
+   * The same keying the trim, the fit and the crop use, taken from the segment itself — a segment knows
+   * its own place by the key it was built with — so the speed follows its clip through a reorder the
+   * way everything else filed per clip does.
+   */
+  const inspectedClipIndex = inspectedSegment ? clipIndexOf(inspectedSegment) : 0
+  const inspectedCanSpeed = Boolean(draft && inspectedSource && canApplyClipSpeed(draft, inspectedSource))
+  const inspectedSpeed: ClipSpeed = inspectedSegment
+    ? { speed: inspectedSegment.speed, interpolation: inspectedSegment.speedInterpolation, maintainPitch: inspectedSegment.maintainPitch }
+    : DEFAULT_CLIP_SPEED
 
   /** Transitions are keyed by the clip BEFORE the boundary, like trim points, and by the edge. */
   const applyTransition = (key: string, type: TransitionType, duration = 0.5) => {
@@ -1905,7 +1921,7 @@ export const EditJobApp: React.FC = () => {
     applyTransition(edge === 'head' ? HEAD_FADE_KEY : TAIL_FADE_KEY, type, duration)
 
   /**
-   * Records a source's timing from MEDIA INFO: its rate, and for a still the length of
+   * Records a source's timing from PROPERTIES: its rate, and for a still the length of
    * the clip made from it.
    *
    * Written to the draft so this window's monitor and timeline update at once, and sent to
@@ -1923,6 +1939,30 @@ export const EditJobApp: React.FC = () => {
     setBaseline(nextBaseline)
     setDraft(next)
     void window.electronAPI?.applySourceTiming(draft.id, sourcePath, override)
+  }
+
+  /**
+   * Records one clip's speed, from the PROPERTIES inspector.
+   *
+   * Written to the draft like every other per-clip decision, so the monitor, the strips and the
+   * timeline all follow it at once and APPLY is what carries it to the queue. A record that does
+   * nothing — the clip's own speed, sampled, pitch kept — is REMOVED rather than stored, which is what
+   * keeps an untouched clip off the job's record and its export exactly what it was.
+   *
+   * The duration and the speed are one relationship and this is the only writer of either: choosing a
+   * speed leaves the trim alone and the timeline length follows, and the inspector's DURATION field
+   * asks for the same speed worked out backwards from the length the reader typed.
+   */
+  const setClipSpeed = (sourcePath: string, index: number, next: Partial<ClipSpeed>): void => {
+    const current = speedFor(latest(), sourcePath, index)
+    const speed = clampClipSpeed(next.speed ?? current.speed)
+    const interpolation = (next.interpolation ?? current.interpolation) === 'blending' ? 'blending' : 'sampling'
+    const maintainPitch = (next.maintainPitch ?? current.maintainPitch) !== false
+    const map = { ...(latest().sourceSpeed ?? {}) }
+    const key = `${sourcePath}#${index}`
+    if (speed === 1 && interpolation === 'sampling' && maintainPitch) delete map[key]
+    else map[key] = { speed, interpolation, maintainPitch }
+    updateDraft({ sourceSpeed: Object.keys(map).length ? map : undefined })
   }
 
   /**
@@ -1963,6 +2003,9 @@ export const EditJobApp: React.FC = () => {
     // A still has no rate of its own, so the one it will be rendered at belongs in the
     // clip's own line rather than being left to the monitor to mention.
     if (segment.still) parts.push(`STILL @ ${Math.round(sourceFps(draft, segment.sourcePath, undefined, resolveTiming))}FPS`)
+    // The clip's speed, where it has one: the line already says the TIMELINE length it takes, and the
+    // rate is what turns the source run into that length — so the two belong on one line, together.
+    if (segment.speed !== 1) parts.push(`SPEED ${clipSpeedLabel(segment.speed)}`)
     if (segment.fadeIn) parts.push(`FADE IN ${segment.fadeIn.toFixed(2)}s`)
     if (segment.fadeOut) parts.push(`FADE OUT ${segment.fadeOut.toFixed(2)}s`)
     // What the source's own sound IS, for a clip that is nothing but sound: the line already says how long the
@@ -1982,7 +2025,9 @@ export const EditJobApp: React.FC = () => {
     // an image sequence, the still's chosen length for a still, and the probe's for anything else.
     totalSeconds: sourceDuration(draft, segment.sourcePath, undefined, resolveTiming),
     fps: sourceFps(draft, segment.sourcePath, undefined, resolveTiming),
-    usedSeconds: segment.duration,
+    // What the output takes from the source, which a speed does not change: it is the timeline length
+    // that the speed divides, so the range this draws stays the run through the source itself.
+    usedSeconds: segment.sourceUsedSeconds,
     sourceIn: segment.sourceIn,
     trimmed: segment.trimmed,
     mode: timestampMode,
@@ -2264,6 +2309,7 @@ export const EditJobApp: React.FC = () => {
     transitions: latest().transitions,
     sourceFit: latest().sourceFit,
     sourceCrop: latest().sourceCrop,
+    sourceSpeed: latest().sourceSpeed,
     mutedLanes: latest().mutedLanes,
     sourceTiming: sourceTimingOverrides(latest()),
     // Only when the window changed it: an untouched list is the queue's, and sending the window's
@@ -3010,7 +3056,7 @@ export const EditJobApp: React.FC = () => {
               </div>
             </div>
             <small>{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
-            <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.duration, sourceIn: activeSegment.sourceIn, totalSeconds: sourceDuration(draft, activeSegment.sourcePath, undefined, resolveTiming), fps: sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming), mode: timestampMode })} | ${outputRangeLabel(duration, fps, timestampMode)}` : outputRangeLabel(duration, fps, timestampMode)}</small>
+            <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.sourceUsedSeconds, sourceIn: activeSegment.sourceIn, totalSeconds: sourceDuration(draft, activeSegment.sourcePath, undefined, resolveTiming), fps: sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming), mode: timestampMode })} | ${outputRangeLabel(duration, fps, timestampMode)}` : outputRangeLabel(duration, fps, timestampMode)}</small>
             {/* What the transport is doing. A single line, and the one place it is said: the pause glyph that
                 used to sit among the buttons said the same thing a second time, next to a PLAY toggle that
                 already carries the state. */}
@@ -3086,7 +3132,7 @@ export const EditJobApp: React.FC = () => {
           </div>
           {inspectorOpen && inspectedSource && (
             <div className="media-inspector">
-              <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the media info inspector" title="Close">x</button>
+              <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the properties inspector" title="Close">x</button>
               <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
               <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
               {/* What the sound IS, which an inspector of an audio file had nothing to say about: the rate,
@@ -3096,7 +3142,7 @@ export const EditJobApp: React.FC = () => {
               {inspectedAudioCodec && <EditorRow label="AUDIO CODEC" value={inspectedAudioCodec} />}
               <EditorRow
                 label="USED"
-                value={inspectedSegment ? clipRangeLabel({ usedSeconds: inspectedSegment.duration, sourceIn: inspectedSegment.sourceIn, totalSeconds: sourceDuration(draft, inspectedSegment.sourcePath, undefined, resolveTiming), fps: inspectedFps, mode: timestampMode }) : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
+                value={inspectedSegment ? clipRangeLabel({ usedSeconds: inspectedSegment.sourceUsedSeconds, sourceIn: inspectedSegment.sourceIn, totalSeconds: sourceDuration(draft, inspectedSegment.sourcePath, undefined, resolveTiming), fps: inspectedFps, mode: timestampMode }) : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
               />
               <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
                 inspectedEditable
@@ -3108,6 +3154,50 @@ export const EditJobApp: React.FC = () => {
                   />
                   : <input className="editor-input" type="text" value={`${inspectedFps} FPS`} readOnly />
               }</EditorField>
+              {inspectedSegment && inspectedCanSpeed && (() => {
+                // SPEED and DURATION are one relationship read from either end: the source run the clip
+                // keeps is fixed by its trim, so a speed decides the timeline length and a length decides
+                // the speed. Both fields write the one record through the one writer, which is what keeps
+                // the two in step — and the timeline, the monitor and the strips all read that record, so
+                // a preview and the file it previews cannot disagree about how long the clip is.
+                const trimmedSeconds = inspectedSegment.sourceUsedSeconds
+                const rate = Math.max(1, inspectedFps)
+                const applyDuration = (seconds: number) => {
+                  if (seconds > 0) setClipSpeed(inspectedSource, inspectedClipIndex, { speed: trimmedSeconds / seconds })
+                }
+                return <>
+                  <EditorField label="SPEED" hint={inspectedSpeed.speed === 1 ? 'SOURCE RATE' : `TRIM ${stamp(trimmedSeconds)}`} reason="How fast this clip runs. The trim is what the clip keeps of its source; the speed is how quickly that run is played, so the clip's length in the output follows from the two together.">
+                    <NumberField
+                      className="editor-input"
+                      min={MIN_CLIP_SPEED}
+                      max={MAX_CLIP_SPEED}
+                      step={0.05}
+                      value={inspectedSpeed.speed}
+                      onValue={(entered) => setClipSpeed(inspectedSource, inspectedClipIndex, { speed: entered })}
+                      ariaLabel="The speed this clip is played at"
+                    />
+                  </EditorField>
+                  <EditorField label="DURATION" hint={timestampMode === 'framestamp' ? 'IN FRAMES' : 'IN SECONDS'} reason="How long this clip occupies on the timeline. It is the trimmed source length divided by the speed, so editing it here chooses the speed that length needs.">
+                    {timestampMode === 'framestamp'
+                      ? <NumberField className="editor-input" min={1} step={1} value={Math.max(1, Math.round(inspectedSegment.duration * rate))} onValue={(frames) => applyDuration(frames / rate)} ariaLabel="The length this clip occupies on the timeline" />
+                      : <NumberField className="editor-input" min={0.01} step={0.05} value={Math.round(inspectedSegment.duration * 1000) / 1000} onValue={applyDuration} ariaLabel="The length this clip occupies on the timeline" />}
+                  </EditorField>
+                  {inspectedSpeed.speed !== 1 && <EditorField label="INTERPOLATION" hint="EXPORT" reason="What fills the frames a speed leaves out or repeats. SAMPLING keeps whichever source frame the output instant lands on, which is cheap and can judder; BLENDING averages the neighbours so a slowed clip reads as movement. It changes the picture only, and only in the written file.">
+                    <EditorSelect
+                      value={inspectedSpeed.interpolation}
+                      options={[{ value: 'sampling', label: 'SAMPLING' }, { value: 'blending', label: 'BLENDING' }]}
+                      onChange={(choice) => setClipSpeed(inspectedSource, inspectedClipIndex, { interpolation: choice === 'blending' ? 'blending' : 'sampling' })}
+                      ariaLabel="What fills the frames a speed change leaves out"
+                    />
+                  </EditorField>}
+                  {inspectedSpeed.speed !== 1 && <EditorToggle
+                    label="MAINTAIN AUDIO PITCH"
+                    checked={inspectedSpeed.maintainPitch !== false}
+                    onChange={(checked) => setClipSpeed(inspectedSource, inspectedClipIndex, { maintainPitch: checked })}
+                    reason="On, the sound is retimed with atempo and keeps its own pitch. Off, asetrate shifts the sample rate instead, so the pitch rises and falls with the speed the way a tape's does."
+                  />}
+                </>
+              })()}
               {inspectedSegment?.still && (() => {
                 // The length is a CHOICE for a still, so it is a figure the window is asked for — and the
                 // window is showing lengths in frames or in time, so the field asks in whichever it is
@@ -3766,7 +3856,7 @@ export const EditJobApp: React.FC = () => {
         </div>
       </> : <>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); void openNativePreview({ sourcePath: target.sourcePath, sourceIndex: target.mainIndex ?? 0 }) }}>QUICK LOOK...</button>
-        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setSelected({ laneId: target.laneId, segmentIndex: target.segmentIndex }); setInspectorOpen(true) }}>MEDIA INFO</button>
+        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setSelected({ laneId: target.laneId, segmentIndex: target.segmentIndex }); setInspectorOpen(true) }}>PROPERTIES</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
           const blocked = timelineMenu.fitReason

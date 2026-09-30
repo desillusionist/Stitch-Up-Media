@@ -42,11 +42,11 @@ const logMediaElement = (element: HTMLVideoElement | null, kind: string) => {
 
 const model = {
   lanes: [
-    { id: 'main', label: 'VIDEO', kind: 'video' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'main#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceIn: 0, trimmed: false }] },
+    { id: 'main', label: 'VIDEO', kind: 'video' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'main#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceUsedSeconds: globals.__duration, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false }] },
     // An ADDED track, which is the lane whose sound the scrub is measured on: over a still or the black tail
     // there is no video element, so this element is the only thing that can be audible, and it is the one the
     // per-tick seek used to jog.
-    { id: 'sound', label: 'AUDIO', kind: 'audio' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'sound#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceIn: 0, trimmed: false }] },
+    { id: 'sound', label: 'AUDIO', kind: 'audio' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'sound#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceUsedSeconds: globals.__duration, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false }] },
   ],
   duration: globals.__duration,
   unusedVideoSources: [] as string[],
