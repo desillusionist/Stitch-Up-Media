@@ -598,12 +598,20 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .boundary-duration-value { min-width: 38px; text-align: center; color: var(--ui-accent); font-size: 10px; }
 .boundary-duration small { color: var(--ui-border); font-size: 8px; }
 .boundary-clamped { color: var(--ui-encoding); font-size: 8px; }
-/* MEDIA INFO: the facts about the source under the playhead, and the one of them that
-   is a choice rather than a fact, which a still image and an interpreted sequence
-   both have. */
-.media-inspector { display: grid; gap: 0; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--ui-border); background: var(--ui-panel-inset); }
-.media-inspector .editor-row, .media-inspector .editor-field { min-height: 26px; padding: 4px 0; }
+/* PROPERTIES: the facts about the source under the playhead, and the two of them that are choices
+   rather than facts — a still's length, and any clip's speed. */
+.media-inspector { --inspector-row: 31px; position: relative; display: grid; gap: 0; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--ui-border); background: var(--ui-panel-inset); }
+/* The rows are capped to five and scroll past that. Without the cap the drawer grew by a row every time
+   a field was added to it, and the monitor it hangs under was pushed out of the window by the list meant
+   to describe the clip in it. Five rows is enough to read a clip by and small enough to leave the
+   picture alone; the figure carries the row's own rule, so five rows is five rows. The close is NOT in
+   this scroller — it is a sibling — so it stays reachable wherever the list has been scrolled to. */
+.inspector-scroll { max-height: calc(5 * var(--inspector-row)); overflow-y: auto; overflow-x: hidden; }
+.media-inspector .editor-row, .media-inspector .editor-field, .media-inspector .editor-toggle { box-sizing: border-box; min-height: var(--inspector-row); padding: 4px 0; }
 .media-inspector .editor-field > span { justify-content: flex-start; gap: 8px; }
+/* The close is pinned to the box's own corner rather than to the scrolled list, which is what keeps it
+   in place while the rows move under it. */
+.media-inspector > .inspector-close { z-index: 2; }
 .boundary-close { margin-left: auto; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 12px; line-height: 1; }
 .boundary-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; object-fit: contain; cursor: pointer; }

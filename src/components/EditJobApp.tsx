@@ -3133,95 +3133,97 @@ export const EditJobApp: React.FC = () => {
           {inspectorOpen && inspectedSource && (
             <div className="media-inspector">
               <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the properties inspector" title="Close">x</button>
-              <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
-              <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
-              {/* What the sound IS, which an inspector of an audio file had nothing to say about: the rate,
-                  the sample size and the channels, and then how it is written. A lossy file has no sample
-                  size and says so by leaving it out rather than by claiming zero bits. */}
-              {inspectedAudioFacts && <EditorRow label="AUDIO" value={inspectedAudioFacts} reason="The file's own audio: its sample rate, its sample size, and its channel layout or count." />}
-              {inspectedAudioCodec && <EditorRow label="AUDIO CODEC" value={inspectedAudioCodec} />}
-              <EditorRow
-                label="USED"
-                value={inspectedSegment ? clipRangeLabel({ usedSeconds: inspectedSegment.sourceUsedSeconds, sourceIn: inspectedSegment.sourceIn, totalSeconds: sourceDuration(draft, inspectedSegment.sourcePath, undefined, resolveTiming), fps: inspectedFps, mode: timestampMode }) : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
-              />
-              <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
-                inspectedEditable
-                  ? <EditorSelect
-                    value={String(inspectedFps)}
-                    options={[...new Set([...FPS_CHOICES, inspectedFps])].sort((a, b) => a - b).map((rate) => ({ value: String(rate), label: `${rate}${FPS_CHOICES.includes(rate) ? '' : ' (CURRENT)'} FPS` }))}
-                    onChange={(next) => setSourceTiming(inspectedSource, { fps: Number(next) })}
-                    ariaLabel="The frame rate this source is read at"
-                  />
-                  : <input className="editor-input" type="text" value={`${inspectedFps} FPS`} readOnly />
-              }</EditorField>
-              {inspectedSegment && inspectedCanSpeed && (() => {
-                // SPEED and DURATION are one relationship read from either end: the source run the clip
-                // keeps is fixed by its trim, so a speed decides the timeline length and a length decides
-                // the speed. Both fields write the one record through the one writer, which is what keeps
-                // the two in step — and the timeline, the monitor and the strips all read that record, so
-                // a preview and the file it previews cannot disagree about how long the clip is.
-                const trimmedSeconds = inspectedSegment.sourceUsedSeconds
-                const rate = Math.max(1, inspectedFps)
-                const applyDuration = (seconds: number) => {
-                  if (seconds > 0) setClipSpeed(inspectedSource, inspectedClipIndex, { speed: trimmedSeconds / seconds })
-                }
-                return <>
-                  <EditorField label="SPEED" hint={inspectedSpeed.speed === 1 ? 'SOURCE RATE' : `TRIM ${stamp(trimmedSeconds)}`} reason="How fast this clip runs. The trim is what the clip keeps of its source; the speed is how quickly that run is played, so the clip's length in the output follows from the two together.">
-                    <NumberField
-                      className="editor-input"
-                      min={MIN_CLIP_SPEED}
-                      max={MAX_CLIP_SPEED}
-                      step={0.05}
-                      value={inspectedSpeed.speed}
-                      onValue={(entered) => setClipSpeed(inspectedSource, inspectedClipIndex, { speed: entered })}
-                      ariaLabel="The speed this clip is played at"
+              <div className="inspector-scroll">
+                <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
+                <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
+                {/* What the sound IS, which an inspector of an audio file had nothing to say about: the rate,
+                    the sample size and the channels, and then how it is written. A lossy file has no sample
+                    size and says so by leaving it out rather than by claiming zero bits. */}
+                {inspectedAudioFacts && <EditorRow label="AUDIO" value={inspectedAudioFacts} reason="The file's own audio: its sample rate, its sample size, and its channel layout or count." />}
+                {inspectedAudioCodec && <EditorRow label="AUDIO CODEC" value={inspectedAudioCodec} />}
+                <EditorRow
+                  label="USED"
+                  value={inspectedSegment ? clipRangeLabel({ usedSeconds: inspectedSegment.sourceUsedSeconds, sourceIn: inspectedSegment.sourceIn, totalSeconds: sourceDuration(draft, inspectedSegment.sourcePath, undefined, resolveTiming), fps: inspectedFps, mode: timestampMode }) : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
+                />
+                <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
+                  inspectedEditable
+                    ? <EditorSelect
+                      value={String(inspectedFps)}
+                      options={[...new Set([...FPS_CHOICES, inspectedFps])].sort((a, b) => a - b).map((rate) => ({ value: String(rate), label: `${rate}${FPS_CHOICES.includes(rate) ? '' : ' (CURRENT)'} FPS` }))}
+                      onChange={(next) => setSourceTiming(inspectedSource, { fps: Number(next) })}
+                      ariaLabel="The frame rate this source is read at"
                     />
-                  </EditorField>
-                  <EditorField label="DURATION" hint={timestampMode === 'framestamp' ? 'IN FRAMES' : 'IN SECONDS'} reason="How long this clip occupies on the timeline. It is the trimmed source length divided by the speed, so editing it here chooses the speed that length needs.">
-                    {timestampMode === 'framestamp'
-                      ? <NumberField className="editor-input" min={1} step={1} value={Math.max(1, Math.round(inspectedSegment.duration * rate))} onValue={(frames) => applyDuration(frames / rate)} ariaLabel="The length this clip occupies on the timeline" />
-                      : <NumberField className="editor-input" min={0.01} step={0.05} value={Math.round(inspectedSegment.duration * 1000) / 1000} onValue={applyDuration} ariaLabel="The length this clip occupies on the timeline" />}
-                  </EditorField>
-                  {inspectedSpeed.speed !== 1 && <EditorField label="INTERPOLATION" hint="EXPORT" reason="What fills the frames a speed leaves out or repeats. SAMPLING keeps whichever source frame the output instant lands on, which is cheap and can judder; BLENDING averages the neighbours so a slowed clip reads as movement. It changes the picture only, and only in the written file.">
-                    <EditorSelect
-                      value={inspectedSpeed.interpolation}
-                      options={[{ value: 'sampling', label: 'SAMPLING' }, { value: 'blending', label: 'BLENDING' }]}
-                      onChange={(choice) => setClipSpeed(inspectedSource, inspectedClipIndex, { interpolation: choice === 'blending' ? 'blending' : 'sampling' })}
-                      ariaLabel="What fills the frames a speed change leaves out"
-                    />
-                  </EditorField>}
-                  {inspectedSpeed.speed !== 1 && <EditorToggle
-                    label="MAINTAIN AUDIO PITCH"
-                    checked={inspectedSpeed.maintainPitch !== false}
-                    onChange={(checked) => setClipSpeed(inspectedSource, inspectedClipIndex, { maintainPitch: checked })}
-                    reason="On, the sound is retimed with atempo and keeps its own pitch. Off, asetrate shifts the sample rate instead, so the pitch rises and falls with the speed the way a tape's does."
-                  />}
-                </>
-              })()}
-              {inspectedSegment?.still && (() => {
-                // The length is a CHOICE for a still, so it is a figure the window is asked for — and the
-                // window is showing lengths in frames or in time, so the field asks in whichever it is
-                // showing. What is stored is seconds either way; only the reading of it changes.
-                const seconds = stillSecondsFor(draft, inspectedSource)
-                const rate = Math.max(1, inspectedFps)
-                return <EditorField label="CLIP LENGTH" hint={timestampMode === 'framestamp' ? 'IN FRAMES' : 'IN SECONDS'}>{
-                  timestampMode === 'framestamp'
-                    ? <NumberField
-                      className="editor-input"
-                      min={1}
-                      step={1}
-                      value={Math.round(seconds * rate)}
-                      onValue={(frames) => { if (frames > 0) setSourceTiming(inspectedSource, { seconds: frames / rate }) }}
-                    />
-                    : <NumberField
-                      className="editor-input"
-                      min={0.1}
-                      step={0.1}
-                      value={seconds}
-                      onValue={(entered) => { if (entered > 0) setSourceTiming(inspectedSource, { seconds: entered }) }}
-                    />
+                    : <input className="editor-input" type="text" value={`${inspectedFps} FPS`} readOnly />
                 }</EditorField>
-              })()}
+                {inspectedSegment && inspectedCanSpeed && (() => {
+                  // SPEED and DURATION are one relationship read from either end: the source run the clip
+                  // keeps is fixed by its trim, so a speed decides the timeline length and a length decides
+                  // the speed. Both fields write the one record through the one writer, which is what keeps
+                  // the two in step — and the timeline, the monitor and the strips all read that record, so
+                  // a preview and the file it previews cannot disagree about how long the clip is.
+                  const trimmedSeconds = inspectedSegment.sourceUsedSeconds
+                  const rate = Math.max(1, inspectedFps)
+                  const applyDuration = (seconds: number) => {
+                    if (seconds > 0) setClipSpeed(inspectedSource, inspectedClipIndex, { speed: trimmedSeconds / seconds })
+                  }
+                  return <>
+                    <EditorField label="SPEED" hint={inspectedSpeed.speed === 1 ? 'SOURCE RATE' : `TRIM ${stamp(trimmedSeconds)}`} reason="How fast this clip runs. The trim is what the clip keeps of its source; the speed is how quickly that run is played, so the clip's length in the output follows from the two together.">
+                      <NumberField
+                        className="editor-input"
+                        min={MIN_CLIP_SPEED}
+                        max={MAX_CLIP_SPEED}
+                        step={0.05}
+                        value={inspectedSpeed.speed}
+                        onValue={(entered) => setClipSpeed(inspectedSource, inspectedClipIndex, { speed: entered })}
+                        ariaLabel="The speed this clip is played at"
+                      />
+                    </EditorField>
+                    <EditorField label="DURATION" hint={timestampMode === 'framestamp' ? 'IN FRAMES' : 'IN SECONDS'} reason="How long this clip occupies on the timeline. It is the trimmed source length divided by the speed, so editing it here chooses the speed that length needs.">
+                      {timestampMode === 'framestamp'
+                        ? <NumberField className="editor-input" min={1} step={1} value={Math.max(1, Math.round(inspectedSegment.duration * rate))} onValue={(frames) => applyDuration(frames / rate)} ariaLabel="The length this clip occupies on the timeline" />
+                        : <NumberField className="editor-input" min={0.01} step={0.05} value={Math.round(inspectedSegment.duration * 1000) / 1000} onValue={applyDuration} ariaLabel="The length this clip occupies on the timeline" />}
+                    </EditorField>
+                    {inspectedSpeed.speed !== 1 && <EditorField label="INTERPOLATION" hint="EXPORT" reason="What fills the frames a speed leaves out or repeats. SAMPLING keeps whichever source frame the output instant lands on, which is cheap and can judder; BLENDING averages the neighbours so a slowed clip reads as movement. It changes the picture only, and only in the written file.">
+                      <EditorSelect
+                        value={inspectedSpeed.interpolation}
+                        options={[{ value: 'sampling', label: 'SAMPLING' }, { value: 'blending', label: 'BLENDING' }]}
+                        onChange={(choice) => setClipSpeed(inspectedSource, inspectedClipIndex, { interpolation: choice === 'blending' ? 'blending' : 'sampling' })}
+                        ariaLabel="What fills the frames a speed change leaves out"
+                      />
+                    </EditorField>}
+                    {inspectedSpeed.speed !== 1 && <EditorToggle
+                      label="MAINTAIN AUDIO PITCH"
+                      checked={inspectedSpeed.maintainPitch !== false}
+                      onChange={(checked) => setClipSpeed(inspectedSource, inspectedClipIndex, { maintainPitch: checked })}
+                      reason="On, the sound is retimed with atempo and keeps its own pitch. Off, asetrate shifts the sample rate instead, so the pitch rises and falls with the speed the way a tape's does."
+                    />}
+                  </>
+                })()}
+                {inspectedSegment?.still && (() => {
+                  // The length is a CHOICE for a still, so it is a figure the window is asked for — and the
+                  // window is showing lengths in frames or in time, so the field asks in whichever it is
+                  // showing. What is stored is seconds either way; only the reading of it changes.
+                  const seconds = stillSecondsFor(draft, inspectedSource)
+                  const rate = Math.max(1, inspectedFps)
+                  return <EditorField label="CLIP LENGTH" hint={timestampMode === 'framestamp' ? 'IN FRAMES' : 'IN SECONDS'}>{
+                    timestampMode === 'framestamp'
+                      ? <NumberField
+                        className="editor-input"
+                        min={1}
+                        step={1}
+                        value={Math.round(seconds * rate)}
+                        onValue={(frames) => { if (frames > 0) setSourceTiming(inspectedSource, { seconds: frames / rate }) }}
+                      />
+                      : <NumberField
+                        className="editor-input"
+                        min={0.1}
+                        step={0.1}
+                        value={seconds}
+                        onValue={(entered) => { if (entered > 0) setSourceTiming(inspectedSource, { seconds: entered }) }}
+                      />
+                  }</EditorField>
+                })()}
+              </div>
             </div>
           )}
           {previewNotice && <div className="editor-note is-warning">&gt; {previewNotice}</div>}

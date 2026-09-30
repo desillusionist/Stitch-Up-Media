@@ -268,6 +268,19 @@ app.whenReady().then(async () => {
         if (String(stitch.gate.visuals) !== 'audio,audio') problems.push(`the stitch's visuals were classified as ${stitch.gate.visuals} rather than two sounds`)
         if (!stitch.pictureSource) problems.push('the picture source control was not drawn for a stitch of sounds')
         else if (!stitch.pictureSource.options.includes('visualization')) problems.push('a stitch of sounds is offered no drawing, so it can only ever export black')
+        // THE PROPERTIES DRAWER, whose cap is the whole of this pass: it must scroll rather than grow, hold
+        // the five-row figure, and keep its close button out of the scrolled list and on screen throughout.
+        const inspector = stitch.inspector
+        if (!inspector || !inspector.opened) problems.push(`the PROPERTIES drawer never opened from the clip menu: ${JSON.stringify(inspector && inspector.reason)}`)
+        else {
+          if (inspector.overflowY !== 'auto') problems.push(`the drawer's rows do not scroll: overflow-y is ${JSON.stringify(inspector.overflowY)}`)
+          if (!(inspector.scrollHeight > inspector.clientHeight)) problems.push(`the drawer is not actually overflowing, so its scrollbar and cap prove nothing (${inspector.scrollHeight} in ${inspector.clientHeight})`)
+          if (!(inspector.rows >= 6)) problems.push(`only ${inspector.rows} rows were drawn, too few to overflow the cap`)
+          if (Math.abs(inspector.clientHeight - inspector.cap) > 1) problems.push(`the drawer shows ${inspector.clientHeight}px of rows rather than its five-row cap of ${inspector.cap}px`)
+          if (!inspector.closeOutsideScroller) problems.push('the close button is inside the scrolled list, so it scrolls out of reach')
+          if (!inspector.closeVisible) problems.push('the close button is not on screen when the drawer opens')
+          if (!inspector.closeVisibleAfterScroll) problems.push('the close button leaves the screen once the list is scrolled')
+        }
       }
       // And the opposite side of the gate. A container that holds artwork rather than frames must offer
       // COVER ART and must NOT offer a picture source; if it offered both, or neither, the two gates are

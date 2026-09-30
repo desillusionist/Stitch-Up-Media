@@ -206,6 +206,53 @@ const clickTab = (name: string) => {
   ;(button as HTMLButtonElement | undefined)?.click()
 }
 
+/**
+ * The PROPERTIES drawer, opened the way a reader opens it: a right-click on a clip, then the menu item.
+ *
+ * What it measures is the whole of the pass's claim, and it is read off real layout rather than a
+ * stylesheet: that the rows OVERFLOW (so the drawer really does need the scrollbar it was given),
+ * that the scroller holds the five-row cap, and that the close button is OUTSIDE the scroller and still
+ * on screen after the list has been scrolled to the bottom. The drawer is closed again on the way out,
+ * so the jobs driven after this one are measured with nothing extra on screen.
+ */
+const measureInspector = () => {
+  const box = document.querySelector('.media-inspector') as HTMLElement | null
+  const scroller = document.querySelector('.inspector-scroll') as HTMLElement | null
+  const close = document.querySelector('.inspector-close') as HTMLElement | null
+  if (!box || !scroller || !close) return { opened: false }
+  const row = parseFloat(getComputedStyle(box).getPropertyValue('--inspector-row')) || 0
+  const rows = scroller.querySelectorAll('.editor-row, .editor-field, .editor-toggle').length
+  const closeVisible = () => close.getBoundingClientRect().bottom <= box.getBoundingClientRect().bottom + 0.5
+  const beforeScroll = closeVisible()
+  scroller.scrollTop = scroller.scrollHeight
+  const afterScroll = closeVisible()
+  scroller.scrollTop = 0
+  ;(close as HTMLButtonElement).click()
+  return {
+    opened: true,
+    rows,
+    cap: 5 * row,
+    clientHeight: scroller.clientHeight,
+    scrollHeight: scroller.scrollHeight,
+    overflowY: getComputedStyle(scroller).overflowY,
+    closeOutsideScroller: !scroller.contains(close),
+    closeVisible: beforeScroll,
+    closeVisibleAfterScroll: afterScroll,
+  }
+}
+
+const openInspector = async () => {
+  const clip = document.querySelector('.timeline-clip') as HTMLElement | null
+  if (!clip) return { opened: false, reason: 'no clip to right-click' }
+  clip.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }))
+  await wait(80)
+  const item = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'PROPERTIES') as HTMLButtonElement | undefined
+  if (!item) return { opened: false, reason: 'the clip menu offered no PROPERTIES item' }
+  item.click()
+  await wait(120)
+  return measureInspector()
+}
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** Handing the window a job, which is how a task arrives in the real app too. */
@@ -437,6 +484,8 @@ const drive = async () => {
       visuals: stitchTask.sourcePaths.map(mediaKind),
     },
     pictureSource: joinedSelect ? { value: valueOf(joinedSelect), options: optionsOf(joinedSelect) } : null,
+    // The PROPERTIES drawer over a clip of this job, which is where the speed fields appear.
+    inspector: await openInspector(),
   }
 
   // And the other side of the same gate: a still under a track, into a container that holds artwork
