@@ -5,11 +5,12 @@ import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
-import { PREVIEW_SPEEDS, speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
+import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, speedFor } from '../lib/clipSpeed'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
-import { applyContainerChange, AUDIO_CONTAINERS, IMAGE_CONTAINERS, PICTURE_CONTAINERS } from '../lib/containerSwitch'
+import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
+import { estimateOutputBytes, sizeLabel } from '../lib/outputSize'
 import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } from '../lib/quickLookTarget'
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -1304,9 +1305,6 @@ export const EditJobApp: React.FC = () => {
     logMediaElement(stillFrameRef.current, 'monitor-still')
   }, [playback.segment?.key, playback.videoRef])
   const fps = draft ? sourceFps(draft, playback.segment?.sourcePath ?? draft.sourcePaths[0], undefined, resolveTiming) : 25
-  // A lone image that is not an interpreted sequence, which is what a container
-  // change can turn into a single frame or into a timed clip.
-  const singleFrameSource = Boolean(draft && draft.sourcePaths.length === 1 && mediaKind(draft.sourcePaths[0]) === 'image' && !sequenceFor(draft, draft.sourcePaths[0]))
   const playbackRef = useRef(playback)
   playbackRef.current = playback
   const stepFpsRef = useRef(fps)
@@ -1715,7 +1713,7 @@ export const EditJobApp: React.FC = () => {
   const changeContainer = (container: EncodingPreset['container']) => {
     const current = latest()
     updateDraft({
-      preset: applyContainerChange(current.preset, container, singleFrameSource),
+      preset: applyContainerChange(current.preset, container),
       outputFilename: deriveOutputFilename(current, current.preset, container),
     })
   }
@@ -2911,9 +2909,21 @@ export const EditJobApp: React.FC = () => {
   // A container that carries a picture and no sound: a still, or the animated one. Nothing may be written
   // into it as a sound, so the export's audio toggle is drawn off and cannot be moved.
   const soundNeverPossible = PICTURE_CONTAINERS.includes(container)
+  // A container whose output may be one file or a numbered run of frames, which is the choice IMAGE
+  // OUTPUT makes. The animated one is in it: a GIF is one animation or a sequence of single frames.
+  const framesPossible = FRAME_CONTAINERS.includes(container)
   const audioDisabled = audioOnly || soundNeverPossible
   const videoReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : isGif ? 'GIF OUTPUT FORCES THE GIF ENCODER AND DROPS AUDIO.' : undefined
   const audioReason = audioOnly ? undefined : soundNeverPossible ? 'THIS FORMAT CARRIES NO AUDIO TRACK.' : undefined
+  /**
+   * Which of the two streams is switched off, and — because a file with neither in it is nothing — which
+   * of them is therefore held on. Unchecking the picture makes the job a sound-only one, so the sound is
+   * forced back on; unchecking the sound leaves the picture, and locks it there.
+   */
+  const streamOff = {
+    video: !audioOnly && !soundNeverPossible && draft.preset.outputMode === 'audio',
+    audio: !audioOnly && !soundNeverPossible && draft.preset.audioEnabled === false,
+  }
   /**
    * What the job's own sources are made of, which is what decides whether a picture has to be supplied
    * for it at all.
@@ -2933,6 +2943,32 @@ export const EditJobApp: React.FC = () => {
   const pictureSource = draft.preset.audioPicture ?? (hasStill ? 'still' : 'black')
   const artCoverOffered = outputTakesArt(container) && hasStill && !hasFootage
   const stillIntoWav = container === 'wav' && hasStill
+  /**
+   * What the finished file is going to weigh, where that is a question with an answer.
+   *
+   * A size is only knowable for an encoder that writes at a FIXED rate — a named bitrate, ProRes's own
+   * published targets, or PCM's arithmetic — so this answers where it can and the SUMMARY says UNKNOWN
+   * where it cannot, rather than inventing a figure a CRF encoder has not produced yet. A stream the
+   * job does not write contributes nothing rather than making the whole answer unknown, and the length
+   * is the ASSEMBLED output's own, so a clip's speed is already in the figure. See `outputSize` for the
+   * table it is worked out from.
+   */
+  const estimateBytes = estimateOutputBytes({
+    seconds: duration,
+    picture: !audioOnly && draft.preset.outputMode !== 'audio',
+    sound: jobSound && !soundNeverPossible && draft.preset.audioEnabled !== false,
+    videoCodec: draft.preset.videoCodec,
+    videoBitrate: draft.preset.videoBitrate,
+    proresProfile: draft.preset.proresProfile,
+    width: outputFrame?.width ?? draft.preset.width,
+    height: outputFrame?.height ?? draft.preset.height,
+    fps: draft.preset.fps ?? defaultFps,
+    audioCodec: draft.preset.audioCodec,
+    audioBitrate: draft.preset.audioBitrate,
+    audioChannels: draft.preset.audioChannels,
+    audioSampleRate: draft.preset.audioSampleRate,
+  })
+  const estimateLabel = estimateBytes === undefined ? 'UNKNOWN' : sizeLabel(estimateBytes)
   /** The drawing's own background, as the one choice the editor and the encoder share. */
   const backgroundKind = visualizationBackgroundKind(draft.preset)
   /**
@@ -3103,26 +3139,18 @@ export const EditJobApp: React.FC = () => {
             <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
             <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 || (playback.shuttleRate === 0 && playback.playing && playback.speed > 1) ? ' is-fast' : ''}`}>
               {/* The rate the transport is being driven at: the shuttle's own when one is running, and otherwise
-                  the shared speed value the selector, the wheel and L all write. An idle transport says nothing
-                  here, because the line under the monitor is already saying it is paused. */}
+                  the shared speed value the wheel and L both write. It is shown even when the transport is
+                  IDLE, because it is the speed the monitor is WATCHED at rather than a state — the line above
+                  already says PAUSED, and this is the figure the selector used to show beside it. */}
               {playback.shuttleRate > 0 ? `> ${playback.shuttleRate}x`
                 : playback.shuttleRate < 0 ? `< ${Math.abs(playback.shuttleRate)}x`
                   : playback.playing ? `> ${speedLabel(playback.speed)}`
-                    : null}
+                    : speedLabel(playback.speed)}
             </span>
-            {/* The speed the monitor is WATCHED at, which is not the shuttle and never the export. It is a
-                property set on the element (pitch-corrected) and a multiplier on the fallback clock, so both
-                the picture and the sound of a preview follow it. */}
-            <div className="transport-speed" title="PREVIEW SPEED - THIS NEVER CHANGES THE EXPORT.">
-              <span>SPEED</span>
-              <EditorSelect
-                value={String(playback.speed)}
-                options={PREVIEW_SPEEDS.map((rate) => ({ value: String(rate), label: speedLabel(rate) }))}
-                onChange={(next) => playback.setSpeed(Number(next))}
-                disabled={!playable}
-                ariaLabel="The speed the preview is watched at"
-              />
-            </div>
+            {/* The speed the monitor is watched at was chosen here until this pass. It is a preview-only
+                rate and a wheel over the monitor still steps it — see `speedByWheel` — so the readout on
+                the line beside this comment is where the figure is, and the dropdown that used to sit here
+                was a second control for a figure the transport already owns. */}
             <span>{stampPair(playback.position, duration, fps, timestampMode)}</span>
             <input
               type="range"
@@ -3215,10 +3243,11 @@ export const EditJobApp: React.FC = () => {
                   // The reading beside the length: the share of the source the clip keeps, which is the
                   // speed read the other way round — 100% at the clip's own speed, 50% at twice it. The
                   // figure ITSELF is the field's own, written as a timecode in the window's units, which
-                  // is the shape a reader compares against the ruler.
+                  // is the shape a reader compares against the ruler. The two are read as one line, so the
+                  // hint carries the dash that joins them and the row reads `00:00:12.00 - (100%)`.
                   const durationHint = timestampMode === 'framestamp'
                     ? 'IN FRAMES'
-                    : `(${Math.round(100 / Math.max(0.0001, inspectedSpeed.speed))}%)`
+                    : `- (${Math.round(100 / Math.max(0.0001, inspectedSpeed.speed))}%)`
                   return <>
                     <EditorField
                       label="SPEED"
@@ -3508,18 +3537,43 @@ export const EditJobApp: React.FC = () => {
               onChange={(next) => updatePreset(applyCodecChoice(latest().preset, next))}
               ariaLabel="What the picture is written as"
             /></EditorField>
+            {/* ONE file or a numbered run, which is a question only a frame container asks and asks
+                differently of the animated one: a GIF's single file is an animation rather than a still.
+                A sequence names itself in the output filename too — see `runTask`, which appends the frame
+                pattern — so the control and the encoder say the same word for the same thing. */}
+            {framesPossible && <EditorField
+              label="IMAGE OUTPUT"
+              reason="Whether the container writes ONE file or a numbered run of single frames. A sequence names its files with a frame number, and any sound in the job is dropped because a frame has none."
+              canReset={imageOutputChoiceValue(draft.preset) !== defaultImageOutputChoiceValue(container)}
+              onReset={() => updatePreset(applyImageOutputChoice(latest().preset, defaultImageOutputChoiceValue(container)))}
+            ><EditorSelect
+              value={imageOutputChoiceValue(draft.preset)}
+              options={imageOutputChoicesFor(container).map((choice) => ({ value: choice.value, label: choice.label }))}
+              onChange={(next) => updatePreset(applyImageOutputChoice(latest().preset, next))}
+              ariaLabel="Whether the container writes one file or a numbered run of frames"
+            /></EditorField>}
             <EditorField
               label="OUTPUT NAME"
               canReset={Boolean(draft.outputFilenameManuallySet)}
               onReset={() => updateDraft({ outputFilename: deriveOutputFilename(latest(), latest().preset, container), outputFilenameManuallySet: false })}
             ><input type="text" className="editor-input" value={draft.outputFilename} onChange={(event) => updateDraft({ outputFilename: event.target.value, outputFilenameManuallySet: true })} /></EditorField>
             <EditorRow label="PRESET NAME" value={presetEdited ? 'CUSTOM' : draft.preset.name} reason={presetEdited ? presetSummary(draft.preset).join('\n') : undefined} />
-            {/* WHAT EACH STREAM'S PRESENCE IS HERE. A container that carries only one of them cannot have the
-                other switched on, and cannot have the one it DOES carry switched off — a WAV with no sound is
-                nothing at all — so the toggle for that stream is drawn checked or unchecked and cannot be
-                moved, which is the honest shape of a decision the format already made. */}
-            <EditorToggle label="EXPORT VIDEO" checked={audioOnly ? false : draft.preset.outputMode !== 'audio'} onChange={audioOnly ? undefined : (checked) => updatePreset({ outputMode: checked ? undefined : 'audio' })} reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO THERE IS NO PICTURE TO WRITE.' : undefined} />
-            <EditorToggle label="EXPORT AUDIO" checked={audioOnly ? true : soundNeverPossible ? false : draft.preset.audioEnabled !== false} onChange={audioOnly || soundNeverPossible ? undefined : (checked) => updatePreset({ audioEnabled: checked })} reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO IT IS ALWAYS WRITTEN.' : soundNeverPossible ? 'GIF AND IMAGE OUTPUT CARRY NO AUDIO TRACK.' : undefined} />
+            {/* WHAT EACH STREAM'S PRESENCE IS HERE, and WHY one of them is held in place. A container that
+                carries only one of them cannot have the other switched on — a WAV with no sound is nothing
+                at all — and the last stream standing cannot be switched off either, so unchecking one forces
+                the other back on and then locks it where it is. At least one of the two is always written. */}
+            <EditorToggle
+              label="EXPORT VIDEO"
+              checked={audioOnly ? false : !streamOff.video}
+              onChange={audioOnly || soundNeverPossible || streamOff.audio ? undefined : (checked) => updatePreset(checked ? { outputMode: undefined } : { outputMode: 'audio', audioEnabled: undefined })}
+              reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO THERE IS NO PICTURE TO WRITE.' : soundNeverPossible ? 'THIS FORMAT CARRIES NO SOUND, SO THE PICTURE IS ALWAYS WRITTEN.' : streamOff.audio ? 'THE PICTURE IS THE ONLY STREAM LEFT, SO IT CANNOT BE SWITCHED OFF.' : undefined}
+            />
+            <EditorToggle
+              label="EXPORT AUDIO"
+              checked={audioOnly ? true : soundNeverPossible ? false : !streamOff.audio}
+              onChange={audioOnly || soundNeverPossible || streamOff.video ? undefined : (checked) => updatePreset(checked ? { audioEnabled: undefined } : { audioEnabled: false, outputMode: undefined })}
+              reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO IT IS ALWAYS WRITTEN.' : soundNeverPossible ? 'THIS FORMAT CARRIES NO AUDIO TRACK.' : streamOff.video ? 'THE SOUND IS THE ONLY STREAM LEFT, SO IT CANNOT BE SWITCHED OFF.' : undefined}
+            />
             <EditorToggle label="EXPORT CAPTIONS" checked={false} reason="CAPTION OUTPUT HAS NO BACKING FIELD YET." />
           </>}
 
@@ -3918,6 +3972,7 @@ export const EditJobApp: React.FC = () => {
           <span className="panel-kicker">SUMMARY</span>
           <strong>{draft.outputFilename}</strong>
           <span>{stillFrameJob ? 'SINGLE FRAME OUTPUT - NO TIMELINE' : duration > 0 ? `ASSEMBLED ${stamp(duration)} ACROSS ${model.lanes.length} LANE(S)` : 'LENGTH UNKNOWN - PROBE ON START'}</span>
+          <span>ESTIMATED SIZE {estimateLabel}</span>
           <span>{dirty ? 'UNSAVED CHANGES' : 'NO CHANGES'}</span>
         </div>
 

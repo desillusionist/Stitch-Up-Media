@@ -23,8 +23,9 @@ import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSa
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, timecode, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
-import { applyContainerChange } from '../src/lib/containerSwitch'
+import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceValue, FRAME_CONTAINERS, imageOutputChoiceValue, imageOutputChoicesFor } from '../src/lib/containerSwitch'
 import { applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, containerTakesAudio, containerTakesCodec, reconcileAudioToContainer, reconcileCodecToContainer } from '../src/lib/codecChoices'
+import { bitsPerSecond, estimateOutputBytes, sizeLabel } from '../src/lib/outputSize'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -2299,7 +2300,7 @@ void (async () => {
 
     // And the container change the editor actually calls, end to end.
     const changed = (videoCodec: Preset, container: EncodingPreset['container'], from: EncodingPreset['container'] = 'mp4') => {
-      const next = applyContainerChange({ ...master, container: from, videoCodec, proresProfile: undefined }, container, false)
+      const next = applyContainerChange({ ...master, container: from, videoCodec, proresProfile: undefined }, container)
       return [next.container, next.videoCodec]
     }
     check('changing FORMAT to MOV keeps a codec MOV can hold', changed('h264', 'mov'), ['mov', 'h264'])
@@ -2343,6 +2344,62 @@ void (async () => {
     check('a figure with no frames reads as whole seconds', secondsFromTimecode('00:00:07', 25), 7)
     check('nonsense reads as nothing', [secondsFromTimecode('', 25), secondsFromTimecode('ab', 25), secondsFromTimecode('00:xx:01.00', 25)], [null, null, null])
     check('and a zero timecode is zero seconds', secondsFromTimecode('00:00:00.00', 25), 0)
+  }
+
+  console.log('\n== one file or a run of frames ==')
+  {
+    // The IMAGE OUTPUT list, which is the same question asked of two kinds of format: a still-image
+    // container writes a picture, the animated one writes an animation.
+    check('the containers that can write a run are the two still ones and the animated one', FRAME_CONTAINERS, ['png', 'jpg', 'gif'])
+    check('a still container offers a single frame and a run', imageOutputChoicesFor('png').map((choice) => [choice.value, choice.label]), [['still', 'SINGLE FRAME'], ['sequence', 'SEQUENCE']])
+    check('and the animated one offers an animation and a run', imageOutputChoicesFor('gif').map((choice) => [choice.value, choice.label]), [['animation', 'ANIMATION'], ['sequence', 'SEQUENCE OF FRAMES']])
+    check('a job that names nothing opens on the animation for a GIF', imageOutputChoiceValue({ container: 'gif' }), 'animation')
+    check('and on a single frame for a still container', imageOutputChoiceValue({ container: 'png' }), 'still')
+    check('a run reads back as a run', imageOutputChoiceValue({ container: 'gif', imageOutputMode: 'sequence' }), 'sequence')
+    check('and the defaults are the same two', [defaultImageOutputChoiceValue('gif'), defaultImageOutputChoiceValue('jpg')], ['animation', 'still'])
+    // What the choice STORES: a GIF's animation is the absence of a mode, because that is what the
+    // engine's own gif muxer branch is, and a still is the mode the encoder turns into `-frames:v 1`.
+    const blank: EncodingPreset = { id: 'p', name: 'P', container: 'gif', videoCodec: 'gif', audioCodec: 'copy', resolution: 'source' }
+    check('choosing the animation stores no mode at all', applyImageOutputChoice(blank, 'animation').imageOutputMode, undefined)
+    check('and choosing a run stores one', applyImageOutputChoice(blank, 'sequence').imageOutputMode, 'sequence')
+    // And what a change of FORMAT makes of it: a run survives wherever the new container can write one,
+    // and everything else falls to that container's own default — SINGLE FRAME for a still image, the
+    // animation for a GIF, which is what the container IS.
+    const modeAfter = (from: EncodingPreset['container'], to: EncodingPreset['container'], imageOutputMode?: EncodingPreset['imageOutputMode']) =>
+      applyContainerChange({ ...blank, container: from, imageOutputMode }, to).imageOutputMode
+    check('a video put into PNG becomes a single frame', modeAfter('mp4', 'png'), 'still')
+    check('a video put into GIF becomes its animation', modeAfter('mp4', 'gif'), undefined)
+    check('a run put into PNG stays a run', modeAfter('mp4', 'png', 'sequence'), 'sequence')
+    check('and a run put into GIF stays one too', modeAfter('png', 'gif', 'sequence'), 'sequence')
+    check('while a GIF animation moved into PNG becomes a single frame', modeAfter('gif', 'png'), 'still')
+    check('and a still-image container has no say over a movie one', modeAfter('png', 'mp4'), undefined)
+  }
+
+  console.log('\n== what a file is going to weigh ==')
+  {
+    // The bitrate parser, which is the whole of the arithmetic for every preset built on a named rate.
+    check('a figure with no unit is bits a second', bitsPerSecond('200000'), 200000)
+    check('k is a thousand', bitsPerSecond('320k'), 320000)
+    check('and M is a million', bitsPerSecond('8M'), 8000000)
+    check('while nonsense reads as nothing', [bitsPerSecond('fast'), bitsPerSecond(''), bitsPerSecond(undefined)], [undefined, undefined, undefined])
+    // A named bitrate is the answer, and a CRF encoder has none until it has encoded.
+    const h264 = { videoCodec: 'h264' as const, videoBitrate: '8M', audioCodec: 'aac' as const }
+    check('a named bitrate sizes a file', estimateOutputBytes({ seconds: 10, picture: true, sound: false, ...h264 }), 10200000)
+    check('and a CRF encoder of the same codec says UNKNOWN', estimateOutputBytes({ seconds: 10, picture: true, sound: false, videoCodec: 'h264', audioCodec: 'aac' }), undefined)
+    check('as does a stream copy', estimateOutputBytes({ seconds: 10, picture: true, sound: false, videoCodec: 'copy', audioCodec: 'aac' }), undefined)
+    // ProRes IS a bitrate by specification, so its published target is scaled by the frame's own area.
+    const prores = (width: number, height: number, fps = 29.97) => estimateOutputBytes({ seconds: 10, picture: true, sound: false, videoCodec: 'prores', proresProfile: 'hq', width, height, fps, audioCodec: 'aac' })
+    check('a ProRes HQ at 1080p30 is its documented target for ten seconds', prores(1920, 1080), 280500000)
+    near('and twice the frame area is twice the size', (prores(3840, 2160) as number) / (prores(1920, 1080) as number), 4)
+    near('and twice the rate is twice the size', (prores(1920, 1080, 59.94) as number) / (prores(1920, 1080) as number), 2)
+    // PCM is arithmetic rather than a setting: 48 kHz of sixteen-bit stereo is 1.536 Mb/s exactly.
+    check('a WAV of PCM is its own arithmetic', estimateOutputBytes({ seconds: 10, picture: false, sound: true, videoCodec: 'copy', audioCodec: 'pcm', audioSampleRate: 48000, audioChannels: 2 }), 1958400)
+    check('and a FLAC has no fixed rate to size', estimateOutputBytes({ seconds: 10, picture: false, sound: true, videoCodec: 'copy', audioCodec: 'flac' }), undefined)
+    // A stream nobody writes contributes nothing rather than making the whole answer unknown.
+    check('a silent video is still a size', estimateOutputBytes({ seconds: 10, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' }), 10200000)
+    check('and a length of nothing has no size at all', estimateOutputBytes({ seconds: 0, picture: true, sound: false, ...h264 }), undefined)
+    // The units a reader thinks in.
+    check('a size is written in the unit that fits it', [sizeLabel(900), sizeLabel(1500), sizeLabel(1500000), sizeLabel(2000000000)], ['900 B', '1.5 kB', '1.5 MB', '2 GB'])
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

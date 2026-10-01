@@ -33,6 +33,18 @@ import React, { useRef, useState } from 'react'
  * wheel is read directly: one notch is one step, the step is the field's own, and the bounds are held.
  * The event is cancelled, so the box the field sits in does not scroll out from under it.
  */
+
+/**
+ * How many pixels this platform reports for one notch of a wheel, which is NOT a hundred.
+ *
+ * A hundred is the figure the wider web quotes and the one this used to divide by, and it is the whole
+ * reason a wheel over a value field did nothing while the same wheel scrolled the drawer: no ordinary
+ * notch arrives as a hundred pixels here. The timeline's own scrub and zoom easings ease against
+ * `|deltaY|` directly — see `scrubByWheel` and `zoomedBy` — so a deliberate notch is a handful of
+ * pixels on this platform, and this is the handful. A line or a page (deltaMode 1 or 2) is a notch as
+ * it stands and is not divided at all.
+ */
+const WHEEL_NOTCH_PIXELS = 3
 export const NumberField: React.FC<{
   /** The figure as it stands, or nothing at all where a blank field means something. */
   value: number | undefined
@@ -122,10 +134,11 @@ export const NumberField: React.FC<{
     const onWheel = (event: WheelEvent) => {
       if (disabled) return
       event.preventDefault()
-      // A line of wheel is one step. A pixel delta is accumulated against a notch — a mouse sends about
-      // a hundred pixels for one, a trackpad a stream of small ones — and ONE step is taken per event at
-      // most, so a notch is a notch on either device and a fast flick cannot race the figure away.
-      wheelRemainder.current += event.deltaMode === 1 ? -event.deltaY : -event.deltaY / 100
+      // A line or a page of wheel is a notch as it stands; a pixel delta is divided by the handful of
+      // pixels one notch actually is on this platform. The remainder is carried, so a slow drag still
+      // steps one at a time and a fast flick moves faster without skipping the figures in between.
+      const perNotch = event.deltaMode === 0 ? WHEEL_NOTCH_PIXELS : 1
+      wheelRemainder.current += -event.deltaY / perNotch
       const steps = Math.trunc(wheelRemainder.current)
       if (steps === 0) return
       wheelRemainder.current -= steps
@@ -147,6 +160,17 @@ export const NumberField: React.FC<{
     step={step}
     value={shown}
     aria-label={ariaLabel}
+    onFocus={(event) => {
+      // A FORMATTED field is replaced rather than appended to. Typing into `00:00:12.00` with the caret
+      // at its start builds `500:00:12.00` on the first keystroke, which parses as five hours and sends
+      // the figure somewhere the reader never asked for — the misbehaviour a timecode field was reported
+      // with. Selecting what is there makes the first keystroke the new figure. It is deferred a tick
+      // because the click that focused the field would otherwise place the caret again and drop the
+      // selection; a plain number field is left alone, where appending a digit is what a reader means.
+      if (!format) return
+      const field = event.currentTarget
+      window.setTimeout(() => field.select(), 0)
+    }}
     onChange={(event) => {
       const raw = event.target.value
       setText(raw)

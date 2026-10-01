@@ -16,6 +16,9 @@ export const presetSummary = (preset: EncodingPreset): string[] => {
   const pictureless = !outputCarriesPicture(preset.container) || preset.outputMode === 'audio'
   if (preset.imageOutputMode === 'still') lines.push('SINGLE FRAME')
   else if (preset.imageOutputMode === 'sequence') lines.push('IMAGE SEQUENCE')
+  // A GIF with no mode named is its own animation rather than a single frame, and the summary says so
+  // rather than leaving the reader to infer a run from a format that is overwhelmingly used for motion.
+  else if (preset.container === 'gif') lines.push('GIF ANIMATION')
   lines.push(pictureless
     ? `${preset.container.toUpperCase()} // NO PICTURE`
     : `${preset.container.toUpperCase()} // ${preset.videoCodec.toUpperCase()}${preset.hardwareAccelerated ? ' HW' : ''}`)

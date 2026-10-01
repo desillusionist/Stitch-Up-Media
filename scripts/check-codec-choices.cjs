@@ -154,6 +154,35 @@ const audioCodec = async (file) => {
     }
   }
 
+  // THE GIF'S TWO SHAPES, read off the DIRECTORY rather than off the argument list: the count of files
+  // is the whole question. An animation is one file written by the gif muxer; a sequence is a numbered
+  // run written by image2, which is the distinction the IMAGE OUTPUT control offers. This is the engine
+  // half of it — the control half is `npm run check-mount`'s business.
+  console.log('\n== GIF ANIMATION vs SEQUENCE ==')
+  {
+    const exportGif = (mode) => new Promise((resolve, reject) => {
+      const directory = path.join(work, `gif-${mode ?? 'animation'}`)
+      fs.mkdirSync(directory, { recursive: true })
+      const engine = new FFmpegEngine()
+      engine.runTask({
+        id: `gif-${mode ?? 'animation'}`, type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [source], outputDirectory: directory, outputFilename: 'out.gif',
+        preset: {
+          id: 'p', name: 'P', container: 'gif', audioCodec: 'copy', resolution: 'source', outputMode: 'video',
+          videoCodec: 'gif', fps: 12,
+          ...(mode ? { imageOutputMode: mode } : {}),
+        },
+      }, () => {}, () => resolve(directory), (error) => reject(error))
+    })
+    const animation = await exportGif(undefined)
+    check('a GIF animation writes ONE file', fs.readdirSync(animation), ['out.gif'])
+    check('and it is a GIF', await videoCodec(path.join(animation, 'out.gif')), 'gif')
+    const sequence = await exportGif('sequence')
+    const frames = fs.readdirSync(sequence).filter((name) => /^out_\d{6}\.gif$/.test(name)).sort()
+    check('a GIF sequence writes a NUMBERED run rather than one file', frames.length > 1, true)
+    check('and each of them is a GIF', frames.length ? await videoCodec(path.join(sequence, frames[0])) : null, 'gif')
+  }
+
   console.log(failures === 0 ? '\nEVERY OFFERED CODEC EXPORTS\n' : `\n${failures} CODEC(S) FAILED\n`)
   fs.rmSync(work, { recursive: true, force: true })
   process.exit(failures === 0 ? 0 : 1)

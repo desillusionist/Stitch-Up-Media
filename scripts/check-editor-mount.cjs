@@ -71,15 +71,27 @@ app.whenReady().then(async () => {
       if (preset.options.some((value) => value === 'mpeg4' || value === 'qtrle')) problems.push('the mp4 preset list offers a QuickTime-only codec')
     }
     // WHAT THE TRANSPORT SAYS, and where it says it. The state belongs under the monitor on one line, and the
-    // buttons must not state it a second time: an idle transport leaves the rate readout EMPTY, which is what
-    // the pause glyph that used to sit there prevented. The speeds are read as well, because the wheel over the
-    // monitor climbs this very list and the two have to be one list rather than two that agree today.
+    // buttons must not state it a second time: the rate readout beside them carries the SPEED the monitor is
+    // watched at rather than a pause glyph, so an idle transport reads its own speed rather than nothing. The
+    // speed dropdown that used to sit beside the transport must be GONE — the wheel over the monitor still
+    // climbs the ladder, and the readout is where the figure is, so a dropdown was a duplicate rather than an
+    // offer.
     const transport = rendered && rendered.transport
     if (!transport) problems.push('the monitor said nothing about what the transport was doing')
     else {
       if (transport.state !== '|| PAUSED') problems.push(`an idle monitor reads ${JSON.stringify(transport.state)} rather than a pause`)
-      if (String(transport.rate).trim() !== '') problems.push(`an idle transport still shows a rate of ${JSON.stringify(transport.rate)}, which is the pause glyph over again`)
-      if (String(transport.speeds) !== '0.5,1,1.5,2,3,4,8') problems.push(`the speed selector offers ${JSON.stringify(transport.speeds)} rather than the ladder the wheel and L climb`)
+      if (String(transport.rate).trim() !== '1x') problems.push(`an idle transport reads ${JSON.stringify(transport.rate)} rather than the speed it is watched at`)
+      if (transport.speedSelector) problems.push('the preview speed dropdown is still drawn under the monitor')
+    }
+    // THE ONE-STREAM RULE, driven through a click: unchecking the picture leaves a sound-only job, so the
+    // window has to hold the sound ON and lock it there. A job with neither stream in it writes nothing,
+    // and this is the reading that says the window cannot be put into that state.
+    const afterVideoOff = rendered && rendered.afterVideoOff
+    if (!afterVideoOff) problems.push('the stream toggles could not be driven, so the one-stream rule is unproven')
+    else {
+      if (afterVideoOff['EXPORT VIDEO'] && afterVideoOff['EXPORT VIDEO'].checked) problems.push('unchecking EXPORT VIDEO left it checked')
+      if (!afterVideoOff['EXPORT AUDIO'] || !afterVideoOff['EXPORT AUDIO'].checked) problems.push('unchecking EXPORT VIDEO left the sound off as well, so the job would write nothing at all')
+      if (afterVideoOff['EXPORT AUDIO'] && !afterVideoOff['EXPORT AUDIO'].disabled) problems.push('with the picture off the sound is still choosable, so both streams can be left switched off')
     }
     // The picture settings, which are the one part of the settings that is CONDITIONAL. A section that
     // is gated has two ways to be missing and they need different answers, so what is asserted here is
@@ -306,6 +318,15 @@ app.whenReady().then(async () => {
           if (inspector.arrowSteppedTo !== '2.1') problems.push(`an arrow key moved the speed to ${JSON.stringify(inspector.arrowSteppedTo)} rather than one 0.05 step from 2.05`)
           if (inspector.atCeiling !== '16') problems.push(`a speed past the ceiling reads ${JSON.stringify(inspector.atCeiling)} rather than being held at 16`)
           if (inspector.steppedPastCeiling !== '16') problems.push(`an arrow key at the ceiling moved the speed to ${JSON.stringify(inspector.steppedPastCeiling)}`)
+          // AND THE DURATION FIELD's own wheel and arrows. It is a TIMECODE field rather than a number one,
+          // which is the shape the report was about: its gestures have to move the time it shows, and the
+          // wheel has to come back cancelled for the same reason the speed field's does.
+          if (inspector.durationWheelCancelled !== true) problems.push('a wheel over DURATION was not cancelled, so the drawer scrolls out from under it')
+          if (inspector.durationWheelTo === inspector.durationWheelFrom) problems.push(`a wheel over DURATION left it on ${JSON.stringify(inspector.durationWheelTo)}, so the figure never moved`)
+          if (!/^\d\d:\d\d:\d\d\.\d\d$/.test(String(inspector.durationWheelTo))) problems.push(`a wheel over DURATION left it reading ${JSON.stringify(inspector.durationWheelTo)} rather than a timecode`)
+          if (inspector.durationArrowCancelled !== true) problems.push('an arrow key in DURATION was not cancelled')
+          if (inspector.durationArrowTo === inspector.durationWheelTo) problems.push(`an arrow key in DURATION left it on ${JSON.stringify(inspector.durationArrowTo)}, so the figure never moved`)
+          if (!/^\d\d:\d\d:\d\d\.\d\d$/.test(String(inspector.durationArrowTo))) problems.push(`an arrow key in DURATION left it reading ${JSON.stringify(inspector.durationArrowTo)} rather than a timecode`)
           // The four figures of the clip's own run, which replaced one long line.
           const readings = inspector.readings || {}
           for (const label of ['SOURCE', 'USED', 'START', 'END']) {
@@ -315,9 +336,9 @@ app.whenReady().then(async () => {
           // The DURATION readout: the field itself is the TIME, in the window's own shape, and the share
           // of the source the clip keeps sits beside it — 100% at the clip's own speed and 50% at twice it.
           if (!/^\d\d:\d\d:\d\d\.\d\d$/.test(String(inspector.durationAtOwnSpeed))) problems.push(`the DURATION field at the clip's own speed reads ${JSON.stringify(inspector.durationAtOwnSpeed)} rather than a timecode`)
-          if (String(inspector.durationHintAtOwnSpeed) !== '(100%)') problems.push(`the reading beside DURATION is ${JSON.stringify(inspector.durationHintAtOwnSpeed)} rather than 100% of the source`)
+          if (String(inspector.durationHintAtOwnSpeed) !== '- (100%)') problems.push(`the reading beside DURATION is ${JSON.stringify(inspector.durationHintAtOwnSpeed)} rather than 100% of the source`)
           if (!/^\d\d:\d\d:\d\d\.\d\d$/.test(String(inspector.durationAtTwice))) problems.push(`the DURATION field at 2x reads ${JSON.stringify(inspector.durationAtTwice)} rather than a timecode`)
-          if (String(inspector.durationHintAtTwice) !== '(50%)') problems.push(`the reading beside DURATION at 2x is ${JSON.stringify(inspector.durationHintAtTwice)} rather than 50% of the source`)
+          if (String(inspector.durationHintAtTwice) !== '- (50%)') problems.push(`the reading beside DURATION at 2x is ${JSON.stringify(inspector.durationHintAtTwice)} rather than 50% of the source`)
           // The way back, which appears only where there is something to put back.
           if (inspector.resetsAtOwnSpeed !== 0) problems.push(`${inspector.resetsAtOwnSpeed} reset button(s) are drawn on a clip nothing has been changed on`)
           if (!(inspector.resetsAtTwice >= 2)) problems.push(`a clip at 2x offers ${inspector.resetsAtTwice} reset button(s) rather than one for its speed and one for its length`)
@@ -366,6 +387,20 @@ app.whenReady().then(async () => {
         if (!(reentry.pulls >= 1)) problems.push(`the window never pulled the job it is editing (${reentry.pulls} pulls)`)
         if (reentry.nameBefore === 'pulled-by-focus.mp3') problems.push('the re-entry name was already on screen, so it proves nothing')
         if (reentry.name !== 'pulled-by-focus.mp3') problems.push(`a re-entry pulled a job and the window did not adopt it: the summary still reads ${JSON.stringify(reentry.name)}`)
+      }
+      // THE IMAGE OUTPUT CONTROL, which is the half of the GIF work a page can be wrong about on its own
+      // — the engine half is `verify-codecs`'s. Switching FORMAT to GIF has to bring the control out, offer
+      // an ANIMATION and a SEQUENCE OF FRAMES, open on the animation, and carry the chosen run to the queue.
+      const imageOutput = result.imageOutput
+      if (!imageOutput) problems.push('the GIF job reported nothing about its IMAGE OUTPUT control')
+      else {
+        if (imageOutput.container !== 'gif') problems.push(`switching FORMAT to GIF left the window on ${String(imageOutput.container)}`)
+        if (!imageOutput.drawn) problems.push('a GIF container was offered no IMAGE OUTPUT control')
+        if (String(imageOutput.options) !== 'animation,sequence') problems.push(`a GIF's IMAGE OUTPUT offers ${JSON.stringify(imageOutput.options)} rather than an animation and a run`)
+        if (imageOutput.value !== 'animation') problems.push(`a GIF job that named no mode opens on ${String(imageOutput.value)} rather than its animation`)
+        if (imageOutput.afterSequence !== 'sequence') problems.push(`choosing the run left the control on ${String(imageOutput.afterSequence)}`)
+        if (imageOutput.sentMode !== 'sequence') problems.push(`the chosen run was never sent to the queue: ${String(imageOutput.sentMode)}`)
+        if (imageOutput.sentContainer !== 'gif') problems.push(`the GIF job was sent as ${String(imageOutput.sentContainer)}`)
       }
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))

@@ -233,11 +233,6 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .transport-rate { min-width: 46px; text-align: center; color: var(--ui-muted); font-size: 10px; }
 .transport-rate.is-fast { color: var(--ui-encoding); }
 .transport-rate.is-reverse { color: var(--ui-paused); }
-/* The preview speed: a dropdown beside the transport, so it reads as a viewer's setting rather than as
-   another transport button. It is deliberately NOT styled like the shuttle readout, because it is not one. */
-.transport-speed { display: inline-flex; align-items: center; gap: 4px; }
-.transport-speed .editor-select { width: auto; }
-.transport-speed .editor-select-trigger { padding: 3px 4px; font-size: 10px; }
 .timeline-panel { padding: 10px; flex: 0 0 auto; max-height: 46%; overflow-y: auto; overflow-x: hidden; }
 /* Everything a lane's clip is drawn with is stated further down, against `.timeline-lane`, because a
    clip has no meaning outside one. What used to be here stated the same properties for a standalone
@@ -615,8 +610,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    to describe the clip in it. Five rows is enough to read a clip by and small enough to leave the
    picture alone; the figure carries the row's own rule, so five rows is five rows. The right-hand
    padding is the scrollbar's own room: without it the field boxes and the dotted rules run UNDER the
-   bar, which is a fixed panel drawn over the content rather than beside it. */
-.inspector-scroll { max-height: calc(5 * var(--inspector-row)); padding-right: 5px; overflow-y: auto; overflow-x: hidden; }
+   bar, which is a fixed panel drawn over the content rather than beside it. Ten pixels rather than five,
+   which is what the boxes need to clear a bar this wide — five left the last of each field sitting under
+   it, which is the overlap the row was reported with. */
+.inspector-scroll { max-height: calc(5 * var(--inspector-row)); padding-right: 10px; overflow-y: auto; overflow-x: hidden; }
 .media-inspector .editor-row, .media-inspector .editor-field, .media-inspector .editor-toggle { box-sizing: border-box; min-height: var(--inspector-row); padding: 4px 0; }
 .media-inspector .editor-field > span { justify-content: flex-start; gap: 8px; }
 /* A value field is the wheel's own ground here, so it is given a little more of it: two pixels taller

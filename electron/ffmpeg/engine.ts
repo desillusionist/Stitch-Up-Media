@@ -1016,8 +1016,16 @@ export class FFmpegEngine {
 
     if (preset.container === 'gif') {
       cmd.videoCodec('gif')
-      cmd.outputOptions(['-an', '-f gif', '-loop ' + (preset.gifMode === 'regular' ? '1' : '0')])
-      if (preset.gifMode === 'bounce') cmd.outputOptions(['-filter_complex [0:v]split[a][b];[b]reverse[rev];[a][rev]concat=n=2:v=1:a=0[v]', '-map [v]'])
+      // ANIMATION is one file, which is what the gif muxer writes with its loop count. A SEQUENCE is a
+      // numbered run of single-frame GIFs instead, and `image2` is the muxer that writes a run — the
+      // general `-vsync 0 -an` above is already in place for a sequence, so only the muxer differs here.
+      // The loop and bounce options belong to the animation: a run of separate files has no loop to set.
+      if (preset.imageOutputMode === 'sequence') {
+        cmd.outputOptions(['-f image2'])
+      } else {
+        cmd.outputOptions(['-an', '-f gif', '-loop ' + (preset.gifMode === 'regular' ? '1' : '0')])
+        if (preset.gifMode === 'bounce') cmd.outputOptions(['-filter_complex [0:v]split[a][b];[b]reverse[rev];[a][rev]concat=n=2:v=1:a=0[v]', '-map [v]'])
+      }
     }
     // Custom stream selection and exact dimensions. A container that cannot hold a picture is told so
     // outright, whatever the rest of the preset says: a WAV or an MP3 with a video filter and a video
@@ -1090,7 +1098,12 @@ export class FFmpegEngine {
     if (preset.videoBitrate && preset.videoCodec !== 'copy') {
       cmd.outputOptions(['-b:v ' + preset.videoBitrate])
     }
-    if (preset.fps) {
+    // A SEQUENCE writes one file per frame and says so with `-vsync 0`, which is passthrough — and
+    // ffmpeg refuses an output rate beside a passthrough mode outright: "One of -r/-fpsmax was specified
+    // together with a non-CFR -vsync/-fps_mode. This is contradictory." So the rate is NOT written for a
+    // run, which is also the honest reading of it: a numbered run is every frame of the source as its own
+    // file, and a rate would be a question about how fast they PLAY, which is the animation's business.
+    if (preset.fps && preset.imageOutputMode !== 'sequence') {
       cmd.fps(preset.fps)
     }
 

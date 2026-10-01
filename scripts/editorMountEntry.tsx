@@ -126,7 +126,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -192,8 +192,12 @@ const colourSwatch = () => fieldFor('COLOUR')?.querySelector('.editor-swatch') a
 /** The waveform templates' WAVEFORMS count. */
 const waveformsSelect = () => selectIn('WAVEFORMS')
 
-/** The speeds the monitor is watched at, which the wheel over it climbs. */
-const speedSelect = () => document.querySelector('.transport-speed .editor-select') as HTMLElement | null
+/** Whether the preview speed dropdown under the monitor is still drawn — a control this pass removed. */
+const speedSelector = () => Boolean(document.querySelector('.transport-speed'))
+
+/** One of the two stream toggles in EXPORT SETTINGS, found by its label rather than by position. */
+const toggleInput = (label: string) => ([...document.querySelectorAll('.editor-toggle')] as HTMLElement[])
+  .find((element) => (element.querySelector('span')?.textContent ?? '').trim() === label)?.querySelector('input') as HTMLInputElement | null
 
 /** Whether the monitor is drawing the still it was handed, found by the name the window gives it. */
 const monitorDrawing = () => Boolean(document.querySelector('img[alt="DRAWING THE SOUND"]'))
@@ -294,6 +298,11 @@ const measureInspector = async () => {
   let durationHintAtTwice: string | null = null
   let resetsAtTwice = 0
   let fieldType: string | null = null
+  let durationWheelFrom: string | null = null
+  let durationWheelTo: string | null = null
+  let durationWheelCancelled: boolean | null = null
+  let durationArrowTo: string | null = null
+  let durationArrowCancelled: boolean | null = null
   if (speedField) {
     const speed = () => scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
     const press = (key: string) => {
@@ -312,9 +321,13 @@ const measureInspector = async () => {
     durationAtTwice = fieldValueOf('DURATION')?.value ?? null
     durationHintAtTwice = hintOf('DURATION')
     resetsAtTwice = resets()
-    // THE WHEEL. A line of wheel is one step, and the event has to come back CANCELLED — that is what
-    // stops the drawer scrolling out from under the field the reader was aiming at.
-    const wheelEvent = new WheelEvent('wheel', { deltaY: -1, deltaMode: 1, bubbles: true, cancelable: true })
+    // THE WHEEL. One notch is one step, and the event has to come back CANCELLED — that is what stops the
+    // drawer scrolling out from under the field the reader was aiming at. The event is a PIXEL one
+    // (deltaMode 0) for the reason the bug existed: a real wheel on this platform reports pixels rather
+    // than lines, and the divisor that turned a notch into a whole step was wrong by a factor of thirty-
+    // odd. A three-pixel notch is the smallest this can be dispatched as and still be one notch, and the
+    // assertion below is what says the divisor answers it with exactly one step.
+    const wheelEvent = new WheelEvent('wheel', { deltaY: -3, deltaMode: 0, bubbles: true, cancelable: true })
     speed()?.dispatchEvent(wheelEvent)
     wheelCancelled = wheelEvent.defaultPrevented
     await wait(80)
@@ -323,6 +336,22 @@ const measureInspector = async () => {
     arrowCancelled = press('ArrowUp')
     await wait(80)
     arrowSteppedTo = speed()?.value ?? null
+    // AND THE DURATION FIELD'S OWN TWO GESTURES, which is the field the report was about. A timecode
+    // field is the one whose wheel and arrow keys have to move a FIGURE rather than a digit, and the
+    // wheel must come back cancelled so the drawer does not scroll out from under it. This wheel is a
+    // LINE one (deltaMode 1), so the two fields between them exercise both unit paths.
+    const durationInput = () => scroller.querySelector('input[aria-label="The length this clip occupies on the timeline"]') as HTMLInputElement | null
+    durationWheelFrom = durationInput()?.value ?? null
+    const durationWheel = new WheelEvent('wheel', { deltaY: -1, deltaMode: 1, bubbles: true, cancelable: true })
+    durationInput()?.dispatchEvent(durationWheel)
+    durationWheelCancelled = durationWheel.defaultPrevented
+    await wait(80)
+    durationWheelTo = durationInput()?.value ?? null
+    const durationArrow = new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })
+    durationInput()?.dispatchEvent(durationArrow)
+    durationArrowCancelled = durationArrow.defaultPrevented
+    await wait(80)
+    durationArrowTo = durationInput()?.value ?? null
     setNativeValue(speed() ?? speedField, String(MAX_CLIP_SPEED * 99))
     await wait(80)
     // Left, so the figure the caller clamped is what the field shows rather than the digits just typed:
@@ -365,6 +394,11 @@ const measureInspector = async () => {
     arrowCancelled,
     atCeiling,
     steppedPastCeiling,
+    durationWheelFrom,
+    durationWheelTo,
+    durationWheelCancelled,
+    durationArrowTo,
+    durationArrowCancelled,
   }
 }
 
@@ -434,9 +468,29 @@ const drive = async () => {
     transport: {
       state: document.querySelector('.transport-state')?.textContent ?? null,
       rate: document.querySelector('.transport-rate')?.textContent ?? null,
-      speeds: optionsOf(speedSelect()),
+      // The speed dropdown beside the transport was chosen here until this pass. It must now be GONE:
+      // the wheel over the monitor still steps the rate, and the readout on the line above is where the
+      // figure is, so a second control for it was a duplicate of what the transport already owned.
+      speedSelector: speedSelector(),
     },
   }
+
+  // THE ONE-STREAM RULE. A file with neither a picture nor a sound in it is nothing, so unchecking one
+  // toggle has to force the other back on and then LOCK it: the picture off makes the job sound-only,
+  // and the sound then cannot be switched off as well. Driven here rather than asserted off the initial
+  // render, because the rule is about what a CLICK does. The picture is put back afterwards so the jobs
+  // driven below arrive into the draft this one left as it found it.
+  const videoToggle = toggleInput('EXPORT VIDEO')
+  let afterVideoOff: ReturnType<typeof toggleStates> | null = null
+  if (videoToggle && !videoToggle.disabled) {
+    videoToggle.click()
+    await wait(120)
+    afterVideoOff = toggleStates()
+    const restore = toggleInput('EXPORT VIDEO')
+    if (restore && !restore.disabled) restore.click()
+    await wait(120)
+  }
+  result.rendered = { ...(result.rendered as object), afterVideoOff }
 
   // The lone-sound job. The container the window is on is read BEFORE switching tabs, because the tab
   // switch unmounts the FORMAT field that shows it.
@@ -664,6 +718,34 @@ const drive = async () => {
     name: document.querySelector('.export-summary strong')?.textContent ?? null,
     pulls: pullCalls,
   }
+
+  // THE IMAGE OUTPUT CONTROL, which only a frame container offers and which is the CONTROL half of the
+  // GIF work — the engine half is `npm run verify-codecs`. Driven on the movie job, whose FORMAT is
+  // switched to GIF so the two answers differ in WORD as well as in mode: an ANIMATION or a SEQUENCE OF
+  // FRAMES. The choice is then carried to the queue by APPLY, because a control the editor draws and
+  // never sends is the fault this window is full of assertions against.
+  arrive(task, 'plain')
+  await wait(400)
+  clickTab('EXPORT')
+  await wait(120)
+  const formatSelect = selectIn('FORMAT')
+  if (formatSelect) chooseOption(formatSelect, 'gif')
+  await wait(200)
+  const imageSelect = selectIn('IMAGE OUTPUT')
+  result.imageOutput = {
+    container: valueOf(selectIn('FORMAT')),
+    drawn: Boolean(fieldFor('IMAGE OUTPUT')),
+    options: optionsOf(imageSelect),
+    value: valueOf(imageSelect),
+  }
+  if (imageSelect) chooseOption(imageSelect, 'sequence')
+  await wait(200)
+  const appliedImage = { ...(result.imageOutput as object), afterSequence: valueOf(selectIn('IMAGE OUTPUT')) }
+  const applyImage = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
+  ;(applyImage as HTMLButtonElement | undefined)?.click()
+  await wait(200)
+  const sentImage = applied[applied.length - 1] as { preset?: { imageOutputMode?: string; container?: string } } | undefined
+  result.imageOutput = { ...appliedImage, sentMode: sentImage?.preset?.imageOutputMode ?? null, sentContainer: sentImage?.preset?.container ?? null }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }
