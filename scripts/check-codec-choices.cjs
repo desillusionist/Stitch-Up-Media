@@ -180,6 +180,12 @@ const audioCodec = async (file) => {
     const sequence = await exportGif('sequence')
     const frames = fs.readdirSync(sequence).filter((name) => /^out_\d{6}\.gif$/.test(name)).sort()
     check('a GIF sequence writes a NUMBERED run rather than one file', frames.length > 1, true)
+    // ONE FILE PER FRAME OF THE SOURCE, which is what a run IS and what the container's own fps must not
+    // leak into: the GIF preset names 12 fps for its ANIMATION, and a run reads the frames as they come
+    // rather than resampling them. The figure is read off the source rather than hard-coded, so the check
+    // says the two counts agree rather than that one of them happens to be a number.
+    const sourceFrames = Number(await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=nb_frames', '-of', 'default=noprint_wrappers=1:nokey=1', source]))
+    check('and one file per frame of the source rather than one per second of its rate', frames.length, sourceFrames)
     check('and each of them is a GIF', frames.length ? await videoCodec(path.join(sequence, frames[0])) : null, 'gif')
   }
 
