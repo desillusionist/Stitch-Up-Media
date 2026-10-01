@@ -29,14 +29,19 @@ export interface ImageOutputChoice {
 /**
  * The IMAGE OUTPUT list, which is the same question asked of two kinds of format.
  *
- * A still-image container writes a picture: ONE of them or a numbered run. A GIF is a moving picture,
- * so its two answers are the ANIMATION the format is named for and the run of frames it can also be.
- * Both write the same `sequence` mode; only the word on the single-file entry differs, and it is a
- * different word because "SINGLE FRAME" would be a lie about a GIF.
+ * A still-image container writes a picture: ONE of them or a numbered run. A GIF is a moving picture, so
+ * it is offered all three — the ANIMATION the format is named for as its default, the run of frames it can
+ * also be, and SINGLE FRAME for the one still it can hold, which is the same question the other two
+ * containers ask first. The words differ because "SINGLE FRAME" means the same thing in all three and
+ * "ANIMATION" means nothing in a PNG.
  */
 export const imageOutputChoicesFor = (container: EncodingPreset['container']): ImageOutputChoice[] =>
   container === 'gif'
-    ? [{ value: 'animation', label: 'ANIMATION', mode: undefined }, { value: 'sequence', label: 'SEQUENCE OF FRAMES', mode: 'sequence' }]
+    ? [
+      { value: 'still', label: 'SINGLE FRAME', mode: 'still' },
+      { value: 'animation', label: 'ANIMATION', mode: undefined },
+      { value: 'sequence', label: 'SEQUENCE OF FRAMES', mode: 'sequence' },
+    ]
     : [{ value: 'still', label: 'SINGLE FRAME', mode: 'still' }, { value: 'sequence', label: 'SEQUENCE', mode: 'sequence' }]
 
 /** The entry a preset is standing on. An absent mode is this container's own default rather than a blank. */
@@ -79,11 +84,12 @@ export const applyContainerChange = (
   const soundOnlyContainer = AUDIO_CONTAINERS.includes(container)
   const pictureOnlyContainer = PICTURE_CONTAINERS.includes(container)
 
-  // A run of frames survives a change of container wherever the new one can write a run; everything
-  // else falls to that container's own default. A still-image container opens on SINGLE FRAME — which
-  // is what one .png is — while a GIF opens on its animation, because that is what a GIF is FOR.
+  // A run of frames survives a change of container wherever the new one can write a run, and so does a
+  // single frame; everything else falls to that container's own default. A still-image container opens on
+  // SINGLE FRAME — which is what one .png is — while a GIF opens on its animation, because that is what a
+  // GIF is FOR.
   const imageOutputMode = container === 'gif'
-    ? (preset.imageOutputMode === 'sequence' ? 'sequence' : undefined)
+    ? preset.imageOutputMode
     : toImageContainer
       ? (preset.imageOutputMode === 'sequence' ? 'sequence' : 'still')
       : (preset.imageOutputMode === 'still' ? undefined : preset.imageOutputMode)

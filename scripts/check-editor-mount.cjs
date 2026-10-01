@@ -388,19 +388,44 @@ app.whenReady().then(async () => {
         if (reentry.nameBefore === 'pulled-by-focus.mp3') problems.push('the re-entry name was already on screen, so it proves nothing')
         if (reentry.name !== 'pulled-by-focus.mp3') problems.push(`a re-entry pulled a job and the window did not adopt it: the summary still reads ${JSON.stringify(reentry.name)}`)
       }
-      // THE IMAGE OUTPUT CONTROL, which is the half of the GIF work a page can be wrong about on its own
-      // — the engine half is `verify-codecs`'s. Switching FORMAT to GIF has to bring the control out, offer
-      // an ANIMATION and a SEQUENCE OF FRAMES, open on the animation, and carry the chosen run to the queue.
+      // THE IMAGE TAB, which this pass added: the frame formats' own settings live here. A movie container
+      // must offer NO IMAGE tab, a frame container must offer one, and each format's own knobs have to be
+      // there and reach the queue. The engine half is `verify-codecs`'s.
       const imageOutput = result.imageOutput
       if (!imageOutput) problems.push('the GIF job reported nothing about its IMAGE OUTPUT control')
       else {
+        if (!Array.isArray(imageOutput.tabsForMovie)) problems.push('the tab strip could not be read at all')
+        else {
+          if (imageOutput.tabsForMovie.includes('IMAGE')) problems.push('a movie container was offered an IMAGE tab, which has nothing to say about it')
+          if (!imageOutput.tabsForGif.includes('IMAGE')) problems.push('a frame container was offered no IMAGE tab')
+        }
         if (imageOutput.container !== 'gif') problems.push(`switching FORMAT to GIF left the window on ${String(imageOutput.container)}`)
         if (!imageOutput.drawn) problems.push('a GIF container was offered no IMAGE OUTPUT control')
-        if (String(imageOutput.options) !== 'animation,sequence') problems.push(`a GIF's IMAGE OUTPUT offers ${JSON.stringify(imageOutput.options)} rather than an animation and a run`)
+        if (String(imageOutput.options) !== 'still,animation,sequence') problems.push(`a GIF's IMAGE OUTPUT offers ${JSON.stringify(imageOutput.options)} rather than a single frame, an animation and a run`)
         if (imageOutput.value !== 'animation') problems.push(`a GIF job that named no mode opens on ${String(imageOutput.value)} rather than its animation`)
+        if (!String(imageOutput.gifFields).includes('LOOP')) problems.push(`a GIF's IMAGE tab drew no LOOP control: ${JSON.stringify(imageOutput.gifFields)}`)
+        if (String(imageOutput.loopOptions) !== 'regular,loop,bounce') problems.push(`the LOOP control offers ${JSON.stringify(imageOutput.loopOptions)}`)
+        if (imageOutput.loopValue !== 'loop') problems.push(`a GIF that named no loop opens on ${String(imageOutput.loopValue)} rather than LOOP`)
         if (imageOutput.afterSequence !== 'sequence') problems.push(`choosing the run left the control on ${String(imageOutput.afterSequence)}`)
+        if (imageOutput.loopDisabledForRun !== true) problems.push('the LOOP control stays choosable for a run of frames, which has no loop to set')
         if (imageOutput.sentMode !== 'sequence') problems.push(`the chosen run was never sent to the queue: ${String(imageOutput.sentMode)}`)
         if (imageOutput.sentContainer !== 'gif') problems.push(`the GIF job was sent as ${String(imageOutput.sentContainer)}`)
+        // And the still-image container's own two, which the animated one does not carry.
+        if (String(imageOutput.pngFields).includes('LOOP')) problems.push('a PNG was offered the animated format\u2019s own loop control')
+        for (const expected of ['COMPRESSION', 'BIT DEPTH']) {
+          if (!String(imageOutput.pngFields).includes(expected)) problems.push(`a PNG's IMAGE tab drew no ${expected} control: ${JSON.stringify(imageOutput.pngFields)}`)
+        }
+        if (String(imageOutput.compressionOptions) !== '0,1,3,6,9') problems.push(`the PNG compression ladder offers ${JSON.stringify(imageOutput.compressionOptions)}`)
+        if (String(imageOutput.bitDepthOptions) !== '8,16') problems.push(`the PNG bit depths offer ${JSON.stringify(imageOutput.bitDepthOptions)}`)
+        // What a change of FORMAT makes of a run: it survives into another frame container, which is the
+        // rule `applyContainerChange` states, read here through the control the user actually sees.
+        if (imageOutput.imageBeforeApply !== 'sequence') problems.push(`a run chosen for a GIF read ${String(imageOutput.imageBeforeApply)} after moving to PNG rather than surviving as a run`)
+        if (imageOutput.imageAfterStill !== 'still') problems.push(`choosing a single frame left the control on ${String(imageOutput.imageAfterStill)}`)
+        if (imageOutput.sentContainer2 !== 'png') problems.push(`the PNG job was sent as ${String(imageOutput.sentContainer2)}`)
+        if (imageOutput.sentCompression !== 9) problems.push(`choosing compression 9 sent ${String(imageOutput.sentCompression)}`)
+        if (imageOutput.sentBitDepth !== 16) problems.push(`choosing 16-bit sent ${String(imageOutput.sentBitDepth)}`)
+        // SINGLE FRAME carries the instant it is taken at, which the encoder is what turns into a seek.
+        if (typeof imageOutput.sentStillFrame !== 'number') problems.push(`a SINGLE FRAME was sent with no instant to take it at: ${String(imageOutput.sentStillFrame)}`)
       }
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))

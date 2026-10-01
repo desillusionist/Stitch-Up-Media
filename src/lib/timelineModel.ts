@@ -650,8 +650,25 @@ const applyFades = (task: QueueTask, segments: TimelineSegment[]) => {
  */
 export const isStillFrameJob = (task: QueueTask) => task.preset.imageOutputMode === 'still'
 
+/** Whether a job's sources hold anything with a timeline of its own: footage, or an interpreted sequence. */
+export const taskHasFootage = (task: Pick<QueueTask, 'sourcePaths' | 'sequenceInput' | 'sequenceInputs'>): boolean =>
+  task.sourcePaths.some((source) => mediaKind(source) === 'video')
+  || Boolean(task.sequenceInput)
+  || Object.keys(task.sequenceInputs ?? {}).length > 0
+
+/**
+ * A job with nothing to TIME: one frame in, one frame out, out of a source that is itself one frame.
+ *
+ * `isStillFrameJob` says the OUTPUT is a single frame, which is a fact about the preset and stays true
+ * however long the source is. That is not the same as having nothing to time. A VIDEO asked for one PNG
+ * has every frame of itself to choose from, so hiding the timeline for it took away the only way to say
+ * WHICH frame — and SINGLE FRAME now means the frame under the playhead. So the timeline is withheld only
+ * when the source is a lone still, where there is genuinely nothing to scrub.
+ */
+export const nothingToTime = (task: QueueTask): boolean => isStillFrameJob(task) && !taskHasFootage(task)
+
 export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {}): TimelineModel => {
-  if (isStillFrameJob(task)) return { lanes: [], duration: 0, unusedVideoSources: [] }
+  if (nothingToTime(task)) return { lanes: [], duration: 0, unusedVideoSources: [] }
   const lanes: TimelineLane[] = []
 
   if (task.type === 'stitch') {

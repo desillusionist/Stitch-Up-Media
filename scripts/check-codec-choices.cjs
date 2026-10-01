@@ -189,6 +189,65 @@ const audioCodec = async (file) => {
     check('and each of them is a GIF', frames.length ? await videoCodec(path.join(sequence, frames[0])) : null, 'gif')
   }
 
+  // THE IMAGE SETTINGS, which are the IMAGE tab's own knobs and which only a real export can settle. Every
+  // figure here is read off the FILE — its bytes, its pixel format, or its own looping extension — rather
+  // than off the argument list, because an option the encoder never honoured looks identical to one it did.
+  console.log('\n== IMAGE SETTINGS ==')
+  {
+    const fileSize = (file) => fs.statSync(file).size
+    const probeValue = async (file, entries) => String(await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', entries, '-of', 'default=noprint_wrappers=1:nokey=1', file])).trim()
+    const frameCount = async (file) => Number(String(await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1:nokey=1', file])).trim())
+    /** One image export with extra preset fields, which is how each knob is exercised on its own. */
+    const exportImage = (container, videoCodec, extra, filename) => new Promise((resolve, reject) => {
+      const directory = path.join(work, `img-${container}-${filename.replace(/[^a-z0-9]/gi, '')}`)
+      fs.mkdirSync(directory, { recursive: true })
+      const engine = new FFmpegEngine()
+      engine.runTask({
+        id: `img-${container}-${filename}`, type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [source], outputDirectory: directory, outputFilename: filename,
+        preset: {
+          id: 'p', name: 'P', container, audioCodec: 'copy', resolution: 'source', outputMode: 'video',
+          videoCodec, imageOutputMode: 'still', fps: 12, ...extra,
+        },
+      }, () => {}, () => resolve(path.join(directory, filename)), (error) => reject(error))
+    })
+
+    // PNG: the work setting trades TIME for SIZE and never a pixel.
+    const pngFast = await exportImage('png', 'png', { pngCompression: 0 }, 'p0.png')
+    const pngSmall = await exportImage('png', 'png', { pngCompression: 9 }, 'p9.png')
+    check('compression 9 writes a smaller PNG than 0, and both are PNGs', [fileSize(pngSmall) < fileSize(pngFast), await probeValue(pngSmall, 'stream=codec_name')], [true, 'png'])
+    // And the samples a channel is stored in.
+    const eightBit = await exportImage('png', 'png', { imageBitDepth: 8 }, 'b8.png')
+    const sixteenBit = await exportImage('png', 'png', { imageBitDepth: 16 }, 'b16.png')
+    check('eight bits a channel is rgb24', await probeValue(eightBit, 'stream=pix_fmt'), 'rgb24')
+    check('and sixteen is rgb48be', await probeValue(sixteenBit, 'stream=pix_fmt'), 'rgb48be')
+    // JPEG: the one image setting that trades SIZE against the PICTURE, on a ladder that runs downwards.
+    const jpegBest = await exportImage('jpg', 'mjpeg', { jpegQuality: 2 }, 'q2.jpg')
+    const jpegLeast = await exportImage('jpg', 'mjpeg', { jpegQuality: 31 }, 'q31.jpg')
+    check('a lower JPEG quality figure writes a LARGER file', fileSize(jpegBest) > fileSize(jpegLeast), true)
+    // GIF: its loop count is read off the file's own Netscape extension, so the three modes are settled by
+    // the bytes rather than by the arguments that were meant to produce them.
+    const loopOf = (file) => {
+      const bytes = fs.readFileSync(file)
+      const at = bytes.indexOf(Buffer.from('NETSCAPE2.0'))
+      return at < 0 ? null : bytes.readUInt16LE(at + 13)
+    }
+    const once = await exportImage('gif', 'gif', { imageOutputMode: undefined, gifMode: 'regular' }, 'once.gif')
+    const forever = await exportImage('gif', 'gif', { imageOutputMode: undefined, gifMode: 'loop' }, 'forever.gif')
+    check('ONCE writes no looping extension at all', loopOf(once), null)
+    check('and LOOP loops for ever', loopOf(forever), 0)
+    // SINGLE FRAME for the animated format: one file, holding one frame rather than an animation.
+    const single = await exportImage('gif', 'gif', {}, 'single.gif')
+    check('a single-frame GIF is one file', fs.readdirSync(path.dirname(single)), ['single.gif'])
+    check('and it really holds one frame', await frameCount(single), 1)
+    // And SINGLE FRAME is taken at the instant it NAMES rather than at the file's first frame: two exports
+    // half a second apart have to differ, which is the whole of what the seek is for. The test source is a
+    // moving pattern, so a seek that did nothing would leave the two files byte-identical.
+    const atStart = await exportImage('png', 'png', { stillFrameAt: 0 }, 'atstart.png')
+    const atHalf = await exportImage('png', 'png', { stillFrameAt: 0.5 }, 'athalf.png')
+    check('a single frame is taken at the instant it names, not the file first frame', fs.readFileSync(atStart).equals(fs.readFileSync(atHalf)), false)
+  }
+
   console.log(failures === 0 ? '\nEVERY OFFERED CODEC EXPORTS\n' : `\n${failures} CODEC(S) FAILED\n`)
   fs.rmSync(work, { recursive: true, force: true })
   process.exit(failures === 0 ? 0 : 1)

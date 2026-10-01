@@ -6,16 +6,16 @@ import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
-import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, speedFor } from '../lib/clipSpeed'
+import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
-import { estimateOutputBytes, sizeLabel } from '../lib/outputSize'
+import { estimateLabel, estimateOutputSize, framesFrom } from '../lib/outputSize'
 import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } from '../lib/quickLookTarget'
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { sequenceLabel } from '../lib/sequenceLabel'
@@ -62,11 +62,27 @@ import { placeMenu } from '../lib/menuPlacement'
 import { emptyHistory, DraftHistory, endGesture, recordChange, stepHistory as stepBack } from '../lib/draftHistory'
 import { NumberField } from './NumberField'
 
-const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
+const tabs = ['EXPORT', 'VIDEO', 'IMAGE', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
 
 const CONTAINERS: Array<EncodingPreset['container']> = ['mp4', 'mov', 'mkv', 'webm', 'mp3', 'wav', 'm4a', 'flac', 'png', 'jpg', 'gif']
 const RESOLUTIONS: Array<EncodingPreset['resolution']> = ['source', '4k', '1080p', '720p']
+/**
+ * The PNG encoder's own work setting, 0 to 9.
+ *
+ * It trades the TIME spent writing the file against its SIZE and never a pixel — a PNG is lossless at
+ * every setting. Measured against this machine's own ffmpeg, a 320x240 test frame came out at 231,431
+ * bytes at 0 and 12,663 at 9, which is the whole of what the control is for.
+ */
+const PNG_COMPRESSION_CHOICES = [0, 1, 3, 6, 9] as const
+/** The samples a channel is stored in, for the formats that have a choice at all. */
+const IMAGE_BIT_DEPTHS = [8, 16] as const
+/**
+ * The JPEG encoder's quality, in ffmpeg's own `-q:v` figures — which run DOWNWARDS: a lower figure is a
+ * better picture and a larger file. Measured here, the same 320x240 frame was 9,374 bytes at 2 and 3,319
+ * at 31. It is the one image setting that trades size against the PICTURE rather than against time.
+ */
+const JPEG_QUALITY_CHOICES = [2, 5, 10, 20, 31] as const
 
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
 const TAP_THRESHOLD_MS = 250
@@ -2138,6 +2154,10 @@ export const EditJobApp: React.FC = () => {
   const showBoundaries = cuts.length > 0
   // A single frame in and a single frame out has nothing to time.
   const stillFrameJob = isStillFrameJob(draft)
+  // A single frame out of a source with a timeline of its own is NOT a job with nothing to time: the
+  // frame written is the one under the playhead, so the timeline has to stay for the playhead to mean
+  // anything. Only a lone still, which has no other frame to choose, gets no timeline.
+  const nothingToTimeJob = nothingToTime(draft)
   const selectedBoundary = (() => {
     if (openBoundary == null) return null
     const segments = mainLane?.segments ?? []
@@ -2330,24 +2350,45 @@ export const EditJobApp: React.FC = () => {
   // or setting a transition is not an encoding setting, so neither of those makes it custom.
   const presetEdited = JSON.stringify(draft.preset) !== JSON.stringify((baseline ?? draft).preset)
   /** The patch this window would send, built fresh so it never carries a stale snapshot. */
-  const buildPatch = (): EditJobPatch => ({
-    id: latest().id,
-    // A hand-tuned preset stops claiming to be the preset it started from.
-    preset: presetEdited ? { ...latest().preset, id: 'custom', name: 'CUSTOM' } : latest().preset,
-    outputFilename: latest().outputFilename,
-    outputFilenameManuallySet: latest().outputFilenameManuallySet,
-    transitions: latest().transitions,
-    sourceFit: latest().sourceFit,
-    sourceCrop: latest().sourceCrop,
-    sourceSpeed: latest().sourceSpeed,
-    mutedLanes: latest().mutedLanes,
-    sourceTiming: sourceTimingOverrides(latest()),
-    // Only when the window changed it: an untouched list is the queue's, and sending the window's
-    // snapshot of it back would overwrite a reorder made in the queue while this window was open.
-    ...(sourceListMoved(latest(), baselineRef.current ?? latest())
-      ? { sourcePaths: latest().sourcePaths, additionalAudioTracks: latest().additionalAudioTracks }
-      : {}),
-  })
+  /**
+   * The instant in the SOURCE the playhead is over, which is what a single frame is taken at.
+   *
+   * The monitor's position is a TIMELINE second, and a clip's trim and speed are what turn one into the
+   * other — the mapping `sourceTimeAt` exists for. A frame is written from the SOURCE, so a still taken
+   * from a trimmed or sped clip has to be taken where that clip really is inside its file.
+   */
+  const stillFrameInstant = (): number | undefined => {
+    if (draft.preset.imageOutputMode !== 'still') return undefined
+    const segment = playback.segment
+    if (!segment) return 0
+    return Math.max(0, sourceTimeAt(playback.position, {
+      start: segment.start, duration: segment.duration, sourceIn: segment.sourceIn, speed: segment.speed,
+    }))
+  }
+  const buildPatch = (): EditJobPatch => {
+    const at = stillFrameInstant()
+    const preset = presetEdited ? { ...latest().preset, id: 'custom', name: 'CUSTOM' } : latest().preset
+    return {
+      id: latest().id,
+      // A hand-tuned preset stops claiming to be the preset it started from, and a SINGLE FRAME carries
+      // the instant it is taken at — stamped here rather than stored on the draft, so a moving playhead
+      // is not an edit and does not fill the undo stack with them.
+      preset: at === undefined ? preset : { ...preset, stillFrameAt: at },
+      outputFilename: latest().outputFilename,
+      outputFilenameManuallySet: latest().outputFilenameManuallySet,
+      transitions: latest().transitions,
+      sourceFit: latest().sourceFit,
+      sourceCrop: latest().sourceCrop,
+      sourceSpeed: latest().sourceSpeed,
+      mutedLanes: latest().mutedLanes,
+      sourceTiming: sourceTimingOverrides(latest()),
+      // Only when the window changed it: an untouched list is the queue's, and sending the window's
+      // snapshot of it back would overwrite a reorder made in the queue while this window was open.
+      ...(sourceListMoved(latest(), baselineRef.current ?? latest())
+        ? { sourcePaths: latest().sourcePaths, additionalAudioTracks: latest().additionalAudioTracks }
+        : {}),
+    }
+  }
   /**
    * Sends the edits, and closes only when asked to.
    *
@@ -2912,6 +2953,12 @@ export const EditJobApp: React.FC = () => {
   // A container whose output may be one file or a numbered run of frames, which is the choice IMAGE
   // OUTPUT makes. The animated one is in it: a GIF is one animation or a sequence of single frames.
   const framesPossible = FRAME_CONTAINERS.includes(container)
+  // The tabs the window is SHOWING: IMAGE is offered only where the format writes frames at all, so a
+  // movie container does not carry a tab whose every control would be about a picture nobody asked for.
+  // The ACTIVE tab is what still applies, so changing the format away from an image one while IMAGE is
+  // open falls back to EXPORT rather than leaving a tab whose controls are gone.
+  const tabsShown = tabs.filter((name) => name !== 'IMAGE' || framesPossible)
+  const activeTab: Tab = tabsShown.includes(tab) ? tab : 'EXPORT'
   const audioDisabled = audioOnly || soundNeverPossible
   const videoReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : isGif ? 'GIF OUTPUT FORCES THE GIF ENCODER AND DROPS AUDIO.' : undefined
   const audioReason = audioOnly ? undefined : soundNeverPossible ? 'THIS FORMAT CARRIES NO AUDIO TRACK.' : undefined
@@ -2933,7 +2980,7 @@ export const EditJobApp: React.FC = () => {
    * of sound, or of a still with sound beside it, and that is the only kind these settings are about.
    */
   const visuals = draft.sourcePaths.map(mediaKind)
-  const hasFootage = visuals.some((kind) => kind === 'video') || Boolean(draft.sequenceInput) || Object.keys(draft.sequenceInputs ?? {}).length > 0
+  const hasFootage = taskHasFootage(draft)
   const hasStill = visuals.includes('image')
   const jobSound = visuals.includes('audio') || Boolean(draft.additionalAudioTracks?.length)
   // The gate and the drawing both come from the one function the monitor reads too, so a job cannot be
@@ -2944,17 +2991,17 @@ export const EditJobApp: React.FC = () => {
   const artCoverOffered = outputTakesArt(container) && hasStill && !hasFootage
   const stillIntoWav = container === 'wav' && hasStill
   /**
-   * What the finished file is going to weigh, where that is a question with an answer.
+   * What the finished file is going to weigh, in the range the question has an answer in.
    *
-   * A size is only knowable for an encoder that writes at a FIXED rate — a named bitrate, ProRes's own
-   * published targets, or PCM's arithmetic — so this answers where it can and the SUMMARY says UNKNOWN
-   * where it cannot, rather than inventing a figure a CRF encoder has not produced yet. A stream the
-   * job does not write contributes nothing rather than making the whole answer unknown, and the length
-   * is the ASSEMBLED output's own, so a clip's speed is already in the figure. See `outputSize` for the
-   * table it is worked out from.
+   * The PICTURE is sized from the OUTPUT frame and the assembled length — never from a source's own
+   * dimensions or codec, because the source is re-encoded into one raster however many clips it took. A
+   * single frame is ONE frame rather than the timeline's own length, which is what makes the figure differ
+   * between SINGLE FRAME and a run. A fixed-rate encoder gets a tight estimate, PCM an exact one, and the
+   * content-dependent encoders a range the SUMMARY draws as one. See `outputSize`.
    */
-  const estimateBytes = estimateOutputBytes({
+  const estimate = estimateOutputSize({
     seconds: duration,
+    frames: stillFrameJob ? 1 : framesFrom(duration, draft.preset.fps ?? defaultFps),
     picture: !audioOnly && draft.preset.outputMode !== 'audio',
     sound: jobSound && !soundNeverPossible && draft.preset.audioEnabled !== false,
     videoCodec: draft.preset.videoCodec,
@@ -2963,12 +3010,14 @@ export const EditJobApp: React.FC = () => {
     width: outputFrame?.width ?? draft.preset.width,
     height: outputFrame?.height ?? draft.preset.height,
     fps: draft.preset.fps ?? defaultFps,
+    bitDepth: draft.preset.imageBitDepth,
     audioCodec: draft.preset.audioCodec,
     audioBitrate: draft.preset.audioBitrate,
     audioChannels: draft.preset.audioChannels,
     audioSampleRate: draft.preset.audioSampleRate,
+    // A numbered run of image files has no container around it to pay a muxer's per cent to.
+    containerized: !IMAGE_CONTAINERS.includes(container) && !(isGif && draft.preset.imageOutputMode === 'sequence'),
   })
-  const estimateLabel = estimateBytes === undefined ? 'UNKNOWN' : sizeLabel(estimateBytes)
   /** The drawing's own background, as the one choice the editor and the encoder share. */
   const backgroundKind = visualizationBackgroundKind(draft.preset)
   /**
@@ -3066,7 +3115,7 @@ export const EditJobApp: React.FC = () => {
                   ))}
                   {playback.error
                     ? <span className="editor-screen-message">{playback.error}</span>
-                    : stillFrameJob
+                    : nothingToTimeJob
                       ? <img className="editor-still" draggable={false} style={{ ...mediaStyle }} src={mediaUrl(draft.sourcePaths[0])} alt={sourceName(draft.sourcePaths[0])} onLoad={measureNatural} ref={stillFrameRef} />
                       // A picture file is drawn as a picture, whichever branch the timeline took to get
                       // here — the segment's own flag is not consulted, because the target is what would
@@ -3332,7 +3381,7 @@ export const EditJobApp: React.FC = () => {
         </section>
 
         <section className="timeline-panel">
-          {stillFrameJob ? <>
+          {nothingToTimeJob ? <>
             <div className="panel-kicker">TIMELINE // SINGLE FRAME</div>
             <div className="editor-note">&gt; THIS JOB MAPS ONE FRAME TO ONE FRAME, SO THERE IS NOTHING TO TIME. CHANGE THE FORMAT IN EXPORT SETTINGS TO TREAT THE IMAGE AS A {Math.round(draft.stillImageDuration || 10)}s CLIP.</div>
           </> : <>
@@ -3521,9 +3570,9 @@ export const EditJobApp: React.FC = () => {
 
       <aside className="export-sidebar">
         <div className="export-title">EXPORT SETTINGS</div>
-        <div className="export-tabs">{tabs.map((name) => <button key={name} className={tab === name ? 'active' : ''} onClick={() => setTab(name)}>{name}</button>)}</div>
+        <div className="export-tabs">{tabsShown.map((name) => <button key={name} className={activeTab === name ? 'active' : ''} onClick={() => setTab(name)}>{name}</button>)}</div>
         <div className="export-content">
-          {tab === 'EXPORT' && <>
+          {activeTab === 'EXPORT' && <>
             <EditorField label="FORMAT"><EditorSelect value={container} options={CONTAINERS.map((name) => ({ value: name, label: name.toUpperCase() }))} onChange={(next) => changeContainer(next as EncodingPreset['container'])} /></EditorField>
             <EditorField
               label="PRESET"
@@ -3537,21 +3586,6 @@ export const EditJobApp: React.FC = () => {
               onChange={(next) => updatePreset(applyCodecChoice(latest().preset, next))}
               ariaLabel="What the picture is written as"
             /></EditorField>
-            {/* ONE file or a numbered run, which is a question only a frame container asks and asks
-                differently of the animated one: a GIF's single file is an animation rather than a still.
-                A sequence names itself in the output filename too — see `runTask`, which appends the frame
-                pattern — so the control and the encoder say the same word for the same thing. */}
-            {framesPossible && <EditorField
-              label="IMAGE OUTPUT"
-              reason="Whether the container writes ONE file or a numbered run of single frames. A sequence names its files with a frame number, and any sound in the job is dropped because a frame has none."
-              canReset={imageOutputChoiceValue(draft.preset) !== defaultImageOutputChoiceValue(container)}
-              onReset={() => updatePreset(applyImageOutputChoice(latest().preset, defaultImageOutputChoiceValue(container)))}
-            ><EditorSelect
-              value={imageOutputChoiceValue(draft.preset)}
-              options={imageOutputChoicesFor(container).map((choice) => ({ value: choice.value, label: choice.label }))}
-              onChange={(next) => updatePreset(applyImageOutputChoice(latest().preset, next))}
-              ariaLabel="Whether the container writes one file or a numbered run of frames"
-            /></EditorField>}
             <EditorField
               label="OUTPUT NAME"
               canReset={Boolean(draft.outputFilenameManuallySet)}
@@ -3578,7 +3612,7 @@ export const EditJobApp: React.FC = () => {
           </>}
 
               {/* Resolution Scaling */}
-            {tab === 'VIDEO' && <>
+            {activeTab === 'VIDEO' && <>
             {/* Three groups rather than eight foldouts: a group is a decision about the OUTPUT, and the
                 settings inside one are read together or not at all. Folding a single field away would be
                 a heading that only repeats the row beneath it. */}
@@ -3760,7 +3794,75 @@ export const EditJobApp: React.FC = () => {
             </EditorGroup>
           </>}
 
-          {tab === 'AUDIO' && <>
+          {/* THE IMAGE TAB. What it holds belongs to the FORMAT rather than to the job, which is why it is a
+              tab of its own: a PNG's compression, a JPEG's quality and a GIF's loop have nothing to say to
+              one another. IMAGE OUTPUT leads because it is the one question all three ask — and because a
+              single frame and a run of them are two different outputs of the same picture. */}
+          {activeTab === 'IMAGE' && framesPossible && <>
+            <EditorField
+              label="IMAGE OUTPUT"
+              reason="Whether the format writes ONE file or a numbered run of single frames. A sequence names each file with a frame number and any sound is dropped, because a frame has none; SINGLE FRAME writes the frame under the playhead. A GIF is offered all three: its animation, that same run, and the one still it can hold."
+              canReset={imageOutputChoiceValue(draft.preset) !== defaultImageOutputChoiceValue(container)}
+              onReset={() => updatePreset(applyImageOutputChoice(latest().preset, defaultImageOutputChoiceValue(container)))}
+            ><EditorSelect
+              value={imageOutputChoiceValue(draft.preset)}
+              options={imageOutputChoicesFor(container).map((choice) => ({ value: choice.value, label: choice.label }))}
+              onChange={(next) => updatePreset(applyImageOutputChoice(latest().preset, next))}
+              ariaLabel="Whether the format writes one file or a numbered run of frames"
+            /></EditorField>
+            {container === 'gif' && <EditorField
+              label="LOOP"
+              reason="What the animation does at its end: played through ONCE, repeated for ever, or turned around and played back again, which is a bounce. It belongs to the ANIMATION, so it is not offered for a run of frames — a run has no end to reach."
+              canReset={draft.preset.gifMode !== undefined && draft.preset.gifMode !== 'loop'}
+              onReset={() => updatePreset({ gifMode: 'loop' })}
+            ><EditorSelect
+              value={draft.preset.gifMode ?? 'loop'}
+              options={[{ value: 'regular', label: 'ONCE' }, { value: 'loop', label: 'LOOP' }, { value: 'bounce', label: 'BOUNCE' }]}
+              disabled={draft.preset.imageOutputMode === 'sequence'}
+              onChange={(next) => updatePreset({ gifMode: next as NonNullable<EncodingPreset['gifMode']> })}
+              ariaLabel="What the animation does at its end"
+            /></EditorField>}
+            {container === 'png' && <>
+              <EditorField
+                label="COMPRESSION"
+                hint="TIME FOR SIZE"
+                reason="How hard the PNG encoder works. A PNG is lossless at every setting, so this trades the TIME spent writing the file against its SIZE and never a pixel: 9 is the smallest file and the slowest to write, 0 the largest and the quickest."
+                canReset={draft.preset.pngCompression !== undefined}
+                onReset={() => updatePreset({ pngCompression: undefined })}
+              ><EditorSelect
+                value={String(draft.preset.pngCompression ?? 6)}
+                options={PNG_COMPRESSION_CHOICES.map((level) => ({ value: String(level), label: level === 0 ? '0 (FASTEST)' : level === 9 ? '9 (SMALLEST)' : String(level) }))}
+                onChange={(next) => updatePreset({ pngCompression: Number(next) })}
+                ariaLabel="How hard the PNG encoder works"
+              /></EditorField>
+              <EditorField
+                label="BIT DEPTH"
+                reason="The samples a channel is stored in. Eight is what a player opens and what a delivery frame is; sixteen is for a frame on its way into a compositor, where the extra room is the point — and it is twice the samples per channel."
+                canReset={draft.preset.imageBitDepth !== undefined}
+                onReset={() => updatePreset({ imageBitDepth: undefined })}
+              ><EditorSelect
+                value={String(draft.preset.imageBitDepth ?? 8)}
+                options={IMAGE_BIT_DEPTHS.map((depth) => ({ value: String(depth), label: `${depth}-BIT${depth === 8 ? ' (DELIVERY)' : ''}` }))}
+                onChange={(next) => updatePreset({ imageBitDepth: Number(next) === 16 ? 16 : 8 })}
+                ariaLabel="The samples a channel is stored in"
+              /></EditorField>
+            </>}
+            {container === 'jpg' && <EditorField
+              label="QUALITY"
+              hint="LOWER IS BETTER"
+              reason="The JPEG encoder's quality, in ffmpeg's own `-q:v` figures, which run DOWNWARDS: a lower figure is a better picture and a larger file. It is the one image setting that trades SIZE against the picture rather than against the time spent writing it."
+              canReset={draft.preset.jpegQuality !== undefined}
+              onReset={() => updatePreset({ jpegQuality: undefined })}
+            ><EditorSelect
+              value={String(draft.preset.jpegQuality ?? 5)}
+              options={JPEG_QUALITY_CHOICES.map((quality) => ({ value: String(quality), label: quality === 2 ? '2 (BEST)' : quality === 31 ? '31 (SMALLEST)' : String(quality) }))}
+              onChange={(next) => updatePreset({ jpegQuality: Number(next) })}
+              ariaLabel="The JPEG encoder's quality"
+            /></EditorField>}
+            <div className="editor-note">&gt; A RUN OF FRAMES NAMES EACH FILE WITH ITS FRAME NUMBER, SO THE OUTPUT NAME IS A PATTERN TOO. THE RATE IN THE VIDEO TAB IS THE ANIMATION'S OWN AND DOES NOT RESAMPLE A RUN.</div>
+          </>}
+
+          {activeTab === 'AUDIO' && <>
             {/* What the file IS, above what the export will make of it: the two are read together, and the
                 answer comes off the probe this window already made for the source under the playhead. */}
             <EditorRow
@@ -3955,14 +4057,14 @@ export const EditJobApp: React.FC = () => {
             {stillIntoWav && <div className="editor-note">&gt; A WAV CANNOT CARRY ARTWORK. THE STILL IS DROPPED; MP3, M4A OR FLAC WOULD KEEP IT.</div>}
           </>}
 
-          {tab === 'EFFECTS' && <>
+          {activeTab === 'EFFECTS' && <>
             <EditorToggle label="TIMESTAMP BURN-IN" checked={false} reason="BURN-IN HAS NO BACKING FIELD AND IS NOT IMPLEMENTED BY THE ENCODER." />
             <EditorToggle label="FRAMESTAMP BURN-IN" checked={false} reason="BURN-IN HAS NO BACKING FIELD AND IS NOT IMPLEMENTED BY THE ENCODER." />
             <EditorToggle label="IMAGE OVERLAY / WATERMARK" checked={false} reason="BURN-IN HAS NO BACKING FIELD AND IS NOT IMPLEMENTED BY THE ENCODER." />
             <div className="editor-note">&gt; THESE CONTROLS ARE SHOWN DISABLED BECAUSE THE ENCODER HAS NOTHING TO DRIVE YET. WIRING THEM WOULD FORCE A RE-ENCODE.</div>
           </>}
 
-          {tab === 'CAPTIONS' && <>
+          {activeTab === 'CAPTIONS' && <>
             <EditorField label="MODE" reason="CAPTIONS ARE NOT WIRED TO THE ENCODER YET."><EditorSelect value="embedded" options={[{ value: 'embedded', label: 'EMBEDDED' }, { value: 'sidecar', label: 'SIDECAR SRT' }, { value: 'burn-in', label: 'BURN-IN' }]} disabled onChange={() => undefined} ariaLabel="Caption mode" /></EditorField>
             <div className="editor-note">&gt; CAPTION MODE HAS NO BACKING FIELD YET, SO NOTHING IS SENT BACK ON APPLY.</div>
           </>}
@@ -3971,8 +4073,10 @@ export const EditJobApp: React.FC = () => {
         <div className="export-summary">
           <span className="panel-kicker">SUMMARY</span>
           <strong>{draft.outputFilename}</strong>
-          <span>{stillFrameJob ? 'SINGLE FRAME OUTPUT - NO TIMELINE' : duration > 0 ? `ASSEMBLED ${stamp(duration)} ACROSS ${model.lanes.length} LANE(S)` : 'LENGTH UNKNOWN - PROBE ON START'}</span>
-          <span>ESTIMATED SIZE {estimateLabel}</span>
+          <span>{stillFrameJob
+            ? (nothingToTimeJob ? 'SINGLE FRAME OUTPUT - NO TIMELINE' : `SINGLE FRAME AT ${stamp(playback.position)} OF ${stamp(duration)}`)
+            : duration > 0 ? `ASSEMBLED ${stamp(duration)} ACROSS ${model.lanes.length} LANE(S)` : 'LENGTH UNKNOWN - PROBE ON START'}</span>
+          <span>ESTIMATED SIZE {estimateLabel(estimate)}</span>
           <span>{dirty ? 'UNSAVED CHANGES' : 'NO CHANGES'}</span>
         </div>
 

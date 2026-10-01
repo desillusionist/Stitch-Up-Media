@@ -719,33 +719,89 @@ const drive = async () => {
     pulls: pullCalls,
   }
 
-  // THE IMAGE OUTPUT CONTROL, which only a frame container offers and which is the CONTROL half of the
-  // GIF work — the engine half is `npm run verify-codecs`. Driven on the movie job, whose FORMAT is
-  // switched to GIF so the two answers differ in WORD as well as in mode: an ANIMATION or a SEQUENCE OF
-  // FRAMES. The choice is then carried to the queue by APPLY, because a control the editor draws and
-  // never sends is the fault this window is full of assertions against.
+  // THE IMAGE TAB, which is where the frame formats keep their own settings, and which this pass added.
+  // Driven on the movie job, whose FORMAT is switched to GIF and then to PNG so both sides of the gate are
+  // read: a movie container must offer NO IMAGE tab at all, and a frame container must offer one with its
+  // own knobs and the output shape all three share.
   arrive(task, 'plain')
   await wait(400)
   clickTab('EXPORT')
   await wait(120)
+  const tabNames = () => [...document.querySelectorAll('.export-tabs button')].map((button) => button.textContent?.trim())
+  const tabsForMovie = tabNames()
   const formatSelect = selectIn('FORMAT')
+  // The FORMAT lives on the EXPORT tab and the tab switch UNMOUNTS it, so it is read and changed while
+  // that tab is the one on screen — a reading taken from the IMAGE tab is a reading of nothing.
   if (formatSelect) chooseOption(formatSelect, 'gif')
   await wait(200)
+  const containerAfterGif = valueOf(selectIn('FORMAT'))
+  clickTab('IMAGE')
+  await wait(150)
   const imageSelect = selectIn('IMAGE OUTPUT')
+  const gifFields = labelsOf('.editor-field')
+  const loopSelect = selectIn('LOOP')
   result.imageOutput = {
-    container: valueOf(selectIn('FORMAT')),
+    container: containerAfterGif,
+    tabsForMovie,
+    tabsForGif: tabNames(),
     drawn: Boolean(fieldFor('IMAGE OUTPUT')),
     options: optionsOf(imageSelect),
     value: valueOf(imageSelect),
+    gifFields,
+    loopOptions: optionsOf(loopSelect),
+    loopValue: valueOf(loopSelect),
   }
   if (imageSelect) chooseOption(imageSelect, 'sequence')
   await wait(200)
-  const appliedImage = { ...(result.imageOutput as object), afterSequence: valueOf(selectIn('IMAGE OUTPUT')) }
+  const afterSequence = valueOf(selectIn('IMAGE OUTPUT'))
+  const loopDisabledForRun = Boolean(loopSelect?.querySelector('.editor-select-trigger')?.hasAttribute('disabled'))
   const applyImage = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
   ;(applyImage as HTMLButtonElement | undefined)?.click()
   await wait(200)
-  const sentImage = applied[applied.length - 1] as { preset?: { imageOutputMode?: string; container?: string } } | undefined
-  result.imageOutput = { ...appliedImage, sentMode: sentImage?.preset?.imageOutputMode ?? null, sentContainer: sentImage?.preset?.container ?? null }
+  const sentImage = applied[applied.length - 1] as { preset?: { imageOutputMode?: string; container?: string; gifMode?: string } } | undefined
+  // The still-image container's own knobs, which the animated one does not carry.
+  clickTab('EXPORT')
+  await wait(120)
+  const formatAgain = selectIn('FORMAT')
+  if (formatAgain) chooseOption(formatAgain, 'png')
+  await wait(200)
+  const containerAfterPng = valueOf(selectIn('FORMAT'))
+  clickTab('IMAGE')
+  await wait(150)
+  const pngFields = labelsOf('.editor-field')
+  const compressionSelect = selectIn('COMPRESSION')
+  const bitDepthSelect = selectIn('BIT DEPTH')
+  const pngImageSelect = selectIn('IMAGE OUTPUT')
+  // What the change of container made of the run chosen for the GIF, read before anything else is touched.
+  const imageBeforeApply = valueOf(pngImageSelect)
+  if (pngImageSelect) chooseOption(pngImageSelect, 'still')
+  await wait(150)
+  const imageAfterStill = valueOf(selectIn('IMAGE OUTPUT'))
+  if (compressionSelect) chooseOption(compressionSelect, '9')
+  if (bitDepthSelect) chooseOption(bitDepthSelect, '16')
+  await wait(150)
+  const applyPng = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
+  ;(applyPng as HTMLButtonElement | undefined)?.click()
+  await wait(200)
+  const sentPng = applied[applied.length - 1] as { preset?: { pngCompression?: number; imageBitDepth?: number; container?: string; stillFrameAt?: number; imageOutputMode?: string } } | undefined
+  result.imageOutput = {
+    ...(result.imageOutput as object),
+    afterSequence,
+    loopDisabledForRun,
+    sentMode: sentImage?.preset?.imageOutputMode ?? null,
+    sentContainer: sentImage?.preset?.container ?? null,
+    sentLoop: sentImage?.preset?.gifMode ?? null,
+    containerAfterPng,
+    pngFields,
+    compressionOptions: optionsOf(compressionSelect),
+    bitDepthOptions: optionsOf(bitDepthSelect),
+    imageBeforeApply,
+    imageAfterStill,
+    sentContainer2: sentPng?.preset?.container ?? null,
+    sentCompression: sentPng?.preset?.pngCompression ?? null,
+    sentBitDepth: sentPng?.preset?.imageBitDepth ?? null,
+    sentStillFrame: sentPng?.preset?.stillFrameAt ?? null,
+  }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

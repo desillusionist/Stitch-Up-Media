@@ -84,6 +84,36 @@ export interface EncodingPreset {
   imageOutputMode?: 'sequence' | 'still'
   gifMode?: 'regular' | 'loop' | 'bounce'
   /**
+   * Where in the SOURCE a single frame is taken from, in seconds.
+   *
+   * SINGLE FRAME used to mean the file's first frame, because `-frames:v 1` takes whatever comes first.
+   * The editor records the instant under the playhead here when it sends the edits, so the frame written
+   * is the frame that was being looked at — and the clip's own trim is not applied beside it, because
+   * that instant is already a position in the source and two seeks would write a frame nobody pointed at.
+   */
+  stillFrameAt?: number
+  /**
+   * How hard the lossless PNG encoder works, 0 to 9.
+   *
+   * It changes the FILE SIZE and the time taken to write it, never a pixel: a PNG is lossless at every
+   * setting. Absent means the encoder's own default, which is the middle of the range.
+   */
+  pngCompression?: number
+  /**
+   * The samples an image sequence is written with, per channel.
+   *
+   * Eight bits is what every player expects and what a delivery frame is; sixteen is for a frame on its
+   * way into a compositor, where the extra room is the point. Absent means the encoder's own, which is
+   * eight for the formats this app writes. It is a PNG-side choice: the JPEG encoder has none.
+   */
+  imageBitDepth?: 8 | 16
+  /**
+   * The JPEG encoder's quality, 1 to 31 with the LOWER figure the better picture — ffmpeg's own `-q:v`
+   * ladder, which runs the other way from every photographer's 1-100. Absent means the encoder's own
+   * default. It is the one image setting that trades size against the picture rather than against time.
+   */
+  jpegQuality?: number
+  /**
    * The picture an audio job is given when the export can hold one.
    *
    * Absent is the job's own default: the still it already has, if its visual IS a still, and black

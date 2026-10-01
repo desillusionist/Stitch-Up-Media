@@ -42,6 +42,17 @@ const EVEN_SIZE_CODECS: Array<EncodingPreset['videoCodec']> = ['h264', 'hevc', '
  */
 const QUAD_SIZE_CODECS: Array<EncodingPreset['videoCodec']> = ['hap']
 
+/**
+ * The gif muxer's own loop count.
+ *
+ * `-loop -1` plays the animation through ONCE and writes no looping extension at all, while `-loop 0`
+ * repeats it for ever — both read back off the file rather than assumed. ONCE and FOREVER are the two
+ * things the control offers; a BOUNCE is forever over a doubled, mirrored frame list rather than a count
+ * of its own. An animation that named no mode keeps the looping one, which is what it did before the
+ * choice existed.
+ */
+const gifLoopCount = (mode: EncodingPreset['gifMode']): string => (mode === 'regular' ? '-1' : '0')
+
 export class FFmpegEngine {
   private activeProcesses = new Map<string, ffmpeg.FfmpegCommand>()
   private sequenceFor(task: QueueTask, source: string) {
@@ -250,7 +261,16 @@ export class FFmpegEngine {
       // one the editor showed.
       cmd.inputOptions(['-loop 1', `-framerate ${this.stillRate(task, source)}`, '-t ' + stillSecondsFor(task, source)])
     }
-    if (!isSequence) this.applyTrimInput(cmd, trim)
+    // A SINGLE FRAME is taken at the instant the reader was LOOKING AT, and that instant is a position in
+    // the SOURCE — so the clip's own trim is not applied beside it: two seeks would write a frame nobody
+    // pointed at, and a range has no meaning for one frame. An input seek is accurate here because the
+    // frame is re-encoded, so it lands on the frame it names rather than on the keyframe before it.
+    const singleFrameAt = task.preset.imageOutputMode === 'still' ? Math.max(0, Number(task.preset.stillFrameAt) || 0) : null
+    if (singleFrameAt !== null) {
+      if (singleFrameAt > 0) cmd.inputOptions(['-ss ' + singleFrameAt])
+    } else if (!isSequence) {
+      this.applyTrimInput(cmd, trim)
+    }
     // A sound file has no frame to give, so a preset that asks for video would write a container
     // holding a sound stream and no picture at all — a video file in name only. The export's own frame
     // is supplied instead. It is skipped for a muted lane, where the audio is dropped and there would be
@@ -1000,8 +1020,23 @@ export class FFmpegEngine {
       cmd.videoCodec('libsvtav1')
     } else if (preset.videoCodec === 'png') {
       cmd.videoCodec('png')
+      // PNG's two own settings. Compression trades the time spent writing the file against its SIZE and
+      // never a pixel — a PNG is lossless at every setting. The bit depth is the samples a channel is
+      // stored in: eight for a frame a player will open, sixteen for one on its way into a compositor.
+      const png: string[] = []
+      if (typeof preset.pngCompression === 'number' && Number.isFinite(preset.pngCompression)) {
+        png.push('-compression_level ' + Math.max(0, Math.min(9, Math.round(preset.pngCompression))))
+      }
+      if (preset.imageBitDepth === 16) png.push('-pix_fmt rgb48be')
+      else if (preset.imageBitDepth === 8) png.push('-pix_fmt rgb24')
+      if (png.length) cmd.outputOptions(png)
     } else if (preset.videoCodec === 'mjpeg') {
       cmd.videoCodec('mjpeg')
+      // The one image setting that trades SIZE against the picture rather than against time. ffmpeg's own
+      // ladder runs downwards: a lower figure is a better picture and a larger file.
+      if (typeof preset.jpegQuality === 'number' && Number.isFinite(preset.jpegQuality)) {
+        cmd.outputOptions(['-q:v ' + Math.max(1, Math.min(31, Math.round(preset.jpegQuality)))])
+      }
     } else if (preset.videoCodec === 'dxv') {
       // Resolume's own intermediate. Its encoder takes the picture as it comes, with no profile and
       // nothing to configure beyond the frame size the filters have already settled.
@@ -1023,7 +1058,7 @@ export class FFmpegEngine {
       if (preset.imageOutputMode === 'sequence') {
         cmd.outputOptions(['-f image2'])
       } else {
-        cmd.outputOptions(['-an', '-f gif', '-loop ' + (preset.gifMode === 'regular' ? '1' : '0')])
+        cmd.outputOptions(['-an', '-f gif', '-loop ' + gifLoopCount(preset.gifMode)])
         if (preset.gifMode === 'bounce') cmd.outputOptions(['-filter_complex [0:v]split[a][b];[b]reverse[rev];[a][rev]concat=n=2:v=1:a=0[v]', '-map [v]'])
       }
     }

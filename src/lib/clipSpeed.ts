@@ -32,7 +32,15 @@ export const CLIP_SPEED_CHOICES = [0.25, 0.5, 1, 1.5, 2, 4, 8] as const
 export const clampClipSpeed = (value: unknown): number => {
   const rate = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(rate) || rate <= 0) return 1
-  return Math.min(MAX_CLIP_SPEED, Math.max(MIN_CLIP_SPEED, Math.round(rate * 1000) / 1000))
+  // Rounded to SIX decimals rather than three, and that digit is load-bearing: DURATION and SPEED are one
+  // relationship, so a one-frame step of the length is a speed change of `trimmed / duration^2 / rate`.
+  // For a long clip that is smaller than a thousandth, and at three decimals it rounded straight back to
+  // the speed it started from — so the length could not be moved a frame at all. The worst case was a
+  // 7m49s source at 30 fps, where the wheel and the arrows went dead below 2.654x (38% of the source),
+  // and a 2m59s one at 24 fps below 1.468x: exactly the two boundaries the report was made with. Six
+  // decimals keeps a frame step surviving out to a source of many hours, and it is still a figure a
+  // reader can look at.
+  return Math.min(MAX_CLIP_SPEED, Math.max(MIN_CLIP_SPEED, Math.round(rate * 1e6) / 1e6))
 }
 
 /**

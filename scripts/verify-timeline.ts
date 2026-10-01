@@ -20,12 +20,12 @@ import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurati
 import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, timecode, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nothingToTime, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceValue, FRAME_CONTAINERS, imageOutputChoiceValue, imageOutputChoicesFor } from '../src/lib/containerSwitch'
 import { applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, containerTakesAudio, containerTakesCodec, reconcileAudioToContainer, reconcileCodecToContainer } from '../src/lib/codecChoices'
-import { bitsPerSecond, estimateOutputBytes, sizeLabel } from '../src/lib/outputSize'
+import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel } from '../src/lib/outputSize'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -2187,6 +2187,19 @@ void (async () => {
     check('and by the path alone as a job-wide fallback', speedFor({ sourceSpeed: { '/a.mp4': { speed: 2, interpolation: 'sampling' } } }, '/a.mp4', 3).speed, 2)
     check('a nonsense record reads as the clip\u2019s own speed', speedFor({ sourceSpeed: { '/a.mp4#0': { speed: 0, interpolation: 'sampling' } } }, '/a.mp4', 0).speed, 1)
     check('a rate reads the way the monitor spells one', clipSpeedLabel(0.5), '0.5x')
+
+    // A ONE-FRAME STEP OF THE LENGTH has to survive the speed it is STORED as. DURATION and SPEED are one
+    // relationship, so a frame of a long clip is a speed change far below a thousandth — and at three
+    // decimals it rounded straight back to where it started, which is why the wheel and the arrows went
+    // dead for a long clip at a slow speed. The two cases the report named are asserted by name, plus an
+    // hour, so the precision is pinned to the arithmetic rather than to a feeling about it.
+    const frameStepSurvives = (seconds: number, rate: number) => {
+      const speed = clampClipSpeed(seconds / (seconds + 1 / rate))
+      return speed !== 1 && Math.abs(seconds / speed - (seconds + 1 / rate)) < 1e-3
+    }
+    check('one frame of a 7m49s source at 30 fps moves the length', frameStepSurvives(7 * 60 + 49 + 19 / 30, 30), true)
+    check('and one frame of a 2m59s source at 24 fps moves it too', frameStepSurvives(2 * 60 + 59 + 13 / 24, 24), true)
+    check('and an hour of source at 25 fps still moves a frame', frameStepSurvives(3600, 25), true)
   }
 
   console.log('\n== a sped clip on the timeline ==')
@@ -2352,10 +2365,11 @@ void (async () => {
     // container writes a picture, the animated one writes an animation.
     check('the containers that can write a run are the two still ones and the animated one', FRAME_CONTAINERS, ['png', 'jpg', 'gif'])
     check('a still container offers a single frame and a run', imageOutputChoicesFor('png').map((choice) => [choice.value, choice.label]), [['still', 'SINGLE FRAME'], ['sequence', 'SEQUENCE']])
-    check('and the animated one offers an animation and a run', imageOutputChoicesFor('gif').map((choice) => [choice.value, choice.label]), [['animation', 'ANIMATION'], ['sequence', 'SEQUENCE OF FRAMES']])
+    check('and the animated one is offered all three, its animation included', imageOutputChoicesFor('gif').map((choice) => [choice.value, choice.label]), [['still', 'SINGLE FRAME'], ['animation', 'ANIMATION'], ['sequence', 'SEQUENCE OF FRAMES']])
     check('a job that names nothing opens on the animation for a GIF', imageOutputChoiceValue({ container: 'gif' }), 'animation')
     check('and on a single frame for a still container', imageOutputChoiceValue({ container: 'png' }), 'still')
     check('a run reads back as a run', imageOutputChoiceValue({ container: 'gif', imageOutputMode: 'sequence' }), 'sequence')
+    check('and a single frame reads back for a GIF too', imageOutputChoiceValue({ container: 'gif', imageOutputMode: 'still' }), 'still')
     check('and the defaults are the same two', [defaultImageOutputChoiceValue('gif'), defaultImageOutputChoiceValue('jpg')], ['animation', 'still'])
     // What the choice STORES: a GIF's animation is the absence of a mode, because that is what the
     // engine's own gif muxer branch is, and a still is the mode the encoder turns into `-frames:v 1`.
@@ -2371,8 +2385,29 @@ void (async () => {
     check('a video put into GIF becomes its animation', modeAfter('mp4', 'gif'), undefined)
     check('a run put into PNG stays a run', modeAfter('mp4', 'png', 'sequence'), 'sequence')
     check('and a run put into GIF stays one too', modeAfter('png', 'gif', 'sequence'), 'sequence')
+    check('while a single frame survives into the animated one', modeAfter('mp4', 'gif', 'still'), 'still')
     check('while a GIF animation moved into PNG becomes a single frame', modeAfter('gif', 'png'), 'still')
     check('and a still-image container has no say over a movie one', modeAfter('png', 'mp4'), undefined)
+  }
+
+  console.log('\n== a single frame is not the same as having nothing to time ==')
+  {
+    // A single frame out of FOOTAGE has every frame of itself to choose from, so its timeline stays — which
+    // is what lets SINGLE FRAME mean the frame under the playhead. Only a source that is itself one frame
+    // has nothing to time.
+    const frameJob = (sourcePaths: string[], extra: Partial<QueueTask> = {}) => ({
+      id: 'j', type: 'transcode', status: 'pending', progress: 0,
+      sourcePaths, outputDirectory: '/out', outputFilename: 'o.png',
+      preset: { id: 'p', name: 'P', container: 'png', videoCodec: 'png', audioCodec: 'copy', resolution: 'source', imageOutputMode: 'still' },
+      ...extra,
+    } as unknown as QueueTask)
+    check('a video asked for one frame has footage in it', taskHasFootage(frameJob(['/a.mp4'])), true)
+    check('so its timeline stays, for the frame to be picked from', nothingToTime(frameJob(['/a.mp4'])), false)
+    check('a lone still has no footage', taskHasFootage(frameJob(['/a.png'])), false)
+    check('and its single frame has nothing to time', nothingToTime(frameJob(['/a.png'])), true)
+    check('a sound file has no picture to time either', nothingToTime(frameJob(['/a.wav'])), true)
+    check('an interpreted sequence IS footage', taskHasFootage({ sourcePaths: ['/s0001.png'], sequenceInput: {} as never }), true)
+    check('and a job asked for a movie is not a single frame at all', nothingToTime(frameJob(['/a.mp4'], { preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' } })), false)
   }
 
   console.log('\n== what a file is going to weigh ==')
@@ -2382,24 +2417,42 @@ void (async () => {
     check('k is a thousand', bitsPerSecond('320k'), 320000)
     check('and M is a million', bitsPerSecond('8M'), 8000000)
     check('while nonsense reads as nothing', [bitsPerSecond('fast'), bitsPerSecond(''), bitsPerSecond(undefined)], [undefined, undefined, undefined])
-    // A named bitrate is the answer, and a CRF encoder has none until it has encoded.
-    const h264 = { videoCodec: 'h264' as const, videoBitrate: '8M', audioCodec: 'aac' as const }
-    check('a named bitrate sizes a file', estimateOutputBytes({ seconds: 10, picture: true, sound: false, ...h264 }), 10200000)
-    check('and a CRF encoder of the same codec says UNKNOWN', estimateOutputBytes({ seconds: 10, picture: true, sound: false, videoCodec: 'h264', audioCodec: 'aac' }), undefined)
-    check('as does a stream copy', estimateOutputBytes({ seconds: 10, picture: true, sound: false, videoCodec: 'copy', audioCodec: 'aac' }), undefined)
-    // ProRes IS a bitrate by specification, so its published target is scaled by the frame's own area.
-    const prores = (width: number, height: number, fps = 29.97) => estimateOutputBytes({ seconds: 10, picture: true, sound: false, videoCodec: 'prores', proresProfile: 'hq', width, height, fps, audioCodec: 'aac' })
-    check('a ProRes HQ at 1080p30 is its documented target for ten seconds', prores(1920, 1080), 280500000)
-    near('and twice the frame area is twice the size', (prores(3840, 2160) as number) / (prores(1920, 1080) as number), 4)
-    near('and twice the rate is twice the size', (prores(1920, 1080, 59.94) as number) / (prores(1920, 1080) as number), 2)
-    // PCM is arithmetic rather than a setting: 48 kHz of sixteen-bit stereo is 1.536 Mb/s exactly.
-    check('a WAV of PCM is its own arithmetic', estimateOutputBytes({ seconds: 10, picture: false, sound: true, videoCodec: 'copy', audioCodec: 'pcm', audioSampleRate: 48000, audioChannels: 2 }), 1958400)
-    check('and a FLAC has no fixed rate to size', estimateOutputBytes({ seconds: 10, picture: false, sound: true, videoCodec: 'copy', audioCodec: 'flac' }), undefined)
+    // A named bitrate wins over everything, a CRF encoder has none until it has encoded, and a passthrough
+    // has nothing to work one out from at all.
+    check('a named bitrate sizes a file', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' }), { bytes: 10100000, confidence: 'close' })
+    check('and a CRF encoder of the same codec says UNKNOWN', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', audioCodec: 'aac' }), undefined)
+    check('as does a stream copy', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'copy', audioCodec: 'aac' }), undefined)
+    // ProRes IS a bitrate by specification, so its published target is scaled by the frame's own area and
+    // rate — the OUTPUT frame, never the source's.
+    const proresBytes = (width: number, height: number, fps = 29.97) => estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'prores', proresProfile: 'hq', width, height, fps, audioCodec: 'aac' })?.bytes
+    check('a ProRes HQ at 1080p30 is its documented target for ten seconds', proresBytes(1920, 1080), 277750000)
+    near('and twice the frame area is twice the size', (proresBytes(3840, 2160) as number) / (proresBytes(1920, 1080) as number), 4)
+    near('and twice the rate is twice the size', (proresBytes(1920, 1080, 59.94) as number) / (proresBytes(1920, 1080) as number), 2)
+    // PCM is arithmetic rather than a setting, and it is the one figure the SUMMARY draws plainly.
+    check('a WAV of PCM is its own arithmetic, and says it is exact', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: false, sound: true, videoCodec: 'copy', audioCodec: 'pcm', audioSampleRate: 48000, audioChannels: 2 }), { bytes: 1939200, confidence: 'exact' })
+    // A content-dependent codec is a RANGE, never a number.
+    check('and a FLAC is a range rather than a figure', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: false, sound: true, videoCodec: 'copy', audioCodec: 'flac', audioSampleRate: 48000, audioChannels: 2 }), { bytes: 872640, high: 1260480, confidence: 'rough' })
+    // The picture is sized from the OUTPUT frame and the COUNT of frames, so one frame is one frame however
+    // long the source is — which is the whole of what SINGLE FRAME changes about the figure. A numbered run
+    // of image files is not wrapped in a container, so it pays no muxer's per cent.
+    const frameBytes = (videoCodec: EncodingPreset['videoCodec'], frames: number, bitDepth?: 8 | 16) => estimateOutputSize({ seconds: 0, frames, containerized: false, picture: true, sound: false, videoCodec, bitDepth, width: 1920, height: 1080, fps: 30, audioCodec: 'copy' })
+    check('a PNG single frame is a bracket over one frame of samples', frameBytes('png', 1), { bytes: 1866240, high: 3732480, confidence: 'rough' })
+    check('sixteen bits a channel is twice the samples', frameBytes('png', 1, 16), { bytes: 3732480, high: 7464960, confidence: 'rough' })
+    check('and a run of ten is ten of them', frameBytes('png', 10), { bytes: 18662400, high: 37324800, confidence: 'rough' })
+    check('a JPEG is bracketed by the pixel rather than by the samples', frameBytes('mjpeg', 1), { bytes: 414720, high: 1866240, confidence: 'rough' })
+    check('and the animated format has the widest bracket of the three', frameBytes('gif', 1), { bytes: 311040, high: 1451520, confidence: 'rough' })
     // A stream nobody writes contributes nothing rather than making the whole answer unknown.
-    check('a silent video is still a size', estimateOutputBytes({ seconds: 10, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' }), 10200000)
-    check('and a length of nothing has no size at all', estimateOutputBytes({ seconds: 0, picture: true, sound: false, ...h264 }), undefined)
-    // The units a reader thinks in.
+    check('a silent video is still a size', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' })?.bytes, 10100000)
+    check('and a length of nothing has no size at all', estimateOutputSize({ seconds: 0, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' }), undefined)
+    // The units a reader thinks in, and the confidence drawn in the SUMMARY's own line.
     check('a size is written in the unit that fits it', [sizeLabel(900), sizeLabel(1500), sizeLabel(1500000), sizeLabel(2000000000)], ['900 B', '1.5 kB', '1.5 MB', '2 GB'])
+    check('an exact figure is written plainly', estimateLabel({ bytes: 1939200, confidence: 'exact' }), '1.9 MB')
+    check('a fixed-rate one is marked as the target it is', estimateLabel({ bytes: 10100000, confidence: 'close' }), '≈ 10.1 MB')
+    check('and a content-dependent one is drawn as the range it is, in one unit', estimateLabel({ bytes: 311040, high: 1451520, confidence: 'rough' }), '~ 0.3-1.5 MB')
+    check('while nothing to go on says UNKNOWN rather than guessing', estimateLabel(undefined), 'UNKNOWN')
+    // The frame count a run is sized by.
+    check('an assembled length is counted at the rate it is written', framesFrom(10, 30), 300)
+    check('and a length of nothing is still one frame', framesFrom(0, 30), 1)
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
