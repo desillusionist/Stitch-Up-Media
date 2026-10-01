@@ -462,6 +462,32 @@ export const timecode = (seconds: number, fps: number) => {
 export const frameStamp = (seconds: number, fps: number) => `FRAME ${frameNumber(seconds, fps)}`
 
 /**
+ * The seconds a timecode of the window's own shape stands for: HH:MM:SS.FF.
+ *
+ * The last field is SECONDS AND FRAMES rather than a decimal fraction — `00:00:13.10` is thirteen seconds
+ * and ten frames, which is what `timecode` writes and therefore what a reader types back into it. The
+ * groups are optional and may be left half-typed, so `13`, `00:13` and `00:00:13.10` all read; anything
+ * that is not a figure at all answers with nothing, and the field leaves the value where it was.
+ */
+export const secondsFromTimecode = (text: string, fps: number): number | null => {
+  const rate = fps > 0 ? Math.round(fps) : 25
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  const groups = trimmed.split(':')
+  const last = groups.pop() ?? ''
+  const [secondsText, framesText] = last.split('.')
+  const whole = Number(secondsText)
+  if (!Number.isFinite(whole)) return null
+  const frames = framesText === undefined || framesText === '' ? 0 : Number(framesText)
+  if (!Number.isFinite(frames)) return null
+  const before = groups.map(Number)
+  if (before.some((value) => !Number.isFinite(value))) return null
+  // HH:MM before the last group, or MM when only one of them is there.
+  const lead = before.length === 2 ? before[0] * 3600 + before[1] * 60 : before.length === 1 ? before[0] * 60 : 0
+  return Math.max(0, lead + whole + frames / rate)
+}
+
+/**
  * The frame a time falls on, as a number and nothing else.
  *
  * A stamp carries the word FRAME because it is read on its own; a scale does not, because the column of

@@ -8,13 +8,13 @@ import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES
 import { PREVIEW_SPEEDS, speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, speedFor } from '../lib/clipSpeed'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
-import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
-import { applyCodecChoice, codecChoiceValue, codecChoicesFor } from '../lib/codecChoices'
+import { applyContainerChange, AUDIO_CONTAINERS, IMAGE_CONTAINERS, PICTURE_CONTAINERS } from '../lib/containerSwitch'
+import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
 import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } from '../lib/quickLookTarget'
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { sequenceLabel } from '../lib/sequenceLabel'
@@ -65,8 +65,6 @@ const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
 
 const CONTAINERS: Array<EncodingPreset['container']> = ['mp4', 'mov', 'mkv', 'webm', 'mp3', 'wav', 'm4a', 'flac', 'png', 'jpg', 'gif']
-const AUDIO_CODECS: Array<EncodingPreset['audioCodec']> = ['copy', 'aac', 'mp3', 'opus', 'pcm', 'flac']
-const AUDIO_CONTAINERS: Array<EncodingPreset['container']> = ['mp3', 'wav', 'm4a', 'flac']
 const RESOLUTIONS: Array<EncodingPreset['resolution']> = ['source', '4k', '1080p', '720p']
 
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
@@ -197,8 +195,31 @@ const EditorRow: React.FC<{ label: string; value: React.ReactNode; reason?: stri
   <div className="editor-row" title={reason}><span>{label}</span><strong>{value}</strong></div>
 )
 
-const EditorField: React.FC<{ label: string; hint?: string; reason?: string; children: React.ReactNode }> = ({ label, hint, reason, children }) => (
-  <label className="editor-field" title={reason}><span>{label}{hint ? <em>{hint}</em> : null}</span>{children}</label>
+/**
+ * One editable setting: its name, an optional reading of the figure beside it, and a way back.
+ *
+ * The RESET sits at the end of the name row and takes that field, and only that field, back to what an
+ * untouched job has: the codec a container opens on, no bitrate, the clip's own speed. It is drawn only
+ * when there is something to put back — a reset that is always there is a button whose press mostly does
+ * nothing — and it is prevented from reaching the label, whose own click would otherwise hand the press
+ * to the control underneath.
+ */
+const EditorField: React.FC<{ label: string; hint?: string; reason?: string; canReset?: boolean; onReset?: () => void; children: React.ReactNode }> = ({ label, hint, reason, canReset, onReset, children }) => (
+  <label className="editor-field" title={reason}>
+    <span>
+      {label}
+      {hint ? <em>{hint}</em> : null}
+      {onReset && canReset ? <button
+        type="button"
+        className="field-reset"
+        aria-label={`Reset ${label.toLowerCase()} to its default`}
+        title="Put this back to what an untouched job has"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={(event) => { event.preventDefault(); event.stopPropagation(); onReset() }}
+      ><RotateCcw size={11} /></button> : null}
+    </span>
+    {children}
+  </label>
 )
 
 /**
@@ -2887,9 +2908,12 @@ export const EditJobApp: React.FC = () => {
   const audioOnly = AUDIO_CONTAINERS.includes(container)
   const isImageContainer = IMAGE_CONTAINERS.includes(container)
   const isGif = container === 'gif'
-  const audioDisabled = audioOnly || isGif || isImageContainer
+  // A container that carries a picture and no sound: a still, or the animated one. Nothing may be written
+  // into it as a sound, so the export's audio toggle is drawn off and cannot be moved.
+  const soundNeverPossible = PICTURE_CONTAINERS.includes(container)
+  const audioDisabled = audioOnly || soundNeverPossible
   const videoReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : isGif ? 'GIF OUTPUT FORCES THE GIF ENCODER AND DROPS AUDIO.' : undefined
-  const audioReason = audioOnly ? undefined : isGif ? 'GIF OUTPUT CARRIES NO AUDIO.' : isImageContainer ? 'IMAGE OUTPUT CARRIES NO AUDIO TRACK.' : undefined
+  const audioReason = audioOnly ? undefined : soundNeverPossible ? 'THIS FORMAT CARRIES NO AUDIO TRACK.' : undefined
   /**
    * What the job's own sources are made of, which is what decides whether a picture has to be supplied
    * for it at all.
@@ -3188,15 +3212,21 @@ export const EditJobApp: React.FC = () => {
                   const applyDuration = (seconds: number) => {
                     if (seconds > 0) setClipSpeed(inspectedSource, inspectedClipIndex, { speed: trimmedSeconds / seconds })
                   }
-                  // The length the clip occupies, said in the window's own units beside the field that sets
-                  // it. In TIME it is a timecode and the share of the source it keeps — 100% at the clip's
-                  // own speed, 50% at twice it — because the speed and the length are one relationship and
-                  // a reader comparing the two figures wants both on the line.
+                  // The reading beside the length: the share of the source the clip keeps, which is the
+                  // speed read the other way round — 100% at the clip's own speed, 50% at twice it. The
+                  // figure ITSELF is the field's own, written as a timecode in the window's units, which
+                  // is the shape a reader compares against the ruler.
                   const durationHint = timestampMode === 'framestamp'
-                    ? `${Math.max(1, Math.round(inspectedSegment.duration * rate))} FRAMES`
-                    : `${timecode(inspectedSegment.duration, rate)} - (${Math.round(100 / Math.max(0.0001, inspectedSpeed.speed))}%)`
+                    ? 'IN FRAMES'
+                    : `(${Math.round(100 / Math.max(0.0001, inspectedSpeed.speed))}%)`
                   return <>
-                    <EditorField label="SPEED" hint={inspectedSpeed.speed === 1 ? 'SOURCE RATE' : `TRIM ${stamp(trimmedSeconds)}`} reason="How fast this clip runs. The trim is what the clip keeps of its source; the speed is how quickly that run is played, so the clip's length in the output follows from the two together.">
+                    <EditorField
+                      label="SPEED"
+                      hint={inspectedSpeed.speed === 1 ? 'SOURCE RATE' : `TRIM ${stamp(trimmedSeconds)}`}
+                      reason="How fast this clip runs. The trim is what the clip keeps of its source; the speed is how quickly that run is played, so the clip's length in the output follows from the two together."
+                      canReset={inspectedSpeed.speed !== 1}
+                      onReset={() => setClipSpeed(inspectedSource, inspectedClipIndex, { speed: 1 })}
+                    >
                       <NumberField
                         className="editor-input"
                         min={MIN_CLIP_SPEED}
@@ -3207,10 +3237,23 @@ export const EditJobApp: React.FC = () => {
                         ariaLabel="The speed this clip is played at"
                       />
                     </EditorField>
-                    <EditorField label="DURATION" hint={durationHint} reason="How long this clip occupies on the timeline. It is the trimmed source length divided by the speed, so editing it here chooses the speed that length needs.">
-                      {timestampMode === 'framestamp'
-                        ? <NumberField className="editor-input" min={1} step={1} value={Math.max(1, Math.round(inspectedSegment.duration * rate))} onValue={(frames) => applyDuration(frames / rate)} ariaLabel="The length this clip occupies on the timeline" />
-                        : <NumberField className="editor-input" min={0.01} step={0.05} value={Math.round(inspectedSegment.duration * 1000) / 1000} onValue={applyDuration} ariaLabel="The length this clip occupies on the timeline" />}
+                    <EditorField
+                      label="DURATION"
+                      hint={durationHint}
+                      reason="How long this clip occupies on the timeline, in the window's own units. It is the trimmed source length divided by the speed, so editing it here chooses the speed that length needs; one notch or one arrow key is one frame of it."
+                      canReset={inspectedSpeed.speed !== 1}
+                      onReset={() => setClipSpeed(inspectedSource, inspectedClipIndex, { speed: 1 })}
+                    >
+                      <NumberField
+                        className="editor-input"
+                        min={timestampMode === 'framestamp' ? 1 : 1 / rate}
+                        step={1 / rate}
+                        value={timestampMode === 'framestamp' ? Math.max(1, Math.round(inspectedSegment.duration * rate)) : inspectedSegment.duration}
+                        onValue={(entered) => applyDuration(timestampMode === 'framestamp' ? entered / rate : entered)}
+                        format={timestampMode === 'framestamp' ? undefined : (seconds) => timecode(seconds, rate)}
+                        parse={timestampMode === 'framestamp' ? undefined : (text) => secondsFromTimecode(text, rate)}
+                        ariaLabel="The length this clip occupies on the timeline"
+                      />
                     </EditorField>
                     {inspectedSpeed.speed !== 1 && inspectedHasPicture && <EditorField label="INTERPOLATION" hint="EXPORT" reason="What fills the frames a speed leaves out or repeats. SAMPLING keeps whichever source frame the output instant lands on, which is cheap and can judder; BLENDING averages the neighbours so a slowed clip reads as movement. It changes the picture only, and only in the written file. A clip with no picture has no frames to fill, so the choice is not offered for one.">
                       <EditorSelect
@@ -3453,17 +3496,30 @@ export const EditJobApp: React.FC = () => {
         <div className="export-content">
           {tab === 'EXPORT' && <>
             <EditorField label="FORMAT"><EditorSelect value={container} options={CONTAINERS.map((name) => ({ value: name, label: name.toUpperCase() }))} onChange={(next) => changeContainer(next as EncodingPreset['container'])} /></EditorField>
-            <EditorField label="PRESET" reason={videoReason}><EditorSelect
+            <EditorField
+              label="PRESET"
+              reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO THERE IS NO PICTURE TO WRITE.' : undefined}
+              canReset={codecChoiceValue(draft.preset) !== defaultCodecChoiceValue(container)}
+              onReset={() => updatePreset(applyCodecChoice(latest().preset, defaultCodecChoiceValue(container)))}
+            ><EditorSelect
               value={codecChoiceValue(draft.preset)}
               options={codecChoicesFor(container).map((choice) => ({ value: choice.value, label: choice.label, disabled: Boolean(choice.reason), title: choice.reason }))}
               disabled={audioOnly}
               onChange={(next) => updatePreset(applyCodecChoice(latest().preset, next))}
               ariaLabel="What the picture is written as"
             /></EditorField>
-            <EditorField label="OUTPUT NAME"><input type="text" className="editor-input" value={draft.outputFilename} onChange={(event) => updateDraft({ outputFilename: event.target.value, outputFilenameManuallySet: true })} /></EditorField>
+            <EditorField
+              label="OUTPUT NAME"
+              canReset={Boolean(draft.outputFilenameManuallySet)}
+              onReset={() => updateDraft({ outputFilename: deriveOutputFilename(latest(), latest().preset, container), outputFilenameManuallySet: false })}
+            ><input type="text" className="editor-input" value={draft.outputFilename} onChange={(event) => updateDraft({ outputFilename: event.target.value, outputFilenameManuallySet: true })} /></EditorField>
             <EditorRow label="PRESET NAME" value={presetEdited ? 'CUSTOM' : draft.preset.name} reason={presetEdited ? presetSummary(draft.preset).join('\n') : undefined} />
-            <EditorToggle label="EXPORT VIDEO" checked={draft.preset.outputMode !== 'audio'} onChange={(checked) => updatePreset({ outputMode: checked ? undefined : 'audio' })} />
-            <EditorToggle label="EXPORT AUDIO" checked={draft.preset.audioEnabled !== false} onChange={audioDisabled ? undefined : (checked) => updatePreset({ audioEnabled: checked })} reason={audioReason} />
+            {/* WHAT EACH STREAM'S PRESENCE IS HERE. A container that carries only one of them cannot have the
+                other switched on, and cannot have the one it DOES carry switched off — a WAV with no sound is
+                nothing at all — so the toggle for that stream is drawn checked or unchecked and cannot be
+                moved, which is the honest shape of a decision the format already made. */}
+            <EditorToggle label="EXPORT VIDEO" checked={audioOnly ? false : draft.preset.outputMode !== 'audio'} onChange={audioOnly ? undefined : (checked) => updatePreset({ outputMode: checked ? undefined : 'audio' })} reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO THERE IS NO PICTURE TO WRITE.' : undefined} />
+            <EditorToggle label="EXPORT AUDIO" checked={audioOnly ? true : soundNeverPossible ? false : draft.preset.audioEnabled !== false} onChange={audioOnly || soundNeverPossible ? undefined : (checked) => updatePreset({ audioEnabled: checked })} reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO IT IS ALWAYS WRITTEN.' : soundNeverPossible ? 'GIF AND IMAGE OUTPUT CARRY NO AUDIO TRACK.' : undefined} />
             <EditorToggle label="EXPORT CAPTIONS" checked={false} reason="CAPTION OUTPUT HAS NO BACKING FIELD YET." />
           </>}
 
@@ -3481,7 +3537,12 @@ export const EditJobApp: React.FC = () => {
                 <button className={matchSource || matchSourceChosen ? 'is-selected' : ''} onClick={applyMatchSource} title="Match the frame to the picture in hand: its shape and its own pixel size">MS</button>
               </div>
             </div>
-            <EditorField label="RESOLUTION" reason={videoReason}><EditorSelect value={draft.preset.resolution} options={RESOLUTIONS.map((name) => ({ value: name, label: name.toUpperCase() }))} disabled={audioOnly || isGif} onChange={(next) => changeResolution(next as EncodingPreset['resolution'])} /></EditorField>
+            <EditorField
+              label="RESOLUTION"
+              reason={videoReason}
+              canReset={draft.preset.resolution !== 'source'}
+              onReset={() => updatePreset({ resolution: 'source', width: undefined, height: undefined })}
+            ><EditorSelect value={draft.preset.resolution} options={RESOLUTIONS.map((name) => ({ value: name, label: name.toUpperCase() }))} disabled={audioOnly || isGif} onChange={(next) => changeResolution(next as EncodingPreset['resolution'])} /></EditorField>
             <div className="editor-field"><span>EXACT SIZE<em>OVERRIDES RESOLUTION</em></span>
               <div className="exact-row">
                 <label className="mini-field"><span>W</span><NumberField min={2} step={2} className="editor-input" value={draft.preset.width} placeholder={outputFrame ? String(outputFrame.width) : '-'} disabled={audioOnly || isGif} onValue={(value) => setExactEdge('width', value)} title="Output width in pixels" /></label>
@@ -3632,7 +3693,12 @@ export const EditJobApp: React.FC = () => {
             {/* The two micro-labels this section carried are in the fields now: what a blank FPS means,
                 and what a quality figure looks like. A label beside a field is read as a title for it;
                 a placeholder is read as what to put in it. */}
-            <EditorField label="FPS" reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={`SOURCE | ${defaultFps}`} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
+            <EditorField
+              label="FPS"
+              reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}
+              canReset={draft.preset.fps !== undefined}
+              onReset={() => changeFps(undefined)}
+            ><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={`SOURCE | ${defaultFps}`} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
             <div className="editor-field">
               <span><span className="editor-label">QUALITY</span><EditorInfo text={QUALITY_HELP} /></span>
               <input type="text" className="editor-input" aria-label="Video bitrate" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE | E.G. 8M" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} />
@@ -3648,7 +3714,18 @@ export const EditJobApp: React.FC = () => {
               value={tabAudioSource ? (tabAudioFacts ?? 'NO SOUND') : 'PROBING...'}
               reason={tabAudioSource && tabAudioCodec ? `${sourceName(tabAudioSource)} - ${tabAudioCodec}.` : undefined}
             />
-            <EditorField label="CODEC" reason={audioReason}><EditorSelect value={draft.preset.audioCodec} options={AUDIO_CODECS.map((name) => ({ value: name, label: name.toUpperCase() }))} disabled={audioDisabled} onChange={(next) => updatePreset({ audioCodec: next as EncodingPreset['audioCodec'] })} /></EditorField>
+            <EditorField
+              label="CODEC"
+              reason={audioReason}
+              canReset={audioChoiceValue(draft.preset) !== defaultAudioChoiceValue(container)}
+              onReset={() => updatePreset(applyAudioChoice(latest().preset, defaultAudioChoiceValue(container)))}
+            ><EditorSelect
+              value={audioChoiceValue(draft.preset)}
+              options={audioChoicesFor(container).map((choice) => ({ value: choice.value, label: choice.label, disabled: Boolean(choice.reason), title: choice.reason }))}
+              disabled={audioDisabled}
+              onChange={(next) => updatePreset(applyAudioChoice(latest().preset, next))}
+              ariaLabel="What the sound is written as"
+            /></EditorField>
             {/* A rung of the encoder's own ladder, or a figure of the user's — and NOTHING AT ALL where the codec
                 has no bitrate to set, because a lossless encoder writes what the samples are. */}
             {bitrateApplies(draft.preset.audioCodec) && <EditorField label="BITRATE" hint={bitrateCustom ? 'IN KBPS' : undefined} reason={audioReason ?? 'How many bits a second the sound is written at. A lossless codec has no such figure and is not offered one.'}>

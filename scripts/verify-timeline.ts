@@ -20,11 +20,11 @@ import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurati
 import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, timecode, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 import { applyContainerChange } from '../src/lib/containerSwitch'
-import { applyCodecChoice, codecChoiceValue, codecChoicesFor, containerTakesCodec, reconcileCodecToContainer } from '../src/lib/codecChoices'
+import { applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, containerTakesAudio, containerTakesCodec, reconcileAudioToContainer, reconcileCodecToContainer } from '../src/lib/codecChoices'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -2258,8 +2258,11 @@ void (async () => {
   console.log('\n== which codecs a container offers ==')
   {
     const values = (container: EncodingPreset['container']) => codecChoicesFor(container).map((choice) => choice.value)
-    check('a MOV offers the ProRes family', values('mov').filter((value) => value.startsWith('prores')), ['prores-proxy', 'prores-lt', 'prores-422', 'prores-hq', 'prores-4444'])
+    check('a MOV offers the ProRes family', values('mov').filter((value) => value.startsWith('prores')), ['prores-proxy', 'prores-lt', 'prores-422', 'prores-hq', 'prores-4444', 'prores-4444xq'])
     check('and DXV and Hap beside it', [values('mov').includes('dxv'), values('mov').includes('hap')], [true, true])
+    // The DXV generations this encoder cannot write are shown and cannot be chosen, rather than missing.
+    const dxvEntries = codecChoicesFor('mov').filter((choice) => choice.value.startsWith('dxv'))
+    check('DXV is offered once as what it is, with the rest refused', [dxvEntries.length, dxvEntries.filter((choice) => !choice.reason).map((choice) => choice.value)], [4, ['dxv']])
     check('an MP4 offers none of them', values('mp4').filter((value) => value.startsWith('prores') || value === 'dxv' || value === 'hap'), [])
     check('a WebM offers only what it can hold', values('webm'), ['copy', 'vp9', 'av1'])
     check('a GIF offers its own encoder', values('gif'), ['gif'])
@@ -2270,7 +2273,7 @@ void (async () => {
     check('which is what that container reads by', codecChoiceValue({ container: 'wav', videoCodec: 'h264' }), 'none')
 
     // The five ProRes entries are told apart by their PROFILE, which is what the select has to carry.
-    check('each ProRes entry carries its own profile', codecChoicesFor('mov').filter((choice) => choice.videoCodec === 'prores').map((choice) => choice.proresProfile), ['proxy', 'lt', 'standard', 'hq', '4444'])
+    check('each ProRes entry carries its own profile', codecChoicesFor('mov').filter((choice) => choice.videoCodec === 'prores').map((choice) => choice.proresProfile), ['proxy', 'lt', 'standard', 'hq', '4444', '4444xq'])
     const master = { id: 'p', name: 'P', container: 'mov', videoCodec: 'prores', audioCodec: 'aac', resolution: 'source', proresProfile: 'hq' } as EncodingPreset
     check('a ProRes HQ preset stands on its own entry', codecChoiceValue(master), 'prores-hq')
     check('and ProRes with no profile stands on the standard one', codecChoiceValue({ ...master, proresProfile: undefined }), 'prores-422')
@@ -2303,6 +2306,43 @@ void (async () => {
     check('and drops one it cannot', changed('vp9', 'mov'), ['mov', 'h264'])
     check('leaving an image container for a movie one drops the image codec', changed('png', 'mp4', 'png'), ['mp4', 'h264'])
     check('and moving into a still container takes its own', changed('h264', 'jpg'), ['jpg', 'mjpeg'])
+  }
+
+  console.log('\n== which sounds a container offers ==')
+  {
+    const soundValues = (container: EncodingPreset['container']) => audioChoicesFor(container).filter((choice) => !choice.reason).map((choice) => choice.value)
+    check('a WebM offers Opus and nothing else it can hold', soundValues('webm'), ['copy', 'opus'])
+    check('an MP4 offers the sounds a player expects', soundValues('mp4'), ['copy', 'aac', 'mp3', 'opus'])
+    check('a WAV offers the one codec it is', soundValues('wav'), ['pcm'])
+    check('an M4A opens on AAC', soundValues('m4a'), ['aac', 'mp3'])
+    check('a MATROSKA offers the lot', soundValues('mkv'), ['copy', 'aac', 'mp3', 'opus', 'pcm', 'flac'])
+    // A picture container carries no sound at all, and says so where the list would be.
+    const pngSound = audioChoicesFor('png')
+    check('a picture container offers one entry, and it cannot be chosen', [pngSound.length, Boolean(pngSound[0].reason)], [1, true])
+    check('which is what that container reads by', audioChoiceValue({ container: 'gif', audioCodec: 'aac' }), 'none')
+
+    check('whether a container takes a sound is asked of its own list', [containerTakesAudio('webm', 'aac'), containerTakesAudio('webm', 'opus'), containerTakesAudio('mp4', 'flac')], [false, true, false])
+    type Audio = EncodingPreset['audioCodec']
+    const soundMoved = (audioCodec: Audio, container: EncodingPreset['container']) => {
+      const next = reconcileAudioToContainer({ id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec, resolution: 'source' } as EncodingPreset, container)
+      return [next.container, next.audioCodec]
+    }
+    check('an AAC job moved into a WebM becomes Opus', soundMoved('aac', 'webm'), ['webm', 'opus'])
+    check('and one moved into a WAV becomes PCM', soundMoved('aac', 'wav'), ['wav', 'pcm'])
+    check('while Opus into a Matroska is left alone', soundMoved('opus', 'mkv'), ['mkv', 'opus'])
+    check('and an AAC into an MP4 is too', soundMoved('aac', 'mp4'), ['mp4', 'aac'])
+  }
+
+  console.log('\n== a timecode read back ==')
+  {
+    check('the frame group is a COUNT of frames, not a decimal', secondsFromTimecode('00:00:13.10', 25), 13.4)
+    check('and it round-trips through the shape the window writes', timecode(secondsFromTimecode('00:00:13.10', 25) as number, 25), '00:00:13.10')
+    check('hours are counted up', secondsFromTimecode('01:02:03.00', 25), 3723)
+    check('a half-typed figure still reads', secondsFromTimecode('00:12', 25), 12)
+    check('and so does one with no groups at all', secondsFromTimecode('13', 25), 13)
+    check('a figure with no frames reads as whole seconds', secondsFromTimecode('00:00:07', 25), 7)
+    check('nonsense reads as nothing', [secondsFromTimecode('', 25), secondsFromTimecode('ab', 25), secondsFromTimecode('00:xx:01.00', 25)], [null, null, null])
+    check('and a zero timecode is zero seconds', secondsFromTimecode('00:00:00.00', 25), 0)
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

@@ -303,6 +303,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-group-body > .editor-field:first-child { padding-top: 6px; }
 .editor-field > span { display: flex; justify-content: space-between; gap: 8px; position: relative; }
 .editor-field em, .crop-head em { color: var(--ui-border); font-style: normal; font-size: 8px; letter-spacing: .06em; }
+/* The way back for one field: at the end of its name row, drawn only where there is something to put
+   back. It is a small monochrome mark rather than a button, because it belongs to the field beside it
+   rather than to the panel. */
+.field-reset { flex: 0 0 auto; width: 16px; height: 16px; margin-left: 6px; padding: 0; display: grid; place-items: center; color: var(--ui-border); background: transparent; border: 0; cursor: pointer; }
+.field-reset:hover { color: var(--ui-accent); }
 .editor-field select, .editor-field input, .editor-group select, .editor-group input, .crop-head select { width: 100%; margin: 0; padding: 7px 8px; color: var(--ui-foreground); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; }
 .editor-field select:focus, .editor-field input:focus, .editor-group select:focus, .editor-group input:focus, .crop-head select:focus { border-color: var(--ui-accent); }
 /* The EDIT JOB window draws its own state, so the platform's focus box is suppressed rather

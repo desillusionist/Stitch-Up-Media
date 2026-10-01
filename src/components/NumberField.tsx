@@ -45,12 +45,23 @@ export const NumberField: React.FC<{
   max?: number
   /** How far one notch or one arrow key moves the figure. Absent is one. */
   step?: number
+  /**
+   * How the figure is WRITTEN when it is not being typed into, for a field whose figure is not a number
+   * a reader would type — a length the window shows as a timecode, say.
+   *
+   * A formatted field is a text input rather than a number one, because a spinner cannot show
+   * `00:00:12.00` and would offer to step a figure that is not on screen. The wheel and the arrow keys
+   * still work: they move the VALUE by `step` and the field writes the new figure back out.
+   */
+  format?: (value: number) => string
+  /** The figure a typed entry means, or nothing where it is not a figure yet. Required with `format`. */
+  parse?: (text: string) => number | null
   className?: string
   title?: string
   placeholder?: string
   disabled?: boolean
   ariaLabel?: string
-}> = ({ value, onValue, onClear, min, max, step, className, title, placeholder, disabled, ariaLabel }) => {
+}> = ({ value, onValue, onClear, min, max, step, format, parse, className, title, placeholder, disabled, ariaLabel }) => {
   const [text, setText] = useState<string | null>(null)
   const [seen, setSeen] = useState(value)
   /** Whether the last change to the value was this field's own entry, which has yet to be seen here. */
@@ -72,7 +83,7 @@ export const NumberField: React.FC<{
     if (!ownEntry.current) setText(null)
     ownEntry.current = false
   }
-  const shown = text ?? (value === undefined ? '' : String(value))
+  const shown = text ?? (value === undefined ? '' : format ? format(value) : String(value))
 
   /**
    * The figure moved by whole steps, held to the bounds.
@@ -111,12 +122,14 @@ export const NumberField: React.FC<{
     const onWheel = (event: WheelEvent) => {
       if (disabled) return
       event.preventDefault()
-      // A line of wheel is one step; a pixel delta is accumulated into steps.
-      wheelRemainder.current += event.deltaMode === 1 ? -event.deltaY : -event.deltaY / 50
+      // A line of wheel is one step. A pixel delta is accumulated against a notch — a mouse sends about
+      // a hundred pixels for one, a trackpad a stream of small ones — and ONE step is taken per event at
+      // most, so a notch is a notch on either device and a fast flick cannot race the figure away.
+      wheelRemainder.current += event.deltaMode === 1 ? -event.deltaY : -event.deltaY / 100
       const steps = Math.trunc(wheelRemainder.current)
       if (steps === 0) return
       wheelRemainder.current -= steps
-      stepBy(steps > 0 ? 1 : -1, Math.min(Math.abs(steps), 10))
+      stepBy(steps > 0 ? 1 : -1, 1)
     }
     element.addEventListener('wheel', onWheel, { passive: false })
     unbound.current = () => element.removeEventListener('wheel', onWheel)
@@ -124,7 +137,7 @@ export const NumberField: React.FC<{
 
   return <input
     ref={bindWheel}
-    type="number"
+    type={format ? 'text' : 'number'}
     className={className}
     title={title}
     placeholder={placeholder}
@@ -137,8 +150,8 @@ export const NumberField: React.FC<{
     onChange={(event) => {
       const raw = event.target.value
       setText(raw)
-      const parsed = Number(raw)
-      if (raw.trim() !== '' && Number.isFinite(parsed)) { ownEntry.current = true; onValue(parsed) }
+      const parsed = parse ? parse(raw) : (raw.trim() === '' ? null : Number(raw))
+      if (parsed !== null && Number.isFinite(parsed)) { ownEntry.current = true; onValue(parsed) }
     }}
     onKeyDown={(event) => {
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return

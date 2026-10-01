@@ -989,7 +989,10 @@ export class FFmpegEngine {
         cmd.videoCodec('prores_ks')
       }
       const profile = preset.proresProfile || 'standard'
-      const profileMap: Record<string, number> = { proxy: 0, lt: 1, standard: 2, hq: 3, '4444': 4 }
+      // The two 4444 profiles are the only higher ones: 4 is 4444 and 5 is 4444 XQ. There is no 8-bit
+      // ProRes to offer — the codec's own pixel formats are 10-bit with a 12-bit alpha plane, and this
+      // build writes yuv422p10le, yuv444p10le and yuva444p10le and nothing else.
+      const profileMap: Record<string, number> = { proxy: 0, lt: 1, standard: 2, hq: 3, '4444': 4, '4444xq': 5 }
       cmd.outputOptions([`-profile:v ${profileMap[profile] ?? 2}`])
     } else if (preset.videoCodec === 'vp9') {
       cmd.videoCodec('libvpx-vp9')
@@ -1104,6 +1107,11 @@ export class FFmpegEngine {
       cmd.audioCodec('libopus')
     } else if (preset.audioCodec === 'mp3') {
       cmd.audioCodec('libmp3lame')
+    } else if (preset.audioCodec === 'flac') {
+      // The one the chain used to miss. FLAC was settable and had no branch of its own, so it fell
+      // through to the muxer's own default — a Matroska wrote VORBIS under a FLAC label, which
+      // `npm run verify-codecs` caught by reading the file back rather than the argument list.
+      cmd.audioCodec('flac')
     }
 
     if (preset.audioBitrate && preset.audioCodec !== 'copy' && preset.audioCodec !== 'pcm') {

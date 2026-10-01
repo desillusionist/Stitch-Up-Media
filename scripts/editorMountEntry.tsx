@@ -145,6 +145,18 @@ const selectIn = (label: string) => fieldFor(label)?.querySelector('.editor-sele
 const rowValue = (label: string) => ([...document.querySelectorAll('.editor-row')] as HTMLElement[])
   .find((row) => row.querySelector('span')?.textContent?.trim() === label)?.querySelector('strong')?.textContent?.trim() ?? null
 
+/**
+ * The stream toggles as they stand: what each is showing and whether it can be moved.
+ *
+ * The FORMAT decides what a job's two streams can be — a sound-only container writes no picture, a
+ * picture-only one writes no sound, and a container that carries a stream always writes it — so the
+ * interesting reading is the CHECKED and DISABLED pair rather than the label.
+ */
+const toggleStates = () => Object.fromEntries(([...document.querySelectorAll('.editor-toggle')] as HTMLElement[]).map((element) => {
+  const input = element.querySelector('input')
+  return [(element.querySelector('span')?.textContent ?? '').trim(), { checked: Boolean(input?.checked), disabled: Boolean(input?.disabled) }]
+}))
+
 /** What a dropdown is showing, and what it offers, read off the DOM the same way a reader would. */
 const valueOf = (control: HTMLElement | null) => control?.querySelector('.editor-select-trigger')?.getAttribute('data-value') ?? null
 const optionsOf = (control: HTMLElement | null) => control ? [...control.querySelectorAll('.editor-select-option')].map((option) => option.getAttribute('data-value')) : []
@@ -251,10 +263,16 @@ const measureInspector = async () => {
   /** The pane's plain readings, by their label: the four figures of the clip's run are read this way. */
   const readings = Object.fromEntries(([...scroller.querySelectorAll('.editor-row')] as HTMLElement[])
     .map((element) => [element.querySelector('span')?.textContent?.trim() ?? '', element.querySelector('strong')?.textContent?.trim() ?? '']))
-  /** The hint a field carries, which is where the DURATION readout lives. */
+  /** The hint a field carries, which is where the reading beside a figure lives. */
   const hintOf = (label: string) => ([...scroller.querySelectorAll('.editor-field')] as HTMLElement[])
     .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith(label))
     ?.querySelector('em')?.textContent?.trim() ?? null
+  /** The figure a field is showing, which for the length is a timecode rather than a number. */
+  const fieldValueOf = (label: string) => ([...scroller.querySelectorAll('.editor-field')] as HTMLElement[])
+    .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith(label))
+    ?.querySelector('input') as HTMLInputElement | null
+  /** How many fields are offering a way back to what an untouched job has. */
+  const resets = () => scroller.querySelectorAll('.field-reset').length
   const speedField = scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
   // One question about the retiming options, asked at a speed where they mean something and then undone.
   const offered = () => ({
@@ -262,7 +280,9 @@ const measureInspector = async () => {
     maintainPitch: labelsOf('.inspector-scroll .editor-toggle').some((label) => label.startsWith('MAINTAIN AUDIO PITCH')),
   })
   const atOwnSpeed = offered()
-  const durationAtOwnSpeed = hintOf('DURATION')
+  const durationAtOwnSpeed = fieldValueOf('DURATION')?.value ?? null
+  const durationHintAtOwnSpeed = hintOf('DURATION')
+  const resetsAtOwnSpeed = resets()
   let atTwice = null
   let wheelSteppedTo: string | null = null
   let wheelCancelled: boolean | null = null
@@ -271,6 +291,8 @@ const measureInspector = async () => {
   let atCeiling: string | null = null
   let steppedPastCeiling: string | null = null
   let durationAtTwice: string | null = null
+  let durationHintAtTwice: string | null = null
+  let resetsAtTwice = 0
   let fieldType: string | null = null
   if (speedField) {
     const speed = () => scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
@@ -287,7 +309,9 @@ const measureInspector = async () => {
       interpolation: labels.some((label) => label.startsWith('INTERPOLATION')),
       maintainPitch: labelsOf('.inspector-scroll .editor-toggle').some((label) => label.startsWith('MAINTAIN AUDIO PITCH')),
     }
-    durationAtTwice = hintOf('DURATION')
+    durationAtTwice = fieldValueOf('DURATION')?.value ?? null
+    durationHintAtTwice = hintOf('DURATION')
+    resetsAtTwice = resets()
     // THE WHEEL. A line of wheel is one step, and the event has to come back CANCELLED — that is what
     // stops the drawer scrolling out from under the field the reader was aiming at.
     const wheelEvent = new WheelEvent('wheel', { deltaY: -1, deltaMode: 1, bubbles: true, cancelable: true })
@@ -327,7 +351,11 @@ const measureInspector = async () => {
     closeVisibleAfterScroll: afterScroll,
     readings,
     durationAtOwnSpeed,
+    durationHintAtOwnSpeed,
     durationAtTwice,
+    durationHintAtTwice,
+    resetsAtOwnSpeed,
+    resetsAtTwice,
     fieldType,
     atOwnSpeed,
     atTwice,
@@ -388,6 +416,8 @@ const drive = async () => {
     // the whole of the fix, so it is read as a count.
     nativeSelects: document.querySelectorAll('select').length,
     dropdowns: document.querySelectorAll('.editor-select').length,
+    // What the two stream toggles say for a MOVIE container, which is where both of them are choosable.
+    toggles: toggleStates(),
     // THE PRESET LIST, which belongs to the FORMAT. Read off the DOM the way a reader sees it: the codec
     // select that replaced VIDEO CODEC, what it is offering for this job's container, and the preset
     // NAME the row beside it now carries — the two cannot both be called PRESET.
@@ -602,14 +632,21 @@ const drive = async () => {
   // two sound-only jobs above.
   arrive(coverTask, 'cover')
   await wait(400)
+  const coverAudioToggles = labelsOf('.editor-toggle')
+  const coverPictureSource = pictureSourceSelect() ? 'drawn' : null
+  // The EXPORT tab, which is where the two stream toggles live, and where THIS container's answer to
+  // them is the one the report was about: an mp3 carries a sound and no picture at all.
+  clickTab('EXPORT')
+  await wait(120)
   result.cover = {
     gate: {
       containerKind: outputKind(coverTask.preset.container as never),
       visuals: coverTask.sourcePaths.map(mediaKind),
       takesArt: outputTakesArt(coverTask.preset.container as never),
     },
-    audioToggles: labelsOf('.editor-toggle'),
-    pictureSource: pictureSourceSelect() ? 'drawn' : null,
+    audioToggles: coverAudioToggles,
+    pictureSource: coverPictureSource,
+    toggles: toggleStates(),
   }
 
   // RE-ENTRY, with NOTHING pushed. This is the half that closes the race a re-created window loses: the job

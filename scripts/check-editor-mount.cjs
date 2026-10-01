@@ -312,10 +312,15 @@ app.whenReady().then(async () => {
             if (!readings[label]) problems.push(`the drawer draws no ${label} figure for the clip it describes`)
           }
           if (readings.END === readings.START) problems.push('the clip\u2019s START and END read the same figure, so the range says nothing')
-          // The DURATION readout: a timecode and the share of the source the clip keeps, which is the
-          // speed read the other way round — 100% at the clip's own speed and 50% at twice it.
-          if (!/^\d\d:\d\d:\d\d\.\d\d - \(100%\)$/.test(String(inspector.durationAtOwnSpeed))) problems.push(`the DURATION readout at the clip's own speed is ${JSON.stringify(inspector.durationAtOwnSpeed)} rather than a timecode and 100%`)
-          if (!/^\d\d:\d\d:\d\d\.\d\d - \(50%\)$/.test(String(inspector.durationAtTwice))) problems.push(`the DURATION readout at 2x is ${JSON.stringify(inspector.durationAtTwice)} rather than a timecode and 50%`)
+          // The DURATION readout: the field itself is the TIME, in the window's own shape, and the share
+          // of the source the clip keeps sits beside it — 100% at the clip's own speed and 50% at twice it.
+          if (!/^\d\d:\d\d:\d\d\.\d\d$/.test(String(inspector.durationAtOwnSpeed))) problems.push(`the DURATION field at the clip's own speed reads ${JSON.stringify(inspector.durationAtOwnSpeed)} rather than a timecode`)
+          if (String(inspector.durationHintAtOwnSpeed) !== '(100%)') problems.push(`the reading beside DURATION is ${JSON.stringify(inspector.durationHintAtOwnSpeed)} rather than 100% of the source`)
+          if (!/^\d\d:\d\d:\d\d\.\d\d$/.test(String(inspector.durationAtTwice))) problems.push(`the DURATION field at 2x reads ${JSON.stringify(inspector.durationAtTwice)} rather than a timecode`)
+          if (String(inspector.durationHintAtTwice) !== '(50%)') problems.push(`the reading beside DURATION at 2x is ${JSON.stringify(inspector.durationHintAtTwice)} rather than 50% of the source`)
+          // The way back, which appears only where there is something to put back.
+          if (inspector.resetsAtOwnSpeed !== 0) problems.push(`${inspector.resetsAtOwnSpeed} reset button(s) are drawn on a clip nothing has been changed on`)
+          if (!(inspector.resetsAtTwice >= 2)) problems.push(`a clip at 2x offers ${inspector.resetsAtTwice} reset button(s) rather than one for its speed and one for its length`)
           // The retiming options, asked either side of a speed being set. This clip is a SOUND, so the
           // interpolation — which fills the frames a speed leaves out — has no meaning for it and must not
           // be offered, while the pitch, which a sound has, must be.
@@ -335,6 +340,21 @@ app.whenReady().then(async () => {
         if (!cover.gate.takesArt) problems.push(`mp3 was judged unable to hold artwork: ${JSON.stringify(cover.gate)}`)
         if (!cover.audioToggles.includes('COVER ART')) problems.push('cover art was not offered for a still in a container that can hold it')
         if (cover.pictureSource) problems.push('a picture source was offered by a container that holds artwork rather than frames')
+        // AND THE TWO STREAM TOGGLES, which the FORMAT decides. This job's container is a sound one, so
+        // the picture it cannot write is off and cannot be switched on, and the sound it always writes is
+        // on and cannot be switched off.
+        const gates = cover.toggles || {}
+        if (gates['EXPORT VIDEO'] && gates['EXPORT VIDEO'].checked) problems.push('a sound-only format shows EXPORT VIDEO checked, which is a picture it cannot write')
+        if (gates['EXPORT VIDEO'] && !gates['EXPORT VIDEO'].disabled) problems.push('a sound-only format lets EXPORT VIDEO be switched on')
+        if (gates['EXPORT AUDIO'] && !gates['EXPORT AUDIO'].checked) problems.push('a sound-only format shows EXPORT AUDIO unchecked, which is the sound it always writes')
+        if (gates['EXPORT AUDIO'] && !gates['EXPORT AUDIO'].disabled) problems.push('a sound-only format lets EXPORT AUDIO be switched off')
+      }
+      // And the other side of that gate, read on the MOVIE job: both streams are choosable there.
+      const movieToggles = rendered && rendered.toggles
+      if (!movieToggles) problems.push('the movie job reported nothing about its stream toggles')
+      else {
+        if (!movieToggles['EXPORT VIDEO'] || movieToggles['EXPORT VIDEO'].disabled) problems.push('a movie container does not let EXPORT VIDEO be chosen')
+        if (!movieToggles['EXPORT AUDIO'] || movieToggles['EXPORT AUDIO'].disabled) problems.push('a movie container does not let EXPORT AUDIO be chosen')
       }
       // THE RE-ENTRY. The window is already open, the job has moved in the queue, and NOTHING is pushed: the
       // pull is the only thing that can deliver it. What is asserted is that a pull happened at all (wired)

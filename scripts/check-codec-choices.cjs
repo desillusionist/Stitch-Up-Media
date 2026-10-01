@@ -20,7 +20,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const { execFile } = require('node:child_process')
 const { FFmpegEngine } = require('./.engine.cjs')
-const { codecChoicesFor } = require('./.codecChoices.cjs')
+const { audioChoicesFor, codecChoicesFor } = require('./.codecChoices.cjs')
 
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'codec-choices-'))
 
@@ -75,9 +75,40 @@ const exportWith = (source, container, choice) => new Promise((resolve, reject) 
   }, () => {}, () => resolve(path.join(directory, outputFilename)), (error) => reject(error))
 })
 
+/** What ffmpeg calls each sound codec the preset can be set to. */
+const AUDIO_NAME = { aac: 'aac', mp3: 'mp3', opus: 'opus', pcm: 'pcm_s16le', flac: 'flac' }
+
+/** A picture codec each container accepts, so a sound can be tested without the picture failing first. */
+const PICTURE_FOR = { mp4: 'h264', mov: 'prores', mkv: 'h264', webm: 'vp9' }
+
+/** One export with a SOUND choice: a picture the container accepts, or no picture at all for a sound one. */
+const exportSoundWith = (source, container, choice) => new Promise((resolve, reject) => {
+  const directory = path.join(work, `sound-${container}-${choice.value}`)
+  fs.mkdirSync(directory, { recursive: true })
+  const outputFilename = `out.${container}`
+  const soundOnly = ['mp3', 'wav', 'm4a', 'flac'].includes(container)
+  const engine = new FFmpegEngine()
+  engine.runTask({
+    id: `sound-${container}-${choice.value}`, type: 'transcode', status: 'pending', progress: 0,
+    sourcePaths: [source], outputDirectory: directory, outputFilename,
+    preset: {
+      id: 'p', name: 'P', container, resolution: 'source',
+      videoCodec: soundOnly ? 'copy' : PICTURE_FOR[container],
+      audioCodec: choice.audioCodec,
+      ...(soundOnly ? { outputMode: 'audio' } : {}),
+    },
+  }, () => {}, () => resolve(path.join(directory, outputFilename)), (error) => reject(error))
+})
+
 /** The codec of the file's first picture, which is what says whether the choice was really written. */
 const videoCodec = async (file) => {
   const out = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', file])
+  return String(out).trim()
+}
+
+/** And of its first sound, which is what the audio list is about. */
+const audioCodec = async (file) => {
+  const out = await run('ffprobe', ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', file])
   return String(out).trim()
 }
 
@@ -101,6 +132,24 @@ const videoCodec = async (file) => {
       } catch (error) {
         failures++
         console.log(`FAIL ${container} ${label} did not export at all\n       ${String(error).split('\n')[0].slice(0, 200)}`)
+      }
+    }
+  }
+
+  // THE SOUND HALF. A sound codec a container refuses fails the whole job — which is what a WebM left on
+  // the default AAC did, while its picture was never the problem — so every offered sound is exported
+  // too, and read back.
+  for (const container of CONTAINERS) {
+    const choices = audioChoicesFor(container).filter((choice) => !choice.reason && choice.audioCodec !== 'copy')
+    if (!choices.length) continue
+    console.log(`\n== ${container.toUpperCase()} SOUND ==`)
+    for (const choice of choices) {
+      try {
+        const file = await exportSoundWith(source, container, choice)
+        check(`${container} writes ${choice.value} sound`, await audioCodec(file), AUDIO_NAME[choice.audioCodec])
+      } catch (error) {
+        failures++
+        console.log(`FAIL ${container} ${choice.value} sound did not export at all\n       ${String(error).split('\n')[0].slice(0, 200)}`)
       }
     }
   }

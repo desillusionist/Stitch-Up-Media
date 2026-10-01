@@ -51,7 +51,7 @@ export interface EncodingPreset {
   fps?: number
   crf?: number // 18-28
   hardwareAccelerated?: boolean // VideoToolbox on macOS
-  proresProfile?: 'proxy' | 'lt' | 'standard' | 'hq' | '4444'
+  proresProfile?: 'proxy' | 'lt' | 'standard' | 'hq' | '4444' | '4444xq'
   suffix?: string
   width?: number
   height?: number
