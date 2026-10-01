@@ -35,7 +35,15 @@ export interface EncodingPreset {
   id: string
   name: string
   container: 'mp4' | 'mov' | 'mkv' | 'webm' | 'mp3' | 'wav' | 'm4a' | 'flac' | 'png' | 'jpg' | 'gif'
-  videoCodec: 'h264' | 'hevc' | 'prores' | 'vp9' | 'av1' | 'png' | 'mjpeg' | 'copy'
+  /**
+   * What the picture is written as.
+   *
+   * The set is what the encoder can actually be asked for. It grew the intermediates a finishing house
+   * works in — DXV and Hap for Resolume and Vidvox playback, MPEG-4 part 2 and QuickTime Animation for
+   * older masters — which is why which of them is OFFERED is a question about the container rather than
+   * about this list: see `src/lib/codecChoices.ts`.
+   */
+  videoCodec: 'h264' | 'hevc' | 'prores' | 'vp9' | 'av1' | 'png' | 'mjpeg' | 'gif' | 'dxv' | 'hap' | 'mpeg4' | 'qtrle' | 'copy'
   audioCodec: 'aac' | 'mp3' | 'opus' | 'pcm' | 'flac' | 'copy'
   resolution: 'source' | '4k' | '1080p' | '720p'
   videoBitrate?: string // e.g. '8M'

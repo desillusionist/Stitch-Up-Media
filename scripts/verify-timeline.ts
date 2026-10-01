@@ -23,6 +23,8 @@ import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSa
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, outputRangeLabel, rekeyClipMap, resolveFades, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
+import { applyContainerChange } from '../src/lib/containerSwitch'
+import { applyCodecChoice, codecChoiceValue, codecChoicesFor, containerTakesCodec, reconcileCodecToContainer } from '../src/lib/codecChoices'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -2251,6 +2253,56 @@ void (async () => {
     check('removing a later clip leaves an earlier clip\u2019s speed alone', dropped?.sourceSpeed?.['/a.mp4#0']?.speed, 2)
     const gone = removeSourceFromTask(job, '/a.mp4', 0)
     check('removing the clip itself takes its speed with it', gone?.sourceSpeed, undefined)
+  }
+
+  console.log('\n== which codecs a container offers ==')
+  {
+    const values = (container: EncodingPreset['container']) => codecChoicesFor(container).map((choice) => choice.value)
+    check('a MOV offers the ProRes family', values('mov').filter((value) => value.startsWith('prores')), ['prores-proxy', 'prores-lt', 'prores-422', 'prores-hq', 'prores-4444'])
+    check('and DXV and Hap beside it', [values('mov').includes('dxv'), values('mov').includes('hap')], [true, true])
+    check('an MP4 offers none of them', values('mp4').filter((value) => value.startsWith('prores') || value === 'dxv' || value === 'hap'), [])
+    check('a WebM offers only what it can hold', values('webm'), ['copy', 'vp9', 'av1'])
+    check('a GIF offers its own encoder', values('gif'), ['gif'])
+    check('a still container offers the one codec it writes', [values('png'), values('jpg')], [['png'], ['mjpeg']])
+    // A sound container has nothing to encode a picture as, and says so rather than leaving an empty box.
+    const soundOnly = codecChoicesFor('wav')
+    check('a sound container offers one entry, and it cannot be chosen', [soundOnly.length, Boolean(soundOnly[0].reason)], [1, true])
+    check('which is what that container reads by', codecChoiceValue({ container: 'wav', videoCodec: 'h264' }), 'none')
+
+    // The five ProRes entries are told apart by their PROFILE, which is what the select has to carry.
+    check('each ProRes entry carries its own profile', codecChoicesFor('mov').filter((choice) => choice.videoCodec === 'prores').map((choice) => choice.proresProfile), ['proxy', 'lt', 'standard', 'hq', '4444'])
+    const master = { id: 'p', name: 'P', container: 'mov', videoCodec: 'prores', audioCodec: 'aac', resolution: 'source', proresProfile: 'hq' } as EncodingPreset
+    check('a ProRes HQ preset stands on its own entry', codecChoiceValue(master), 'prores-hq')
+    check('and ProRes with no profile stands on the standard one', codecChoiceValue({ ...master, proresProfile: undefined }), 'prores-422')
+    check('choosing an entry writes the codec and the profile together', (() => { const next = applyCodecChoice(master, 'prores-lt'); return [next.videoCodec, next.proresProfile] })(), ['prores', 'lt'])
+    check('and choosing DXV writes DXV and drops the profile', (() => { const next = applyCodecChoice(master, 'dxv'); return [next.videoCodec, next.proresProfile] })(), ['dxv', undefined])
+
+    // A container that cannot hold the codec moves the job onto what that container is FOR.
+    check('whether a container takes a codec is asked of its own list', [containerTakesCodec('mp4', 'h264'), containerTakesCodec('mp4', 'dxv'), containerTakesCodec('webm', 'h264'), containerTakesCodec('mov', 'hap')], [true, false, false, true])
+    type Preset = EncodingPreset['videoCodec']
+    const moved = (videoCodec: Preset, container: EncodingPreset['container']) => {
+      const next = reconcileCodecToContainer({ ...master, videoCodec }, container)
+      return [next.container, next.videoCodec]
+    }
+    check('a ProRes master moved into an MP4 falls back to H.264', moved('prores', 'mp4'), ['mp4', 'h264'])
+    // A png stream inside a MOV is one no player opens either, so the still-image codecs are not offered
+    // outside the containers they belong to: this is the rule the image-codec special case used to be.
+    check('and a PNG sequence moved into a MOV does too', moved('png', 'mov'), ['mov', 'h264'])
+    check('while VP9 into a WebM is left alone', moved('vp9', 'webm'), ['webm', 'vp9'])
+    check('but H.264 into a WebM is not', moved('h264', 'webm'), ['webm', 'vp9'])
+    check('and DXV into an MKV is not', moved('dxv', 'mkv'), ['mkv', 'h264'])
+    check('a codec the container already holds is left exactly as it is', reconcileCodecToContainer(master, 'mov'), master)
+    check('a still-image codec has no container but its own', codecChoicesFor('mp4').filter((choice) => choice.videoCodec === 'png' || choice.videoCodec === 'mjpeg'), [])
+
+    // And the container change the editor actually calls, end to end.
+    const changed = (videoCodec: Preset, container: EncodingPreset['container'], from: EncodingPreset['container'] = 'mp4') => {
+      const next = applyContainerChange({ ...master, container: from, videoCodec, proresProfile: undefined }, container, false)
+      return [next.container, next.videoCodec]
+    }
+    check('changing FORMAT to MOV keeps a codec MOV can hold', changed('h264', 'mov'), ['mov', 'h264'])
+    check('and drops one it cannot', changed('vp9', 'mov'), ['mov', 'h264'])
+    check('leaving an image container for a movie one drops the image codec', changed('png', 'mp4', 'png'), ['mp4', 'h264'])
+    check('and moving into a still container takes its own', changed('h264', 'jpg'), ['jpg', 'mjpeg'])
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

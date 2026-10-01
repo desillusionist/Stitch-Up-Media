@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react'
 
 /**
- * A number field that can be emptied.
+ * A number field that can be emptied, and whose figure follows the wheel.
  *
  * A field bound straight to a number cannot be cleared, and that is not a nicety: deleting the last
  * digit leaves an empty string, the handler turns that into whatever an empty string means to it — a
@@ -14,10 +14,11 @@ import React, { useRef, useState } from 'react'
  * the text, so the field falls back to the value as it stands and can never keep a half-typed figure
  * on screen after the user has moved on.
  *
- * Neither the bounds nor the step are enforced here: an out-of-range figure is handed over as typed
- * and the caller decides what to do with it, because the callers disagree about that — clamping a
- * crop edge, refusing a zero frame, or lifting an override altogether. `onClear` exists for the last
- * of those, where a blank field is a meaning rather than a mistake.
+ * Neither the bounds nor the step are enforced on what is TYPED: an out-of-range figure is handed over
+ * as typed and the caller decides what to do with it, because the callers disagree about that —
+ * clamping a crop edge, refusing a zero frame, or lifting an override altogether. `onClear` exists for
+ * the last of those, where a blank field is a meaning rather than a mistake. They ARE enforced on the
+ * wheel and the arrow keys, which are gestures about a figure rather than about the text in it.
  *
  * The text gives way to a value that arrives from somewhere else — an undo, or a drag of the crop box
  * on the preview — because otherwise a field being typed in would go on showing what was typed while
@@ -25,17 +26,12 @@ import React, { useRef, useState } from 'react'
  * field's own entry produced keeps the text, including one the caller clamped: typing the third digit
  * of a number that the caller then reduces must not wipe the digits still under the caret.
  *
- * A TEXT INPUT RATHER THAN A NUMBER ONE, AND THAT IS THE WHOLE OF THE WHEEL RULE. A
- * `<input type="number">` takes the wheel for its own stepper: the figure creeps by a step every notch
- * while a reader is only trying to scroll past it, and the box the field sits in stops scrolling under
- * the pointer, because the stepper answers the event and cancels the scroll behind it. There is no way
- * to keep the scroll and refuse the stepper from outside — cancelling at the container takes the
- * scroller away too, and moving focus out mid-gesture throws away a figure being typed. A text input
- * has no stepper to take the wheel with, so the wheel goes where it was aimed and the box scrolls.
- *
- * STEPPING IS NOT LOST WITH IT. The arrow keys are read here instead, so UP and DOWN move the figure by
- * `step` and stop at `min` and `max` — which is now a real stop rather than an advisory attribute, and
- * is what the platform's own stepper was never actually doing for these fields.
+ * THE WHEEL MOVES THE FIGURE, WHEREVER THE POINTER IS IN THE BOX AND WHATEVER HAS FOCUS. A number
+ * input's own wheel-stepper only answers while the field is focused, so a reader wheeling over a list
+ * of settings either scrolled the list out from under the figure or — with focus in the field — crept
+ * the figure while the list refused to move. Neither is what a wheel over a value means here, so the
+ * wheel is read directly: one notch is one step, the step is the field's own, and the bounds are held.
+ * The event is cancelled, so the box the field sits in does not scroll out from under it.
  */
 export const NumberField: React.FC<{
   /** The figure as it stands, or nothing at all where a blank field means something. */
@@ -44,10 +40,10 @@ export const NumberField: React.FC<{
   onValue: (value: number) => void
   /** Called when the field is left blank, for a caller where blank is a meaning. */
   onClear?: () => void
-  /** The arrow keys' own bounds, not a rule about what may be typed. */
+  /** The bounds the wheel and the arrow keys stop at, not a rule about what may be typed. */
   min?: number
   max?: number
-  /** How far an arrow key moves the figure. Absent is one. */
+  /** How far one notch or one arrow key moves the figure. Absent is one. */
   step?: number
   className?: string
   title?: string
@@ -59,6 +55,15 @@ export const NumberField: React.FC<{
   const [seen, setSeen] = useState(value)
   /** Whether the last change to the value was this field's own entry, which has yet to be seen here. */
   const ownEntry = useRef(false)
+  /**
+   * How much of a trackpad's pixel stream has not yet added up to a step.
+   *
+   * A mouse notch arrives as one line and is one step; a trackpad sends a stream of small pixel deltas,
+   * and stepping on each of them would race the figure through a dozen values in one flick. The
+   * remainder is carried, so a slow drag moves the figure one step at a time and a fast one moves it
+   * faster without skipping the intermediate figures entirely.
+   */
+  const wheelRemainder = useRef(0)
   if (seen !== value) {
     setSeen(value)
     // An entry of this field's own keeps its text, whatever the caller made of the figure; anything
@@ -68,27 +73,58 @@ export const NumberField: React.FC<{
     ownEntry.current = false
   }
   const shown = text ?? (value === undefined ? '' : String(value))
+
   /**
-   * One press of an arrow key: the figure moved by the step, held to the bounds.
+   * The figure moved by whole steps, held to the bounds.
    *
-   * Rounded to six places rather than left as the arithmetic's own float, so that 1.1 - 0.2 is 0.9 and
-   * not 0.9000000000000001 — the app spells rates like this everywhere else, and a figure that cannot
-   * be compared exactly is a figure the "no change" check below cannot see.
+   * Rounded by SIGNIFICANT FIGURES rather than by decimal places, so that 1.1 - 0.2 is 0.9 and not
+   * 0.9000000000000001 while the EQ's own step of a ten-millionth survives: a figure that cannot be
+   * compared exactly is a figure the "no change" check below cannot see, and rounding to fixed
+   * decimals would swallow the small steps outright.
    */
-  const stepBy = (direction: 1 | -1) => {
+  const stepBy = (direction: 1 | -1, times = 1) => {
     const current = typeof value === 'number' && Number.isFinite(value) ? value : 0
     const by = typeof step === 'number' && Number.isFinite(step) && step > 0 ? step : 1
-    let next = Math.round((current + direction * by) * 1e6) / 1e6
+    let next = current + direction * by * times
     if (typeof min === 'number') next = Math.max(min, next)
     if (typeof max === 'number') next = Math.min(max, next)
-    // A press at a bound is not a change, and handing one over would put a step on the undo stack that
-    // undoes nothing.
+    next = Number(next.toPrecision(12))
+    // A gesture at a bound is not a change, and handing one over would put a step on the undo stack
+    // that undoes nothing.
     if (next !== current) { setText(null); ownEntry.current = false; onValue(next) }
   }
+
+  /**
+   * The wheel, bound by hand rather than through React, so that it can be cancelled.
+   *
+   * React's own listener may be registered passively, and a passive listener's `preventDefault` is a
+   * no-op with a warning — which would leave the box scrolling on the very gesture this is for. A
+   * native listener with `passive: false` is the only way to be sure of it. The ref is a fresh arrow
+   * on every render, so React detaches and reattaches it each time, which is what keeps the handler
+   * closing over the CURRENT step, bounds and figure rather than the ones from its first render.
+   */
+  const unbound = useRef<(() => void) | null>(null)
+  const bindWheel = (element: HTMLInputElement | null) => {
+    unbound.current?.()
+    unbound.current = null
+    if (!element) return
+    const onWheel = (event: WheelEvent) => {
+      if (disabled) return
+      event.preventDefault()
+      // A line of wheel is one step; a pixel delta is accumulated into steps.
+      wheelRemainder.current += event.deltaMode === 1 ? -event.deltaY : -event.deltaY / 50
+      const steps = Math.trunc(wheelRemainder.current)
+      if (steps === 0) return
+      wheelRemainder.current -= steps
+      stepBy(steps > 0 ? 1 : -1, Math.min(Math.abs(steps), 10))
+    }
+    element.addEventListener('wheel', onWheel, { passive: false })
+    unbound.current = () => element.removeEventListener('wheel', onWheel)
+  }
+
   return <input
-    type="text"
-    inputMode="decimal"
-    autoComplete="off"
+    ref={bindWheel}
+    type="number"
     className={className}
     title={title}
     placeholder={placeholder}
@@ -106,7 +142,8 @@ export const NumberField: React.FC<{
     }}
     onKeyDown={(event) => {
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-      // Read here so the caret does not jump to the field's start or end instead of the figure moving.
+      // Read here rather than left to the platform's own stepper, so the bounds are a real stop and the
+      // caret does not jump to the field's start or end instead of the figure moving.
       event.preventDefault()
       stepBy(event.key === 'ArrowUp' ? 1 : -1)
     }}

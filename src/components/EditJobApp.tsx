@@ -9,6 +9,7 @@ import { PREVIEW_SPEEDS, speedLabel, steppedPreviewSpeed } from '../lib/previewS
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, speedFor } from '../lib/clipSpeed'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, IMAGE_CONTAINERS } from '../lib/containerSwitch'
+import { applyCodecChoice, codecChoiceValue, codecChoicesFor } from '../lib/codecChoices'
 import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } from '../lib/quickLookTarget'
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -64,7 +65,6 @@ const tabs = ['EXPORT', 'VIDEO', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
 
 const CONTAINERS: Array<EncodingPreset['container']> = ['mp4', 'mov', 'mkv', 'webm', 'mp3', 'wav', 'm4a', 'flac', 'png', 'jpg', 'gif']
-const VIDEO_CODECS: Array<EncodingPreset['videoCodec']> = ['copy', 'h264', 'hevc', 'prores', 'vp9', 'av1', 'png', 'mjpeg']
 const AUDIO_CODECS: Array<EncodingPreset['audioCodec']> = ['copy', 'aac', 'mp3', 'opus', 'pcm', 'flac']
 const AUDIO_CONTAINERS: Array<EncodingPreset['container']> = ['mp3', 'wav', 'm4a', 'flac']
 const RESOLUTIONS: Array<EncodingPreset['resolution']> = ['source', '4k', '1080p', '720p']
@@ -3157,10 +3157,16 @@ export const EditJobApp: React.FC = () => {
                     size and says so by leaving it out rather than by claiming zero bits. */}
                 {inspectedAudioFacts && <EditorRow label="AUDIO" value={inspectedAudioFacts} reason="The file's own audio: its sample rate, its sample size, and its channel layout or count." />}
                 {inspectedAudioCodec && <EditorRow label="AUDIO CODEC" value={inspectedAudioCodec} />}
-                <EditorRow
-                  label="USED"
-                  value={inspectedSegment ? clipRangeLabel({ usedSeconds: inspectedSegment.sourceUsedSeconds, sourceIn: inspectedSegment.sourceIn, totalSeconds: sourceDuration(draft, inspectedSegment.sourcePath, undefined, resolveTiming), fps: inspectedFps, mode: timestampMode }) : (inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...')}
-                />
+                {/* The clip's own run through its source, told in four figures rather than in one line.
+                    SOURCE is the whole of the file, USED is the part the output takes, and START and END
+                    are the two points inside the source that part runs between — which is what a reader
+                    reaching for an in or an out point is looking for, and what one long line buried. */}
+                {inspectedSegment ? <>
+                  <EditorRow label="SOURCE" value={stamp(sourceDuration(draft, inspectedSegment.sourcePath, undefined, resolveTiming))} reason="The whole of the file this clip is a piece of, in the units the window is showing lengths in." />
+                  <EditorRow label="USED" value={stamp(inspectedSegment.sourceUsedSeconds)} reason="How much of the source the output takes, which is the source length less whatever the trim cut off." />
+                  <EditorRow label="START" value={stamp(inspectedSegment.sourceIn)} reason="Where inside the source that run begins: the clip's IN point." />
+                  <EditorRow label="END" value={stamp(inspectedSegment.sourceIn + inspectedSegment.sourceUsedSeconds)} reason="Where inside the source that run ends: the clip's OUT point." />
+                </> : <EditorRow label="SOURCE" value={inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...'} />}
                 <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
                   inspectedEditable
                     ? <EditorSelect
@@ -3182,6 +3188,13 @@ export const EditJobApp: React.FC = () => {
                   const applyDuration = (seconds: number) => {
                     if (seconds > 0) setClipSpeed(inspectedSource, inspectedClipIndex, { speed: trimmedSeconds / seconds })
                   }
+                  // The length the clip occupies, said in the window's own units beside the field that sets
+                  // it. In TIME it is a timecode and the share of the source it keeps — 100% at the clip's
+                  // own speed, 50% at twice it — because the speed and the length are one relationship and
+                  // a reader comparing the two figures wants both on the line.
+                  const durationHint = timestampMode === 'framestamp'
+                    ? `${Math.max(1, Math.round(inspectedSegment.duration * rate))} FRAMES`
+                    : `${timecode(inspectedSegment.duration, rate)} - (${Math.round(100 / Math.max(0.0001, inspectedSpeed.speed))}%)`
                   return <>
                     <EditorField label="SPEED" hint={inspectedSpeed.speed === 1 ? 'SOURCE RATE' : `TRIM ${stamp(trimmedSeconds)}`} reason="How fast this clip runs. The trim is what the clip keeps of its source; the speed is how quickly that run is played, so the clip's length in the output follows from the two together.">
                       <NumberField
@@ -3194,7 +3207,7 @@ export const EditJobApp: React.FC = () => {
                         ariaLabel="The speed this clip is played at"
                       />
                     </EditorField>
-                    <EditorField label="DURATION" hint={timestampMode === 'framestamp' ? 'IN FRAMES' : 'IN SECONDS'} reason="How long this clip occupies on the timeline. It is the trimmed source length divided by the speed, so editing it here chooses the speed that length needs.">
+                    <EditorField label="DURATION" hint={durationHint} reason="How long this clip occupies on the timeline. It is the trimmed source length divided by the speed, so editing it here chooses the speed that length needs.">
                       {timestampMode === 'framestamp'
                         ? <NumberField className="editor-input" min={1} step={1} value={Math.max(1, Math.round(inspectedSegment.duration * rate))} onValue={(frames) => applyDuration(frames / rate)} ariaLabel="The length this clip occupies on the timeline" />
                         : <NumberField className="editor-input" min={0.01} step={0.05} value={Math.round(inspectedSegment.duration * 1000) / 1000} onValue={applyDuration} ariaLabel="The length this clip occupies on the timeline" />}
@@ -3440,9 +3453,15 @@ export const EditJobApp: React.FC = () => {
         <div className="export-content">
           {tab === 'EXPORT' && <>
             <EditorField label="FORMAT"><EditorSelect value={container} options={CONTAINERS.map((name) => ({ value: name, label: name.toUpperCase() }))} onChange={(next) => changeContainer(next as EncodingPreset['container'])} /></EditorField>
-            <EditorField label="VIDEO CODEC" reason={videoReason}><EditorSelect value={draft.preset.videoCodec} options={VIDEO_CODECS.map((name) => ({ value: name, label: name.toUpperCase() }))} disabled={audioOnly || isGif} onChange={(next) => updatePreset({ videoCodec: next as EncodingPreset['videoCodec'] })} /></EditorField>
+            <EditorField label="PRESET" reason={videoReason}><EditorSelect
+              value={codecChoiceValue(draft.preset)}
+              options={codecChoicesFor(container).map((choice) => ({ value: choice.value, label: choice.label, disabled: Boolean(choice.reason), title: choice.reason }))}
+              disabled={audioOnly}
+              onChange={(next) => updatePreset(applyCodecChoice(latest().preset, next))}
+              ariaLabel="What the picture is written as"
+            /></EditorField>
             <EditorField label="OUTPUT NAME"><input type="text" className="editor-input" value={draft.outputFilename} onChange={(event) => updateDraft({ outputFilename: event.target.value, outputFilenameManuallySet: true })} /></EditorField>
-            <EditorRow label="PRESET" value={presetEdited ? 'CUSTOM' : draft.preset.name} reason={presetEdited ? presetSummary(draft.preset).join('\n') : undefined} />
+            <EditorRow label="PRESET NAME" value={presetEdited ? 'CUSTOM' : draft.preset.name} reason={presetEdited ? presetSummary(draft.preset).join('\n') : undefined} />
             <EditorToggle label="EXPORT VIDEO" checked={draft.preset.outputMode !== 'audio'} onChange={(checked) => updatePreset({ outputMode: checked ? undefined : 'audio' })} />
             <EditorToggle label="EXPORT AUDIO" checked={draft.preset.audioEnabled !== false} onChange={audioDisabled ? undefined : (checked) => updatePreset({ audioEnabled: checked })} reason={audioReason} />
             <EditorToggle label="EXPORT CAPTIONS" checked={false} reason="CAPTION OUTPUT HAS NO BACKING FIELD YET." />

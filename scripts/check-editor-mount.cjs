@@ -56,6 +56,20 @@ app.whenReady().then(async () => {
     if (!rendered || !rendered.monitor) problems.push('the monitor was not drawn')
     if (!rendered || !rendered.settings) problems.push('the export settings were not drawn')
     if (!rendered || rendered.clips < 1) problems.push('the timeline drew no clip for its one source')
+    // THE PRESET LIST, which belongs to the FORMAT. The list must be the container's own — the table the
+    // encoder's own codecs come from — and the row that used to be called VIDEO CODEC must be gone.
+    const preset = rendered && rendered.preset
+    if (!preset) problems.push('the export settings said nothing about the codec list')
+    else {
+      if (preset.videoCodecField) problems.push('a VIDEO CODEC field is still drawn, so the rename did not happen')
+      if (preset.name !== 'P') problems.push(`the preset's own name reads ${JSON.stringify(preset.name)} rather than P`)
+      if (preset.value !== 'h264') problems.push(`an h264 mp4 job stands on preset ${JSON.stringify(preset.value)} rather than h264`)
+      if (!preset.options.includes('h264')) problems.push(`the mp4 preset list offers no h264: ${JSON.stringify(preset.options)}`)
+      // The two that must NOT be there: a container's list is its own, which is the whole of the fix.
+      if (preset.options.includes('dxv')) problems.push('the mp4 preset list offers DXV, which an mp4 cannot hold')
+      if (preset.options.some((value) => String(value).startsWith('prores'))) problems.push('the mp4 preset list offers ProRes, which an mp4 cannot hold')
+      if (preset.options.some((value) => value === 'mpeg4' || value === 'qtrle')) problems.push('the mp4 preset list offers a QuickTime-only codec')
+    }
     // WHAT THE TRANSPORT SAYS, and where it says it. The state belongs under the monitor on one line, and the
     // buttons must not state it a second time: an idle transport leaves the rate readout EMPTY, which is what
     // the pause glyph that used to sit there prevented. The speeds are read as well, because the wheel over the
@@ -283,10 +297,25 @@ app.whenReady().then(async () => {
           if (inspector.closeOverlapsAControl) problems.push('the close button overlaps a value field, which is the overlap this pass removes')
           if (!inspector.closeVisible) problems.push('the close button is not on screen when the drawer opens')
           if (!inspector.closeVisibleAfterScroll) problems.push('the close button leaves the screen once the list is scrolled')
-          // A value field is a TEXT field: a number input takes the wheel for its stepper, which stops the
-          // drawer scrolling under the pointer and creeps the figure while the reader is only scrolling past.
-          const numeric = inspector.valueFieldTypes.filter((kind) => !String(kind).startsWith('text/decimal'))
-          if (numeric.length) problems.push(`${numeric.length} value field(s) are not text/decimal inputs: ${numeric.join(', ')}`)
+          // The arrow keys are the platform's own stepping, kept and made to stop at the bounds; and the
+          // wheel is the figure's own gesture, which must not hand the drawer a scroll.
+          if (inspector.fieldType !== 'number') problems.push(`a value field is a ${JSON.stringify(inspector.fieldType)} input, so the native steppers are gone`)
+          if (inspector.wheelCancelled !== true) problems.push('a wheel over a value field was not cancelled, so the drawer scrolls out from under it')
+          if (inspector.wheelSteppedTo !== '2.05') problems.push(`a wheel over a value field moved it to ${JSON.stringify(inspector.wheelSteppedTo)} rather than one 0.05 step from 2`)
+          if (inspector.arrowCancelled !== true) problems.push('an arrow key in a value field was not cancelled')
+          if (inspector.arrowSteppedTo !== '2.1') problems.push(`an arrow key moved the speed to ${JSON.stringify(inspector.arrowSteppedTo)} rather than one 0.05 step from 2.05`)
+          if (inspector.atCeiling !== '16') problems.push(`a speed past the ceiling reads ${JSON.stringify(inspector.atCeiling)} rather than being held at 16`)
+          if (inspector.steppedPastCeiling !== '16') problems.push(`an arrow key at the ceiling moved the speed to ${JSON.stringify(inspector.steppedPastCeiling)}`)
+          // The four figures of the clip's own run, which replaced one long line.
+          const readings = inspector.readings || {}
+          for (const label of ['SOURCE', 'USED', 'START', 'END']) {
+            if (!readings[label]) problems.push(`the drawer draws no ${label} figure for the clip it describes`)
+          }
+          if (readings.END === readings.START) problems.push('the clip\u2019s START and END read the same figure, so the range says nothing')
+          // The DURATION readout: a timecode and the share of the source the clip keeps, which is the
+          // speed read the other way round — 100% at the clip's own speed and 50% at twice it.
+          if (!/^\d\d:\d\d:\d\d\.\d\d - \(100%\)$/.test(String(inspector.durationAtOwnSpeed))) problems.push(`the DURATION readout at the clip's own speed is ${JSON.stringify(inspector.durationAtOwnSpeed)} rather than a timecode and 100%`)
+          if (!/^\d\d:\d\d:\d\d\.\d\d - \(50%\)$/.test(String(inspector.durationAtTwice))) problems.push(`the DURATION readout at 2x is ${JSON.stringify(inspector.durationAtTwice)} rather than a timecode and 50%`)
           // The retiming options, asked either side of a speed being set. This clip is a SOUND, so the
           // interpolation — which fills the frames a speed leaves out — has no meaning for it and must not
           // be offered, while the pitch, which a sound has, must be.
@@ -295,10 +324,6 @@ app.whenReady().then(async () => {
             if (inspector.atTwice.interpolation) problems.push('INTERPOLATION is offered for a clip of sound, which has no frames to fill')
             if (!inspector.atTwice.maintainPitch) problems.push('MAINTAIN AUDIO PITCH is not offered for a clip of sound, which is the one case it is for')
           }
-          // The arrow keys, which are the stepping a text field would otherwise lose with its stepper.
-          if (inspector.steppedUp !== '2.05') problems.push(`an arrow key moved the speed to ${JSON.stringify(inspector.steppedUp)} rather than one 0.05 step from 2`)
-          if (inspector.atCeiling !== '16') problems.push(`a speed past the ceiling reads ${JSON.stringify(inspector.atCeiling)} rather than being held at 16`)
-          if (inspector.steppedPastCeiling !== '16') problems.push(`an arrow key at the ceiling moved the speed to ${JSON.stringify(inspector.steppedPastCeiling)}`)
         }
       }
       // And the opposite side of the gate. A container that holds artwork rather than frames must offer

@@ -32,7 +32,15 @@ export interface ProgressData {
  * Codecs that cannot encode an odd frame size. 4:2:0 and 4:2:2 chroma is sampled in
  * pairs, so libx264 rejects 1195x896 outright, whatever pixel format is asked for.
  */
-const EVEN_SIZE_CODECS: Array<EncodingPreset['videoCodec']> = ['h264', 'hevc', 'prores', 'vp9', 'av1']
+const EVEN_SIZE_CODECS: Array<EncodingPreset['videoCodec']> = ['h264', 'hevc', 'prores', 'vp9', 'av1', 'mpeg4', 'dxv']
+/**
+ * Codecs that pack the frame in four-by-four blocks and refuse anything else.
+ *
+ * Hap is the one: asked for a 322x242 frame it answers "Video size 322x242 is not multiple of 4" and
+ * fails the whole job, so for it the frame is rounded to FOUR rather than to two. Measured against this
+ * machine's own ffmpeg, which is where the figure comes from.
+ */
+const QUAD_SIZE_CODECS: Array<EncodingPreset['videoCodec']> = ['hap']
 
 export class FFmpegEngine {
   private activeProcesses = new Map<string, ffmpeg.FfmpegCommand>()
@@ -991,6 +999,16 @@ export class FFmpegEngine {
       cmd.videoCodec('png')
     } else if (preset.videoCodec === 'mjpeg') {
       cmd.videoCodec('mjpeg')
+    } else if (preset.videoCodec === 'dxv') {
+      // Resolume's own intermediate. Its encoder takes the picture as it comes, with no profile and
+      // nothing to configure beyond the frame size the filters have already settled.
+      cmd.videoCodec('dxv')
+    } else if (preset.videoCodec === 'hap') {
+      cmd.videoCodec('hap')
+    } else if (preset.videoCodec === 'qtrle') {
+      cmd.videoCodec('qtrle')
+    } else if (preset.videoCodec === 'mpeg4') {
+      cmd.videoCodec('mpeg4').outputOptions(['-q:v 3'])
     }
 
     if (preset.container === 'gif') {
@@ -1055,8 +1073,10 @@ export class FFmpegEngine {
       // one outright: a 1195x896 source failed the whole job with "width not divisible by
       // 2". Rounding down to even is a no-op for a frame that already is, and it is added
       // after any scaling so a named resolution that leaves a smaller source untouched
-      // cannot reintroduce an odd size.
-      if (preset.container !== 'gif' && EVEN_SIZE_CODECS.includes(preset.videoCodec)) {
+      // cannot reintroduce an odd size. Hap wants four rather than two, and says so itself.
+      if (preset.container !== 'gif' && QUAD_SIZE_CODECS.includes(preset.videoCodec)) {
+        videoFilters.push('scale=trunc(iw/4)*4:trunc(ih/4)*4')
+      } else if (preset.container !== 'gif' && EVEN_SIZE_CODECS.includes(preset.videoCodec)) {
         videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2')
       }
     }

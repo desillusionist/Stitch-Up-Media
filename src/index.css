@@ -340,7 +340,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-select-trigger:hover { border-color: var(--ui-accent); }
 .editor-select-trigger:disabled { opacity: .45; cursor: not-allowed; }
 .editor-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.editor-select-caret { flex: 0 0 auto; color: var(--ui-accent); font-size: 9px; line-height: 1; }
+.editor-select-caret { flex: 0 0 auto; display: inline-block; color: var(--ui-accent); font-size: 10px; line-height: 1; transform: rotate(90deg); transform-origin: center; }
 /* Fixed, so the sidebar's own scrolling cannot clip a list below its last field. */
 .editor-select-menu { position: fixed; z-index: 90; display: flex; flex-direction: column; padding: 3px; overflow-y: auto; background: var(--ui-panel-inset); border: 1px solid var(--ui-accent); box-shadow: 0 10px 28px rgba(3, 9, 16, .72); }
 .editor-select-menu[hidden] { display: none; }
@@ -608,10 +608,16 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 /* The rows are capped to five and scroll past that. Without the cap the drawer grew by a row every time
    a field was added to it, and the monitor it hangs under was pushed out of the window by the list meant
    to describe the clip in it. Five rows is enough to read a clip by and small enough to leave the
-   picture alone; the figure carries the row's own rule, so five rows is five rows. */
-.inspector-scroll { max-height: calc(5 * var(--inspector-row)); overflow-y: auto; overflow-x: hidden; }
+   picture alone; the figure carries the row's own rule, so five rows is five rows. The right-hand
+   padding is the scrollbar's own room: without it the field boxes and the dotted rules run UNDER the
+   bar, which is a fixed panel drawn over the content rather than beside it. */
+.inspector-scroll { max-height: calc(5 * var(--inspector-row)); padding-right: 5px; overflow-y: auto; overflow-x: hidden; }
 .media-inspector .editor-row, .media-inspector .editor-field, .media-inspector .editor-toggle { box-sizing: border-box; min-height: var(--inspector-row); padding: 4px 0; }
 .media-inspector .editor-field > span { justify-content: flex-start; gap: 8px; }
+/* A value field is the wheel's own ground here, so it is given a little more of it: two pixels taller
+   than the sidebar's fields, which is the difference between the wheel landing on the figure and the
+   drawer scrolling instead. */
+.media-inspector .editor-field input, .media-inspector .editor-field .editor-select-trigger { padding-top: 8px; padding-bottom: 8px; }
 .boundary-close { margin-left: auto; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 12px; line-height: 1; }
 .boundary-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; object-fit: contain; cursor: pointer; }

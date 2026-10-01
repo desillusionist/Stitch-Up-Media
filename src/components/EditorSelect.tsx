@@ -5,6 +5,8 @@ export interface EditorSelectOption {
   value: string
   label: string
   disabled?: boolean
+  /** What an entry that cannot be chosen says about why, shown on the entry itself. */
+  title?: string
 }
 
 /**
@@ -145,7 +147,9 @@ export const EditorSelect: React.FC<{
       onKeyDown={onKeyDown}
     >
       <span className="editor-select-value">{current?.label ?? ''}</span>
-      <span className="editor-select-caret" aria-hidden="true">v</span>
+      {/* The same glyph the queue's own chevron uses, turned a quarter turn clockwise: one mark for the
+          two disclosures in the app, and a `>` reads as a point rather than as a letter. */}
+      <span className="editor-select-caret" aria-hidden="true">{'>'}</span>
     </button>
     <div
       className="editor-select-menu"
@@ -163,6 +167,7 @@ export const EditorSelect: React.FC<{
           className={`editor-select-option${index === active && open ? ' is-active' : ''}${option.value === value ? ' is-selected' : ''}`}
           data-value={option.value}
           disabled={option.disabled}
+          title={option.title}
           aria-selected={option.value === value}
           onMouseEnter={() => setActive(index)}
           onClick={() => commit(index)}

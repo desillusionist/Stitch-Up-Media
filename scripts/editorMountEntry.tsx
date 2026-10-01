@@ -141,6 +141,10 @@ const fieldFor = (label: string) => [...document.querySelectorAll('.editor-field
 /** The window's own dropdown inside a field: the control that replaced every platform `<select>` in it. */
 const selectIn = (label: string) => fieldFor(label)?.querySelector('.editor-select') as HTMLElement | null
 
+/** What a plain reading of the sidebar says, by its label — the row the codec select replaced, for one. */
+const rowValue = (label: string) => ([...document.querySelectorAll('.editor-row')] as HTMLElement[])
+  .find((row) => row.querySelector('span')?.textContent?.trim() === label)?.querySelector('strong')?.textContent?.trim() ?? null
+
 /** What a dropdown is showing, and what it offers, read off the DOM the same way a reader would. */
 const valueOf = (control: HTMLElement | null) => control?.querySelector('.editor-select-trigger')?.getAttribute('data-value') ?? null
 const optionsOf = (control: HTMLElement | null) => control ? [...control.querySelectorAll('.editor-select-option')].map((option) => option.getAttribute('data-value')) : []
@@ -210,13 +214,15 @@ const clickTab = (name: string) => {
 /**
  * The PROPERTIES drawer, opened the way a reader opens it: a right-click on a clip, then the menu item.
  *
- * What it measures is the whole of this pass's claim, and it is read off real layout rather than a
- * stylesheet: that the rows OVERFLOW (so the drawer really does need the scrollbar it was given), that
- * the scroller holds the five-row cap, that the close button is clear of both the rows and the
- * scroller's own bar and stays on screen while the list moves, that a value field is a TEXT field (the
- * only kind that does not take the wheel for a stepper), and that the two retiming options come out
- * only where they mean something. The speed it sets to ask that last question is put back, so the
- * drawer leaves the draft as it found it and the jobs driven after this one are unaffected.
+ * What it measures is the whole of what this pass claims, and it is read off real layout and real events
+ * rather than off the stylesheet: that the rows OVERFLOW (so the drawer really does need the scrollbar it
+ * was given), that the scroller holds the five-row cap, that the close button is clear of both the rows
+ * and the scroller's own bar and stays on screen while the list moves, that the four figures of the
+ * clip's own run are drawn, that the DURATION readout is a timecode with the share of the source beside
+ * it, that a WHEEL over a value field moves the figure and cancels the event so the drawer does not
+ * scroll, that the arrow keys do the same, that the bounds are a real stop, and that the two retiming
+ * options come out only where they mean something. The speed it sets to ask those questions is put back,
+ * so the drawer leaves the draft as it found it and the jobs driven after this one are unaffected.
  */
 const setNativeValue = (field: HTMLInputElement, next: string) => {
   // The native setter, so React's own value tracking sees the change and fires onChange.
@@ -242,6 +248,13 @@ const measureInspector = async () => {
   const controls = [...scroller.querySelectorAll('input, .editor-select-trigger')] as HTMLElement[]
   const overlapsAControl = controls.some((control) => overlaps(control.getBoundingClientRect()))
   const fieldLabels = [...scroller.querySelectorAll('.editor-field > span')].map((span) => (span.textContent ?? '').trim())
+  /** The pane's plain readings, by their label: the four figures of the clip's run are read this way. */
+  const readings = Object.fromEntries(([...scroller.querySelectorAll('.editor-row')] as HTMLElement[])
+    .map((element) => [element.querySelector('span')?.textContent?.trim() ?? '', element.querySelector('strong')?.textContent?.trim() ?? '']))
+  /** The hint a field carries, which is where the DURATION readout lives. */
+  const hintOf = (label: string) => ([...scroller.querySelectorAll('.editor-field')] as HTMLElement[])
+    .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith(label))
+    ?.querySelector('em')?.textContent?.trim() ?? null
   const speedField = scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
   // One question about the retiming options, asked at a speed where they mean something and then undone.
   const offered = () => ({
@@ -249,25 +262,43 @@ const measureInspector = async () => {
     maintainPitch: labelsOf('.inspector-scroll .editor-toggle').some((label) => label.startsWith('MAINTAIN AUDIO PITCH')),
   })
   const atOwnSpeed = offered()
+  const durationAtOwnSpeed = hintOf('DURATION')
   let atTwice = null
-  let steppedUp: string | null = null
+  let wheelSteppedTo: string | null = null
+  let wheelCancelled: boolean | null = null
+  let arrowSteppedTo: string | null = null
+  let arrowCancelled: boolean | null = null
   let atCeiling: string | null = null
   let steppedPastCeiling: string | null = null
+  let durationAtTwice: string | null = null
+  let fieldType: string | null = null
   if (speedField) {
     const speed = () => scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
-    const press = (key: string) => speed()?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    const press = (key: string) => {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+      speed()?.dispatchEvent(event)
+      return event.defaultPrevented
+    }
     setNativeValue(speedField, '2')
     await wait(80)
+    fieldType = speed()?.type ?? null
     const labels = [...scroller.querySelectorAll('.editor-field > span')].map((span) => (span.textContent ?? '').trim())
     atTwice = {
       interpolation: labels.some((label) => label.startsWith('INTERPOLATION')),
       maintainPitch: labelsOf('.inspector-scroll .editor-toggle').some((label) => label.startsWith('MAINTAIN AUDIO PITCH')),
     }
-    // The arrow keys stand in for the stepper a text field no longer has, so they are read here: one step
-    // of `step`, and a press at the ceiling leaving the figure where it is rather than running past it.
-    press('ArrowUp')
+    durationAtTwice = hintOf('DURATION')
+    // THE WHEEL. A line of wheel is one step, and the event has to come back CANCELLED — that is what
+    // stops the drawer scrolling out from under the field the reader was aiming at.
+    const wheelEvent = new WheelEvent('wheel', { deltaY: -1, deltaMode: 1, bubbles: true, cancelable: true })
+    speed()?.dispatchEvent(wheelEvent)
+    wheelCancelled = wheelEvent.defaultPrevented
     await wait(80)
-    steppedUp = speed()?.value ?? null
+    wheelSteppedTo = speed()?.value ?? null
+    // The arrow keys are the platform's own stepping, kept and made to stop at the bounds.
+    arrowCancelled = press('ArrowUp')
+    await wait(80)
+    arrowSteppedTo = speed()?.value ?? null
     setNativeValue(speed() ?? speedField, String(MAX_CLIP_SPEED * 99))
     await wait(80)
     // Left, so the figure the caller clamped is what the field shows rather than the digits just typed:
@@ -294,12 +325,16 @@ const measureInspector = async () => {
     closeOverlapsAControl: overlapsAControl,
     closeVisible: beforeScroll,
     closeVisibleAfterScroll: afterScroll,
-    // Every value field is a text field, which is the guarantee the wheel needed. The read-only stamps
-    // (the FPS one) are left out: there is no figure to step in them, so no stepper to take a wheel.
-    valueFieldTypes: ([...scroller.querySelectorAll('input:not([readonly])')] as HTMLInputElement[]).map((input) => `${input.type}/${input.inputMode}`),
+    readings,
+    durationAtOwnSpeed,
+    durationAtTwice,
+    fieldType,
     atOwnSpeed,
     atTwice,
-    steppedUp,
+    wheelSteppedTo,
+    wheelCancelled,
+    arrowSteppedTo,
+    arrowCancelled,
     atCeiling,
     steppedPastCeiling,
   }
@@ -353,6 +388,16 @@ const drive = async () => {
     // the whole of the fix, so it is read as a count.
     nativeSelects: document.querySelectorAll('select').length,
     dropdowns: document.querySelectorAll('.editor-select').length,
+    // THE PRESET LIST, which belongs to the FORMAT. Read off the DOM the way a reader sees it: the codec
+    // select that replaced VIDEO CODEC, what it is offering for this job's container, and the preset
+    // NAME the row beside it now carries — the two cannot both be called PRESET.
+    preset: {
+      value: valueOf(selectIn('PRESET')),
+      options: optionsOf(selectIn('PRESET')),
+      name: rowValue('PRESET NAME'),
+      videoCodecField: Boolean(fieldFor('VIDEO CODEC')),
+      container: valueOf(selectIn('FORMAT')),
+    },
     // WHAT THE TRANSPORT SAYS. Two halves of one question: the state has to be stated somewhere — the readout
     // under the monitor — and it must NOT be said a second time by a pause glyph among the buttons. The rate
     // readout is read as its own text so that an idle transport saying NOTHING is what is asserted.
