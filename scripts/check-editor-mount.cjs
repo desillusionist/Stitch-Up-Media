@@ -83,6 +83,9 @@ app.whenReady().then(async () => {
       if (String(transport.rate).trim() !== '1x') problems.push(`an idle transport reads ${JSON.stringify(transport.rate)} rather than the speed it is watched at`)
       if (transport.speedSelector) problems.push('the preview speed dropdown is still drawn under the monitor')
     }
+    // THE SIZE ESTIMATE, which is where the report about UNKNOWN came from: a movie job's picture is a CRF
+    // delivery codec, and its figure is a bracket rather than the word UNKNOWN.
+    if (String(rendered && rendered.summary).includes('UNKNOWN')) problems.push(`the summary of a movie job still says UNKNOWN: ${String(rendered && rendered.summary)}`)
     // THE ONE-STREAM RULE, driven through a click: unchecking the picture leaves a sound-only job, so the
     // window has to hold the sound ON and lock it there. A job with neither stream in it writes nothing,
     // and this is the reading that says the window cannot be put into that state.
@@ -327,6 +330,14 @@ app.whenReady().then(async () => {
           if (inspector.durationArrowCancelled !== true) problems.push('an arrow key in DURATION was not cancelled')
           if (inspector.durationArrowTo === inspector.durationWheelTo) problems.push(`an arrow key in DURATION left it on ${JSON.stringify(inspector.durationArrowTo)}, so the figure never moved`)
           if (!/^\d\d:\d\d:\d\d\.\d\d$/.test(String(inspector.durationArrowTo))) problems.push(`an arrow key in DURATION left it reading ${JSON.stringify(inspector.durationArrowTo)} rather than a timecode`)
+          // AND A TYPED FIGURE IS HELD UNTIL IT IS CONFIRMED. A timecode is typed whole, so nothing may be
+          // applied while it is being typed, and a figure that is not a timecode must be refused rather
+          // than run. The clip is twelve seconds, so a four-second length is a speed of three.
+          if (inspector.durationTypedHeld !== '00:00:04.00') problems.push(`a typed timecode reads ${JSON.stringify(inspector.durationTypedHeld)} rather than what was typed`)
+          if (inspector.typingHeldTheFigure !== true) problems.push(`a typed timecode moved the figure before it was confirmed: the speed went from ${JSON.stringify(inspector.speedBeforeTyping)} to ${JSON.stringify(inspector.speedWhileTyped)}`)
+          if (inspector.durationTypedCommitted !== '00:00:04.00') problems.push(`Enter left DURATION on ${JSON.stringify(inspector.durationTypedCommitted)}`)
+          if (inspector.speedAfterEnter !== '3') problems.push(`Enter on a four-second length left the speed at ${JSON.stringify(inspector.speedAfterEnter)} rather than 3`)
+          if (inspector.durationAfterRefusal !== '00:00:04.00') problems.push(`a figure that is not a timecode was not refused: DURATION reads ${JSON.stringify(inspector.durationAfterRefusal)}`)
           // The four figures of the clip's own run, which replaced one long line.
           const readings = inspector.readings || {}
           for (const label of ['SOURCE', 'USED', 'START', 'END']) {
@@ -369,6 +380,15 @@ app.whenReady().then(async () => {
         if (gates['EXPORT VIDEO'] && !gates['EXPORT VIDEO'].disabled) problems.push('a sound-only format lets EXPORT VIDEO be switched on')
         if (gates['EXPORT AUDIO'] && !gates['EXPORT AUDIO'].checked) problems.push('a sound-only format shows EXPORT AUDIO unchecked, which is the sound it always writes')
         if (gates['EXPORT AUDIO'] && !gates['EXPORT AUDIO'].disabled) problems.push('a sound-only format lets EXPORT AUDIO be switched off')
+        // AND ITS SOUND SETTINGS ARE NOT DISABLED. A WAV or an MP3 is a SOUND export: SAMPLE RATE, BITRATE
+        // and CHANNELS were all drawn disabled for every audio-only container, which left the one format
+        // that is nothing but sound with nothing to set.
+        const audioOff = cover.audioDisabled || {}
+        for (const label of ['sampleRate', 'bitrate', 'channels']) {
+          if (audioOff[label] !== false) problems.push(`a sound-only format draws ${label} disabled, so the one format that is only sound has nothing to set`)
+        }
+        if (!cover.summary) problems.push('the sound-only job reported no summary at all')
+        else if (String(cover.summary).includes('UNKNOWN')) problems.push(`a sound-only job still says UNKNOWN: ${String(cover.summary)}`)
       }
       // And the other side of that gate, read on the MOVIE job: both streams are choosable there.
       const movieToggles = rendered && rendered.toggles
@@ -400,6 +420,9 @@ app.whenReady().then(async () => {
           if (!imageOutput.tabsForGif.includes('IMAGE')) problems.push('a frame container was offered no IMAGE tab')
         }
         if (imageOutput.container !== 'gif') problems.push(`switching FORMAT to GIF left the window on ${String(imageOutput.container)}`)
+        // The heading of a dropdown must not open it, and the trigger must still.
+        if (imageOutput.headingOpened !== false) problems.push('clicking a selector\u2019s HEADING opened its dropdown')
+        if (imageOutput.triggerOpened !== true) problems.push('clicking a selector\u2019s trigger did not open it, so the heading fix broke the control')
         if (!imageOutput.drawn) problems.push('a GIF container was offered no IMAGE OUTPUT control')
         if (String(imageOutput.options) !== 'still,animation,sequence') problems.push(`a GIF's IMAGE OUTPUT offers ${JSON.stringify(imageOutput.options)} rather than a single frame, an animation and a run`)
         if (imageOutput.value !== 'animation') problems.push(`a GIF job that named no mode opens on ${String(imageOutput.value)} rather than its animation`)
@@ -415,17 +438,39 @@ app.whenReady().then(async () => {
         for (const expected of ['COMPRESSION', 'BIT DEPTH']) {
           if (!String(imageOutput.pngFields).includes(expected)) problems.push(`a PNG's IMAGE tab drew no ${expected} control: ${JSON.stringify(imageOutput.pngFields)}`)
         }
-        if (String(imageOutput.compressionOptions) !== '0,1,3,6,9') problems.push(`the PNG compression ladder offers ${JSON.stringify(imageOutput.compressionOptions)}`)
+        if (String(imageOutput.compressionOptions) !== '0,1,3,6,9,custom') problems.push(`the PNG compression ladder offers ${JSON.stringify(imageOutput.compressionOptions)}`)
+        if (imageOutput.compressionCustomField !== true) problems.push('choosing CUSTOM for the PNG compression brought out no field to type a figure in')
+        if (imageOutput.compressionAfterTyping !== 'custom') problems.push(`a typed compression left the ladder on ${String(imageOutput.compressionAfterTyping)}`)
         if (String(imageOutput.bitDepthOptions) !== '8,16') problems.push(`the PNG bit depths offer ${JSON.stringify(imageOutput.bitDepthOptions)}`)
         // What a change of FORMAT makes of a run: it survives into another frame container, which is the
         // rule `applyContainerChange` states, read here through the control the user actually sees.
         if (imageOutput.imageBeforeApply !== 'sequence') problems.push(`a run chosen for a GIF read ${String(imageOutput.imageBeforeApply)} after moving to PNG rather than surviving as a run`)
         if (imageOutput.imageAfterStill !== 'still') problems.push(`choosing a single frame left the control on ${String(imageOutput.imageAfterStill)}`)
         if (imageOutput.sentContainer2 !== 'png') problems.push(`the PNG job was sent as ${String(imageOutput.sentContainer2)}`)
-        if (imageOutput.sentCompression !== 9) problems.push(`choosing compression 9 sent ${String(imageOutput.sentCompression)}`)
+        if (imageOutput.sentCompression !== 7) problems.push(`a compression of 7 typed under CUSTOM was sent as ${String(imageOutput.sentCompression)}`)
         if (imageOutput.sentBitDepth !== 16) problems.push(`choosing 16-bit sent ${String(imageOutput.sentBitDepth)}`)
         // SINGLE FRAME carries the instant it is taken at, which the encoder is what turns into a seek.
         if (typeof imageOutput.sentStillFrame !== 'number') problems.push(`a SINGLE FRAME was sent with no instant to take it at: ${String(imageOutput.sentStillFrame)}`)
+      }
+      // THE DEPTH CONTROL: derived for ProRes, which has no choice to offer, and chosen for H.264/H.265,
+      // which genuinely take both.
+      const depth = result.depth
+      if (!depth) problems.push('the window reported nothing about its DEPTH control')
+      else {
+        if (!depth.h264 || !depth.h264.drawn) problems.push('an H.264 job was offered no DEPTH control, and it takes both depths')
+        else {
+          if (String(depth.h264.options) !== '8,10') problems.push(`the H.264 depth offers ${JSON.stringify(depth.h264.options)} rather than eight and ten`)
+          if (depth.h264.value !== '8') problems.push(`a job that named no depth opens on ${String(depth.h264.value)} rather than eight`)
+          if (depth.h264.readOnly) problems.push('the H.264 depth is drawn read-only, so the choice cannot be made')
+        }
+        if (depth.sentDepth !== 10) problems.push(`choosing ten bits sent ${String(depth.sentDepth)}`)
+        if (!depth.prores) problems.push('a ProRes job reported nothing about its depth')
+        else {
+          if (!depth.prores.readOnly) problems.push('ProRes drew a depth CONTROL, which could only ever lie about what its profile decides')
+          if (depth.prores.hasSelect) problems.push('ProRes was offered a depth dropdown')
+          if (depth.prores.value !== '12-BIT + ALPHA') problems.push(`ProRes 4444 XQ reads ${String(depth.prores.value)} rather than 12-BIT + ALPHA`)
+          if (depth.proresHint !== 'FROM THE PROFILE') problems.push(`the ProRes depth field's hint is ${JSON.stringify(depth.proresHint)} rather than FROM THE PROFILE`)
+        }
       }
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))

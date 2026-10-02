@@ -246,6 +246,12 @@ const audioCodec = async (file) => {
     const atStart = await exportImage('png', 'png', { stillFrameAt: 0 }, 'atstart.png')
     const atHalf = await exportImage('png', 'png', { stillFrameAt: 0.5 }, 'athalf.png')
     check('a single frame is taken at the instant it names, not the file first frame', fs.readFileSync(atStart).equals(fs.readFileSync(atHalf)), false)
+    // And the DEPTH a delivery codec is written at. Ten bits is the software encoder's own pixel format;
+    // eight is what every player opens and what a job that names nothing gets.
+    const tenBit = await exportImage('mp4', 'h264', { imageOutputMode: undefined, videoBitDepth: 10 }, 'ten.mp4')
+    const eightBitH264 = await exportImage('mp4', 'h264', { imageOutputMode: undefined, videoBitDepth: 8 }, 'eight.mp4')
+    check('ten bits a sample is written as yuv420p10le', await probeValue(tenBit, 'stream=pix_fmt'), 'yuv420p10le')
+    check('and eight as the delivery format', await probeValue(eightBitH264, 'stream=pix_fmt'), 'yuv420p')
   }
 
   console.log(failures === 0 ? '\nEVERY OFFERED CODEC EXPORTS\n' : `\n${failures} CODEC(S) FAILED\n`)

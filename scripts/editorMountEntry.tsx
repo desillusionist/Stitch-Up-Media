@@ -126,7 +126,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -160,6 +160,12 @@ const toggleStates = () => Object.fromEntries(([...document.querySelectorAll('.e
 /** What a dropdown is showing, and what it offers, read off the DOM the same way a reader would. */
 const valueOf = (control: HTMLElement | null) => control?.querySelector('.editor-select-trigger')?.getAttribute('data-value') ?? null
 const optionsOf = (control: HTMLElement | null) => control ? [...control.querySelectorAll('.editor-select-option')].map((option) => option.getAttribute('data-value')) : []
+
+/** Whether a labelled control is drawn disabled — the reading that says a setting can be set at all. */
+const fieldDisabled = (label: string) => {
+  const field = fieldFor(label)
+  return Boolean(field?.querySelector('.editor-select-trigger')?.hasAttribute('disabled') || field?.querySelector('input')?.hasAttribute('disabled'))
+}
 
 /** Choosing an option the way a user does: pressing the entry itself, so React sees the change. */
 const chooseOption = (control: HTMLElement | null, value: string) => {
@@ -303,6 +309,12 @@ const measureInspector = async () => {
   let durationWheelCancelled: boolean | null = null
   let durationArrowTo: string | null = null
   let durationArrowCancelled: boolean | null = null
+  let durationTypedHeld: string | null = null
+  let speedWhileTyped: string | null = null
+  let typingHeldTheFigure: boolean | null = null
+  let durationTypedCommitted: string | null = null
+  let speedAfterEnter: string | null = null
+  let durationAfterRefusal: string | null = null
   if (speedField) {
     const speed = () => scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
     const press = (key: string) => {
@@ -352,6 +364,26 @@ const measureInspector = async () => {
     durationArrowCancelled = durationArrow.defaultPrevented
     await wait(80)
     durationArrowTo = durationInput()?.value ?? null
+    // AND A TYPED FIGURE IS HELD UNTIL IT IS CONFIRMED. A timecode is typed as a whole rather than built up
+    // a digit at a time, so nothing is applied until Enter — and a figure that is not a timecode is refused
+    // rather than run, with the field falling back to the value it had.
+    const typeInto = (value: string) => { const field = durationInput(); if (field) setNativeValue(field, value) }
+    const speedBeforeTyping = speed()?.value ?? null
+    typeInto('00:00:04.00')
+    await wait(80)
+    durationTypedHeld = durationInput()?.value ?? null
+    speedWhileTyped = speed()?.value ?? null
+    // Whether typing moved the figure at all, which is the question — the speed it was on is whatever the
+    // two gestures above left it at.
+    typingHeldTheFigure = speedWhileTyped === speedBeforeTyping
+    durationInput()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await wait(120)
+    durationTypedCommitted = durationInput()?.value ?? null
+    speedAfterEnter = speed()?.value ?? null
+    typeInto('nonsense')
+    durationInput()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await wait(120)
+    durationAfterRefusal = durationInput()?.value ?? null
     setNativeValue(speed() ?? speedField, String(MAX_CLIP_SPEED * 99))
     await wait(80)
     // Left, so the figure the caller clamped is what the field shows rather than the digits just typed:
@@ -399,6 +431,12 @@ const measureInspector = async () => {
     durationWheelCancelled,
     durationArrowTo,
     durationArrowCancelled,
+    durationTypedHeld,
+    speedWhileTyped,
+    typingHeldTheFigure,
+    durationTypedCommitted,
+    speedAfterEnter,
+    durationAfterRefusal,
   }
 }
 
@@ -473,6 +511,9 @@ const drive = async () => {
       // figure is, so a second control for it was a duplicate of what the transport already owned.
       speedSelector: speedSelector(),
     },
+    // THE SUMMARY'S OWN LINE, which is where the size estimate is read. A movie job must not answer
+    // UNKNOWN: its picture is a CRF delivery codec, which is bracketed rather than unknown.
+    summary: document.querySelector('.export-summary')?.textContent ?? null,
   }
 
   // THE ONE-STREAM RULE. A file with neither a picture nor a sound in it is nothing, so unchecking one
@@ -688,6 +729,11 @@ const drive = async () => {
   await wait(400)
   const coverAudioToggles = labelsOf('.editor-toggle')
   const coverPictureSource = pictureSourceSelect() ? 'drawn' : null
+  // THE AUDIO-ONLY FORMAT is a SOUND export, so its sound settings have to be choosable: SAMPLE RATE,
+  // BITRATE and CHANNELS were all drawn disabled for every audio-only container, which left the one
+  // format that is nothing BUT sound with nothing to set.
+  const coverAudioDisabled = { sampleRate: fieldDisabled('SAMPLE RATE'), bitrate: fieldDisabled('BITRATE'), channels: fieldDisabled('CHANNELS') }
+  const coverSummary = document.querySelector('.export-summary')?.textContent ?? null
   // The EXPORT tab, which is where the two stream toggles live, and where THIS container's answer to
   // them is the one the report was about: an mp3 carries a sound and no picture at all.
   clickTab('EXPORT')
@@ -701,6 +747,8 @@ const drive = async () => {
     audioToggles: coverAudioToggles,
     pictureSource: coverPictureSource,
     toggles: toggleStates(),
+    audioDisabled: coverAudioDisabled,
+    summary: coverSummary,
   }
 
   // RE-ENTRY, with NOTHING pushed. This is the half that closes the race a re-created window loses: the job
@@ -729,6 +777,21 @@ const drive = async () => {
   await wait(120)
   const tabNames = () => [...document.querySelectorAll('.export-tabs button')].map((button) => button.textContent?.trim())
   const tabsForMovie = tabNames()
+  // A HEADING IS NOT A HANDLE FOR THE DROPDOWN BESIDE IT. A `<button>` is a LABELABLE element, so a click
+  // anywhere on a field's own `<label>` forwards a synthetic click to the select's trigger and opens its
+  // menu — which is not what clicking the NAME of a setting means. The heading's click is cancelled where
+  // the field holds a select, and the trigger itself still opens it, so the control is not broken.
+  const formatField = fieldFor('FORMAT')
+  const menuOpen = () => Boolean(formatField?.querySelector('.editor-select-menu:not([hidden])'))
+  ;(formatField?.querySelector('span') as HTMLElement | null)?.click()
+  await wait(150)
+  const headingOpened = menuOpen()
+  ;(formatField?.querySelector('.editor-select-trigger') as HTMLElement | null)?.click()
+  await wait(150)
+  const triggerOpened = menuOpen()
+  // Shut again, so the rest of the drive starts from a closed menu.
+  if (menuOpen()) (formatField?.querySelector('.editor-select-trigger') as HTMLElement | null)?.click()
+  await wait(120)
   const formatSelect = selectIn('FORMAT')
   // The FORMAT lives on the EXPORT tab and the tab switch UNMOUNTS it, so it is read and changed while
   // that tab is the one on screen — a reading taken from the IMAGE tab is a reading of nothing.
@@ -744,6 +807,8 @@ const drive = async () => {
     container: containerAfterGif,
     tabsForMovie,
     tabsForGif: tabNames(),
+    headingOpened,
+    triggerOpened,
     drawn: Boolean(fieldFor('IMAGE OUTPUT')),
     options: optionsOf(imageSelect),
     value: valueOf(imageSelect),
@@ -772,12 +837,20 @@ const drive = async () => {
   const compressionSelect = selectIn('COMPRESSION')
   const bitDepthSelect = selectIn('BIT DEPTH')
   const pngImageSelect = selectIn('IMAGE OUTPUT')
+  const compressionOptions = optionsOf(compressionSelect)
   // What the change of container made of the run chosen for the GIF, read before anything else is touched.
   const imageBeforeApply = valueOf(pngImageSelect)
   if (pngImageSelect) chooseOption(pngImageSelect, 'still')
   await wait(150)
   const imageAfterStill = valueOf(selectIn('IMAGE OUTPUT'))
-  if (compressionSelect) chooseOption(compressionSelect, '9')
+  // CUSTOM has to bring a field of its own out, and a figure typed into it has to be the figure sent.
+  if (compressionSelect) chooseOption(compressionSelect, 'custom')
+  await wait(150)
+  const compressionCustomField = Boolean(fieldFor('COMPRESSION')?.querySelector('input'))
+  const compressionInput = fieldFor('COMPRESSION')?.querySelector('input') as HTMLInputElement | null
+  if (compressionInput) setNativeValue(compressionInput, '7')
+  await wait(150)
+  const compressionAfterTyping = valueOf(selectIn('COMPRESSION'))
   if (bitDepthSelect) chooseOption(bitDepthSelect, '16')
   await wait(150)
   const applyPng = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
@@ -791,9 +864,11 @@ const drive = async () => {
     sentMode: sentImage?.preset?.imageOutputMode ?? null,
     sentContainer: sentImage?.preset?.container ?? null,
     sentLoop: sentImage?.preset?.gifMode ?? null,
-    containerAfterPng,
     pngFields,
-    compressionOptions: optionsOf(compressionSelect),
+    compressionOptions,
+    compressionCustomField,
+    compressionAfterTyping,
+    containerAfterPng,
     bitDepthOptions: optionsOf(bitDepthSelect),
     imageBeforeApply,
     imageAfterStill,
@@ -801,6 +876,54 @@ const drive = async () => {
     sentCompression: sentPng?.preset?.pngCompression ?? null,
     sentBitDepth: sentPng?.preset?.imageBitDepth ?? null,
     sentStillFrame: sentPng?.preset?.stillFrameAt ?? null,
+  }
+
+  // THE DEPTH CONTROL, which is derived for ProRes and chosen for H.264 and H.265. A movie container is
+  // switched to first, then the codec, and the two readings are taken off the same field.
+  clickTab('EXPORT')
+  await wait(120)
+  const toMovie = selectIn('FORMAT')
+  if (toMovie) chooseOption(toMovie, 'mp4')
+  await wait(200)
+  const toH264 = selectIn('PRESET')
+  if (toH264) chooseOption(toH264, 'h264')
+  await wait(200)
+  clickTab('VIDEO')
+  await wait(150)
+  const depthSelect = selectIn('DEPTH')
+  const h264Depth = {
+    drawn: Boolean(fieldFor('DEPTH')),
+    options: optionsOf(depthSelect),
+    value: valueOf(depthSelect),
+    readOnly: Boolean(fieldFor('DEPTH')?.querySelector('input[readonly]')),
+  }
+  if (depthSelect) chooseOption(depthSelect, '10')
+  await wait(150)
+  const applyDepth = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
+  ;(applyDepth as HTMLButtonElement | undefined)?.click()
+  await wait(200)
+  const sentDepth = (applied[applied.length - 1] as { preset?: { videoBitDepth?: number } } | undefined)?.preset?.videoBitDepth ?? null
+  // And ProRes, whose depth its PROFILE decides: the same field becomes a reading rather than a control.
+  clickTab('EXPORT')
+  await wait(120)
+  const toMov = selectIn('FORMAT')
+  if (toMov) chooseOption(toMov, 'mov')
+  await wait(200)
+  const toProres = selectIn('PRESET')
+  if (toProres) chooseOption(toProres, 'prores-4444xq')
+  await wait(200)
+  clickTab('VIDEO')
+  await wait(150)
+  const proresDepthField = fieldFor('DEPTH')
+  result.depth = {
+    h264: h264Depth,
+    sentDepth,
+    prores: {
+      value: proresDepthField?.querySelector('input')?.value ?? null,
+      readOnly: Boolean(proresDepthField?.querySelector('input[readonly]')),
+      hasSelect: Boolean(proresDepthField?.querySelector('.editor-select')),
+    },
+    proresHint: proresDepthField?.querySelector('em')?.textContent?.trim() ?? null,
   }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true

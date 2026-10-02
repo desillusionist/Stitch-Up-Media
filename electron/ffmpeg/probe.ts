@@ -53,6 +53,8 @@ export function probeFile(filePath: string): Promise<MediaProbeInfo> {
           resolution: s.width && s.height ? `${s.width}x${s.height}` : undefined,
           fps: s.r_frame_rate ? eval(s.r_frame_rate) : undefined,
           bitrate: s.bit_rate ? `${Math.round(Number(s.bit_rate) / 1000)}k` : undefined,
+          // The picture's own storage format, which is where its DEPTH is read from rather than guessed at.
+          pixelFormat: s.pix_fmt || undefined,
         }))
 
       const audioStreams = (data.streams || [])

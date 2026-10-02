@@ -32,6 +32,13 @@ import React, { useRef, useState } from 'react'
  * the figure while the list refused to move. Neither is what a wheel over a value means here, so the
  * wheel is read directly: one notch is one step, the step is the field's own, and the bounds are held.
  * The event is cancelled, so the box the field sits in does not scroll out from under it.
+ *
+ * A FORMATTED FIELD IS CONFIRMED RATHER THAN TYPED AT. `00:00:12.00` is a whole figure rather than a
+ * number built up out of digits, and applying each keystroke of one runs the job through every length on
+ * the way to the length that was meant — `1` on the road to `10:00` is one second, and the timeline
+ * follows it there and back. So a formatted field holds what is typed and hands it over on ENTER, or when
+ * it is left; a figure its `parse` refuses is not applied at all and the field falls back to the value it
+ * had, because a length is not something to guess at. Every other field keeps applying as it is typed.
  */
 
 /**
@@ -148,6 +155,21 @@ export const NumberField: React.FC<{
     unbound.current = () => element.removeEventListener('wheel', onWheel)
   }
 
+  /**
+   * Confirms what was typed into a FORMATTED field, which is applied here and nowhere else.
+   *
+   * A figure `parse` refuses leaves the value exactly as it was: the text is dropped and the field draws
+   * the value again, so an unparseable timecode is a keystroke that did nothing rather than one that ran.
+   */
+  const commit = () => {
+    if (text === null) return
+    const parsed = parse ? parse(text) : null
+    setText(null)
+    if (parsed === null || !Number.isFinite(parsed)) return
+    ownEntry.current = true
+    onValue(parsed)
+  }
+
   return <input
     ref={bindWheel}
     type={format ? 'text' : 'number'}
@@ -174,10 +196,13 @@ export const NumberField: React.FC<{
     onChange={(event) => {
       const raw = event.target.value
       setText(raw)
+      // A formatted field holds what is typed until it is confirmed — see the note at the top.
+      if (format) return
       const parsed = parse ? parse(raw) : (raw.trim() === '' ? null : Number(raw))
       if (parsed !== null && Number.isFinite(parsed)) { ownEntry.current = true; onValue(parsed) }
     }}
     onKeyDown={(event) => {
+      if (format && event.key === 'Enter') { event.preventDefault(); commit(); return }
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
       // Read here rather than left to the platform's own stepper, so the bounds are a real stop and the
       // caret does not jump to the field's start or end instead of the figure moving.
@@ -185,6 +210,9 @@ export const NumberField: React.FC<{
       stepBy(event.key === 'ArrowUp' ? 1 : -1)
     }}
     onBlur={(event) => {
+      // Leaving a formatted field confirms it too, so a figure typed and then clicked away from is not
+      // silently thrown out; an unparseable one falls back to the value rather than sticking on screen.
+      if (format) { commit(); return }
       const raw = event.target.value
       setText(null)
       if (raw.trim() === '') onClear?.()

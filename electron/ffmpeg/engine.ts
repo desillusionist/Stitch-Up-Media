@@ -995,12 +995,17 @@ export class FFmpegEngine {
         cmd.videoCodec('h264_videotoolbox')
       } else {
         cmd.videoCodec('libx264').outputOptions(['-preset medium', '-crf 20'])
+        // Ten bits a sample where the job asked for it. It is the SOFTWARE encoder's own pixel format: the
+        // hardware one is left at eight, because what a VideoToolbox generation supports for 10-bit H.264
+        // depends on the machine and asking for it blindly turns a job into a failure on the wrong one.
+        if (preset.videoBitDepth === 10) cmd.outputOptions(['-pix_fmt yuv420p10le'])
       }
     } else if (preset.videoCodec === 'hevc') {
       if (preset.hardwareAccelerated && process.platform === 'darwin') {
         cmd.videoCodec('hevc_videotoolbox')
       } else {
         cmd.videoCodec('libx265').outputOptions(['-preset medium', '-crf 23'])
+        if (preset.videoBitDepth === 10) cmd.outputOptions(['-pix_fmt yuv420p10le'])
       }
     } else if (preset.videoCodec === 'prores') {
       if (preset.hardwareAccelerated && process.platform === 'darwin') {

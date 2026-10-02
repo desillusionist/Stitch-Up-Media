@@ -18,6 +18,7 @@ import { EditorSelect } from './EditorSelect'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
+import { pixelDepthLabel, proresDepthLabel } from '../lib/pixelDepth'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { computeFilmstrip, FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SETTLE_MS, frameKey, thumbnailSignature } from '../lib/filmstrip'
 import { WAVEFORM_BAR, peaksForTrim, waveformPath } from '../lib/waveform'
@@ -223,7 +224,13 @@ const EditorRow: React.FC<{ label: string; value: React.ReactNode; reason?: stri
  */
 const EditorField: React.FC<{ label: string; hint?: string; reason?: string; canReset?: boolean; onReset?: () => void; children: React.ReactNode }> = ({ label, hint, reason, canReset, onReset, children }) => (
   <label className="editor-field" title={reason}>
-    <span>
+    {/* A HEADING IS A HEADING. A `<button>` is a LABELABLE element, so a click anywhere on a field's own
+        `<label>` forwards a synthetic click to the first labelable control inside it — and for a dropdown
+        that opens its menu. Clicking the NAME of a setting is not a request to open the setting, so the
+        default is cancelled where the control is a select's trigger. Where it is an ordinary value field
+        the forwarding is left alone, because there it only puts the caret in the box, which is what a
+        reader clicking the name of a value means. */}
+    <span onClick={(event) => { if (event.currentTarget.parentElement?.querySelector('.editor-select-trigger')) event.preventDefault() }}>
       {label}
       {hint ? <em>{hint}</em> : null}
       {onReset && canReset ? <button
@@ -1826,6 +1833,8 @@ export const EditJobApp: React.FC = () => {
   const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
   const inspectedEditable = Boolean(inspectedSegment && (inspectedSegment.still || inspectedSegment.sequence))
   const inspectedProbe = inspectedSource ? probedTiming[inspectedSource] : undefined
+  /** The SOURCE's own pixel format, which its depth is read off — a fact about the file, never a control. */
+  const inspectedPixelFormat = inspectedSource ? sourceProbes[inspectedSource]?.videoStreams?.[0]?.pixelFormat : undefined
   /** The whole probe of the same source, for the lines that describe the file rather than time it. */
   const inspectedInfo = inspectedSource ? sourceProbes[inspectedSource] : undefined
   const inspectedAudioFacts = audioFacts(inspectedInfo)
@@ -2959,7 +2968,7 @@ export const EditJobApp: React.FC = () => {
   // open falls back to EXPORT rather than leaving a tab whose controls are gone.
   const tabsShown = tabs.filter((name) => name !== 'IMAGE' || framesPossible)
   const activeTab: Tab = tabsShown.includes(tab) ? tab : 'EXPORT'
-  const audioDisabled = audioOnly || soundNeverPossible
+  const audioDisabled = soundNeverPossible
   const videoReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : isGif ? 'GIF OUTPUT FORCES THE GIF ENCODER AND DROPS AUDIO.' : undefined
   const audioReason = audioOnly ? undefined : soundNeverPossible ? 'THIS FORMAT CARRIES NO AUDIO TRACK.' : undefined
   /**
@@ -3062,6 +3071,20 @@ export const EditJobApp: React.FC = () => {
    */
   const bitrateRung = bitrateOptionOf(draft.preset.audioBitrate)
   const bitrateCustom = draft.preset.audioBitrate !== undefined && bitrateRung === null
+  // The PNG work setting, read the way the bitrate ladder is: a rung of the offered list, or a figure of
+  // the reader's own with a field of its own to type it in.
+  const compressionRung = draft.preset.pngCompression !== undefined && (PNG_COMPRESSION_CHOICES as readonly number[]).includes(draft.preset.pngCompression)
+  const compressionCustom = draft.preset.pngCompression !== undefined && !compressionRung
+  /**
+   * Which depth control the OUTPUT codec gets, if any.
+   *
+   * ProRes decides its own depth by profile, so it gets a reading. H.264 and H.265 genuinely support both
+   * depths, so they get the choice. Everything else here has no such setting to offer.
+   */
+  const depthKind: 'profile' | 'choice' | null =
+    draft.preset.videoCodec === 'prores' ? 'profile'
+      : draft.preset.videoCodec === 'h264' || draft.preset.videoCodec === 'hevc' ? 'choice'
+        : null
   const bitrateValueForChoice = (choice: string) => {
     if (choice === 'custom') updatePreset({ audioBitrate: '' })
     else if (choice === '0') updatePreset({ audioBitrate: undefined })
@@ -3258,6 +3281,10 @@ export const EditJobApp: React.FC = () => {
                     size and says so by leaving it out rather than by claiming zero bits. */}
                 {inspectedAudioFacts && <EditorRow label="AUDIO" value={inspectedAudioFacts} reason="The file's own audio: its sample rate, its sample size, and its channel layout or count." />}
                 {inspectedAudioCodec && <EditorRow label="AUDIO CODEC" value={inspectedAudioCodec} />}
+                {/* The SOURCE's own depth, which is a fact about the file rather than a setting: nothing
+                    here re-encodes a source at a depth it was not already in, and it moves no estimate,
+                    because the source is re-encoded whatever it held. */}
+                {inspectedPixelFormat && <EditorRow label="DEPTH" value={pixelDepthLabel(inspectedPixelFormat) ?? inspectedPixelFormat.toUpperCase()} reason="The samples the source's picture is stored in, read off its own pixel format. It is never a control — the export writes whatever its codec and depth say." />}
                 {/* The clip's own run through its source, told in four figures rather than in one line.
                     SOURCE is the whole of the file, USED is the part the output takes, and START and END
                     are the two points inside the source that part runs between — which is what a reader
@@ -3787,6 +3814,25 @@ export const EditJobApp: React.FC = () => {
               canReset={draft.preset.fps !== undefined}
               onReset={() => changeFps(undefined)}
             ><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={`SOURCE | ${defaultFps}`} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
+            {/* DEPTH. ProRes decides it by PROFILE and nothing else, so it is read rather than chosen;
+                H.264 and H.265 genuinely take both and get the choice; every other codec here has no such
+                setting to offer, so the field is not drawn for them at all. */}
+            {depthKind && <EditorField
+              label="DEPTH"
+              hint={depthKind === 'profile' ? 'FROM THE PROFILE' : undefined}
+              reason={depthKind === 'profile'
+                ? `A ProRes profile decides its own depth: the 422 family is ten bits a sample and the 4444 family is twelve with an alpha plane beside it. There is no eight-bit ProRes and no sixteen-bit one, so this is a reading rather than a control — ${proresDepthLabel(draft.preset.proresProfile)}.`
+                : 'The samples a sample is stored in. Eight is what every player opens; ten keeps a banded gradient from banding further on its way through a grade. At a bitrate the job names the two are the SAME file size — the depth spends the rate on a different picture rather than on more of it — so this changes what the picture looks like rather than how big the file is. The software encoder writes it; the hardware one is left at eight.'}
+              canReset={depthKind === 'choice' && draft.preset.videoBitDepth !== undefined}
+              onReset={() => updatePreset({ videoBitDepth: undefined })}
+            >{depthKind === 'profile'
+              ? <input className="editor-input" type="text" value={proresDepthLabel(draft.preset.proresProfile)} readOnly aria-label="The depth the picture is written at" />
+              : <EditorSelect
+                value={String(draft.preset.videoBitDepth ?? 8)}
+                options={[{ value: '8', label: '8-BIT' }, { value: '10', label: '10-BIT' }]}
+                onChange={(next) => updatePreset({ videoBitDepth: Number(next) === 10 ? 10 : 8 })}
+                ariaLabel="The depth the picture is written at"
+              />}</EditorField>}
             <div className="editor-field">
               <span><span className="editor-label">QUALITY</span><EditorInfo text={QUALITY_HELP} /></span>
               <input type="text" className="editor-input" aria-label="Video bitrate" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE | E.G. 8M" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} />
@@ -3829,12 +3875,26 @@ export const EditJobApp: React.FC = () => {
                 reason="How hard the PNG encoder works. A PNG is lossless at every setting, so this trades the TIME spent writing the file against its SIZE and never a pixel: 9 is the smallest file and the slowest to write, 0 the largest and the quickest."
                 canReset={draft.preset.pngCompression !== undefined}
                 onReset={() => updatePreset({ pngCompression: undefined })}
-              ><EditorSelect
-                value={String(draft.preset.pngCompression ?? 6)}
-                options={PNG_COMPRESSION_CHOICES.map((level) => ({ value: String(level), label: level === 0 ? '0 (FASTEST)' : level === 9 ? '9 (SMALLEST)' : String(level) }))}
-                onChange={(next) => updatePreset({ pngCompression: Number(next) })}
-                ariaLabel="How hard the PNG encoder works"
-              /></EditorField>
+              ><span className="field-pair">
+                <EditorSelect
+                  value={compressionCustom ? 'custom' : String(draft.preset.pngCompression ?? 6)}
+                  options={[
+                    ...PNG_COMPRESSION_CHOICES.map((level) => ({ value: String(level), label: level === 0 ? '0 (FASTEST)' : level === 9 ? '9 (SMALLEST)' : String(level) })),
+                    { value: 'custom', label: 'CUSTOM...' },
+                  ]}
+                  onChange={(next) => updatePreset({ pngCompression: next === 'custom' ? 7 : Number(next) })}
+                  ariaLabel="How hard the PNG encoder works"
+                />
+                {compressionCustom && <NumberField
+                  className="editor-input"
+                  min={0}
+                  max={9}
+                  step={1}
+                  value={draft.preset.pngCompression}
+                  onValue={(level) => updatePreset({ pngCompression: Math.max(0, Math.min(9, Math.round(level))) })}
+                  ariaLabel="The PNG compression level, 0 to 9"
+                />}
+              </span></EditorField>
               <EditorField
                 label="BIT DEPTH"
                 reason="The samples a channel is stored in. Eight is what a player opens and what a delivery frame is; sixteen is for a frame on its way into a compositor, where the extra room is the point — and it is twice the samples per channel."

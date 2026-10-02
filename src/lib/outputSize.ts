@@ -115,6 +115,47 @@ const IMAGE_BRACKETS: Partial<Record<EncodingPreset['videoCodec'], { low: number
   gif: { low: 0.15, high: 0.7, basis: 'pixel' },
 }
 
+/**
+ * What a DELIVERY codec costs a frame, in bits per pixel per frame, at the quality this app's encoder is
+ * told to write.
+ *
+ * CRF has no bitrate until the encode has happened, so the honest answer is the span the encoder's own
+ * output lands in across content — and these are MEASURED, on this machine's encoders, with the very
+ * settings the engine passes (a frame at 1280x720 and 30 fps, four seconds long):
+ *
+ *   codec                     animated gradient    dense moving detail
+ *   H.264 (crf 20, medium)          0.0090 bpp            0.1495 bpp
+ *   H.265 (crf 23, medium)          0.0014 bpp            0.1315 bpp
+ *   VP9   (its own default)         0.0010 bpp            0.1180 bpp
+ *   AV1   (its own default)         0.0010 bpp            0.1078 bpp
+ *
+ * A near-static picture sits BELOW the low end — a test pattern measured 0.0004 bpp at every one of them
+ * — so this brackets moving footage rather than everything a file could hold. It is still a RANGE rather
+ * than a number, which is the whole point: a figure drawn here as measured would be read as a promise.
+ *
+ * Bit depth is deliberately NOT multiplied in. Measured at the same CRF, ten bits a sample came out at
+ * 0.1490 bpp against eight bits' 0.1495: the depth spends the same rate on a different picture rather
+ * than making a larger file, and the difference is far inside the bracket already.
+ */
+const DELIVERY_BPP: Partial<Record<EncodingPreset['videoCodec'], { low: number; high: number }>> = {
+  h264: { low: 0.009, high: 0.1495 },
+  hevc: { low: 0.0014, high: 0.1315 },
+  vp9: { low: 0.001, high: 0.118 },
+  av1: { low: 0.001, high: 0.1078 },
+}
+
+/**
+ * What a lossy sound codec writes when the job names no bitrate, MEASURED rather than assumed.
+ *
+ * A ten-second stereo 48 kHz tone came out of this machine at 128,000 b/s from libmp3lame, 128,108 from
+ * the native AAC encoder, and 116,740 from libopus — so a job that names no figure still gets an answer
+ * instead of UNKNOWN. Libopus is a variable-rate encoder, so its figure is an average rather than a
+ * ceiling, which is what the estimate is marked as.
+ */
+const AUDIO_DEFAULT_BITRATE: Partial<Record<EncodingPreset['audioCodec'], number>> = {
+  mp3: 128000, aac: 128000, opus: 117000,
+}
+
 /** A stream's own bracket, in bytes. */
 interface Talk { low: number; high: number; confidence: SizeConfidence }
 
@@ -139,7 +180,15 @@ const pictureSize = (input: SizeEstimateInput): Talk | undefined => {
   const fps = input.fps && input.fps > 0 ? input.fps : 29.97
   if (input.videoCodec === 'prores') {
     const target = PRORES_TARGET_AT_1080P30[input.proresProfile ?? 'standard']
+    // No depth multiplier: the profile's own data rate already includes its native depth.
     return fixedBytes(target * (area / (1920 * 1080)) * (fps / 29.97), input.seconds, 'close')
+  }
+  // A delivery codec: the measured span its own encoder lands in across content, at the quality this app
+  // asks it for. Bits a second is bits per pixel per frame times the frame's pixels times its rate.
+  const delivery = DELIVERY_BPP[input.videoCodec]
+  if (delivery) {
+    const at = (bpp: number) => Math.round((bpp * area * fps / 8) * Math.max(0, input.seconds))
+    return { low: at(delivery.low), high: at(delivery.high), confidence: 'rough' }
   }
   // Everything else the app writes as pictures is a still codec, whose size is the PICTURE's rather than a
   // setting — so the figure is the frame's own samples, bracketed, times the frames written.
@@ -172,7 +221,11 @@ const soundSize = (input: SizeEstimateInput): Talk | undefined => {
     return { low: Math.round(pcm * 0.45), high: Math.round(pcm * 0.65), confidence: 'rough' }
   }
   const named = bitsPerSecond(input.audioBitrate)
-  return named ? fixedBytes(named, seconds, 'close') : undefined
+  if (named) return fixedBytes(named, seconds, 'close')
+  // The encoder's OWN default, which is a figure rather than a guess — measured above — so a job that names
+  // no bitrate is still answerable. It is marked as the estimate it is.
+  const fallback = AUDIO_DEFAULT_BITRATE[input.audioCodec]
+  return fallback ? fixedBytes(fallback, seconds, 'close') : undefined
 }
 
 /**

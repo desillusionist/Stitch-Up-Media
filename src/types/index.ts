@@ -17,6 +17,14 @@ export interface MediaStreamInfo {
   bitDepth?: number
   /** The speaker layout where the file names one (`stereo`, `5.1`). `unknown` is answered as none. */
   channelLayout?: string
+  /**
+   * The pixel format a PICTURE is stored in, straight from the probe (`yuv420p`, `yuv420p10le`, `rgb24`).
+   *
+   * The depth a source is held at is read off this rather than assumed, and it is a FACT about the file
+   * rather than a setting: nothing here re-encodes a source at a depth it was not already in. See
+   * `pixelDepth`. Absent for a sound stream, which has samples rather than pixels — its depth is `bitDepth`.
+   */
+  pixelFormat?: string
 }
 
 export interface MediaProbeInfo {
@@ -113,6 +121,16 @@ export interface EncodingPreset {
    * default. It is the one image setting that trades size against the picture rather than against time.
    */
   jpegQuality?: number
+  /**
+   * The depth a DELIVERY codec writes at: eight bits a sample, which every player opens, or ten, which
+   * keeps a banded gradient from banding further on its way through a grade.
+   *
+   * It is offered for H.264 and H.265, which genuinely support both, and withheld from ProRes, whose depth
+   * its PROFILE decides — see `proresDepth`. At a bitrate the job names, the two depths are the SAME file
+   * size: the depth spends the rate on a different picture rather than on more of it, so this never moves
+   * the size estimate for a fixed-rate encode. Absent means the encoder's own, which is eight.
+   */
+  videoBitDepth?: 8 | 10
   /**
    * The picture an audio job is given when the export can hold one.
    *

@@ -26,6 +26,7 @@ import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/s
 import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceValue, FRAME_CONTAINERS, imageOutputChoiceValue, imageOutputChoicesFor } from '../src/lib/containerSwitch'
 import { applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, containerTakesAudio, containerTakesCodec, reconcileAudioToContainer, reconcileCodecToContainer } from '../src/lib/codecChoices'
 import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel } from '../src/lib/outputSize'
+import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -2417,10 +2418,9 @@ void (async () => {
     check('k is a thousand', bitsPerSecond('320k'), 320000)
     check('and M is a million', bitsPerSecond('8M'), 8000000)
     check('while nonsense reads as nothing', [bitsPerSecond('fast'), bitsPerSecond(''), bitsPerSecond(undefined)], [undefined, undefined, undefined])
-    // A named bitrate wins over everything, a CRF encoder has none until it has encoded, and a passthrough
-    // has nothing to work one out from at all.
+    // A named bitrate wins over everything, a passthrough has nothing to work one out from at all, and a
+    // CRF delivery codec is a BRACKET rather than a figure — see the section on it below.
     check('a named bitrate sizes a file', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' }), { bytes: 10100000, confidence: 'close' })
-    check('and a CRF encoder of the same codec says UNKNOWN', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', audioCodec: 'aac' }), undefined)
     check('as does a stream copy', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'copy', audioCodec: 'aac' }), undefined)
     // ProRes IS a bitrate by specification, so its published target is scaled by the frame's own area and
     // rate — the OUTPUT frame, never the source's.
@@ -2453,6 +2453,34 @@ void (async () => {
     // The frame count a run is sized by.
     check('an assembled length is counted at the rate it is written', framesFrom(10, 30), 300)
     check('and a length of nothing is still one frame', framesFrom(0, 30), 1)
+  }
+
+  console.log('\n== a delivery codec, and the depth it is written at ==')
+  {
+    // A CRF delivery codec has no bitrate until it has encoded, so its figure is the BRACKET its own
+    // encoder lands in across content — measured on this machine with the very settings the engine passes.
+    const crf = (videoCodec: EncodingPreset['videoCodec']) => estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec, width: 1920, height: 1080, fps: 30, audioCodec: 'copy' })
+    check('a CRF delivery codec is a bracket rather than a figure', [crf('h264')?.bytes, crf('h264')?.high, crf('h264')?.confidence], [706838, 11741371, 'rough'])
+    check('and every one of the four is bracketed', ['hevc', 'vp9', 'av1'].map((codec) => crf(codec as EncodingPreset['videoCodec'])?.confidence), ['rough', 'rough', 'rough'])
+    // The newer codecs write less at the quality they are asked for, which is the ordering a reader would
+    // expect and the one the measurements came out in.
+    const highs = (['h264', 'hevc', 'vp9', 'av1'] as const).map((codec) => crf(codec)?.high ?? 0)
+    check('and the newer ones come out smaller at their own quality', highs.every((value, index) => index === 0 || value < highs[index - 1]), true)
+    // A sound that names no bitrate is answerable too, from the encoder's own default rather than a guess.
+    const soundBytes = (audioCodec: EncodingPreset['audioCodec']) => estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: false, sound: true, videoCodec: 'copy', audioCodec, audioSampleRate: 48000, audioChannels: 2 })
+    near('a sound that names no bitrate gets the encoder own default', soundBytes('mp3')?.bytes ?? 0, 161600, 1)
+    near('and AAC its own', soundBytes('aac')?.bytes ?? 0, 161600, 1)
+    near('and Opus the average it writes', soundBytes('opus')?.bytes ?? 0, 147713, 1)
+    check('each of them is marked as the estimate it is', [soundBytes('mp3')?.confidence, soundBytes('aac')?.confidence, soundBytes('opus')?.confidence], ['close', 'close', 'close'])
+    // The DEPTH a source is held at, read off its own pixel format rather than assumed.
+    check('a pixel format says its own depth', [pixelDepth('yuv420p'), pixelDepth('yuv420p10le'), pixelDepth('yuv444p12le'), pixelDepth('gray16le')], [8, 10, 12, 16])
+    check('and the packed ones say it per channel', [pixelDepth('rgb24'), pixelDepth('rgb48be')], [8, 16])
+    check('nonsense has no depth to read', [pixelDepth(undefined), pixelDepth(''), pixelDepth('weird')], [undefined, undefined, undefined])
+    check('a label carries the format as well', pixelDepthLabel('yuv420p10le'), '10-BIT // YUV420P10LE')
+    // And ProRes, whose depth its PROFILE decides rather than any control.
+    check('the 422 family is ten bits', [proresDepth('proxy'), proresDepth('lt'), proresDepth('standard'), proresDepth('hq')], [10, 10, 10, 10])
+    check('and the 4444 family is twelve', [proresDepth('4444'), proresDepth('4444xq')], [12, 12])
+    check('which is what its label says, alpha and all', [proresDepthLabel('hq'), proresDepthLabel('4444xq')], ['10-BIT', '12-BIT + ALPHA'])
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
