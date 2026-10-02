@@ -126,7 +126,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -221,7 +221,15 @@ const cssRule = (selector: string) => {
     try { rules = sheet.cssRules } catch { continue }
     for (const rule of Array.from(rules ?? [])) {
       if (rule instanceof CSSStyleRule && rule.selectorText === selector) {
-        return { selector: rule.selectorText, width: rule.style.width, height: rule.style.height, objectFit: rule.style.objectFit }
+        return {
+          selector: rule.selectorText,
+          width: rule.style.width,
+          height: rule.style.height,
+          objectFit: rule.style.objectFit,
+          appearance: rule.style.getPropertyValue('-webkit-appearance') || rule.style.appearance,
+          borderRadius: rule.style.borderRadius,
+          background: rule.style.background,
+        }
       }
     }
   }
@@ -514,6 +522,16 @@ const drive = async () => {
     // THE SUMMARY'S OWN LINE, which is where the size estimate is read. A movie job must not answer
     // UNKNOWN: its picture is a CRF delivery codec, which is bracketed rather than unknown.
     summary: document.querySelector('.export-summary')?.textContent ?? null,
+  }
+  // THE TRANSPORT'S SCRUBBER, which is drawn by the WINDOW rather than by the platform: an inset groove
+  // with the played part in the accent and a thin rectangular handle, in the stylesheet's own terms.
+  const scrub = document.querySelector('.transport-scrub') as HTMLElement | null
+  result.scrub = {
+    drawn: Boolean(scrub),
+    played: scrub ? scrub.style.getPropertyValue('--played') : null,
+    inputRule: cssRule('.transport-scrub'),
+    trackRule: cssRule('.transport-scrub::-webkit-slider-runnable-track'),
+    thumbRule: cssRule('.transport-scrub::-webkit-slider-thumb'),
   }
 
   // THE ONE-STREAM RULE. A file with neither a picture nor a sound in it is nothing, so unchecking one
@@ -998,11 +1016,25 @@ const drive = async () => {
   const videoToAudioSummary = document.querySelector('.export-summary')?.textContent ?? null
   clickTab('AUDIO')
   await wait(150)
+  // A LOSSLESS codec has a depth to store and a lossy one has none, so the field is read on both sides.
+  const depthForMp3 = { drawn: Boolean(fieldFor('BIT DEPTH')) }
+  clickTab('EXPORT')
+  await wait(120)
+  const toWav = selectIn('FORMAT')
+  if (toWav) chooseOption(toWav, 'wav')
+  await wait(250)
+  const wavSummary = document.querySelector('.export-summary')?.textContent ?? null
+  clickTab('AUDIO')
+  await wait(150)
+  const audioDepthSelect = selectIn('BIT DEPTH')
   result.videoToAudio = {
     container: 'mp3',
     summary: videoToAudioSummary,
     sampleRateDisabled: fieldDisabled('SAMPLE RATE'),
     bitrateDisabled: fieldDisabled('BITRATE'),
+    depthForMp3,
+    wavSummary,
+    depthForWav: { drawn: Boolean(fieldFor('BIT DEPTH')), options: optionsOf(audioDepthSelect), value: valueOf(audioDepthSelect) },
   }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true

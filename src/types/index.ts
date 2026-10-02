@@ -89,6 +89,16 @@ export interface EncodingPreset {
    * lays its audio out as mono or stereo: the two halves of one stream cannot be laid out differently.
    */
   audioChannels?: 1 | 2
+  /**
+   * How many bits one sample of the export's sound is, for the codecs that store samples at all.
+   *
+   * A lossless codec writes the samples it is given, so this is the only thing that decides what they are:
+   * sixteen is what a CD is and what this app has always written, twenty-four is what a master is, and
+   * thirty-two is a working depth. Absent means sixteen, which is what every job written before this
+   * control existed gets, so an untouched export is byte-identical. A LOSSY codec is offered none: an MP3
+   * holds a transform rather than samples, so a depth beside it would be a control with nothing behind it.
+   */
+  audioBitDepth?: 8 | 16 | 24 | 32
   imageOutputMode?: 'sequence' | 'still'
   gifMode?: 'regular' | 'loop' | 'bounce'
   /**

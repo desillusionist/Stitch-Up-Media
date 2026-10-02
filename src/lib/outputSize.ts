@@ -68,6 +68,8 @@ export interface SizeEstimateInput {
   audioBitrate?: string
   audioChannels?: number
   audioSampleRate?: number
+  /** The bits one sample of a LOSSLESS sound is stored in. Absent means sixteen, which is the default. */
+  audioBitDepth?: number
   /** The bytes an attached still adds, where the job carries one and its size is known. */
   coverArtBytes?: number
   /** Whether the output is wrapped in a container at all. A numbered run of files is not. */
@@ -251,16 +253,18 @@ const soundSize = (input: SizeEstimateInput): Talk | undefined => {
   const rate = input.audioSampleRate || 48000
   const channels = input.audioChannels || 2
   const seconds = Math.max(0, input.seconds)
+  // A lossless sound's figure is arithmetic on its SAMPLES, so the depth is part of it: sixteen bits a
+  // sample is what a job that names none gets, and twenty-four is half again as much.
+  const pcm = (rate * channels * ((input.audioBitDepth ?? 16) / 8)) * seconds
   if (input.audioCodec === 'pcm') {
     // Arithmetic rather than a setting: 48 kHz of sixteen-bit stereo is 1.536 Mb/s exactly.
-    const bytes = Math.round((rate * channels * 16 / 8) * seconds)
+    const bytes = Math.round(pcm)
     return { low: bytes, high: bytes, confidence: 'exact' }
   }
   if (input.audioCodec === 'copy') return undefined
   if (input.audioCodec === 'flac') {
     // Lossless audio compresses to about half of the PCM figure, and how much depends on the sound rather
     // than on the setting — so a range, narrower than a picture's because audio varies less.
-    const pcm = (rate * channels * 16 / 8) * seconds
     return { low: Math.round(pcm * 0.45), high: Math.round(pcm * 0.65), confidence: 'rough' }
   }
   const named = bitsPerSecond(input.audioBitrate)

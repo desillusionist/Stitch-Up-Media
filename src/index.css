@@ -233,6 +233,17 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .transport-rate { min-width: 46px; text-align: center; color: var(--ui-muted); font-size: 10px; }
 .transport-rate.is-fast { color: var(--ui-encoding); }
 .transport-rate.is-reverse { color: var(--ui-paused); }
+/* The transport's own scrubber, drawn like the timeline's playhead rather than like the platform's: the
+   played part of an inset groove in the accent, and a THIN RECTANGULAR handle. The platform's own is a
+   round blue knob on a blue track, which is the one thing on this panel that is not of the window — the
+   window says everything in its own two greens on an inset ground, and a bar that stops at a circle says
+   it in the system's colours instead. `--played` is handed in by the window, because a stylesheet cannot
+   read a range input's value. */
+.transport-scrub { -webkit-appearance: none; appearance: none; flex: 1 1 160px; height: 16px; background: transparent; cursor: ew-resize; }
+.transport-scrub::-webkit-slider-runnable-track { box-sizing: border-box; height: 4px; border: 1px solid var(--ui-border-dim); background: linear-gradient(to right, var(--ui-accent) 0 var(--played, 0%), var(--ui-panel-inset) var(--played, 0%)); }
+.transport-scrub::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; box-sizing: border-box; width: 3px; height: 16px; margin-top: -6px; border: 0; border-radius: 0; background: var(--ui-accent); }
+.transport-scrub:focus { outline: none; }
+.transport-scrub:disabled::-webkit-slider-thumb { background: var(--ui-border); }
 .timeline-panel { padding: 10px; flex: 0 0 auto; max-height: 46%; overflow-y: auto; overflow-x: hidden; }
 /* Everything a lane's clip is drawn with is stated further down, against `.timeline-lane`, because a
    clip has no meaning outside one. What used to be here stated the same properties for a standalone

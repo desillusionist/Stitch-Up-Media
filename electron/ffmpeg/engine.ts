@@ -43,6 +43,27 @@ const EVEN_SIZE_CODECS: Array<EncodingPreset['videoCodec']> = ['h264', 'hevc', '
 const QUAD_SIZE_CODECS: Array<EncodingPreset['videoCodec']> = ['hap']
 
 /**
+ * The PCM codec name for a depth, which is how a WAV says how many bits its samples are.
+ *
+ * Sixteen is the one this app has always written, so a job that names no depth lands on `pcm_s16le` exactly
+ * as it did. Eight is UNSIGNED in a WAV, which is the one oddity of the family. Measured against this
+ * machine's ffmpeg: each of the four writes its depth and reads it back.
+ */
+const pcmCodecFor = (depth: EncodingPreset['audioBitDepth']): string =>
+  depth === 8 ? 'pcm_u8' : depth === 24 ? 'pcm_s24le' : depth === 32 ? 'pcm_s32le' : 'pcm_s16le'
+
+/**
+ * FLAC's depth as its own SAMPLE FORMAT, which is how it is asked for rather than by a figure.
+ *
+ * Sixteen is written EXPLICITLY even when the job names no depth, because the encoder would otherwise choose
+ * from the SOURCE: measured here, the same job from an AAC source — whose decoder hands over floats — came
+ * out at TWENTY-FOUR bits, which is not what the field says and not what the size estimate promised. Pinning
+ * it is what keeps the label, the figure and the file saying the same thing. `s32` is what this machine's
+ * encoder writes twenty-four bits from.
+ */
+const flacSampleFormat = (depth: EncodingPreset['audioBitDepth']): string => `-sample_fmt ${depth === 24 ? 's32' : 's16'}`
+
+/**
  * The gif muxer's own loop count.
  *
  * `-loop -1` plays the animation through ONCE and writes no looping extension at all, while `-loop 0`
@@ -1150,12 +1171,13 @@ export class FFmpegEngine {
     // 4. Audio Codec
     if (preset.outputMode === 'audio' && preset.audioFormat === 'flac') {
       cmd.audioCodec('flac')
+      cmd.outputOptions([flacSampleFormat(preset.audioBitDepth)])
     } else if (preset.audioCodec === 'copy') {
       cmd.audioCodec('copy')
     } else if (preset.audioCodec === 'aac') {
       cmd.audioCodec('aac')
     } else if (preset.audioCodec === 'pcm') {
-      cmd.audioCodec('pcm_s16le')
+      cmd.audioCodec(pcmCodecFor(preset.audioBitDepth))
     } else if (preset.audioCodec === 'opus') {
       cmd.audioCodec('libopus')
     } else if (preset.audioCodec === 'mp3') {
@@ -1165,6 +1187,9 @@ export class FFmpegEngine {
       // through to the muxer's own default — a Matroska wrote VORBIS under a FLAC label, which
       // `npm run verify-codecs` caught by reading the file back rather than the argument list.
       cmd.audioCodec('flac')
+      // And its DEPTH is its sample format rather than a figure of its own — pinned, so the file says what
+      // the field and the estimate say. See `flacSampleFormat`.
+      cmd.outputOptions([flacSampleFormat(preset.audioBitDepth)])
     }
 
     if (preset.audioBitrate && preset.audioCodec !== 'copy' && preset.audioCodec !== 'pcm') {

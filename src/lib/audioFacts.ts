@@ -133,3 +133,22 @@ export const bitrateValue = (kbps: number): string => `${kbps}k`
  */
 export const LOSSLESS_AUDIO_CODECS = ['pcm', 'flac', 'copy']
 export const bitrateApplies = (codec: string): boolean => !LOSSLESS_AUDIO_CODECS.includes(codec)
+
+/**
+ * The depths a sound codec is offered, in bits a sample — and none at all where it has none to store.
+ *
+ * The lossless two do: a PCM sample IS a number of bits, and FLAC stores the same samples compressed. The
+ * lossy ones have no depth to offer, because an MP3 or an AAC holds a transform rather than samples — a
+ * depth beside one would be a control with nothing behind it, which is worse than a control not drawn.
+ * `copy` is neither: it writes whatever the source had, so there is nothing to choose.
+ *
+ * The ladders are MEASURED rather than assumed, on this machine's own encoders, and `verify-codecs` is
+ * where that happens: a WAV takes eight, sixteen, twenty-four and thirty-two — eight being UNSIGNED, which
+ * is the one oddity of the family — and FLAC is written at sixteen or twenty-four through its SAMPLE
+ * FORMAT rather than through a figure of its own.
+ */
+export const audioDepthsFor = (codec: string): number[] =>
+  codec === 'pcm' ? [8, 16, 24, 32] : codec === 'flac' ? [16, 24] : []
+
+/** The depth a lossless codec is written at when the job names none, which is what this app has always written. */
+export const DEFAULT_AUDIO_DEPTH = 16

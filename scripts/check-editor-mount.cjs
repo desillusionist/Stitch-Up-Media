@@ -96,6 +96,21 @@ app.whenReady().then(async () => {
       if (!afterVideoOff['EXPORT AUDIO'] || !afterVideoOff['EXPORT AUDIO'].checked) problems.push('unchecking EXPORT VIDEO left the sound off as well, so the job would write nothing at all')
       if (afterVideoOff['EXPORT AUDIO'] && !afterVideoOff['EXPORT AUDIO'].disabled) problems.push('with the picture off the sound is still choosable, so both streams can be left switched off')
     }
+    // THE TRANSPORT'S SCRUBBER, drawn by the window rather than by the platform: a round blue knob on a
+    // blue track is the one thing on that panel that is not of the window, so the rule is what is asserted.
+    const scrub = result.scrub
+    if (!scrub) problems.push('the transport reported nothing about its scrubber')
+    else {
+      if (!scrub.drawn) problems.push('the transport drew no scrubber at all')
+      if (!String(scrub.inputRule && scrub.inputRule.appearance).includes('none')) problems.push(`the scrubber still has the platform's own appearance: ${String(scrub.inputRule && scrub.inputRule.appearance)}`)
+      if (!scrub.thumbRule) problems.push('the scrubber has no rule of its own for its handle, so the platform draws a round one')
+      else {
+        if (!['0', '0px'].includes(String(scrub.thumbRule.borderRadius))) problems.push(`the scrubber's handle is not rectangular: border-radius ${String(scrub.thumbRule.borderRadius)}`)
+        if (String(scrub.thumbRule.width) !== '3px') problems.push(`the scrubber's handle is ${String(scrub.thumbRule.width)} wide rather than a thin three`)
+        if (String(scrub.thumbRule.height) !== '16px') problems.push(`the scrubber's handle is ${String(scrub.thumbRule.height)} tall rather than the row's own height`)
+      }
+      if (!String(scrub.trackRule && scrub.trackRule.background).includes('var(--ui-accent)')) problems.push(`the scrubber's track is not drawn in the window's own colours: ${String(scrub.trackRule && scrub.trackRule.background)}`)
+    }
     // The picture settings, which are the one part of the settings that is CONDITIONAL. A section that
     // is gated has two ways to be missing and they need different answers, so what is asserted here is
     // both sides of the gate: the inputs the window derived, and what the tab drew with them. If the
@@ -400,6 +415,14 @@ app.whenReady().then(async () => {
         else if (String(videoToAudio.summary).includes('UNKNOWN')) problems.push(`a video extracted to sound still says UNKNOWN: ${String(videoToAudio.summary)}`)
         if (videoToAudio.sampleRateDisabled !== false) problems.push('a video-to-sound job draws SAMPLE RATE disabled')
         if (videoToAudio.bitrateDisabled !== false) problems.push('a video-to-sound job draws BITRATE disabled')
+        // A LOSSLESS codec has a depth to store and a lossy one has none: the field is read on both sides.
+        if (!videoToAudio.depthForMp3 || videoToAudio.depthForMp3.drawn) problems.push('an MP3 was offered a BIT DEPTH, which is a control with nothing behind it')
+        if (!videoToAudio.depthForWav || !videoToAudio.depthForWav.drawn) problems.push('a WAV was offered no BIT DEPTH, and its samples are the whole of what it stores')
+        else {
+          if (String(videoToAudio.depthForWav.options) !== '8,16,24,32') problems.push(`a WAV's BIT DEPTH offers ${JSON.stringify(videoToAudio.depthForWav.options)}`)
+          if (videoToAudio.depthForWav.value !== '16') problems.push(`a WAV that named no depth opens on ${String(videoToAudio.depthForWav.value)} rather than sixteen`)
+        }
+        if (!videoToAudio.wavSummary || String(videoToAudio.wavSummary).includes('UNKNOWN')) problems.push(`a WAV job did not size itself: ${String(videoToAudio.wavSummary)}`)
       }
 
       // And the other side of that gate, read on the MOVIE job: both streams are choosable there.

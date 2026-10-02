@@ -254,6 +254,39 @@ const audioCodec = async (file) => {
     check('and eight as the delivery format', await probeValue(eightBitH264, 'stream=pix_fmt'), 'yuv420p')
   }
 
+  // THE DEPTH A LOSSLESS SOUND IS STORED IN, read back off the file rather than off the arguments that were
+  // meant to produce it: a WAV at each of its four depths and a FLAC at its two.
+  console.log('\n== AUDIO DEPTH ==')
+  {
+    const exportDepth = (container, codec, bitDepth, filename) => new Promise((resolve, reject) => {
+      const directory = path.join(work, `depth-${container}-${bitDepth}`)
+      fs.mkdirSync(directory, { recursive: true })
+      const engine = new FFmpegEngine()
+      engine.runTask({
+        id: `depth-${container}-${bitDepth}`, type: 'transcode', status: 'pending', progress: 0,
+        sourcePaths: [source], outputDirectory: directory, outputFilename: filename,
+        preset: {
+          id: 'p', name: 'P', container, resolution: 'source', videoCodec: 'copy', audioCodec: codec,
+          ...(bitDepth ? { audioBitDepth: bitDepth } : {}),
+        },
+      }, () => {}, () => resolve(path.join(directory, filename)), (error) => reject(error))
+    })
+    const depthOf = async (file) => {
+      // `bits_per_sample` is what a container records and `bits_per_raw_sample` what the decoder reports, and
+      // a FLAC answers the first with a zero — so the figures are collected and the largest taken rather
+      // than the first read, which is the one that means something either way.
+      const out = String(await run('ffprobe', ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=bits_per_sample,bits_per_raw_sample', '-of', 'default=noprint_wrappers=1:nokey=1', file]))
+      const depths = out.split('\n').map((line) => line.trim()).filter((entry) => /^\d+$/.test(entry)).map(Number)
+      return depths.length ? Math.max(...depths) : null
+    }
+    check('a WAV that names no depth is sixteen bits', await depthOf(await exportDepth('wav', 'pcm', undefined, 'd16.wav')), 16)
+    check('eight is eight, and unsigned in a WAV', await depthOf(await exportDepth('wav', 'pcm', 8, 'd8.wav')), 8)
+    check('twenty-four is twenty-four', await depthOf(await exportDepth('wav', 'pcm', 24, 'd24.wav')), 24)
+    check('and thirty-two is thirty-two', await depthOf(await exportDepth('wav', 'pcm', 32, 'd32.wav')), 32)
+    check('a FLAC at twenty-four writes twenty-four', await depthOf(await exportDepth('flac', 'flac', 24, 'f24.flac')), 24)
+    check('and one that names none stays sixteen', await depthOf(await exportDepth('flac', 'flac', undefined, 'f16.flac')), 16)
+  }
+
   console.log(failures === 0 ? '\nEVERY OFFERED CODEC EXPORTS\n' : `\n${failures} CODEC(S) FAILED\n`)
   fs.rmSync(work, { recursive: true, force: true })
   process.exit(failures === 0 ? 0 : 1)

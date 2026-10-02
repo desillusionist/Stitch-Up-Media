@@ -17,7 +17,7 @@ import { presetSummary } from '../src/lib/presetSummary'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, scopeTint, scopeTintFilter, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
 import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurationFor, clipSpeedLabel, sourceTimeAt, speedAudioFilters, speedFor, speedVideoFilters, timelineTimeAt, trimmedForDuration } from '../src/lib/clipSpeed'
-import { AUDIO_CHANNELS, audioCodecFacts, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
+import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nothingToTime, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, usesClipFraming } from '../src/lib/timelineModel'
@@ -2476,11 +2476,23 @@ void (async () => {
     const highs = (['h264', 'hevc', 'vp9', 'av1'] as const).map((codec) => crf(codec)?.high ?? 0)
     check('and the newer ones come out smaller at their own quality', highs.every((value, index) => index === 0 || value < highs[index - 1]), true)
     // A sound that names no bitrate is answerable too, from the encoder's own default rather than a guess.
-    const soundBytes = (audioCodec: EncodingPreset['audioCodec']) => estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: false, sound: true, videoCodec: 'copy', audioCodec, audioSampleRate: 48000, audioChannels: 2 })
+    const soundBytes = (audioCodec: EncodingPreset['audioCodec'], extra: Partial<Parameters<typeof estimateOutputSize>[0]> = {}) => estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: false, sound: true, videoCodec: 'copy', audioCodec, audioSampleRate: 48000, audioChannels: 2, ...extra })
     near('a sound that names no bitrate gets the encoder own default', soundBytes('mp3')?.bytes ?? 0, 161600, 1)
     near('and AAC its own', soundBytes('aac')?.bytes ?? 0, 161600, 1)
     near('and Opus the average it writes', soundBytes('opus')?.bytes ?? 0, 147713, 1)
     check('each of them is marked as the estimate it is', [soundBytes('mp3')?.confidence, soundBytes('aac')?.confidence, soundBytes('opus')?.confidence], ['close', 'close', 'close'])
+    // A LOSSLESS sound's depth is part of its arithmetic, so asking for more bits asks for more bytes: the
+    // figures are 48000 samples a second, two channels, over ten seconds, plus the muxer's per cent.
+    check('a WAV that names no depth is sixteen bits', soundBytes('pcm')?.bytes, 1939200)
+    check('eight bits a sample is half of that', soundBytes('pcm', { audioBitDepth: 8 })?.bytes, 969600)
+    check('twenty-four is half again', soundBytes('pcm', { audioBitDepth: 24 })?.bytes, 2908800)
+    check('and thirty-two is twice the sixteen', soundBytes('pcm', { audioBitDepth: 32 })?.bytes, 3878400)
+    check('while a FLAC at twenty-four is a bracket over the same samples', soundBytes('flac', { audioBitDepth: 24 }), { bytes: 1308960, high: 1890720, confidence: 'rough' })
+    // WHICH CODECS HAVE A DEPTH AT ALL, which is the question the field is drawn on: the lossless two store
+    // samples, and the lossy ones store a transform with no samples in it to give a depth to.
+    check('a WAV takes eight, sixteen, twenty-four and thirty-two bits', audioDepthsFor('pcm'), [8, 16, 24, 32])
+    check('a FLAC takes sixteen and twenty-four', audioDepthsFor('flac'), [16, 24])
+    check('and a lossy codec has none, because it stores no samples', [audioDepthsFor('mp3'), audioDepthsFor('aac'), audioDepthsFor('opus'), audioDepthsFor('copy')], [[], [], [], []])
     // The DEPTH a source is held at, read off its own pixel format rather than assumed.
     check('a pixel format says its own depth', [pixelDepth('yuv420p'), pixelDepth('yuv420p10le'), pixelDepth('yuv444p12le'), pixelDepth('gray16le')], [8, 10, 12, 16])
     check('and the packed ones say it per channel', [pixelDepth('rgb24'), pixelDepth('rgb48be')], [8, 16])

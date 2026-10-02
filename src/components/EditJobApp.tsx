@@ -7,7 +7,7 @@ import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
-import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
+import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
 import { estimateLabel, estimateOutputSize, framesFrom } from '../lib/outputSize'
@@ -3054,6 +3054,7 @@ export const EditJobApp: React.FC = () => {
     audioBitrate: draft.preset.audioBitrate,
     audioChannels: draft.preset.audioChannels,
     audioSampleRate: draft.preset.audioSampleRate,
+    audioBitDepth: draft.preset.audioBitDepth,
     // A numbered run of image files has no container around it to pay a muxer's per cent to.
     containerized: !IMAGE_CONTAINERS.includes(container) && !(isGif && draft.preset.imageOutputMode === 'sequence'),
   })
@@ -3271,7 +3272,14 @@ export const EditJobApp: React.FC = () => {
                 the line beside this comment is where the figure is, and the dropdown that used to sit here
                 was a second control for a figure the transport already owns. */}
             <span>{stampPair(playback.position, duration, fps, timestampMode)}</span>
+            {/* The scrubber, drawn like the timeline's own playhead rather than like the platform's: an inset
+                groove with the played part in the accent and a THIN RECTANGULAR handle. The platform's is a
+                round blue knob on a blue track, which was the one thing on this panel that was not of the
+                window — see `.transport-scrub`. The share played is handed to the stylesheet as a figure,
+                because a stylesheet cannot read a range input's value. */}
             <input
+              className="transport-scrub"
+              style={{ '--played': `${duration > 0 ? Math.max(0, Math.min(100, (playback.position / duration) * 100)) : 0}%` } as React.CSSProperties}
               type="range"
               min={0}
               max={duration > 0 ? duration : 1}
@@ -4039,6 +4047,22 @@ export const EditJobApp: React.FC = () => {
               </span>
             </EditorField>}
             <EditorField label="SAMPLE RATE" reason={audioReason}><EditorSelect value={String(draft.preset.audioSampleRate ?? 0)} options={[{ value: '0', label: 'SOURCE' }, { value: '44100', label: '44.1 KHZ' }, { value: '48000', label: '48 KHZ' }, { value: '96000', label: '96 KHZ' }]} disabled={audioDisabled} onChange={(next) => updatePreset({ audioSampleRate: Number(next) || undefined })} /></EditorField>
+            {/* THE DEPTH THE SAMPLES ARE, which only a LOSSLESS codec has: a lossy one holds a transform
+                rather than samples, so a depth beside it would be a control with nothing behind it. Offered
+                for the two that store samples — a WAV at eight, sixteen, twenty-four or thirty-two, and a
+                FLAC at sixteen or twenty-four — and absent for the rest. */}
+            {audioDepthsFor(draft.preset.audioCodec).length > 0 && <EditorField
+              label="BIT DEPTH"
+              reason="How many bits one sample of the export's sound is. A lossless codec writes the samples it is given, so this is the only thing that decides what they are: sixteen is what a CD is and what this app has always written, twenty-four is what a master is, and thirty-two is a working depth. Sixteen is what a job that names nothing gets, so leaving it alone changes nothing."
+              canReset={draft.preset.audioBitDepth !== undefined}
+              onReset={() => updatePreset({ audioBitDepth: undefined })}
+            ><EditorSelect
+              value={String(draft.preset.audioBitDepth ?? 16)}
+              options={audioDepthsFor(draft.preset.audioCodec).map((depth) => ({ value: String(depth), label: `${depth}-BIT${depth === 16 ? ' (DEFAULT)' : ''}` }))}
+              disabled={audioDisabled}
+              onChange={(next) => updatePreset({ audioBitDepth: Number(next) as NonNullable<EncodingPreset['audioBitDepth']> })}
+              ariaLabel="How many bits one sample of the export's sound is"
+            /></EditorField>}
             {/* The one audio setting about the SHAPE of the stream rather than its quality, and the only one
                 offered for a job that has sound in it: a job with none has nothing to lay out, and the field
                 would be a choice about a stream that is never written. */}
