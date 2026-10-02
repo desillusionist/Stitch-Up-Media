@@ -60,6 +60,10 @@ export interface SizeEstimateInput {
   alpha?: boolean
   /** The picture's own sample depth per channel, where the format has a choice. */
   bitDepth?: 8 | 16
+  /** The PNG encoder's own work setting, 0 to 9. Absent means the encoder's default. */
+  pngCompression?: number
+  /** The JPEG encoder's own quality, 1 to 31 with the lower figure the better picture. */
+  jpegQuality?: number
   audioCodec: EncodingPreset['audioCodec']
   audioBitrate?: string
   audioChannels?: number
@@ -96,24 +100,54 @@ const PRORES_TARGET_AT_1080P30: Record<NonNullable<EncodingPreset['proresProfile
 }
 
 /**
- * What a still picture costs a frame, as a bracket in one of two bases.
+ * What a still picture costs a frame, per codec, as a pair of brackets: a flat frame and a photograph.
  *
- * `raw` is a share of the SAMPLES the frame has — which is what a lossless encoder compresses, so the
- * bracket is how well it does on flat content and on detailed content. `pixel` is bytes per output pixel
- * directly, which is what a codec that throws the samples away is better described by.
+ * These are MEASURED, on this machine's own encoders, over four frames — a landscape photograph, a
+ * synthetic detailed pattern, an animated gradient and a test pattern — because the honest answer for a
+ * codec that compresses WHAT IT IS GIVEN is the span it lands in, never a single number. The first figure
+ * is the flattest frame measured and the second the photograph; a frame lying between them lands between.
  *
- * These are brackets, not measurements: this app has no way to look at the picture it is about to write
- * without writing it, so the honest answer is the span. See the presentation in `estimateLabel`.
+ * THEY ARE KEYED BY THE SETTING where the setting moves them, because it does — a PNG's own work level
+ * changes the file by up to twenty times, and a JPEG's quality by up to four, and a figure that ignored
+ * them would be a figure that never moved when the reader moved the control beside it.
  */
-const IMAGE_BRACKETS: Partial<Record<EncodingPreset['videoCodec'], { low: number; high: number; basis: 'raw' | 'pixel' }>> = {
-  // A PNG is lossless, so its size is the picture's: a flat drawing lands near a third of the samples and
-  // a detailed frame near two thirds.
-  png: { low: 0.3, high: 0.6, basis: 'raw' },
-  // A JPEG at the encoder's own quality, from a smooth frame to a detailed one.
-  mjpeg: { low: 0.2, high: 0.9, basis: 'pixel' },
-  // A GIF: an eight-bit palette, LZW over it, and inter-frame deltas on top — the widest of the three.
-  gif: { low: 0.15, high: 0.7, basis: 'pixel' },
-}
+const PNG_LEVEL_FACTORS: Array<[number, number]> = [
+  [1.0034, 1.0036], // 0: stored, so the frame is its own samples and nothing more
+  [0.0054, 0.2793], // 1
+  [0.0052, 0.2703], // 2
+  [0.0052, 0.2567], // 3
+  [0.0016, 0.2499], // 4
+  [0.0016, 0.2413], // 5
+  [0.0016, 0.2324], // 6
+  [0.0016, 0.2289], // 7
+  [0.0016, 0.2237], // 8
+  [0.0014, 0.2215], // 9
+]
+/** The encoder's own PNG setting, measured rather than assumed: it behaves as level 6. */
+const PNG_DEFAULT_FACTOR: [number, number] = [0.0016, 0.2324]
+
+/** JPEG quality 1 to 31, in bytes per output pixel. A lower figure is a better picture and a bigger file. */
+const JPEG_QUALITY_FACTORS: Array<[number, number]> = [
+  [0.0123, 0.1392], [0.0123, 0.1392], [0.0119, 0.1073], [0.0116, 0.0915], [0.0113, 0.0819],
+  [0.0111, 0.0735], [0.0108, 0.0678], [0.0107, 0.0631], [0.0105, 0.0600], [0.0105, 0.0571],
+  [0.0103, 0.0546], [0.0101, 0.0526], [0.0100, 0.0510], [0.0100, 0.0494], [0.0099, 0.0479],
+  [0.0098, 0.0466], [0.0097, 0.0456], [0.0097, 0.0446], [0.0096, 0.0436], [0.0095, 0.0428],
+  [0.0095, 0.0422], [0.0095, 0.0415], [0.0095, 0.0409], [0.0094, 0.0403], [0.0094, 0.0399],
+  [0.0093, 0.0394], [0.0092, 0.0390], [0.0092, 0.0386], [0.0092, 0.0383], [0.0091, 0.0378],
+  [0.0091, 0.0375],
+]
+/** The encoder's own JPEG quality, measured: it behaves as six on the frames measured. */
+const JPEG_DEFAULT_FACTOR: [number, number] = [0.0113, 0.0735]
+
+/**
+ * The animated format's own, in bytes per output pixel, measured for a single frame.
+ *
+ * It has no setting to key on — the palette and the LZW pass are the encoder's own — so it is one bracket.
+ * A RUN of frames measured a little better than the bracket's low end and an animation better still, because
+ * what the frames of one picture have in common is what a frame-sequence and a GIF both spend one frame's
+ * worth of it on; the bracket is left where the single frame measured it, which is the conservative end.
+ */
+const GIF_FACTOR: [number, number] = [0.0407, 0.3676]
 
 /**
  * What a DELIVERY codec costs a frame, in bits per pixel per frame, at the quality this app's encoder is
@@ -191,16 +225,25 @@ const pictureSize = (input: SizeEstimateInput): Talk | undefined => {
     return { low: at(delivery.low), high: at(delivery.high), confidence: 'rough' }
   }
   // Everything else the app writes as pictures is a still codec, whose size is the PICTURE's rather than a
-  // setting — so the figure is the frame's own samples, bracketed, times the frames written.
-  const bracket = IMAGE_BRACKETS[input.videoCodec]
-  if (!bracket) return undefined
-  const channels = 3 + (input.alpha ? 1 : 0)
-  const samples = area * channels * ((input.bitDepth ?? 8) / 8)
-  const perFrame = bracket.basis === 'raw'
-    ? { low: samples * bracket.low, high: samples * bracket.high }
-    : { low: area * bracket.low, high: area * bracket.high }
+  // setting — the brackets above are what it costs, keyed by the setting where one moves it.
   const frames = Math.max(1, Math.round(input.frames))
-  return { low: Math.round(perFrame.low * frames), high: Math.round(perFrame.high * frames), confidence: 'rough' }
+  const channels = 3 + (input.alpha ? 1 : 0)
+  const pick = (table: Array<[number, number]>, value: number | undefined, low: number, high: number, fallback: [number, number]) =>
+    value === undefined ? fallback : (table[Math.max(low, Math.min(high, Math.round(value)))] ?? fallback)
+  if (input.videoCodec === 'png') {
+    const [flat, photo] = pick(PNG_LEVEL_FACTORS, input.pngCompression, 0, 9, PNG_DEFAULT_FACTOR)
+    const samples = area * channels * ((input.bitDepth ?? 8) / 8)
+    return { low: Math.round(samples * flat * frames), high: Math.round(samples * photo * frames), confidence: 'rough' }
+  }
+  if (input.videoCodec === 'mjpeg') {
+    const quality = input.jpegQuality === undefined ? undefined : Math.max(1, Math.min(31, Math.round(input.jpegQuality)))
+    const [flat, photo] = quality === undefined ? JPEG_DEFAULT_FACTOR : (JPEG_QUALITY_FACTORS[quality - 1] ?? JPEG_DEFAULT_FACTOR)
+    return { low: Math.round(area * flat * frames), high: Math.round(area * photo * frames), confidence: 'rough' }
+  }
+  if (input.videoCodec === 'gif') {
+    return { low: Math.round(area * GIF_FACTOR[0] * frames), high: Math.round(area * GIF_FACTOR[1] * frames), confidence: 'rough' }
+  }
+  return undefined
 }
 
 const soundSize = (input: SizeEstimateInput): Talk | undefined => {

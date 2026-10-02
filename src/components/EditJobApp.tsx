@@ -84,6 +84,16 @@ const IMAGE_BIT_DEPTHS = [8, 16] as const
  * at 31. It is the one image setting that trades size against the PICTURE rather than against time.
  */
 const JPEG_QUALITY_CHOICES = [2, 5, 10, 20, 31] as const
+/**
+ * The codecs that have a RATE to set at all.
+ *
+ * The delivery ones do: H.264, H.265, VP9, AV1 and MPEG-4 are all rate-controlled, whether the rate is a
+ * bitrate the job names or a quality the encoder turns into one. What is left out is not being coy about
+ * it — ProRes is a family of FIXED rates whose profile decides the figure, and DXV, Hap, QuickTime
+ * Animation, PNG and GIF are intra-only with no rate control of any kind. A bitrate box beside any of them
+ * would be an offer the encoder silently ignores, which is worse than a control that is not drawn.
+ */
+const RATE_CODECS: Array<EncodingPreset['videoCodec']> = ['h264', 'hevc', 'vp9', 'av1', 'mpeg4']
 
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
 const TAP_THRESHOLD_MS = 250
@@ -223,14 +233,23 @@ const EditorRow: React.FC<{ label: string; value: React.ReactNode; reason?: stri
  * to the control underneath.
  */
 const EditorField: React.FC<{ label: string; hint?: string; reason?: string; canReset?: boolean; onReset?: () => void; children: React.ReactNode }> = ({ label, hint, reason, canReset, onReset, children }) => (
-  <label className="editor-field" title={reason}>
-    {/* A HEADING IS A HEADING. A `<button>` is a LABELABLE element, so a click anywhere on a field's own
-        `<label>` forwards a synthetic click to the first labelable control inside it — and for a dropdown
-        that opens its menu. Clicking the NAME of a setting is not a request to open the setting, so the
-        default is cancelled where the control is a select's trigger. Where it is an ordinary value field
-        the forwarding is left alone, because there it only puts the caret in the box, which is what a
-        reader clicking the name of a value means. */}
-    <span onClick={(event) => { if (event.currentTarget.parentElement?.querySelector('.editor-select-trigger')) event.preventDefault() }}>
+  <label
+    className="editor-field"
+    title={reason}
+    // A FIELD'S OWN BOX IS NOT A HANDLE FOR THE DROPDOWN IN IT. A `<button>` is a LABELABLE element, so a
+    // click anywhere on a field's `<label>` — the heading, the padding around it, or the dotted rule under
+    // it, all of which are the label's own box — forwards a synthetic click to the first labelable control
+    // inside it, and for a dropdown that opens its menu. So the default is cancelled for every click that
+    // did NOT land on the trigger itself, where the field holds a select. A field holding an ordinary value
+    // is left alone: there the forwarding only puts the caret in the box, which is what clicking a field's
+    // name means.
+    onClick={(event) => {
+      const target = event.target as HTMLElement
+      if (target.closest('.editor-select-trigger')) return
+      if (event.currentTarget.querySelector('.editor-select-trigger')) event.preventDefault()
+    }}
+  >
+    <span>
       {label}
       {hint ? <em>{hint}</em> : null}
       {onReset && canReset ? <button
@@ -254,7 +273,6 @@ const EditorField: React.FC<{ label: string; hint?: string; reason?: string; can
  */
 const INSETS_HELP = 'The margin this clip leaves around itself: the box its fit scales it into. The picture is centred in the box, and the OFFSET slides it from there. All four at 0 is the whole frame, which is what the clip is given until it is inset. The figures are per cent of the output frame, so they mean the same at any resolution.'
 const OFFSET_HELP = 'Where the picture sits on the output canvas. 0 and 0 is centred, which is where it sits until it is moved. The figures are the output frame\'s own, so they mean the same at any resolution, and they are not held in: a picture moved past an edge is clipped by the frame, and one that leaves a gap is filled with the background. The monitor\'s dragger writes the same two figures.'
-const QUALITY_HELP = 'BITRATE IS IGNORED WHILE THE VIDEO CODEC IS SET TO COPY. ADVANCED CONTROLS OPEN IN CUSTOM PRESET.'
 const CROP_HELP = 'What part of the SOURCE this clip keeps, in the source\'s own terms, so a change of output size or shape never invalidates it. The shape list centres the region on a named shape; FREEFORM holds no shape at all, so a corner follows the pointer on both axes and the region keeps whatever shape it has. It is taken before any scaling, so cropping to a shape is a crop then a fit. Drag the edges on the preview, or set the four figures here.'
 
 /**
@@ -2992,6 +3010,16 @@ export const EditJobApp: React.FC = () => {
   const hasFootage = taskHasFootage(draft)
   const hasStill = visuals.includes('image')
   const jobSound = visuals.includes('audio') || Boolean(draft.additionalAudioTracks?.length)
+  /**
+   * Whether the EXPORT writes a sound, which is a different question from whether the source IS sound.
+   *
+   * A video carries an audio stream of its own, so a job extracting it — an MP4 or a MOV into an MP3, which
+   * is what VID2AUD means — writes a sound whatever the source's own kind is. Reading this off the sources'
+   * KINDS left every one of those estimates with nothing to size and no reason to size it, which is why
+   * they all said UNKNOWN. The probe is the one this window already made. It is true for an added track as
+   * well, which a still with sound beside it has and a bare picture does not.
+   */
+  const exportHasSound = Boolean(draft.additionalAudioTracks?.length) || draft.sourcePaths.some((source) => probeHasAudio(sourceProbes[source]))
   // The gate and the drawing both come from the one function the monitor reads too, so a job cannot be
   // shown one picture and given another.
   const offersPicture = drawingPicture.offersPicture || (jobSound && outputCarriesPicture(container) && !isImageContainer && !isGif && draft.preset.outputMode !== 'audio' && !hasFootage)
@@ -3012,7 +3040,7 @@ export const EditJobApp: React.FC = () => {
     seconds: duration,
     frames: stillFrameJob ? 1 : framesFrom(duration, draft.preset.fps ?? defaultFps),
     picture: !audioOnly && draft.preset.outputMode !== 'audio',
-    sound: jobSound && !soundNeverPossible && draft.preset.audioEnabled !== false,
+    sound: exportHasSound && !soundNeverPossible && draft.preset.audioEnabled !== false,
     videoCodec: draft.preset.videoCodec,
     videoBitrate: draft.preset.videoBitrate,
     proresProfile: draft.preset.proresProfile,
@@ -3020,6 +3048,8 @@ export const EditJobApp: React.FC = () => {
     height: outputFrame?.height ?? draft.preset.height,
     fps: draft.preset.fps ?? defaultFps,
     bitDepth: draft.preset.imageBitDepth,
+    pngCompression: draft.preset.pngCompression,
+    jpegQuality: draft.preset.jpegQuality,
     audioCodec: draft.preset.audioCodec,
     audioBitrate: draft.preset.audioBitrate,
     audioChannels: draft.preset.audioChannels,
@@ -3075,6 +3105,9 @@ export const EditJobApp: React.FC = () => {
   // the reader's own with a field of its own to type it in.
   const compressionRung = draft.preset.pngCompression !== undefined && (PNG_COMPRESSION_CHOICES as readonly number[]).includes(draft.preset.pngCompression)
   const compressionCustom = draft.preset.pngCompression !== undefined && !compressionRung
+  /** The same reading for the JPEG quality ladder, which has a CUSTOM rung of its own. */
+  const qualityRung = draft.preset.jpegQuality !== undefined && (JPEG_QUALITY_CHOICES as readonly number[]).includes(draft.preset.jpegQuality)
+  const qualityCustom = draft.preset.jpegQuality !== undefined && !qualityRung
   /**
    * Which depth control the OUTPUT codec gets, if any.
    *
@@ -3085,6 +3118,14 @@ export const EditJobApp: React.FC = () => {
     draft.preset.videoCodec === 'prores' ? 'profile'
       : draft.preset.videoCodec === 'h264' || draft.preset.videoCodec === 'hevc' ? 'choice'
         : null
+  /** Whether the OUTPUT codec has a bitrate to set at all, and why not where it has none. */
+  const ratePossible = !audioOnly && RATE_CODECS.includes(draft.preset.videoCodec)
+  const rateReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.'
+    : draft.preset.videoCodec === 'copy' ? 'A BITRATE IS UNUSED WHILE THE PICTURE IS COPIED.'
+      : draft.preset.videoCodec === 'prores' ? 'PRORES IS A FAMILY OF FIXED RATES: THE PROFILE DECIDES THE FIGURE, AND A BITRATE BESIDE IT WOULD BE AN OFFER THE ENCODER IGNORES.'
+        : draft.preset.videoCodec === 'mjpeg' ? 'A JPEG IS SIZED BY ITS QUALITY RATHER THAN BY A RATE, WHICH IS THE IMAGE TAB.'
+          : draft.preset.videoCodec === 'gif' ? 'A GIF IS SIZED BY ITS PALETTE AND ITS OWN ENCODER RATHER THAN BY A RATE.'
+            : 'THIS CODEC WRITES AT A FIXED RATE OF ITS OWN, SO THERE IS NO BITRATE TO SET.'
   const bitrateValueForChoice = (choice: string) => {
     if (choice === 'custom') updatePreset({ audioBitrate: '' })
     else if (choice === '0') updatePreset({ audioBitrate: undefined })
@@ -3833,10 +3874,25 @@ export const EditJobApp: React.FC = () => {
                 onChange={(next) => updatePreset({ videoBitDepth: Number(next) === 10 ? 10 : 8 })}
                 ariaLabel="The depth the picture is written at"
               />}</EditorField>}
-            <div className="editor-field">
-              <span><span className="editor-label">QUALITY</span><EditorInfo text={QUALITY_HELP} /></span>
-              <input type="text" className="editor-input" aria-label="Video bitrate" value={draft.preset.videoBitrate ?? ''} placeholder="SOURCE | E.G. 8M" disabled={audioOnly || isGif || draft.preset.videoCodec === 'copy'} onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })} />
-            </div>
+            {/* BITRATE, which is what this field always was: it takes a figure in bits a second, and calling
+                it QUALITY made a rate look like a quality. It is drawn only where the codec HAS a rate —
+                ProRes is a family of fixed rates and the intra-only codecs have none — so a reader is not
+                offered a box the encoder would ignore. */}
+            <EditorField
+              label="BITRATE"
+              hint={ratePossible ? undefined : 'SET BY THE CODEC'}
+              reason={rateReason}
+              canReset={draft.preset.videoBitrate !== undefined}
+              onReset={() => updatePreset({ videoBitrate: undefined })}
+            ><input
+              type="text"
+              className="editor-input"
+              aria-label="The bitrate the picture is written at"
+              value={draft.preset.videoBitrate ?? ''}
+              placeholder={ratePossible ? 'SOURCE | E.G. 8M' : '--'}
+              disabled={!ratePossible}
+              onChange={(event) => updatePreset({ videoBitrate: event.target.value.trim() || undefined })}
+            /></EditorField>
             </EditorGroup>
           </>}
 
@@ -3877,12 +3933,13 @@ export const EditJobApp: React.FC = () => {
                 onReset={() => updatePreset({ pngCompression: undefined })}
               ><span className="field-pair">
                 <EditorSelect
-                  value={compressionCustom ? 'custom' : String(draft.preset.pngCompression ?? 6)}
+                  value={compressionCustom ? 'custom' : draft.preset.pngCompression === undefined ? 'default' : String(draft.preset.pngCompression)}
                   options={[
+                    { value: 'default', label: 'ENCODER DEFAULT' },
                     ...PNG_COMPRESSION_CHOICES.map((level) => ({ value: String(level), label: level === 0 ? '0 (FASTEST)' : level === 9 ? '9 (SMALLEST)' : String(level) })),
                     { value: 'custom', label: 'CUSTOM...' },
                   ]}
-                  onChange={(next) => updatePreset({ pngCompression: next === 'custom' ? 7 : Number(next) })}
+                  onChange={(next) => updatePreset({ pngCompression: next === 'default' ? undefined : next === 'custom' ? 7 : Number(next) })}
                   ariaLabel="How hard the PNG encoder works"
                 />
                 {compressionCustom && <NumberField
@@ -3913,12 +3970,27 @@ export const EditJobApp: React.FC = () => {
               reason="The JPEG encoder's quality, in ffmpeg's own `-q:v` figures, which run DOWNWARDS: a lower figure is a better picture and a larger file. It is the one image setting that trades SIZE against the picture rather than against the time spent writing it."
               canReset={draft.preset.jpegQuality !== undefined}
               onReset={() => updatePreset({ jpegQuality: undefined })}
-            ><EditorSelect
-              value={String(draft.preset.jpegQuality ?? 5)}
-              options={JPEG_QUALITY_CHOICES.map((quality) => ({ value: String(quality), label: quality === 2 ? '2 (BEST)' : quality === 31 ? '31 (SMALLEST)' : String(quality) }))}
-              onChange={(next) => updatePreset({ jpegQuality: Number(next) })}
-              ariaLabel="The JPEG encoder's quality"
-            /></EditorField>}
+            ><span className="field-pair">
+              <EditorSelect
+                value={qualityCustom ? 'custom' : draft.preset.jpegQuality === undefined ? 'default' : String(draft.preset.jpegQuality)}
+                options={[
+                  { value: 'default', label: 'ENCODER DEFAULT' },
+                  ...JPEG_QUALITY_CHOICES.map((quality) => ({ value: String(quality), label: quality === 2 ? '2 (BEST)' : quality === 31 ? '31 (SMALLEST)' : String(quality) })),
+                  { value: 'custom', label: 'CUSTOM...' },
+                ]}
+                onChange={(next) => updatePreset({ jpegQuality: next === 'default' ? undefined : next === 'custom' ? 6 : Number(next) })}
+                ariaLabel="The JPEG encoder's quality"
+              />
+              {qualityCustom && <NumberField
+                className="editor-input"
+                min={1}
+                max={31}
+                step={1}
+                value={draft.preset.jpegQuality}
+                onValue={(quality) => updatePreset({ jpegQuality: Math.max(1, Math.min(31, Math.round(quality))) })}
+                ariaLabel="The JPEG quality, 1 to 31"
+              />}
+            </span></EditorField>}
             <div className="editor-note">&gt; A RUN OF FRAMES NAMES EACH FILE WITH ITS FRAME NUMBER, SO THE OUTPUT NAME IS A PATTERN TOO. THE RATE IN THE VIDEO TAB IS THE ANIMATION'S OWN AND DOES NOT RESAMPLE A RUN.</div>
           </>}
 

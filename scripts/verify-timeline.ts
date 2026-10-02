@@ -2435,12 +2435,21 @@ void (async () => {
     // The picture is sized from the OUTPUT frame and the COUNT of frames, so one frame is one frame however
     // long the source is — which is the whole of what SINGLE FRAME changes about the figure. A numbered run
     // of image files is not wrapped in a container, so it pays no muxer's per cent.
-    const frameBytes = (videoCodec: EncodingPreset['videoCodec'], frames: number, bitDepth?: 8 | 16) => estimateOutputSize({ seconds: 0, frames, containerized: false, picture: true, sound: false, videoCodec, bitDepth, width: 1920, height: 1080, fps: 30, audioCodec: 'copy' })
-    check('a PNG single frame is a bracket over one frame of samples', frameBytes('png', 1), { bytes: 1866240, high: 3732480, confidence: 'rough' })
-    check('sixteen bits a channel is twice the samples', frameBytes('png', 1, 16), { bytes: 3732480, high: 7464960, confidence: 'rough' })
-    check('and a run of ten is ten of them', frameBytes('png', 10), { bytes: 18662400, high: 37324800, confidence: 'rough' })
-    check('a JPEG is bracketed by the pixel rather than by the samples', frameBytes('mjpeg', 1), { bytes: 414720, high: 1866240, confidence: 'rough' })
-    check('and the animated format has the widest bracket of the three', frameBytes('gif', 1), { bytes: 311040, high: 1451520, confidence: 'rough' })
+    // The picture is sized from the OUTPUT frame and the COUNT of frames, so one frame is one frame however
+    // long the source is — which is the whole of what SINGLE FRAME changes about the figure. A numbered run
+    // of image files is not wrapped in a container, so it pays no muxer's per cent. The brackets are the
+    // measured ones: a flat frame at the low end and a photograph at the high.
+    const frameBytes = (videoCodec: EncodingPreset['videoCodec'], frames: number, extra: Partial<Parameters<typeof estimateOutputSize>[0]> = {}) => estimateOutputSize({ seconds: 0, frames, containerized: false, picture: true, sound: false, videoCodec, width: 1920, height: 1080, fps: 30, audioCodec: 'copy', ...extra })
+    check('a PNG single frame is a bracket over one frame of samples', frameBytes('png', 1), { bytes: 9953, high: 1445714, confidence: 'rough' })
+    check('sixteen bits a channel is twice the samples', frameBytes('png', 1, { bitDepth: 16 }), { bytes: 19907, high: 2891428, confidence: 'rough' })
+    check('and a run of ten is ten of them', frameBytes('png', 10), { bytes: 99533, high: 14457139, confidence: 'rough' })
+    // THE SETTING MOVES THE FIGURE, which is the whole of what a reader changing it expects to see. A PNG
+    // at level 0 is its own samples stored and nothing more, and level 9 comes out under the default's.
+    check('a PNG at level 0 is its samples stored and nothing more', frameBytes('png', 1, { pngCompression: 0 })?.bytes, 6241951)
+    check('and level 9 comes out under the default', (frameBytes('png', 1, { pngCompression: 9 })?.high ?? 0) < (frameBytes('png', 1)?.high ?? 0), true)
+    check('a JPEG falls back to the encoder own quality', frameBytes('mjpeg', 1), { bytes: 23432, high: 152410, confidence: 'rough' })
+    check('and a better quality is a bigger file', (frameBytes('mjpeg', 1, { jpegQuality: 2 })?.high ?? 0) > (frameBytes('mjpeg', 1, { jpegQuality: 31 })?.high ?? 0), true)
+    check('a GIF is bracketed by its own palette', frameBytes('gif', 1), { bytes: 84396, high: 762255, confidence: 'rough' })
     // A stream nobody writes contributes nothing rather than making the whole answer unknown.
     check('a silent video is still a size', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' })?.bytes, 10100000)
     check('and a length of nothing has no size at all', estimateOutputSize({ seconds: 0, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' }), undefined)

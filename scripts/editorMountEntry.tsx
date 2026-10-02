@@ -126,7 +126,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -786,6 +786,11 @@ const drive = async () => {
   ;(formatField?.querySelector('span') as HTMLElement | null)?.click()
   await wait(150)
   const headingOpened = menuOpen()
+  // And the field's own BOX — the padding and the dotted rule under it, which are the label's own edges
+  // rather than the heading's text. Those edges are what a reader lands on when aiming at a divider.
+  ;(formatField as HTMLElement | null)?.click()
+  await wait(150)
+  const dividerOpened = menuOpen()
   ;(formatField?.querySelector('.editor-select-trigger') as HTMLElement | null)?.click()
   await wait(150)
   const triggerOpened = menuOpen()
@@ -808,6 +813,7 @@ const drive = async () => {
     tabsForMovie,
     tabsForGif: tabNames(),
     headingOpened,
+    dividerOpened,
     triggerOpened,
     drawn: Boolean(fieldFor('IMAGE OUTPUT')),
     options: optionsOf(imageSelect),
@@ -838,6 +844,13 @@ const drive = async () => {
   const bitDepthSelect = selectIn('BIT DEPTH')
   const pngImageSelect = selectIn('IMAGE OUTPUT')
   const compressionOptions = optionsOf(compressionSelect)
+  // THE TIER HAS TO MOVE THE FIGURE. A reader changing the PNG's work setting is changing the size the
+  // SUMMARY is showing, and a figure keyed to nothing but the frame would sit still while the control beside
+  // it moved — which is what was reported.
+  const summaryBeforeTier = document.querySelector('.export-summary')?.textContent ?? null
+  if (compressionSelect) chooseOption(compressionSelect, '0')
+  await wait(250)
+  const summaryAtLevel0 = document.querySelector('.export-summary')?.textContent ?? null
   // What the change of container made of the run chosen for the GIF, read before anything else is touched.
   const imageBeforeApply = valueOf(pngImageSelect)
   if (pngImageSelect) chooseOption(pngImageSelect, 'still')
@@ -866,6 +879,8 @@ const drive = async () => {
     sentLoop: sentImage?.preset?.gifMode ?? null,
     pngFields,
     compressionOptions,
+    summaryBeforeTier,
+    summaryAtLevel0,
     compressionCustomField,
     compressionAfterTyping,
     containerAfterPng,
@@ -876,6 +891,32 @@ const drive = async () => {
     sentCompression: sentPng?.preset?.pngCompression ?? null,
     sentBitDepth: sentPng?.preset?.imageBitDepth ?? null,
     sentStillFrame: sentPng?.preset?.stillFrameAt ?? null,
+  }
+
+  // AND THE JPEG'S OWN QUALITY MOVES ITS FIGURE TOO, which is the same report one codec along: the two ends
+  // of a ladder that is several times apart have to read differently in the SUMMARY.
+  clickTab('EXPORT')
+  await wait(120)
+  const toJpg = selectIn('FORMAT')
+  if (toJpg) chooseOption(toJpg, 'jpg')
+  await wait(200)
+  clickTab('IMAGE')
+  await wait(150)
+  const qualitySelect = selectIn('QUALITY')
+  const qualityOptions = optionsOf(qualitySelect)
+  const jpgSummaryBefore = document.querySelector('.export-summary')?.textContent ?? null
+  if (qualitySelect) chooseOption(qualitySelect, '2')
+  await wait(250)
+  const jpgSummaryBest = document.querySelector('.export-summary')?.textContent ?? null
+  if (qualitySelect) chooseOption(qualitySelect, '31')
+  await wait(250)
+  const jpgSummarySmallest = document.querySelector('.export-summary')?.textContent ?? null
+  result.imageOutput = {
+    ...(result.imageOutput as object),
+    qualityOptions,
+    jpgSummaryBefore,
+    jpgSummaryBest,
+    jpgSummarySmallest,
   }
 
   // THE DEPTH CONTROL, which is derived for ProRes and chosen for H.264 and H.265. A movie container is
@@ -897,6 +938,9 @@ const drive = async () => {
     value: valueOf(depthSelect),
     readOnly: Boolean(fieldFor('DEPTH')?.querySelector('input[readonly]')),
   }
+  // AND THE BITRATE, which is what that field always was: a rate, named for what it takes. It is drawn
+  // only where the codec HAS one, so ProRes is refused rather than offered a box it would ignore.
+  const h264Bitrate = { drawn: Boolean(fieldFor('BITRATE')), disabled: fieldDisabled('BITRATE'), oldQualityLabel: Boolean(fieldFor('QUALITY')) }
   if (depthSelect) chooseOption(depthSelect, '10')
   await wait(150)
   const applyDepth = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
@@ -917,6 +961,7 @@ const drive = async () => {
   const proresDepthField = fieldFor('DEPTH')
   result.depth = {
     h264: h264Depth,
+    h264Bitrate,
     sentDepth,
     prores: {
       value: proresDepthField?.querySelector('input')?.value ?? null,
@@ -924,6 +969,26 @@ const drive = async () => {
       hasSelect: Boolean(proresDepthField?.querySelector('.editor-select')),
     },
     proresHint: proresDepthField?.querySelector('em')?.textContent?.trim() ?? null,
+    proresBitrate: { disabled: fieldDisabled('BITRATE'), hint: fieldFor('BITRATE')?.querySelector('em')?.textContent?.trim() ?? null },
+  }
+
+  // A VIDEO EXTRACTED TO SOUND, which is what VID2AUD means. The source is a VIDEO, so the job's own
+  // visuals are not 'audio' — and the estimate was reading the SOURCE's kind rather than what the EXPORT
+  // writes, which left every one of these jobs with nothing to size and no reason to size it. Its summary
+  // must carry a figure, and its sound settings must be choosable.
+  clickTab('EXPORT')
+  await wait(120)
+  const toMp3 = selectIn('FORMAT')
+  if (toMp3) chooseOption(toMp3, 'mp3')
+  await wait(300)
+  const videoToAudioSummary = document.querySelector('.export-summary')?.textContent ?? null
+  clickTab('AUDIO')
+  await wait(150)
+  result.videoToAudio = {
+    container: 'mp3',
+    summary: videoToAudioSummary,
+    sampleRateDisabled: fieldDisabled('SAMPLE RATE'),
+    bitrateDisabled: fieldDisabled('BITRATE'),
   }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true

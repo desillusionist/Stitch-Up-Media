@@ -390,6 +390,18 @@ app.whenReady().then(async () => {
         if (!cover.summary) problems.push('the sound-only job reported no summary at all')
         else if (String(cover.summary).includes('UNKNOWN')) problems.push(`a sound-only job still says UNKNOWN: ${String(cover.summary)}`)
       }
+      // A VIDEO EXTRACTED TO SOUND, which is the case the sound reading missed: the source is a video, so
+      // the job's own visuals are not 'audio', and the estimate was looking at the source's KIND rather
+      // than at what the export writes.
+      const videoToAudio = result.videoToAudio
+      if (!videoToAudio) problems.push('the video-to-sound job reported nothing at all')
+      else {
+        if (!videoToAudio.summary) problems.push('the video-to-sound job reported no summary')
+        else if (String(videoToAudio.summary).includes('UNKNOWN')) problems.push(`a video extracted to sound still says UNKNOWN: ${String(videoToAudio.summary)}`)
+        if (videoToAudio.sampleRateDisabled !== false) problems.push('a video-to-sound job draws SAMPLE RATE disabled')
+        if (videoToAudio.bitrateDisabled !== false) problems.push('a video-to-sound job draws BITRATE disabled')
+      }
+
       // And the other side of that gate, read on the MOVIE job: both streams are choosable there.
       const movieToggles = rendered && rendered.toggles
       if (!movieToggles) problems.push('the movie job reported nothing about its stream toggles')
@@ -420,8 +432,11 @@ app.whenReady().then(async () => {
           if (!imageOutput.tabsForGif.includes('IMAGE')) problems.push('a frame container was offered no IMAGE tab')
         }
         if (imageOutput.container !== 'gif') problems.push(`switching FORMAT to GIF left the window on ${String(imageOutput.container)}`)
-        // The heading of a dropdown must not open it, and the trigger must still.
+        // The heading of a dropdown must not open it, nor may the field's own box — the padding and the rule
+        // under a row are the label's own edges, which is what a reader aiming at a divider lands on — and
+        // the trigger must still open it.
         if (imageOutput.headingOpened !== false) problems.push('clicking a selector\u2019s HEADING opened its dropdown')
+        if (imageOutput.dividerOpened !== false) problems.push('clicking a field\u2019s own box, which is where its divider is, opened the dropdown')
         if (imageOutput.triggerOpened !== true) problems.push('clicking a selector\u2019s trigger did not open it, so the heading fix broke the control')
         if (!imageOutput.drawn) problems.push('a GIF container was offered no IMAGE OUTPUT control')
         if (String(imageOutput.options) !== 'still,animation,sequence') problems.push(`a GIF's IMAGE OUTPUT offers ${JSON.stringify(imageOutput.options)} rather than a single frame, an animation and a run`)
@@ -438,9 +453,15 @@ app.whenReady().then(async () => {
         for (const expected of ['COMPRESSION', 'BIT DEPTH']) {
           if (!String(imageOutput.pngFields).includes(expected)) problems.push(`a PNG's IMAGE tab drew no ${expected} control: ${JSON.stringify(imageOutput.pngFields)}`)
         }
-        if (String(imageOutput.compressionOptions) !== '0,1,3,6,9,custom') problems.push(`the PNG compression ladder offers ${JSON.stringify(imageOutput.compressionOptions)}`)
+        if (String(imageOutput.compressionOptions) !== 'default,0,1,3,6,9,custom') problems.push(`the PNG compression ladder offers ${JSON.stringify(imageOutput.compressionOptions)}`)
         if (imageOutput.compressionCustomField !== true) problems.push('choosing CUSTOM for the PNG compression brought out no field to type a figure in')
         if (imageOutput.compressionAfterTyping !== 'custom') problems.push(`a typed compression left the ladder on ${String(imageOutput.compressionAfterTyping)}`)
+        // THE TIER MOVES THE FIGURE, which is the report: a size keyed to nothing but the frame sat still
+        // while the control beside it moved.
+        if (!imageOutput.summaryAtLevel0 || imageOutput.summaryBeforeTier === imageOutput.summaryAtLevel0) problems.push(`changing the PNG compression tier did not move the estimated size: ${String(imageOutput.summaryBeforeTier)}`)
+        if (String(imageOutput.qualityOptions) !== 'default,2,5,10,20,31,custom') problems.push(`the JPEG quality ladder offers ${JSON.stringify(imageOutput.qualityOptions)}`)
+        if (!imageOutput.jpgSummaryBest || imageOutput.jpgSummaryBest === imageOutput.jpgSummarySmallest) problems.push(`changing the JPEG quality did not move the estimated size: ${String(imageOutput.jpgSummaryBest)}`)
+        if (String(imageOutput.jpgSummaryBest).includes('UNKNOWN')) problems.push('a JPEG single frame still says UNKNOWN')
         if (String(imageOutput.bitDepthOptions) !== '8,16') problems.push(`the PNG bit depths offer ${JSON.stringify(imageOutput.bitDepthOptions)}`)
         // What a change of FORMAT makes of a run: it survives into another frame container, which is the
         // rule `applyContainerChange` states, read here through the control the user actually sees.
@@ -464,6 +485,17 @@ app.whenReady().then(async () => {
           if (depth.h264.readOnly) problems.push('the H.264 depth is drawn read-only, so the choice cannot be made')
         }
         if (depth.sentDepth !== 10) problems.push(`choosing ten bits sent ${String(depth.sentDepth)}`)
+        // THE BITRATE, which is a rate and is named for one, and is drawn only where the codec has a rate.
+        if (!depth.h264Bitrate || !depth.h264Bitrate.drawn) problems.push('an H.264 job was offered no BITRATE field, and H.264 is rate-controlled')
+        else {
+          if (depth.h264Bitrate.disabled) problems.push('the BITRATE field is disabled for a codec that has a rate')
+          if (depth.h264Bitrate.oldQualityLabel) problems.push('the old QUALITY label is still drawn, so the rename did not happen')
+        }
+        if (!depth.proresBitrate) problems.push('a ProRes job reported nothing about its BITRATE field')
+        else {
+          if (!depth.proresBitrate.disabled) problems.push('a ProRes job offers a bitrate, which its fixed-rate profiles ignore')
+          if (depth.proresBitrate.hint !== 'SET BY THE CODEC') problems.push(`the ProRes bitrate field's hint is ${JSON.stringify(depth.proresBitrate.hint)} rather than SET BY THE CODEC`)
+        }
         if (!depth.prores) problems.push('a ProRes job reported nothing about its depth')
         else {
           if (!depth.prores.readOnly) problems.push('ProRes drew a depth CONTROL, which could only ever lie about what its profile decides')
