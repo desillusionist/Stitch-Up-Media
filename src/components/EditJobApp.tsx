@@ -3271,12 +3271,14 @@ export const EditJobApp: React.FC = () => {
                 rate and a wheel over the monitor still steps it — see `speedByWheel` — so the readout on
                 the line beside this comment is where the figure is, and the dropdown that used to sit here
                 was a second control for a figure the transport already owns. */}
-            <span>{stampPair(playback.position, duration, fps, timestampMode)}</span>
+            <span className="transport-stamp">{stampPair(playback.position, duration, fps, timestampMode)}</span>
             {/* The scrubber, drawn like the timeline's own playhead rather than like the platform's: an inset
                 groove with the played part in the accent and a THIN RECTANGULAR handle. The platform's is a
                 round blue knob on a blue track, which was the one thing on this panel that was not of the
                 window — see `.transport-scrub`. The share played is handed to the stylesheet as a figure,
-                because a stylesheet cannot read a range input's value. */}
+                because a stylesheet cannot read a range input's value. Its wheel is the timeline's OWN
+                gesture — the lanes' handler directly, so a flick forward runs forward and a nudge moves a
+                fraction of a frame, and the two can never drift into different weights or directions. */}
             <input
               className="transport-scrub"
               style={{ '--played': `${duration > 0 ? Math.max(0, Math.min(100, (playback.position / duration) * 100)) : 0}%` } as React.CSSProperties}
@@ -3286,6 +3288,7 @@ export const EditJobApp: React.FC = () => {
               step={fps > 0 ? 1 / fps : 0.01}
               value={duration > 0 ? playback.position : 0}
               disabled={!playable}
+              onWheel={scrubByWheel}
               onChange={(event) => playback.seek(Number(event.target.value))}
               aria-label="Playhead across the assembled output"
             />

@@ -126,7 +126,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1035,6 +1035,22 @@ const drive = async () => {
     depthForMp3,
     wavSummary,
     depthForWav: { drawn: Boolean(fieldFor('BIT DEPTH')), options: optionsOf(audioDepthSelect), value: valueOf(audioDepthSelect) },
+  }
+
+  // THE TRANSPORT'S WHEEL, which is the timeline's OWN scrub gesture rather than a second one: a flick on the
+  // bar has to move the playhead. It is read as the stamp under the bar, before and after, because that is what
+  // a reader sees move — and it is turned in whichever direction has room, since a bar already at its end can
+  // only move the other way.
+  const scrubEl = document.querySelector('.transport-scrub') as HTMLInputElement | null
+  const wheelPositionBefore = Number(scrubEl?.value ?? 0)
+  const wheelExtent = Number(scrubEl?.max ?? 0)
+  const stampBeforeWheel = document.querySelector('.transport-stamp')?.textContent ?? null
+  scrubEl?.dispatchEvent(new WheelEvent('wheel', { deltaY: wheelPositionBefore > wheelExtent / 2 ? 3 : -3, deltaMode: 0, bubbles: true, cancelable: true }))
+  await wait(40)
+  result.scrubWheel = {
+    disabled: Boolean(scrubEl?.disabled),
+    stampBefore: stampBeforeWheel,
+    stampAfter: document.querySelector('.transport-stamp')?.textContent ?? null,
   }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true

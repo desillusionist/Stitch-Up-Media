@@ -111,6 +111,16 @@ app.whenReady().then(async () => {
       }
       if (!String(scrub.trackRule && scrub.trackRule.background).includes('var(--ui-accent)')) problems.push(`the scrubber's track is not drawn in the window's own colours: ${String(scrub.trackRule && scrub.trackRule.background)}`)
     }
+    // AND ITS WHEEL, which is the timeline's OWN scrub gesture rather than a second one: a turn on the bar has
+    // to move the playhead rather than do nothing. Read as the stamp under the bar, which is what a reader sees
+    // move; the bar is turned whichever way has room, since one already at an end can only move the other way.
+    const scrubWheel = result.scrubWheel
+    if (!scrubWheel) problems.push('the transport reported nothing about its scrubber wheel')
+    else if (scrubWheel.disabled) problems.push(`the transport's scrubber was disabled, so its wheel could not be driven`)
+    else {
+      if (scrubWheel.stampBefore == null || scrubWheel.stampAfter == null) problems.push('the transport reported no stamp to read the scrub by')
+      else if (scrubWheel.stampBefore === scrubWheel.stampAfter) problems.push(`a wheel over the transport's bar did not move the playhead: it stayed at ${String(scrubWheel.stampBefore)}`)
+    }
     // The picture settings, which are the one part of the settings that is CONDITIONAL. A section that
     // is gated has two ways to be missing and they need different answers, so what is asserted here is
     // both sides of the gate: the inputs the window derived, and what the tab drew with them. If the
