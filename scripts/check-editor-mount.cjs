@@ -483,6 +483,10 @@ app.whenReady().then(async () => {
           if (String(depth.h264.options) !== '8,10') problems.push(`the H.264 depth offers ${JSON.stringify(depth.h264.options)} rather than eight and ten`)
           if (depth.h264.value !== '8') problems.push(`a job that named no depth opens on ${String(depth.h264.value)} rather than eight`)
           if (depth.h264.readOnly) problems.push('the H.264 depth is drawn read-only, so the choice cannot be made')
+          // A HEADING CLICK MUST NOT PUT A SETTING BACK, and the reset itself must still work.
+          if (depth.h264.resetDrawn !== true) problems.push('the depth field drew no reset button, so the heading test proves nothing')
+          if (depth.h264.afterHeading !== '10') problems.push(`clicking the DEPTH heading put the setting back: the field reads ${String(depth.h264.afterHeading)} rather than the ten that was chosen`)
+          if (depth.h264.afterReset !== '8') problems.push(`the reset button did not put the depth back: the field reads ${String(depth.h264.afterReset)} rather than eight`)
         }
         if (depth.sentDepth !== 10) problems.push(`choosing ten bits sent ${String(depth.sentDepth)}`)
         // THE BITRATE, which is a rate and is named for one, and is drawn only where the codec has a rate.
@@ -490,6 +494,9 @@ app.whenReady().then(async () => {
         else {
           if (depth.h264Bitrate.disabled) problems.push('the BITRATE field is disabled for a codec that has a rate')
           if (depth.h264Bitrate.oldQualityLabel) problems.push('the old QUALITY label is still drawn, so the rename did not happen')
+          // The tooltip has to describe the figure it is on rather than say there is none to set.
+          if (!String(depth.h264Bitrate.title).includes('bits a second')) problems.push(`the H.264 bitrate tooltip does not describe a bitrate: ${JSON.stringify(depth.h264Bitrate.title)}`)
+          if (String(depth.h264Bitrate.title).includes('NO BITRATE TO SET')) problems.push('the H.264 bitrate tooltip says there is no bitrate to set, beside a field that takes one')
         }
         if (!depth.proresBitrate) problems.push('a ProRes job reported nothing about its BITRATE field')
         else {

@@ -236,17 +236,17 @@ const EditorField: React.FC<{ label: string; hint?: string; reason?: string; can
   <label
     className="editor-field"
     title={reason}
-    // A FIELD'S OWN BOX IS NOT A HANDLE FOR THE DROPDOWN IN IT. A `<button>` is a LABELABLE element, so a
-    // click anywhere on a field's `<label>` — the heading, the padding around it, or the dotted rule under
-    // it, all of which are the label's own box — forwards a synthetic click to the first labelable control
-    // inside it, and for a dropdown that opens its menu. So the default is cancelled for every click that
-    // did NOT land on the trigger itself, where the field holds a select. A field holding an ordinary value
-    // is left alone: there the forwarding only puts the caret in the box, which is what clicking a field's
-    // name means.
+    // A FIELD'S OWN BOX IS NOT A HANDLE FOR ANYTHING INSIDE IT. A `<button>` is a LABELABLE element, so a
+    // click anywhere on a field's `<label>` — its heading, the padding around it, or the dotted rule drawn
+    // under it, all of which ARE the label's own box — makes the browser forward a synthetic click to the
+    // FIRST labelable thing inside it. That is the RESET button wherever a field has one, and the dropdown's
+    // trigger otherwise; so a click on a heading either put the setting back or opened its menu, and neither
+    // is what clicking the NAME of a field means. The forwarding is cancelled for every click that did not
+    // land on a control the reader was aiming at, which leaves the controls themselves working.
     onClick={(event) => {
       const target = event.target as HTMLElement
-      if (target.closest('.editor-select-trigger')) return
-      if (event.currentTarget.querySelector('.editor-select-trigger')) event.preventDefault()
+      if (target.closest('input, textarea, select, .editor-select-trigger')) return
+      event.preventDefault()
     }}
   >
     <span>
@@ -3119,13 +3119,19 @@ export const EditJobApp: React.FC = () => {
       : draft.preset.videoCodec === 'h264' || draft.preset.videoCodec === 'hevc' ? 'choice'
         : null
   /** Whether the OUTPUT codec has a bitrate to set at all, and why not where it has none. */
+  /** Whether the OUTPUT codec has a bitrate to set at all, and what to say about it either way. */
   const ratePossible = !audioOnly && RATE_CODECS.includes(draft.preset.videoCodec)
-  const rateReason = audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.'
-    : draft.preset.videoCodec === 'copy' ? 'A BITRATE IS UNUSED WHILE THE PICTURE IS COPIED.'
-      : draft.preset.videoCodec === 'prores' ? 'PRORES IS A FAMILY OF FIXED RATES: THE PROFILE DECIDES THE FIGURE, AND A BITRATE BESIDE IT WOULD BE AN OFFER THE ENCODER IGNORES.'
-        : draft.preset.videoCodec === 'mjpeg' ? 'A JPEG IS SIZED BY ITS QUALITY RATHER THAN BY A RATE, WHICH IS THE IMAGE TAB.'
-          : draft.preset.videoCodec === 'gif' ? 'A GIF IS SIZED BY ITS PALETTE AND ITS OWN ENCODER RATHER THAN BY A RATE.'
-            : 'THIS CODEC WRITES AT A FIXED RATE OF ITS OWN, SO THERE IS NO BITRATE TO SET.'
+  // A codec that HAS a rate gets a description of the figure; one that has not gets the reason it has not,
+  // which is a different sentence and never the other way round — the tooltip on H.264 said there was no
+  // bitrate to set, beside a box that takes one.
+  const rateReason = ratePossible
+    ? 'How many bits a second the picture is written at. A blank field leaves the codec its own default, which in a delivery codec is a quality rather than a rate — a CRF encoder has no bitrate until it has encoded.'
+    : audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.'
+      : draft.preset.videoCodec === 'copy' ? 'A BITRATE IS UNUSED WHILE THE PICTURE IS COPIED.'
+        : draft.preset.videoCodec === 'prores' ? 'PRORES IS A FAMILY OF FIXED RATES: THE PROFILE DECIDES THE FIGURE, AND A BITRATE BESIDE IT WOULD BE AN OFFER THE ENCODER IGNORES.'
+          : draft.preset.videoCodec === 'mjpeg' ? 'A JPEG IS SIZED BY ITS QUALITY RATHER THAN BY A RATE, WHICH IS THE IMAGE TAB.'
+            : draft.preset.videoCodec === 'gif' ? 'A GIF IS SIZED BY ITS PALETTE AND ITS OWN ENCODER RATHER THAN BY A RATE.'
+              : 'THIS CODEC WRITES AT A FIXED RATE OF ITS OWN, SO THERE IS NO BITRATE TO SET.'
   const bitrateValueForChoice = (choice: string) => {
     if (choice === 'custom') updatePreset({ audioBitrate: '' })
     else if (choice === '0') updatePreset({ audioBitrate: undefined })

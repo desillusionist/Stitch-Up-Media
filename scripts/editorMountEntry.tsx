@@ -940,7 +940,21 @@ const drive = async () => {
   }
   // AND THE BITRATE, which is what that field always was: a rate, named for what it takes. It is drawn
   // only where the codec HAS one, so ProRes is refused rather than offered a box it would ignore.
-  const h264Bitrate = { drawn: Boolean(fieldFor('BITRATE')), disabled: fieldDisabled('BITRATE'), oldQualityLabel: Boolean(fieldFor('QUALITY')) }
+  const h264Bitrate = { drawn: Boolean(fieldFor('BITRATE')), disabled: fieldDisabled('BITRATE'), oldQualityLabel: Boolean(fieldFor('QUALITY')), title: fieldFor('BITRATE')?.getAttribute('title') ?? null }
+  if (depthSelect) chooseOption(depthSelect, '10')
+  await wait(150)
+  // A HEADING CLICK MUST NOT PUT THE SETTING BACK. A field's reset button is the FIRST labelable element
+  // inside its label, so a browser click on the label — its heading, its padding, the rule under it —
+  // forwarded to the RESET rather than to the control the field draws. The heading is clicked first, then
+  // the reset itself, so the fix is proved without breaking the button.
+  const depthField = fieldFor('DEPTH')
+  const depthResetDrawn = Boolean(depthField?.querySelector('.field-reset'))
+  ;(depthField?.querySelector('span') as HTMLElement | null)?.click()
+  await wait(150)
+  const depthAfterHeading = valueOf(selectIn('DEPTH'))
+  ;(depthField?.querySelector('.field-reset') as HTMLElement | null)?.click()
+  await wait(150)
+  const depthAfterReset = valueOf(selectIn('DEPTH'))
   if (depthSelect) chooseOption(depthSelect, '10')
   await wait(150)
   const applyDepth = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY')
@@ -960,7 +974,7 @@ const drive = async () => {
   await wait(150)
   const proresDepthField = fieldFor('DEPTH')
   result.depth = {
-    h264: h264Depth,
+    h264: { ...h264Depth, afterHeading: depthAfterHeading, afterReset: depthAfterReset, resetDrawn: depthResetDrawn },
     h264Bitrate,
     sentDepth,
     prores: {
