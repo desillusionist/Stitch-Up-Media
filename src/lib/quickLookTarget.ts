@@ -1,5 +1,6 @@
 import { QueueTask } from '../types'
 import { mediaKind } from './mediaKind'
+import { clipKey } from './clipIds'
 import { isStillFrameJob, sequenceFor, sourceFps, stillSecondsFor } from './timelineModel'
 import { previewProxySpec } from './previewCodec'
 
@@ -238,8 +239,10 @@ export const resolveQuickLookRequest = async (
   const target = proxyPath || existingPreview || (wantsOutput ? `${task.outputDirectory}/${task.outputFilename}` : sourceTarget)
   if (!target) return null
 
-  // Trim points belong to the logical source occurrence, not the temporary preview.
-  const sourceKey = `${sourceTarget}#${sourceIndex}`
+  // Trim points belong to the logical source occurrence, not the temporary preview, and to the CLIP rather
+  // than to the place it happened to be in: the id follows a reorder, so the trim of the clip being looked
+  // at is the one handed over however the job's list has been shuffled since.
+  const sourceKey = clipKey(task, sourceTarget, sourceIndex)
   const points = task.trimPoints?.[sourceKey]
     || task.trimPoints?.[sourceTarget ?? '']
     || task.trimPoints?.[`${target}#${sourceIndex}`]

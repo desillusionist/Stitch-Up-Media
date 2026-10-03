@@ -437,6 +437,16 @@ export interface QueueTask {
   /** COMBO interpretation: mux/stack tracks or concatenate both axes. */
   comboMode?: 'multitrack' | 'stitch'
   sourcePaths: string[] // 1 for transcode/multitrack, >=2 for stitch
+  /**
+   * One IDENTITY per occurrence in `sourcePaths`, in the same order — so a file imported twice is two
+   * clips with two ids rather than one clip named twice.
+   *
+   * Absent on a job saved before ids existed, and that is not a migration: the id a clip falls back to is
+   * the key its records already carry (`path#index`), so a legacy job resolves exactly as it did. The list
+   * is written down (the legacy keys made explicit) before the job's sources are first reordered, removed
+   * or added to, because those shift places and an implicit id would shift with them. See `clipIds`.
+   */
+  clipIds?: string[]
   outputDirectory: string
   outputFilename: string
   preset: EncodingPreset
@@ -543,6 +553,12 @@ export interface EditJobPatch {
   sourcePaths?: string[]
   /** Carried with the sources for the same reason, and absent on the same terms. */
   additionalAudioTracks?: NonNullable<QueueTask['additionalAudioTracks']>
+  /**
+   * The identity of each source, in the same order, sent whenever the list is reordered — so the queue
+   * knows which clip moved rather than re-keying every record onto the places the paths now fall in, which
+   * cannot tell two copies of one file apart. Carried whole, like the trims.
+   */
+  clipIds?: string[]
 }
 
 export interface PresetRule {

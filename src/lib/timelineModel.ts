@@ -3,13 +3,22 @@ import { CropFractions } from './outputFrame'
 import { mediaKind } from './mediaKind'
 import { outputCarriesPicture } from './outputKind'
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedFor } from './clipSpeed'
+import { clipKey } from './clipIds'
 import { FrameRate, RateInput, frameCount, makeRate, rateOf, rateValue } from './frameRate'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
 const DEFAULT_STILL_SECONDS = 10
 
 export interface TimelineSegment {
+  /**
+   * The clip's IDENTITY, and the key every per-clip record and both React lists file it under.
+   *
+   * The id at that place in the source list for a main-lane clip, and the legacy `path#index` key for an
+   * added audio track, which has an id of its own on the track rather than in `sourcePaths`.
+   */
   key: string
+  /** The clip's place in the job's source list, which is where its id is read from. */
+  index?: number
   sourcePath: string
   /** Offset on the consolidated timeline, in seconds. */
   start: number
@@ -89,7 +98,7 @@ export interface ClipFade {
 
 /** The fade asked for at the boundary AFTER this clip, in seconds. */
 export const transitionDuration = (task: QueueTask, sourcePath: string, index: number): number => {
-  const transition: ClipTransition | undefined = task.transitions?.[`${sourcePath}#${index}`] ?? task.transitions?.[sourcePath]
+  const transition: ClipTransition | undefined = task.transitions?.[clipKey(task, sourcePath, index)] ?? task.transitions?.[sourcePath]
   return transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
 }
 
@@ -152,69 +161,6 @@ export const resolveFades = (durations: number[], requests: number[], edges: { h
 }
 
 /**
- * Re-keys clip-scoped maps after clips move, so trims and transitions follow their
- * clip instead of staying on an index that now belongs to a different one.
- *
- * Occurrences are matched in order. Looking each path up by its first index put the
- * second occurrence's entry onto the first one, which duplicated a fade onto a cut
- * the user never set and could drop it from the cut they did, whenever the same file
- * appeared twice in one job.
- */
-export const rekeyClipMap = <T>(
-  map: Record<string, T> | undefined,
-  previousPaths: string[],
-  nextPaths: string[],
-): Record<string, T> | undefined => {
-  if (!map) return undefined
-  const unclaimed = new Map<string, number[]>()
-  previousPaths.forEach((sourcePath, index) => {
-    const indices = unclaimed.get(sourcePath)
-    if (indices) indices.push(index)
-    else unclaimed.set(sourcePath, [index])
-  })
-  const rekeyed: Record<string, T> = {}
-  nextPaths.forEach((sourcePath, nextIndex) => {
-    const previousIndex = unclaimed.get(sourcePath)?.shift()
-    const value = (previousIndex !== undefined ? map[`${sourcePath}#${previousIndex}`] : undefined)
-      ?? map[`${sourcePath}#${nextIndex}`]
-      ?? map[sourcePath]
-    if (value !== undefined) rekeyed[`${sourcePath}#${nextIndex}`] = value
-  })
-  return Object.keys(rekeyed).length ? rekeyed : undefined
-}
-
-/**
- * Re-keys a clip map after ONE clip is MOVED from one place to another, so its trims and fades travel with
- * it even when the job holds the same file twice.
- *
- * `rekeyClipMap` matches occurrences in order, which is right for a removal or a reorder of DISTINCT paths —
- * each file's k-th occurrence is the same clip either way. Two copies of one file share a path, though, and
- * an in-order match cannot tell which of them moved: it leaves each record on the place it already had, so
- * a drag that swaps the two reads as a reorder and changes nothing at all. A MOVE is unambiguous where a
- * list of paths is not, so the caller that knows which clip was dragged passes the two places, and the
- * records are moved by the same splice.
- */
-export const moveClipMap = <T>(
-  map: Record<string, T> | undefined,
-  previousPaths: string[],
-  from: number,
-  to: number,
-): Record<string, T> | undefined => {
-  if (!map) return undefined
-  if (from < 0 || from >= previousPaths.length || to < 0 || to >= previousPaths.length) return rekeyClipMap(map, previousPaths, previousPaths)
-  const order = previousPaths.map((_, index) => index)
-  const [moved] = order.splice(from, 1)
-  order.splice(to, 0, moved)
-  const rekeyed: Record<string, T> = {}
-  order.forEach((previousIndex, nextIndex) => {
-    const sourcePath = previousPaths[previousIndex]
-    const value = map[`${sourcePath}#${previousIndex}`] ?? map[sourcePath]
-    if (value !== undefined) rekeyed[`${sourcePath}#${nextIndex}`] = value
-  })
-  return Object.keys(rekeyed).length ? rekeyed : undefined
-}
-
-/**
  * Consulted only when the task itself carries no timing for a source, which is
  * the normal case: `sourceInfo` and `sourceMetadata` are read all over the app
  * but are never actually populated, so durations have to be probed on demand.
@@ -259,7 +205,7 @@ export const sequenceFor = (task: QueueTask, sourcePath: string | undefined): Se
 }
 
 export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
-  task.trimPoints?.[`${sourcePath}#${index}`] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
+  task.trimPoints?.[clipKey(task, sourcePath, index)] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
 
 /** The lane the clips themselves are on, whose audio is whatever they have embedded. */
 export const MAIN_LANE_ID = 'main'
@@ -360,7 +306,8 @@ export const effectiveCropFor = (task: QueueTask, sourcePath: string | undefined
  * read back from there rather than re-derived by looking the path up: the same file can appear
  * twice in one job, and its first occurrence is not the one being shown.
  */
-export const clipIndexOf = (segment: Pick<TimelineSegment, 'key'>): number => {
+export const clipIndexOf = (segment: Pick<TimelineSegment, 'key' | 'index'>): number => {
+  if (typeof segment.index === 'number' && segment.index >= 0) return segment.index
   const index = Number(segment.key.slice(segment.key.lastIndexOf('#') + 1))
   return Number.isInteger(index) && index >= 0 ? index : 0
 }
@@ -372,7 +319,7 @@ export const clipIndexOf = (segment: Pick<TimelineSegment, 'key'>): number => {
  * this returning nothing is how "nothing chosen" is carried everywhere it is read.
  */
 export const sourceFitFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
-  task.sourceFit?.[`${sourcePath}#${index}`] || (sourcePath ? task.sourceFit?.[sourcePath] : undefined)
+  task.sourceFit?.[clipKey(task, sourcePath, index)] || (sourcePath ? task.sourceFit?.[sourcePath] : undefined)
 
 /**
  * The crop a clip carries, by the same keying again. An absent one is the whole clip — not an empty
@@ -380,7 +327,7 @@ export const sourceFitFor = (task: QueueTask, sourcePath: string | undefined, in
  * so that a job cropped before clips could be cropped one by one keeps the crop it had.
  */
 export const sourceCropFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
-  task.sourceCrop?.[`${sourcePath}#${index}`] || (sourcePath ? task.sourceCrop?.[sourcePath] : undefined)
+  task.sourceCrop?.[clipKey(task, sourcePath, index)] || (sourcePath ? task.sourceCrop?.[sourcePath] : undefined)
 
 /**
  * Interpreter rate for a source. An image sequence's own fps wins, matching the
@@ -432,7 +379,7 @@ export const nativeRateFor = (
  * record is not a rate of 1 — it is the source's own, which is what leaves the clip untouched.
  */
 export const clipRateFor = (task: QueueTask, sourcePath: string | undefined, index: number, native: FrameRate): FrameRate => {
-  const record = task.sourceFps?.[`${sourcePath}#${index}`] ?? (sourcePath ? task.sourceFps?.[sourcePath] : undefined)
+  const record = task.sourceFps?.[clipKey(task, sourcePath, index)] ?? (sourcePath ? task.sourceFps?.[sourcePath] : undefined)
   return record && record.num > 0 && record.den > 0 ? makeRate(record.num, record.den) : native
 }
 
@@ -512,7 +459,11 @@ const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: n
   // encoder would write at a different one.
   const retime = clampClipSpeed(clipRetime(speed.speed, rate, nativeRate))
   return {
-    key: `${sourcePath}#${index}`,
+    // The clip's IDENTITY, which is what every per-clip record is filed under and what the window keys its
+    // element by: a clip given an id keeps it through a reorder, so its trims, its fit and its place in the
+    // React tree all follow it rather than being rewritten onto the place it moved to.
+    key: clipKey(task, sourcePath, index),
+    index,
     sourcePath,
     start,
     duration: clipDurationFor(timing.duration, retime),

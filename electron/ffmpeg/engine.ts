@@ -11,6 +11,7 @@ import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { codecTakesRate } from '../../src/lib/outputSize'
+import { clipKey } from '../../src/lib/clipIds'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
@@ -126,7 +127,7 @@ export class FFmpegEngine {
     return command
   }
   private trimPoint(task: QueueTask, source: string, index: number) {
-    return task.trimPoints?.[`${source}#${index}`] || task.trimPoints?.[source]
+    return task.trimPoints?.[clipKey(task, source, index)] || task.trimPoints?.[source]
   }
   /**
    * Fade filters for one clip, appended to the same chains the scaling already

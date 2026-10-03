@@ -7,6 +7,7 @@ import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
+import { clipIdAt, clipKey } from '../lib/clipIds'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
@@ -136,6 +137,9 @@ const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft)
 const sourceListMoved = (draft: QueueTask, baseline: QueueTask) =>
   JSON.stringify(draft.sourcePaths) !== JSON.stringify(baseline.sourcePaths)
   || JSON.stringify(draft.additionalAudioTracks ?? []) !== JSON.stringify(baseline.additionalAudioTracks ?? [])
+  // And the ids, because a swap of two copies of one file leaves the PATH list identical and only the ids
+  // show that the list moved.
+  || JSON.stringify(draft.clipIds ?? []) !== JSON.stringify(baseline.clipIds ?? [])
 
 /**
  * Whether the window has unsaved edits: the slice the queue is compared on, plus the source list.
@@ -402,7 +406,7 @@ export const EditJobApp: React.FC = () => {
    * about. It is a SELECTION rather than the moment the inspector was opened, so changing what is
    * selected changes what is described.
    */
-  const [selected, setSelected] = useState<{ laneId: string; segmentIndex: number } | null>(null)
+  const [selected, setSelected] = useState<{ laneId: string; clipKey: string } | null>(null)
   /** Whether the PROPERTIES inspector is showing. It describes whatever is selected. */
   const [inspectorOpen, setInspectorOpen] = useState(false)
   /** The figure typed into the inspector's CUSTOM FPS field, held while it is open; null is the field shut. */
@@ -660,7 +664,7 @@ export const EditJobApp: React.FC = () => {
       : {
           ...incoming,
           ...(clipsMoved && !mine
-            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps }
+            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, clipIds: incoming.clipIds }
             : kept),
           ...(mine
             ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
@@ -710,7 +714,7 @@ export const EditJobApp: React.FC = () => {
   const timelineSignature = draft ? JSON.stringify([
     draft.type, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
     draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo,
-    draft.preset.fps, draft.preset.fpsRate, draft.stillImageDuration, draft.transitions, draft.sourceSpeed, draft.sourceFps,
+    draft.preset.fps, draft.preset.fpsRate, draft.stillImageDuration, draft.transitions, draft.sourceSpeed, draft.sourceFps, draft.clipIds,
   ]) : ''
 
   // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source without intrinsic
@@ -906,7 +910,7 @@ export const EditJobApp: React.FC = () => {
    */
   const describedSource = (() => {
     const lane = inspectorOpen && selected ? model?.lanes.find((candidate) => candidate.id === selected.laneId) : undefined
-    return lane?.segments[selected?.segmentIndex ?? 0]?.sourcePath ?? focusedSource ?? null
+    return lane?.segments.find((segment) => segment.key === selected?.clipKey)?.sourcePath ?? focusedSource ?? null
   })()
   /**
    * The facts about that source, which is not always a source a lane was built from: in a stitch or a combo the
@@ -1844,7 +1848,7 @@ export const EditJobApp: React.FC = () => {
   // PROPERTIES reads the source under the playhead, which is the one the inspector was
   // opened on. A source with an intrinsic rate shows it; a still or a sequence, whose
   // rate is a choice rather than a fact about the file, can have it changed here.
-  const inspectedSegment = selected ? model?.lanes.find((lane) => lane.id === selected.laneId)?.segments[selected.segmentIndex] : undefined
+  const inspectedSegment = selected ? model?.lanes.find((lane) => lane.id === selected.laneId)?.segments.find((segment) => segment.key === selected.clipKey) : undefined
   const inspectedSource = inspectedSegment?.sourcePath
   const inspectedSequence = inspectedSource ? sequenceFor(draft, inspectedSource) : undefined
   const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
@@ -1989,7 +1993,7 @@ export const EditJobApp: React.FC = () => {
   const setBoundaryTransition = (index: number, type: TransitionType, duration = 0.5) => {
     const cut = cuts.find((candidate) => candidate.index === index)
     if (!cut) return
-    applyTransition(`${cut.sourcePath}#${index}`, type, duration)
+    applyTransition(clipKey(latest(), cut.sourcePath, index), type, duration)
   }
   /** The head and tail of the timeline, which cut from and to black. */
   const setEdgeTransition = (edge: 'head' | 'tail', type: TransitionType, duration = 0.5) =>
@@ -2034,7 +2038,7 @@ export const EditJobApp: React.FC = () => {
     const interpolation = (next.interpolation ?? current.interpolation) === 'blending' ? 'blending' : 'sampling'
     const maintainPitch = (next.maintainPitch ?? current.maintainPitch) !== false
     const map = { ...(latest().sourceSpeed ?? {}) }
-    const key = `${sourcePath}#${index}`
+    const key = clipKey(latest(), sourcePath, index)
     if (speed === 1 && interpolation === 'sampling' && maintainPitch) delete map[key]
     else map[key] = { speed, interpolation, maintainPitch }
     updateDraft({ sourceSpeed: Object.keys(map).length ? map : undefined })
@@ -2052,7 +2056,7 @@ export const EditJobApp: React.FC = () => {
   const setClipRate = (sourcePath: string, index: number, next: FrameRate | undefined): void => {
     const native = nativeRateFor(latest(), sourcePath, undefined, resolveTiming)
     const map = { ...(latest().sourceFps ?? {}) }
-    const key = `${sourcePath}#${index}`
+    const key = clipKey(latest(), sourcePath, index)
     if (!next || ratesEqual(next, native)) delete map[key]
     else map[key] = makeRate(next.num, next.den)
     updateDraft({ sourceFps: Object.keys(map).length ? map : undefined })
@@ -2146,12 +2150,7 @@ export const EditJobApp: React.FC = () => {
     const mainIndex = laneId === model.lanes[0]?.id ? index : null
     // A right-click SELECTS as well as asks: both items in the menu describe this clip, and the
     // inspector goes on describing it until something else is selected.
-    setSelected({ laneId, segmentIndex: index })
-    // The clip's own entry in the job, which is what a trim or a fit is keyed by. A segment knows its place
-    // by the key it was built with, NOT by looking its path up: the same file can appear twice in a job, and
-    // `indexOf` answers with the first occurrence whatever clip was right-clicked — which is why removing
-    // one of two copies removed the wrong one, and why the two could not be told apart anywhere else either.
-    const clipIndex = mainIndex ?? clipIndexOf(segment)
+    setSelected({ laneId, clipKey: segment.key })
     setTimelineMenu({
       kind: 'clip',
       x: point.x,
@@ -2166,7 +2165,7 @@ export const EditJobApp: React.FC = () => {
       segmentIndex: index,
       sourcePath: segment.sourcePath,
       label: segmentLabel(segment),
-      fitKey: `${segment.sourcePath}#${clipIndex}`,
+      fitKey: segment.key,
       // A fit places a picture in the frame. Every job with a picture offers it now, not only the ones
       // that concatenate: a single visual's fit is folded into that job's own command, so the choice
       // reaches the export wherever there is an export for it to reach. The jobs that do not encode a
@@ -2231,7 +2230,7 @@ export const EditJobApp: React.FC = () => {
     }
     const cut = cuts.find((candidate) => candidate.index === openBoundary)
     if (!cut || !segments[openBoundary] || !segments[openBoundary + 1]) return null
-    const transition = draft.transitions?.[`${cut.sourcePath}#${openBoundary}`]
+    const transition = draft.transitions?.[segments[openBoundary].key]
     const requested = transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
     const maxFade = maxFadeAtBoundary(segments[openBoundary].duration, segments[openBoundary + 1].duration)
     // The request and what will actually render are reported separately. A fade that
@@ -2443,7 +2442,7 @@ export const EditJobApp: React.FC = () => {
       // Only when the window changed it: an untouched list is the queue's, and sending the window's
       // snapshot of it back would overwrite a reorder made in the queue while this window was open.
       ...(sourceListMoved(latest(), baselineRef.current ?? latest())
-        ? { sourcePaths: latest().sourcePaths, additionalAudioTracks: latest().additionalAudioTracks }
+        ? { sourcePaths: latest().sourcePaths, additionalAudioTracks: latest().additionalAudioTracks, clipIds: latest().clipIds }
         : {}),
     }
   }
@@ -2467,7 +2466,7 @@ export const EditJobApp: React.FC = () => {
   const picture = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined
   const naturalAspect = picture ? picture.width / picture.height : null
   /** The clip being shown, and the fit it carries, which is what places it in the frame. */
-  const activeFitKey = playback.segment ? `${playback.segment.sourcePath}#${clipIndexOf(playback.segment)}` : null
+  const activeFitKey = playback.segment ? playback.segment.key : null
   const activeClipKey = activeFitKey
   /** Whether framing is per clip in this job, which is where a job's visuals are concatenated. */
   const perClipFraming = clipsConcatenate(draft)
@@ -2559,7 +2558,7 @@ export const EditJobApp: React.FC = () => {
     const region = sourceCropOf(crop ?? { left: 0, top: 0, right: 0, bottom: 0 })
     const map: Record<string, SourceCrop> = {}
     draft.sourcePaths.forEach((sourcePath, index) => {
-      if (mediaKind(sourcePath) !== 'audio') map[`${sourcePath}#${index}`] = region
+      if (mediaKind(sourcePath) !== 'audio') map[clipIdAt(draft, index)] = region
     })
     updateDraft({ sourceCrop: Object.keys(map).length ? map : undefined })
   }
@@ -3581,10 +3580,10 @@ export const EditJobApp: React.FC = () => {
                     {lane.segments.map((segment, index) => (
                       <div
                         key={segment.key}
-                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${selected && selected.laneId === lane.id && selected.segmentIndex === index ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${selected && selected.laneId === lane.id && selected.clipKey === segment.key ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
                         style={{ width: `${laneWidthFor(segment.duration, zoom)}px` }}
                         title={clipTitle(segment)}
-                        onClick={() => setSelected({ laneId: lane.id, segmentIndex: index })}
+                        onClick={() => setSelected({ laneId: lane.id, clipKey: segment.key })}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
                       >
                         {/* The cells share the lane exactly, so there is no gap at the end, and each
@@ -3657,7 +3656,7 @@ export const EditJobApp: React.FC = () => {
                         )}
                         {lane.id === mainLane?.id && index < lane.segments.length - 1 && (
                           <button
-                            className={`boundary-add${(draft.transitions?.[`${segment.sourcePath}#${index}`]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === index ? ' is-open' : ''}`}
+                            className={`boundary-add${(draft.transitions?.[segment.key]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === index ? ' is-open' : ''}`}
                             onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === index ? null : index) }}
                             aria-label={`Add a transition after ${sourceName(segment.sourcePath)}`}
                             title={`Transition after ${sourceName(segment.sourcePath)}`}
@@ -4378,7 +4377,7 @@ export const EditJobApp: React.FC = () => {
         </div>
       </> : <>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); void openNativePreview({ sourcePath: target.sourcePath, sourceIndex: target.mainIndex ?? 0 }) }}>QUICK LOOK...</button>
-        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setSelected({ laneId: target.laneId, segmentIndex: target.segmentIndex }); setInspectorOpen(true) }}>PROPERTIES</button>
+        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setSelected({ laneId: target.laneId, clipKey: target.fitKey }); setInspectorOpen(true) }}>PROPERTIES</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
           const blocked = timelineMenu.fitReason

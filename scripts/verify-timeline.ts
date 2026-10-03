@@ -21,7 +21,9 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, moveClipMap, nativeRateFor, nothingToTime, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
+import { clipIdAt, matchClipIdsToPaths, materializeClipIds, moveClipIds, newClipId } from '../src/lib/clipIds'
+import { clipRecordsFor } from '../src/lib/sourceRemoval'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceValue, FRAME_CONTAINERS, imageOutputChoiceValue, imageOutputChoicesFor } from '../src/lib/containerSwitch'
@@ -267,30 +269,79 @@ console.log('\n== a combo exposes cuts too ==')
   check('the fade on the cut is drawn', main.segments.map((segment) => [segment.fadeIn, segment.fadeOut]), [[undefined, 0.5], [0.5, undefined]])
 }
 
-console.log('\n== clips keep what belongs to them when they move ==')
+console.log('\n== a clip keeps its records wherever it moves ==')
 {
-  // The same file twice: each occurrence has to keep its own entry, or a fade set on
-  // the second cut appears on the first and vanishes from the one it was set on.
-  const duplicated = { 'a.mp4#0': { type: 'fade', duration: 0.5 }, 'a.mp4#1': { type: 'fade', duration: 1.5 } }
-  check('a repeated file keeps one entry per occurrence', rekeyClipMap(duplicated, ['a.mp4', 'a.mp4'], ['a.mp4', 'a.mp4']), duplicated)
+  // TWO SEGMENTS OF ONE FILE, each with records of its own — the case a PATH cannot tell apart, and the one
+  // both bugs came from. They carry opaque ids, as an import gives them, so the id is what every per-clip
+  // record is filed under and what BOTH React lists (the timeline and the queue) key their element by.
+  const key0 = newClipId()
+  const key1 = newClipId()
+  const base: QueueTask = {
+    id: 'g', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: ['a.mp4', 'a.mp4'], clipIds: [key0, key1],
+    outputDirectory: '/out', outputFilename: 'o.mp4',
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    trimPoints: { [key0]: { in: 0, out: 5 }, [key1]: { in: 6, out: 10 } },
+    sourceFit: { [key0]: { mode: 'width', offset: { x: 0, y: 0 } }, [key1]: { mode: 'height', offset: { x: 0, y: 0 } } },
+    sourceCrop: { [key0]: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, [key1]: { x: 0.2, y: 0.2, w: 0.6, h: 0.6 } },
+    sourceSpeed: { [key0]: { speed: 2, interpolation: 'sampling', maintainPitch: true }, [key1]: { speed: 0.5, interpolation: 'blending', maintainPitch: false } },
+    sourceFps: { [key0]: makeRate(12, 1), [key1]: makeRate(48, 1) },
+  }
+  const recordsAt = (task: QueueTask, index: number) => ({
+    trim: trimFor(task, 'a.mp4', index)?.out,
+    fit: sourceFitFor(task, 'a.mp4', index)?.mode,
+    crop: sourceCropFor(task, 'a.mp4', index)?.w,
+    speed: speedFor(task, 'a.mp4', index).speed,
+    rate: rateLabel(clipRateFor(task, 'a.mp4', index, makeRate(30, 1))),
+  })
+  const clipsOf = (task: QueueTask) => buildTimeline(task).lanes[0].segments.map((segment) => segment.key)
 
-  // A transition belongs to the clip before the cut, so moving that clip moves it.
-  const moved = { 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 }
-  check('a reorder carries each fade with its clip', rekeyClipMap(moved, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': 0.5, 'b.mp4#2': 1.5 })
+  check('two copies of one file are two clips', clipsOf(base), [key0, key1])
+  check('each carries the id it was given, and its own place beside it', buildTimeline(base).lanes[0].segments.map((segment) => segment.index), [0, 1])
+  check('the first copy reads its own records', recordsAt(base, 0), { trim: 5, fit: 'width', crop: 0.8, speed: 2, rate: '12' })
+  check('and the second reads its own', recordsAt(base, 1), { trim: 10, fit: 'height', crop: 0.6, speed: 0.5, rate: '48' })
 
-  // Removing the clip a fade sits after leaves nothing to fade into.
-  check('a removed clip takes its fade with it', rekeyClipMap({ 'a.mp4#0': 0.5, 'b.mp4#1': 1.5, 'c.mp4#2': 2 }, ['a.mp4', 'b.mp4', 'c.mp4'], ['a.mp4', 'b.mp4']), { 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 })
-  check('an empty result is no map at all', rekeyClipMap({ 'a.mp4#0': 1 }, ['a.mp4'], ['b.mp4']), undefined)
+  // A MOVE: the ids are spliced with the paths, so not one record had to be re-keyed — it was already filed
+  // under the clip, and the clip moved.
+  const moved: QueueTask = { ...base, clipIds: moveClipIds(materializeClipIds(base), 1, 0) }
+  check('a move puts the second clip first, id and all', clipsOf(moved), [key1, key0])
+  check('and the clip that moved kept its trims, fit, crop, speed and rate', recordsAt(moved, 0), { trim: 10, fit: 'height', crop: 0.6, speed: 0.5, rate: '48' })
+  check('while the other keeps its own', recordsAt(moved, 1), { trim: 5, fit: 'width', crop: 0.8, speed: 2, rate: '12' })
 
-  // A MOVE of two copies of ONE file, which an in-order match cannot express: the two share a path, so
-  // neither `rekeyClipMap` nor anything reading the two path lists can tell which one was dragged. The
-  // caller that knows the two places passes them, and each record travels with ITS clip — the five-second
-  // trim that was first is second after the drag, and the four-second one that was second is first.
-  const twoCopies = { 'a.mp4#0': { in: 0, out: 5 }, 'a.mp4#1': { in: 6, out: 10 } }
-  check('a move carries each copy\u2019s own record with it', moveClipMap(twoCopies, ['a.mp4', 'a.mp4'], 1, 0), { 'a.mp4#0': { in: 6, out: 10 }, 'a.mp4#1': { in: 0, out: 5 } })
-  check('and an in-order match alone cannot, which is why the move is passed at all', rekeyClipMap(twoCopies, ['a.mp4', 'a.mp4'], ['a.mp4', 'a.mp4']), twoCopies)
-  check('a move among distinct files carries each record too', moveClipMap({ 'a.mp4#0': 0.5, 'b.mp4#1': 1.5, 'c.mp4#2': 2.5 }, ['a.mp4', 'b.mp4', 'c.mp4'], 2, 0), { 'c.mp4#0': 2.5, 'a.mp4#1': 0.5, 'b.mp4#2': 1.5 })
-  check('a move with a place that is not one leaves the map as it was', moveClipMap({ 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 }, ['a.mp4', 'b.mp4'], 5, 0), { 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 })
+  // A REMOVAL: one id goes, and every record of the survivor still resolves at its new place.
+  const removed = removeSourceFromTask(moved, 'a.mp4', 0) as QueueTask
+  check('a removal leaves one clip', removed.sourcePaths.length, 1)
+  check('and it is the one that was not taken out', removed.clipIds, [key0])
+  check('with every record still its own', recordsAt(removed, 0), { trim: 5, fit: 'width', crop: 0.8, speed: 2, rate: '12' })
+
+  // A DUPLICATE: a third occurrence is a third clip, with an id of its own and none of the others' records.
+  const dupKey = newClipId()
+  const duplicated: QueueTask = { ...base, sourcePaths: ['a.mp4', 'a.mp4', 'a.mp4'], clipIds: [key0, key1, dupKey] }
+  check('a duplicate is a clip of its own', new Set(materializeClipIds(duplicated)).size, 3)
+  check('and it carries none of the records of the copy it came from', [trimFor(duplicated, 'a.mp4', 2), speedFor(duplicated, 'a.mp4', 2).speed], [undefined, 1])
+
+  // A SPLIT: each clip into a job of its own, taking its records under its own id.
+  const splitFirst: QueueTask = { ...base, id: 's1', type: 'transcode', sourcePaths: ['a.mp4'], clipIds: [key0], ...clipRecordsFor(base, key0, 'a.mp4') }
+  const splitSecond: QueueTask = { ...base, id: 's2', type: 'transcode', sourcePaths: ['a.mp4'], clipIds: [key1], ...clipRecordsFor(base, key1, 'a.mp4') }
+  check('a split takes the clip\u2019s own records', recordsAt(splitFirst, 0), { trim: 5, fit: 'width', crop: 0.8, speed: 2, rate: '12' })
+  check('and the other clip\u2019s its own', recordsAt(splitSecond, 0), { trim: 10, fit: 'height', crop: 0.6, speed: 0.5, rate: '48' })
+
+  // A LEGACY JOB has no ids and no migration on disk: the id a clip falls back to IS the key its records
+  // already carry, and materializing writes exactly that down before the list moves — so a removal that
+  // shifts the places does not shift the ids with them.
+  const legacy: QueueTask = {
+    id: 'l', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: ['a.mp4', 'a.mp4'], outputDirectory: '/out', outputFilename: 'o.mp4',
+    preset: base.preset,
+    trimPoints: { 'a.mp4#1': { in: 6, out: 10 } },
+  }
+  check('a legacy clip reads the key it always had', clipIdAt(legacy, 1), 'a.mp4#1')
+  check('and an untouched legacy clip is still not retimed', buildTimeline(legacy).lanes[0].segments.map((segment) => segment.key), ['a.mp4#0', 'a.mp4#1'])
+  const legacyRemoved = removeSourceFromTask(legacy, 'a.mp4', 0) as QueueTask
+  check('so a removal keeps the survivor\u2019s own record', trimFor(legacyRemoved, 'a.mp4', 0)?.out, 10)
+  check('and materializing writes the legacy keys down', materializeClipIds(legacy), ['a.mp4#0', 'a.mp4#1'])
+  // The one list op that still takes bare paths: a reorder handed over without ids matches occurrences in order.
+  check('a bare-path reorder matches each id to its path', matchClipIdsToPaths(['a.mp4', 'b.mp4'], ['A', 'B'], ['b.mp4', 'a.mp4']), ['B', 'A'])
 }
 
 console.log('\n== the rate a still image is rendered at ==')
@@ -988,8 +1039,12 @@ console.log('\n== the per-clip output fit ==')
   check('and not by another occurrence of the same file', sourceFitFor(fitted, 'a.mp4', 0), undefined)
   check('a bare path still answers, as a bare trim does', sourceFitFor(fitted, 'b.mp4', 3), { mode: 'height', offset: { x: 0, y: 0 } })
   check('a clip with no fit has none', sourceFitFor(fitted, 'c.mp4', 0), undefined)
-  check('and a reorder carries each fit with its clip', rekeyClipMap({ 'a.mp4#0': { mode: 'width' as const, offset: { x: 0.1, y: 0 } }, 'b.mp4#1': { mode: 'height' as const, offset: { x: 0, y: 0 } } }, ['a.mp4', 'b.mp4', 'c.mp4'], ['c.mp4', 'a.mp4', 'b.mp4']), { 'a.mp4#1': { mode: 'width', offset: { x: 0.1, y: 0 } }, 'b.mp4#2': { mode: 'height', offset: { x: 0, y: 0 } } })
-  check('a fit set by path alone lands on that clip wherever it moves', rekeyClipMap(fitted.sourceFit, ['a.mp4', 'b.mp4'], ['b.mp4', 'a.mp4']), { 'b.mp4#0': { mode: 'height', offset: { x: 0, y: 0 } }, 'a.mp4#1': { mode: 'width', offset: { x: 0.1, y: 0 } } })
+  // A fit is carried by the clip that owns it, so a MOVE carries it and the place it lands in reads it.
+  const fitIds = ['k-a', 'k-b', 'k-c']
+  const fits = { 'k-a': { mode: 'width' as const, offset: { x: 0.1, y: 0 } }, 'k-b': { mode: 'height' as const, offset: { x: 0, y: 0 } } }
+  const reordered = { sourcePaths: ['c.mp4', 'a.mp4', 'b.mp4'], clipIds: moveClipIds(fitIds, 2, 0), sourceFit: fits } as unknown as QueueTask
+  check('a reorder carries each fit with its clip', [sourceFitFor(reordered, 'a.mp4', 1)?.mode, sourceFitFor(reordered, 'b.mp4', 2)?.mode], ['width', 'height'])
+  check('and the clip that moved reads its own fit, which it has none of', sourceFitFor(reordered, 'c.mp4', 0), undefined)
 }
 
 console.log('\n== a fit on a job whose clips are not joined ==')
@@ -1094,9 +1149,8 @@ console.log('\n== the per-clip crop ==')
 
 console.log('\n== taking a source out of a job ==')
 {
-  // Everything keyed by a clip's PLACE has to move with the clips that survive, so the records are
-  // rebuilt from the surviving entries rather than filtered: a filter would leave "a.mp4#2" naming
-  // the clip that is now the third one's predecessor.
+  // A clip's records are filed under its own ID, which does not move when the clip does, so a removal only
+  // has to drop the id of the clip that went: everything else is left where it is and still resolves.
   const job = (over: Partial<QueueTask> = {}) => ({
     id: 'j', type: 'stitch', sourcePaths: ['a.mp4', 'b.mp4', 'c.mp4'], outputDirectory: '/o', outputFilename: 'o.mp4',
     preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
@@ -1109,9 +1163,11 @@ console.log('\n== taking a source out of a job ==')
   }) as QueueTask
 
   const droppedFirst = removeSourceFromTask(job(), 'a.mp4', 0)
-  check('the trim on a surviving clip is re-keyed to its new place', droppedFirst?.trimPoints, { 'c.mp4#1': { in: 3, out: 4 } })
-  check('and so is its fit', droppedFirst?.sourceFit, { 'c.mp4#1': { mode: 'width', offset: 0.5 } })
-  check('and its crop', droppedFirst?.sourceCrop, { 'b.mp4#0': { x: 0, y: 0, w: 1, h: 1 } })
+  check('a surviving clip keeps its own record under its own id', droppedFirst?.trimPoints, { 'c.mp4#2': { in: 3, out: 4 } })
+  check('and its fit', droppedFirst?.sourceFit, { 'c.mp4#2': { mode: 'width', offset: 0.5 } })
+  check('and the other survivor its crop', droppedFirst?.sourceCrop, { 'b.mp4#1': { x: 0, y: 0, w: 1, h: 1 } })
+  // And they still RESOLVE, at the place the clip now holds rather than the one it had.
+  check('and it is read at the place the clip now holds', [trimFor(droppedFirst as QueueTask, 'c.mp4', 1)?.in, sourceCropFor(droppedFirst as QueueTask, 'b.mp4', 0)?.w], [3, 1])
   // The clip that went takes its own records with it — there is nothing left for them to be about.
   check('the records of the clip that went go with it', droppedFirst?.transitions, undefined)
   const droppedLast = removeSourceFromTask(job(), 'c.mp4', 2)
@@ -1162,13 +1218,12 @@ console.log('\n== the list an editor is showing ==')
     [byRemoval?.trimPoints, byRemoval?.sourceFit, byRemoval?.sourceCrop, byRemoval?.transitions])
   check('so the clip that went left no records behind', [dropped?.sourceFit?.['b.mp4#1'], dropped?.trimPoints?.['b.mp4#1']], [undefined, undefined])
 
-  // An ORDER is the one thing a removal cannot express, so it is carried by re-keying the records
-  // across the two orders — matching occurrences in order, so a job holding one file twice keeps
-  // each copy's own records rather than filing both under the first index.
+  // An ORDER is the one thing a removal cannot express. It is carried by the ids, which travel with the
+  // clips, so the records stay filed under the clip and are READ at whatever place the clip now holds.
   const reversed = withSourceList(job(), ['c.mp4', 'b.mp4', 'a.mp4'])
-  check('a list in another order keeps each clip\u2019s own trim', reversed?.trimPoints, { 'c.mp4#0': { in: 3, out: 4 }, 'a.mp4#2': { in: 1, out: 2 } })
-  check('and each clip\u2019s own fit', reversed?.sourceFit, { 'c.mp4#0': { mode: 'width', offset: 0.5 } })
-  check('and each clip\u2019s own crop', reversed?.sourceCrop, { 'b.mp4#1': { x: 0, y: 0, w: 1, h: 1 } })
+  check('a list in another order keeps each clip\u2019s own trim', [trimFor(reversed as QueueTask, 'c.mp4', 0)?.in, trimFor(reversed as QueueTask, 'a.mp4', 2)?.in], [3, 1])
+  check('and each clip\u2019s own fit', sourceFitFor(reversed as QueueTask, 'c.mp4', 0)?.mode, 'width')
+  check('and each clip\u2019s own crop', sourceCropFor(reversed as QueueTask, 'b.mp4', 1)?.w, 1)
   const twice = job({ sourcePaths: ['a.mp4', 'a.mp4'], trimPoints: { 'a.mp4#1': { in: 5, out: 6 } } })
   check('two copies of one file keep their own trims when the order turns round', withSourceList(twice, ['a.mp4', 'a.mp4'])?.trimPoints, { 'a.mp4#1': { in: 5, out: 6 } })
 
@@ -2333,15 +2388,15 @@ void (async () => {
       preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
       sourceSpeed: { '/a.mp4#0': { speed: 2, interpolation: 'sampling' } },
     } as unknown as QueueTask
-    // A reorder re-keys the records onto the places the clips now have, so the speed rides with its clip
-    // rather than staying on an index that now belongs to another one.
+    // A reorder carries the ids, so the speed stays filed under the clip and is READ at its new place —
+    // rather than being re-keyed onto whatever now occupies the place the clip left.
     const reordered = withSourceList(job, ['/c.mp4', '/a.mp4', '/b.mp4'])
-    check('a reorder moves a clip\u2019s speed with it', reordered?.sourceSpeed?.['/a.mp4#1']?.speed, 2)
-    check('and leaves nothing on the place it left', reordered?.sourceSpeed?.['/a.mp4#0'], undefined)
+    check('a reorder moves a clip\u2019s speed with it', speedFor(reordered as QueueTask, '/a.mp4', 1).speed, 2)
+    check('and leaves nothing on the place it left', speedFor(reordered as QueueTask, '/c.mp4', 0).speed, 1)
     // A removal from the end leaves the earlier clip's record where it is; a removal of the clip itself
     // takes its record with it.
     const dropped = removeSourceFromTask(job, '/c.mp4', 2)
-    check('removing a later clip leaves an earlier clip\u2019s speed alone', dropped?.sourceSpeed?.['/a.mp4#0']?.speed, 2)
+    check('removing a later clip leaves an earlier clip\u2019s speed alone', speedFor(dropped as QueueTask, '/a.mp4', 0).speed, 2)
     const gone = removeSourceFromTask(job, '/a.mp4', 0)
     check('removing the clip itself takes its speed with it', gone?.sourceSpeed, undefined)
   }

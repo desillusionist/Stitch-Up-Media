@@ -1,5 +1,6 @@
 import { ClipSpeed, QueueTask } from '../types'
 import { RateInput, rateOf, rateValue } from './frameRate'
+import { clipKey } from './clipIds'
 
 /**
  * Per-clip playback speed, in ONE place.
@@ -51,8 +52,8 @@ export const clampClipSpeed = (value: unknown): number => {
  * nothing is how "nothing chosen" is carried everywhere the speed is read, which is what keeps the
  * export of an untouched clip exactly what it was.
  */
-export const speedFor = (task: Pick<QueueTask, 'sourceSpeed'>, sourcePath: string | undefined, index: number): ClipSpeed => {
-  const record = task.sourceSpeed?.[`${sourcePath}#${index}`] ?? (sourcePath ? task.sourceSpeed?.[sourcePath] : undefined)
+export const speedFor = (task: { sourceSpeed?: QueueTask['sourceSpeed']; sourcePaths?: string[]; clipIds?: string[] }, sourcePath: string | undefined, index: number): ClipSpeed => {
+  const record = task.sourceSpeed?.[clipKey(task, sourcePath, index)] ?? (sourcePath ? task.sourceSpeed?.[sourcePath] : undefined)
   if (!record) return DEFAULT_CLIP_SPEED
   return {
     speed: clampClipSpeed(record.speed),
