@@ -2,7 +2,7 @@ import { ClipTransition, EncodingPreset, QueueTask, SequenceInput } from '../typ
 import { CropFractions } from './outputFrame'
 import { mediaKind } from './mediaKind'
 import { outputCarriesPicture } from './outputKind'
-import { DEFAULT_CLIP_SPEED, clipDurationFor, clipRetime, speedFor } from './clipSpeed'
+import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedFor } from './clipSpeed'
 import { FrameRate, RateInput, frameCount, makeRate, rateOf, rateValue } from './frameRate'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
@@ -476,7 +476,10 @@ const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: n
   const carried = canApplyClipSpeed(task, sourcePath)
   const rate = carried ? clipRateFor(task, sourcePath, index, nativeRate) : nativeRate
   const speed = carried ? speedFor(task, sourcePath, index) : DEFAULT_CLIP_SPEED
-  const retime = clipRetime(speed.speed, rate, nativeRate)
+  // Held to the same bounds the SPEED is, so the length the timeline draws and the seek the monitor makes
+  // are the one figure `clipDurationFor` also clamps: an extreme composition cannot draw a length the
+  // encoder would write at a different one.
+  const retime = clampClipSpeed(clipRetime(speed.speed, rate, nativeRate))
   return {
     key: `${sourcePath}#${index}`,
     sourcePath,

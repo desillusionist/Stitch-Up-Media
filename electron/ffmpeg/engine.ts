@@ -5,7 +5,7 @@ import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
 import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, nativeRateFor, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
-import { clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
+import { clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
@@ -160,7 +160,7 @@ export class FFmpegEngine {
     const sequence = this.sequenceFor(task, source)
     const native = nativeRateFor(task, source, sequence, () => ({ duration: 0, fps: probedFps }))
     const rate = clipRateFor(task, source, index, native)
-    return clipRetime(speedFor(task, source, index).speed, rate, native)
+    return clampClipSpeed(clipRetime(speedFor(task, source, index).speed, rate, native))
   }
 
   private normalizeStitchSource(task: QueueTask, source: string, output: string, point: { in: number; out: number } | undefined, stitchCanvas: [number, number] | undefined, targetFps = 30, clipDuration = 0, fade?: ClipFade, clipIndex = 0, sourceSize?: { width: number; height: number }, retime?: number): Promise<void> {
