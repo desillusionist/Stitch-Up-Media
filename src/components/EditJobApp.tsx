@@ -10,12 +10,13 @@ import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, cli
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
+import { FrameRate, RATE_PRESETS, frameCount, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue } from '../lib/frameRate'
 import { estimateLabel, estimateOutputSize, framesFrom } from '../lib/outputSize'
 import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } from '../lib/quickLookTarget'
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { pixelDepthLabel, proresDepthLabel } from '../lib/pixelDepth'
@@ -114,15 +115,13 @@ const editableSlice = (task: QueueTask) => ({
   sourceFit: task.sourceFit,
   sourceCrop: task.sourceCrop,
   sourceSpeed: task.sourceSpeed,
+  sourceFps: task.sourceFps,
   mutedLanes: task.mutedLanes,
   // Per-source timing is editable from PROPERTIES, so the window owns it too.
   sourceMetadata: task.sourceMetadata,
   sequenceInput: task.sequenceInput,
   sequenceInputs: task.sequenceInputs,
 })
-
-/** The rates the PROPERTIES inspector offers, matching the queue's own list. */
-const FPS_CHOICES = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60]
 
 const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
 const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft) !== sliceSignature(baseline)
@@ -408,6 +407,10 @@ export const EditJobApp: React.FC = () => {
   const [selected, setSelected] = useState<{ laneId: string; segmentIndex: number } | null>(null)
   /** Whether the PROPERTIES inspector is showing. It describes whatever is selected. */
   const [inspectorOpen, setInspectorOpen] = useState(false)
+  /** The figure typed into the inspector's CUSTOM FPS field, held while it is open; null is the field shut. */
+  const [fpsCustomText, setFpsCustomText] = useState<string | null>(null)
+  /** The same for the ENCODING tab's own CUSTOM FPS, which names the OUTPUT rate rather than a clip's. */
+  const [outFpsCustomText, setOutFpsCustomText] = useState<string | null>(null)
   // Mirrors of the editable state so the IPC listener can decide without stale closures.
   const draftRef = useRef<QueueTask | null>(null)
   const baselineRef = useRef<QueueTask | null>(null)
@@ -659,7 +662,7 @@ export const EditJobApp: React.FC = () => {
       : {
           ...incoming,
           ...(clipsMoved && !mine
-            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed }
+            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps }
             : kept),
           ...(mine
             ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
@@ -709,7 +712,7 @@ export const EditJobApp: React.FC = () => {
   const timelineSignature = draft ? JSON.stringify([
     draft.type, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
     draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo,
-    draft.preset.fps, draft.stillImageDuration, draft.transitions, draft.sourceSpeed,
+    draft.preset.fps, draft.preset.fpsRate, draft.stillImageDuration, draft.transitions, draft.sourceSpeed, draft.sourceFps,
   ]) : ''
 
   // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source without intrinsic
@@ -1346,6 +1349,21 @@ export const EditJobApp: React.FC = () => {
     logMediaElement(stillFrameRef.current, 'monitor-still')
   }, [playback.segment?.key, playback.videoRef])
   const fps = draft ? sourceFps(draft, playback.segment?.sourcePath ?? draft.sourcePaths[0], undefined, resolveTiming) : 25
+  /** The same rate as the exact rational, for every stamp and scale the window prints: a 29.97 source's
+   * frames are counted at 30000/1001 rather than at the 30 a decimal would round to. */
+  const sourceRateValue = rateOf(fps)
+  /**
+   * The rate a job writes at when it names none: the PRIMARY source's own, read once per job.
+   *
+   * Snapshot rather than live-bound: the memo is keyed on the JOB and not on the timeline, so retiming or
+   * removing the clip it was read from cannot move the output rate out from under a job that never chose
+   * one. That is the whole of the difference between "the first clip's rate" and "whatever the first clip
+   * is now", and it is the difference the OUTPUT FRAME totals depend on.
+   */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const defaultOutputRate = useMemo<FrameRate>(() => (draft ? rateOf(sourceFps(draft, draft.sourcePaths[0], undefined, resolveTiming)) : rateOf(30)), [draft?.id])
+  /** The rate the export is written at: the job's own where it names one, and the snapshot where it does not. */
+  const outputRate = rateOf(draft?.preset.fpsRate ?? draft?.preset.fps ?? defaultOutputRate)
   const playbackRef = useRef(playback)
   playbackRef.current = playback
   const stepFpsRef = useRef(fps)
@@ -1814,23 +1832,6 @@ export const EditJobApp: React.FC = () => {
    */
   const matchSourceChosen = Boolean(draft.preset.width && draft.preset.height && matchSourceSize
     && draft.preset.width === matchSourceSize.width && draft.preset.height === matchSourceSize.height)
-  /**
-   * The rate the encoder will use when none is set: the source's own when there is one source,
-   * and otherwise the default the output falls back to, since many sources have many rates and
-   * no single one of them is the answer. Shown as the field's placeholder so a blank field says
-   * what a blank field means rather than nothing at all.
-   */
-  const defaultFps = (() => {
-    if (draft.sourcePaths.length === 1) {
-      const only = sourceFps(draft, draft.sourcePaths[0], undefined, resolveTiming)
-      if (only > 0) return Math.round(only)
-    }
-    return Math.round(settings?.sequenceFps || 30)
-  })()
-
-  const changeFps = (value: number | undefined) => {
-    updatePreset({ fps: value === undefined || !Number.isFinite(value) || value <= 0 ? undefined : Math.round(value) })
-  }
 
   /**
    * The cuts on the main lane, where a transition can sit.
@@ -1849,7 +1850,6 @@ export const EditJobApp: React.FC = () => {
   const inspectedSource = inspectedSegment?.sourcePath
   const inspectedSequence = inspectedSource ? sequenceFor(draft, inspectedSource) : undefined
   const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
-  const inspectedEditable = Boolean(inspectedSegment && (inspectedSegment.still || inspectedSegment.sequence))
   const inspectedProbe = inspectedSource ? probedTiming[inspectedSource] : undefined
   /** The SOURCE's own pixel format, which its depth is read off — a fact about the file, never a control. */
   const inspectedPixelFormat = inspectedSource ? sourceProbes[inspectedSource]?.videoStreams?.[0]?.pixelFormat : undefined
@@ -1866,9 +1866,13 @@ export const EditJobApp: React.FC = () => {
    */
   const inspectedClipIndex = inspectedSegment ? clipIndexOf(inspectedSegment) : 0
   const inspectedCanSpeed = Boolean(draft && inspectedSource && canApplyClipSpeed(draft, inspectedSource))
-  const inspectedSpeed: ClipSpeed = inspectedSegment
-    ? { speed: inspectedSegment.speed, interpolation: inspectedSegment.speedInterpolation, maintainPitch: inspectedSegment.maintainPitch }
-    : DEFAULT_CLIP_SPEED
+  // The SPEED the reader SET, not the segment's own `speed`, which now carries the interpreted rate folded
+  // in as a retime. The two fields must show the figures that were chosen; the composition happens where
+  // the length is worked out, not in what a reader is shown to be editing.
+  const inspectedSpeed: ClipSpeed = inspectedSource ? speedFor(latest(), inspectedSource, inspectedClipIndex) : DEFAULT_CLIP_SPEED
+  /** The rate this clip's frames are read at, and its source's own — both rationals, for the pair of fields. */
+  const inspectedNativeRate = inspectedSource ? nativeRateFor(draft, inspectedSource, undefined, resolveTiming) : rateOf(30)
+  const inspectedRate = inspectedSource ? clipRateFor(draft, inspectedSource, inspectedClipIndex, inspectedNativeRate) : inspectedNativeRate
   /**
    * Whether the clip being described has a picture and a sound, which is what each retiming option needs.
    *
@@ -2039,6 +2043,24 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * Records one clip's INTERPRETED rate, from the PROPERTIES inspector.
+   *
+   * The rate the clip's frames are READ at, which is the source's own until a reader gives it another — and
+   * giving it another retimes the clip exactly as a speed does, by `fps_clip / native`. A record equal to
+   * the source's own does nothing and is REMOVED rather than stored, so a clip left alone stays off the
+   * job's record and its export exactly what it was. Written to the draft like every other clip decision,
+   * so the monitor, the strips and the timeline all follow it at once and APPLY carries it to the queue.
+   */
+  const setClipRate = (sourcePath: string, index: number, next: FrameRate | undefined): void => {
+    const native = nativeRateFor(latest(), sourcePath, undefined, resolveTiming)
+    const map = { ...(latest().sourceFps ?? {}) }
+    const key = `${sourcePath}#${index}`
+    if (!next || ratesEqual(next, native)) delete map[key]
+    else map[key] = makeRate(next.num, next.den)
+    updateDraft({ sourceFps: Object.keys(map).length ? map : undefined })
+  }
+
+  /**
    * The lanes that need an element of their own to be heard.
    *
    * Every added track, and — because a job can be nothing but audio — a main lane that IS audio. Such a
@@ -2055,7 +2077,7 @@ export const EditJobApp: React.FC = () => {
     return lane.kind === 'audio' && lane.segments.length === 1
   })
   const playable = model.duration > 0
-  const stamp = (seconds: number) => timestampMode === 'framestamp' ? frameStamp(seconds, fps) : timecode(seconds, fps)
+  const stamp = (seconds: number) => timestampMode === 'framestamp' ? frameStamp(seconds, sourceRateValue) : timecode(seconds, sourceRateValue)
   /**
    * What a mark on the scale says.
    *
@@ -2063,7 +2085,7 @@ export const EditJobApp: React.FC = () => {
    * a column of labels all saying it would be nine words too many. The live readout in the gutter is the
    * one that says it, because it is the one that is read on its own.
    */
-  const scaleLabel = (seconds: number) => timestampMode === 'framestamp' ? frameNumber(seconds, fps) : timecode(seconds, fps)
+  const scaleLabel = (seconds: number) => timestampMode === 'framestamp' ? frameNumber(seconds, sourceRateValue) : timecode(seconds, sourceRateValue)
   /** The unit the window is showing lengths in, which is a setting rather than a fact about any clip. */
   const timestampMode: 'framestamp' | 'timestamp' = settings?.timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp'
   const segmentDetail = (segment: TimelineSegment) => {
@@ -2076,9 +2098,14 @@ export const EditJobApp: React.FC = () => {
     // A still has no rate of its own, so the one it will be rendered at belongs in the
     // clip's own line rather than being left to the monitor to mention.
     if (segment.still) parts.push(`STILL @ ${Math.round(sourceFps(draft, segment.sourcePath, undefined, resolveTiming))}FPS`)
-    // The clip's speed, where it has one: the line already says the TIMELINE length it takes, and the
-    // rate is what turns the source run into that length — so the two belong on one line, together.
-    if (segment.speed !== 1) parts.push(`SPEED ${clipSpeedLabel(segment.speed)}`)
+    // The clip's speed and its interpreted rate, where it has either: the line already says the TIMELINE
+    // length it takes, and the two figures are what turn the source run into that length. They are told
+    // APART — a rate of the clip's own reads `FPS`, and only a speed the reader set reads `SPEED`, whose
+    // figure is the retime with the rate divided back out — because `segment.speed` carries both folded in.
+    const rateRatio = segment.rate && segment.nativeRate ? rateValue(segment.rate) / Math.max(1e-9, rateValue(segment.nativeRate)) : 1
+    if (segment.rate && segment.nativeRate && !ratesEqual(segment.rate, segment.nativeRate)) parts.push(`FPS ${rateLabel(segment.rate)}`)
+    const speedSetting = segment.speed / rateRatio
+    if (Math.abs(speedSetting - 1) > 1e-9) parts.push(`SPEED ${clipSpeedLabel(speedSetting)}`)
     if (segment.fadeIn) parts.push(`FADE IN ${segment.fadeIn.toFixed(2)}s`)
     if (segment.fadeOut) parts.push(`FADE OUT ${segment.fadeOut.toFixed(2)}s`)
     // What the source's own sound IS, for a clip that is nothing but sound: the line already says how long the
@@ -2097,7 +2124,7 @@ export const EditJobApp: React.FC = () => {
     // The SOURCE's whole length, which is what the clip is a piece of — the sequence's own length for
     // an image sequence, the still's chosen length for a still, and the probe's for anything else.
     totalSeconds: sourceDuration(draft, segment.sourcePath, undefined, resolveTiming),
-    fps: sourceFps(draft, segment.sourcePath, undefined, resolveTiming),
+    fps: segment.nativeRate ?? rateOf(sourceFps(draft, segment.sourcePath, undefined, resolveTiming)),
     // What the output takes from the source, which a speed does not change: it is the timeline length
     // that the speed divides, so the range this draws stays the run through the source itself.
     usedSeconds: segment.sourceUsedSeconds,
@@ -2407,6 +2434,7 @@ export const EditJobApp: React.FC = () => {
       sourceFit: latest().sourceFit,
       sourceCrop: latest().sourceCrop,
       sourceSpeed: latest().sourceSpeed,
+      sourceFps: latest().sourceFps,
       mutedLanes: latest().mutedLanes,
       sourceTiming: sourceTimingOverrides(latest()),
       // Only when the window changed it: an untouched list is the queue's, and sending the window's
@@ -3038,7 +3066,7 @@ export const EditJobApp: React.FC = () => {
    */
   const estimate = estimateOutputSize({
     seconds: duration,
-    frames: stillFrameJob ? 1 : framesFrom(duration, draft.preset.fps ?? defaultFps),
+    frames: stillFrameJob ? 1 : framesFrom(duration, rateValue(outputRate)),
     picture: !audioOnly && draft.preset.outputMode !== 'audio',
     sound: exportHasSound && !soundNeverPossible && draft.preset.audioEnabled !== false,
     videoCodec: draft.preset.videoCodec,
@@ -3046,7 +3074,7 @@ export const EditJobApp: React.FC = () => {
     proresProfile: draft.preset.proresProfile,
     width: outputFrame?.width ?? draft.preset.width,
     height: outputFrame?.height ?? draft.preset.height,
-    fps: draft.preset.fps ?? defaultFps,
+    fps: rateValue(outputRate),
     bitDepth: draft.preset.imageBitDepth,
     pngCompression: draft.preset.pngCompression,
     jpegQuality: draft.preset.jpegQuality,
@@ -3247,7 +3275,7 @@ export const EditJobApp: React.FC = () => {
               </div>
             </div>
             <small>{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
-            <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.sourceUsedSeconds, sourceIn: activeSegment.sourceIn, totalSeconds: sourceDuration(draft, activeSegment.sourcePath, undefined, resolveTiming), fps: sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming), mode: timestampMode })} | ${outputRangeLabel(duration, fps, timestampMode)}` : outputRangeLabel(duration, fps, timestampMode)}</small>
+            <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.sourceUsedSeconds, sourceIn: activeSegment.sourceIn, totalSeconds: sourceDuration(draft, activeSegment.sourcePath, undefined, resolveTiming), fps: activeSegment.nativeRate ?? rateOf(sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming)), mode: timestampMode })} | ${outputRangeLabel(duration, outputRate, timestampMode)}` : outputRangeLabel(duration, outputRate, timestampMode)}</small>
             {/* What the transport is doing. A single line, and the one place it is said: the pause glyph that
                 used to sit among the buttons said the same thing a second time, next to a PLAY toggle that
                 already carries the state. */}
@@ -3271,7 +3299,7 @@ export const EditJobApp: React.FC = () => {
                 rate and a wheel over the monitor still steps it — see `speedByWheel` — so the readout on
                 the line beside this comment is where the figure is, and the dropdown that used to sit here
                 was a second control for a figure the transport already owns. */}
-            <span className="transport-stamp">{stampPair(playback.position, duration, fps, timestampMode)}</span>
+            <span className="transport-stamp">{stampPair(playback.position, duration, outputRate, timestampMode)}</span>
             {/* The scrubber, drawn like the timeline's own playhead rather than like the platform's: an inset
                 groove with the played part in the accent and a THIN RECTANGULAR handle. The platform's is a
                 round blue knob on a blue track, which was the one thing on this panel that was not of the
@@ -3353,16 +3381,41 @@ export const EditJobApp: React.FC = () => {
                   <EditorRow label="START" value={stamp(inspectedSegment.sourceIn)} reason="Where inside the source that run begins: the clip's IN point." />
                   <EditorRow label="END" value={stamp(inspectedSegment.sourceIn + inspectedSegment.sourceUsedSeconds)} reason="Where inside the source that run ends: the clip's OUT point." />
                 </> : <EditorRow label="SOURCE" value={inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...'} />}
-                <EditorField label="FPS" hint={inspectedEditable ? undefined : 'FROM THE SOURCE'}>{
-                  inspectedEditable
-                    ? <EditorSelect
-                      value={String(inspectedFps)}
-                      options={[...new Set([...FPS_CHOICES, inspectedFps])].sort((a, b) => a - b).map((rate) => ({ value: String(rate), label: `${rate}${FPS_CHOICES.includes(rate) ? '' : ' (CURRENT)'} FPS` }))}
-                      onChange={(next) => setSourceTiming(inspectedSource, { fps: Number(next) })}
-                      ariaLabel="The frame rate this source is read at"
+                {/* The rate the clip's frames are READ at, with the source's own beside it as the reference. ONE
+                    editable figure: a rate of the clip's own does not replace the native one, it INTERPRETS the
+                    clip by the ratio between them, retiming it exactly as a speed does. Offered wherever the
+                    export can carry a retime, which is the same gate the speed uses, so a control is never drawn
+                    for a clip whose file would ignore it. */}
+                {inspectedSegment && inspectedCanSpeed && (() => {
+                  const native = inspectedNativeRate
+                  const clip = inspectedRate
+                  const chosen = RATE_PRESETS.find((entry) => ratesEqual(entry.rate, clip))
+                  return <EditorField
+                    label="FPS"
+                    hint={`SOURCE ${rateLabel(native)}`}
+                    reason={`How many of this clip's frames are read each second. The source runs at ${rateLabel(native)} (${rateRationalLabel(native)}), shown beside this as the reference; a rate of the clip's own REINTERPRETS its frames, so the clip is retimed by the ratio between the two exactly as a speed retimes it — ${rateRationalLabel(clip)}. Left at the source's own rate, nothing is retimed.`}
+                    canReset={!ratesEqual(clip, native)}
+                    onReset={() => { setFpsCustomText(null); setClipRate(inspectedSource, inspectedClipIndex, undefined) }}
+                  >
+                    <EditorSelect
+                      value={chosen ? `${chosen.rate.num}/${chosen.rate.den}` : 'custom'}
+                      options={[
+                        ...RATE_PRESETS.map((entry) => ({ value: `${entry.rate.num}/${entry.rate.den}`, label: `${entry.label} FPS` })),
+                        { value: 'custom', label: chosen ? 'CUSTOM...' : `CUSTOM... (${rateLabel(clip)})` },
+                      ]}
+                      onChange={(next) => {
+                        if (next === 'custom') { setFpsCustomText(String(Number(rateValue(clip).toFixed(3)))); return }
+                        const [num, den] = next.split('/').map(Number)
+                        setFpsCustomText(null)
+                        setClipRate(inspectedSource, inspectedClipIndex, makeRate(num, den))
+                      }}
+                      ariaLabel="The rate this clip's frames are read at"
                     />
-                    : <input className="editor-input" type="text" value={`${inspectedFps} FPS`} readOnly />
-                }</EditorField>
+                  </EditorField>
+                })()}
+                {inspectedSegment && inspectedCanSpeed && fpsCustomText !== null && <EditorField label="CUSTOM FPS" reason="A rate of the clip's own, in frames a second. A decimal is kept as the exact rational it is written as and reduced — 23.5 becomes 47/2 rather than an approximation of it.">
+                  <NumberField className="editor-input" min={1} max={240} step={0.001} value={Number(fpsCustomText) || undefined} onValue={(value) => { if (value > 0) { setFpsCustomText(String(value)); setClipRate(inspectedSource, inspectedClipIndex, rateOf(value)) } }} ariaLabel="A frame rate of the clip's own" />
+                </EditorField>}
                 {inspectedSegment && inspectedCanSpeed && (() => {
                   // SPEED and DURATION are one relationship read from either end: the source run the clip
                   // keeps is fixed by its trim, so a speed decides the timeline length and a length decides
@@ -3370,9 +3423,14 @@ export const EditJobApp: React.FC = () => {
                   // the two in step — and the timeline, the monitor and the strips all read that record, so
                   // a preview and the file it previews cannot disagree about how long the clip is.
                   const trimmedSeconds = inspectedSegment.sourceUsedSeconds
-                  const rate = Math.max(1, inspectedFps)
+                  // The composition the pipeline states: `duration = (N / fps_clip) / speed`, and the field is
+                  // read from the other end. The rate the clip is INTERPRETED at folds in beside the speed as
+                  // the ratio to the source's own, so a clip read at half its source rate is half as long
+                  // again, and typing a length back-solves the SPEED while the rate is held.
+                  const fpsRatio = rateValue(inspectedRate) / Math.max(1e-9, rateValue(inspectedNativeRate))
+                  const durationRate = outputRate
                   const applyDuration = (seconds: number) => {
-                    if (seconds > 0) setClipSpeed(inspectedSource, inspectedClipIndex, { speed: trimmedSeconds / seconds })
+                    if (seconds > 0) setClipSpeed(inspectedSource, inspectedClipIndex, { speed: trimmedSeconds / (seconds * fpsRatio) })
                   }
                   // The reading beside the length: the share of the source the clip keeps, which is the
                   // speed read the other way round — 100% at the clip's own speed, 50% at twice it. The
@@ -3381,7 +3439,7 @@ export const EditJobApp: React.FC = () => {
                   // hint carries the dash that joins them and the row reads `00:00:12.00 - (100%)`.
                   const durationHint = timestampMode === 'framestamp'
                     ? 'IN FRAMES'
-                    : `- (${Math.round(100 / Math.max(0.0001, inspectedSpeed.speed))}%)`
+                    : `- (${Math.round(100 / Math.max(0.0001, inspectedSegment.speed))}%)`
                   return <>
                     <EditorField
                       label="SPEED"
@@ -3409,16 +3467,16 @@ export const EditJobApp: React.FC = () => {
                     >
                       <NumberField
                         className="editor-input"
-                        min={timestampMode === 'framestamp' ? 1 : 1 / rate}
-                        step={1 / rate}
-                        value={timestampMode === 'framestamp' ? Math.max(1, Math.round(inspectedSegment.duration * rate)) : inspectedSegment.duration}
-                        onValue={(entered) => applyDuration(timestampMode === 'framestamp' ? entered / rate : entered)}
-                        format={timestampMode === 'framestamp' ? undefined : (seconds) => timecode(seconds, rate)}
-                        parse={timestampMode === 'framestamp' ? undefined : (text) => secondsFromTimecode(text, rate)}
+                        min={timestampMode === 'framestamp' ? 1 : 1 / rateValue(durationRate)}
+                        step={1 / rateValue(durationRate)}
+                        value={timestampMode === 'framestamp' ? Math.max(1, frameCount(inspectedSegment.duration, durationRate)) : inspectedSegment.duration}
+                        onValue={(entered) => applyDuration(timestampMode === 'framestamp' ? entered / rateValue(durationRate) : entered)}
+                        format={timestampMode === 'framestamp' ? undefined : (seconds) => timecode(seconds, durationRate)}
+                        parse={timestampMode === 'framestamp' ? undefined : (text) => secondsFromTimecode(text, durationRate)}
                         ariaLabel="The length this clip occupies on the timeline"
                       />
                     </EditorField>
-                    {inspectedSpeed.speed !== 1 && inspectedHasPicture && <EditorField label="INTERPOLATION" hint="EXPORT" reason="What fills the frames a speed leaves out or repeats. SAMPLING keeps whichever source frame the output instant lands on, which is cheap and can judder; BLENDING averages the neighbours so a slowed clip reads as movement. It changes the picture only, and only in the written file. A clip with no picture has no frames to fill, so the choice is not offered for one.">
+                    {inspectedSegment.speed !== 1 && inspectedHasPicture && <EditorField label="INTERPOLATION" hint="EXPORT" reason="What fills the frames a retime leaves out or repeats — a speed or a rate of the clip's own. SAMPLING keeps whichever source frame the output instant lands on, which is cheap and can judder; BLENDING averages the neighbours so a slowed clip reads as movement. It changes the picture only, and only in the written file. A clip with no picture has no frames to fill, so the choice is not offered for one.">
                       <EditorSelect
                         value={inspectedSpeed.interpolation}
                         options={[{ value: 'sampling', label: 'SAMPLING' }, { value: 'blending', label: 'BLENDING' }]}
@@ -3426,7 +3484,7 @@ export const EditJobApp: React.FC = () => {
                         ariaLabel="What fills the frames a speed change leaves out"
                       />
                     </EditorField>}
-                    {inspectedSpeed.speed !== 1 && inspectedHasSound && <EditorToggle
+                    {inspectedSegment.speed !== 1 && inspectedHasSound && <EditorToggle
                       label="MAINTAIN AUDIO PITCH"
                       checked={inspectedSpeed.maintainPitch !== false}
                       onChange={(checked) => setClipSpeed(inspectedSource, inspectedClipIndex, { maintainPitch: checked })}
@@ -3868,10 +3926,34 @@ export const EditJobApp: React.FC = () => {
                 a placeholder is read as what to put in it. */}
             <EditorField
               label="FPS"
-              reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : undefined}
-              canReset={draft.preset.fps !== undefined}
-              onReset={() => changeFps(undefined)}
-            ><NumberField min={1} className="editor-input" value={draft.preset.fps} placeholder={`SOURCE | ${defaultFps}`} disabled={audioOnly} onValue={changeFps} onClear={() => changeFps(undefined)} /></EditorField>
+              hint={draft.preset.fps === undefined && draft.preset.fpsRate === undefined ? 'FROM THE SOURCE' : undefined}
+              reason={audioOnly ? 'THIS CONTAINER CARRIES AUDIO ONLY.' : `The rate the whole output is written at, fixed for the job rather than bound to any one clip: a rate named here is the rate every frame is counted at, and the rate the OUTPUT FRAME totals are worked out from. Left at SOURCE it is the first clip's own rate, read once and held (${rateRationalLabel(outputRate)}), so retiming or removing that clip does not move the output under the frames already counted for it.`}
+              canReset={draft.preset.fps !== undefined || draft.preset.fpsRate !== undefined}
+              onReset={() => { setOutFpsCustomText(null); updatePreset({ fps: undefined, fpsRate: undefined }) }}
+            >{(() => {
+              const named = draft.preset.fpsRate !== undefined || draft.preset.fps !== undefined
+              const chosen = RATE_PRESETS.find((entry) => ratesEqual(entry.rate, outputRate))
+              return <EditorSelect
+                value={chosen ? `${chosen.rate.num}/${chosen.rate.den}` : named ? 'custom' : 'source'}
+                options={[
+                  { value: 'source', label: `SOURCE | ${rateLabel(defaultOutputRate)}` },
+                  ...RATE_PRESETS.map((entry) => ({ value: `${entry.rate.num}/${entry.rate.den}`, label: `${entry.label} FPS` })),
+                  { value: 'custom', label: named && !chosen ? `CUSTOM... (${rateLabel(outputRate)})` : 'CUSTOM...' },
+                ]}
+                disabled={audioOnly}
+                onChange={(next) => {
+                  if (next === 'source') { setOutFpsCustomText(null); updatePreset({ fps: undefined, fpsRate: undefined }); return }
+                  if (next === 'custom') { setOutFpsCustomText(String(Number(rateValue(outputRate).toFixed(3)))); return }
+                  const [num, den] = next.split('/').map(Number)
+                  setOutFpsCustomText(null)
+                  updatePreset({ fps: undefined, fpsRate: makeRate(num, den) })
+                }}
+                ariaLabel="The rate the whole output is written at"
+              />
+            })()}</EditorField>
+            {outFpsCustomText !== null && !audioOnly && <EditorField label="CUSTOM FPS" reason="A rate of the job's own for the whole output, in frames a second. Kept as the exact rational it is written as and reduced, so a fraction like 23.976 does not drift a frame over a long reel.">
+              <NumberField min={1} max={240} step={0.001} className="editor-input" value={Number(outFpsCustomText) || undefined} onValue={(value) => { if (value > 0) { setOutFpsCustomText(String(value)); updatePreset({ fps: undefined, fpsRate: rateOf(value) }) } }} />
+            </EditorField>}
             {/* DEPTH. ProRes decides it by PROFILE and nothing else, so it is read rather than chosen;
                 H.264 and H.265 genuinely take both and get the choice; every other codec here has no such
                 setting to offer, so the field is not drawn for them at all. */}

@@ -16,11 +16,12 @@ import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/out
 import { presetSummary } from '../src/lib/presetSummary'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, scopeTint, scopeTintFilter, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
-import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurationFor, clipSpeedLabel, sourceTimeAt, speedAudioFilters, speedFor, speedVideoFilters, timelineTimeAt, trimmedForDuration } from '../src/lib/clipSpeed'
+import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurationFor, clipRetime, clipSpeedLabel, sourceTimeAt, speedAudioFilters, speedFor, speedVideoFilters, timelineTimeAt, trimmedForDuration } from '../src/lib/clipSpeed'
+import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue, secondsForFrames } from '../src/lib/frameRate'
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nothingToTime, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceValue, FRAME_CONTAINERS, imageOutputChoiceValue, imageOutputChoicesFor } from '../src/lib/containerSwitch'
@@ -2201,6 +2202,71 @@ void (async () => {
     check('one frame of a 7m49s source at 30 fps moves the length', frameStepSurvives(7 * 60 + 49 + 19 / 30, 30), true)
     check('and one frame of a 2m59s source at 24 fps moves it too', frameStepSurvives(2 * 60 + 59 + 13 / 24, 24), true)
     check('and an hour of source at 25 fps still moves a frame', frameStepSurvives(3600, 25), true)
+  }
+
+  console.log('\n== a rate held exactly ==')
+  {
+    // A RATE IS A COUNT OF FRAMES OVER A COUNT OF SECONDS, and the two commonest are not whole numbers.
+    // 30000/1001 is what a reader calls 29.97, and holding the decimal instead loses the exactness the whole
+    // module is for — so a probed 29.97 and a chosen 29.97 have to BE 30000/1001, not 2997/100.
+    check('a probed 29.97 is the exact NTSC rate', rateOf(29.97), makeRate(30000, 1001))
+    check('which is not the decimal it is written as', rateValue(rateOf(29.97)) !== 29.97, true)
+    check('and a chosen 29.97 is the same rate, not one a thousandth apart', ratesEqual(rateOf(29.97), makeRate(30000, 1001)), true)
+    check('23.976 is 24000/1001', rateRationalLabel(rateOf(23.976)), '24000/1001')
+    check('a whole rate is itself', rateOf(30), makeRate(30, 1))
+    check('a typed decimal is the rational it is written as', rateOf(23.5), makeRate(47, 2))
+    check('the label of an NTSC rate is the familiar decimal', rateLabel(makeRate(30000, 1001)), '29.97')
+    check('and a rate that is neither prints the whole of itself', rateLabel(makeRate(47, 2)), '23.5')
+    check('the default is the one the app has always fallen back to', rateLabel(DEFAULT_RATE), '30')
+    // The presets are the eight the window draws, each an exact rational, and the NTSC three are the ones a
+    // float would round: 23.976, 29.97 and 59.94 are held as `.../1001` rather than as their decimals.
+    check('the preset list is the eight the window offers', RATE_PRESETS.map((entry) => entry.label), ['23.976', '24', '25', '29.97', '30', '50', '59.94', '60'])
+    check('and the NTSC three are held over 1001', RATE_PRESETS.filter((entry) => entry.rate.den === 1001).map((entry) => entry.rate.den), [1001, 1001, 1001])
+    // The two readings of a rate are inverses, so a frame index and an instant never drift apart.
+    check('a frame begins where the frame says', secondsForFrames(29, makeRate(30000, 1001)), (29 * 1001) / 30000)
+    check('and the instant falls back on that frame', frameFloor(secondsForFrames(29, makeRate(30000, 1001)), makeRate(30000, 1001)), 29)
+    check('a rate counts whole frames', frameCount(1, makeRate(30000, 1001)), 30)
+
+    // THE COMPOSITION. `retime = speed × fps_clip / native`, which is the whole of how a rate of the clip's
+    // own and a speed fold together: at the source's own rate it is the plain speed, and a 24p clip read at
+    // 12 is half as fast again — twice the length — whatever the speed beside it says.
+    const NTSC = makeRate(30000, 1001)
+    check('a clip at its source rate and its own speed is not retimed', clipRetime(1, makeRate(24, 1), makeRate(24, 1)), 1)
+    check('a 24p clip read at 12 runs at half speed', clipRetime(1, makeRate(12, 1), makeRate(24, 1)), 0.5)
+    check('and a speed beside it multiplies', clipRetime(2, makeRate(12, 1), makeRate(24, 1)), 1)
+    check('a clip read at twice its source rate runs twice as fast', clipRetime(1, makeRate(48, 1), makeRate(24, 1)), 2)
+    check('a measured NTSC rate folds in exactly', Math.abs(clipRetime(1, NTSC, makeRate(30, 1)) - 30000 / 1001 / 30) < 1e-12, true)
+  }
+
+  console.log('\n== a clip at a rate of its own, on the timeline ==')
+  {
+    const rateTask: QueueTask = {
+      id: 'r', type: 'transcode', status: 'pending', progress: 0,
+      sourcePaths: ['/a.mp4'], outputDirectory: '/out', outputFilename: 'o.mp4',
+      preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+      sourceMetadata: { '/a.mp4': { duration: 10, fps: 24 } },
+    }
+    // Left alone, the clip is its source's own rate and nothing is retimed: the length is the trim.
+    const plain = buildTimeline(rateTask)
+    check('the source\u2019s own rate is read as a rational', nativeRateFor(rateTask, '/a.mp4'), makeRate(24, 1))
+    check('and a clip\u2019s own record wins over it', clipRateFor({ ...rateTask, sourceFps: { '/a.mp4#0': makeRate(12, 1) } }, '/a.mp4', 0, makeRate(24, 1)), makeRate(12, 1))
+    check('a clip left at its source rate is not retimed', plain.lanes[0].segments[0].duration, 10)
+    check('and its interpreted rate is its source\u2019s', rateLabel(plain.lanes[0].segments[0].rate!), '24')
+    // Given 12 fps of its own, ten seconds of 24p frames are read at half rate: the clip is twenty seconds.
+    const reread = buildTimeline({ ...rateTask, sourceFps: { '/a.mp4#0': makeRate(12, 1) } })
+    const segment = reread.lanes[0].segments[0]
+    check('a 24p clip read at 12fps runs twice as long', segment.duration, 20)
+    check('and the whole timeline is twice as long', reread.duration, 20)
+    check('its interpreted rate is what was chosen', rateLabel(segment.rate!), '12')
+    check('while its native rate is still the source\u2019s own', rateLabel(segment.nativeRate!), '24')
+    check('the sector of the source it uses is unchanged by the rate', segment.sourceUsedSeconds, 10)
+    // And a speed beside a rate composes, rather than replacing it.
+    const both = buildTimeline({
+      ...rateTask,
+      sourceFps: { '/a.mp4#0': makeRate(12, 1) },
+      sourceSpeed: { '/a.mp4#0': { speed: 2, interpolation: 'sampling', maintainPitch: true } },
+    })
+    check('a speed and a rate of its own compose to their product', both.lanes[0].segments[0].duration, 10)
   }
 
   console.log('\n== a sped clip on the timeline ==')

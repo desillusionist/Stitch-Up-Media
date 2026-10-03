@@ -1,4 +1,5 @@
 import { ClipSpeed, QueueTask } from '../types'
+import { RateInput, rateOf, rateValue } from './frameRate'
 
 /**
  * Per-clip playback speed, in ONE place.
@@ -79,6 +80,22 @@ export const clipDurationFor = (trimmedSeconds: number, speed: number): number =
 export const trimmedForDuration = (durationSeconds: number, speed: number): number => {
   const rate = clampClipSpeed(speed)
   return durationSeconds > 0 ? durationSeconds * rate : 0
+}
+
+/**
+ * The source seconds one timeline second consumes, with a clip's INTERPRETED rate and its speed folded in.
+ *
+ * A clip's frames can be read at a rate of their own — a 24p clip handed to a 30 fps timeline, or a run of
+ * images given a rate — and that reinterpretation retimes the clip exactly as a speed does: `N` frames at
+ * `fps_clip` last `N / fps_clip`, so the source-seconds-per-timeline-second is `speed × fps_clip / native`.
+ * At the source's own rate the ratio is one and this is the plain speed it has always been, which is what
+ * keeps an untouched clip untouched. It is the ONE figure the encoder's `setpts`, the monitor's seek and the
+ * timeline's length all read, so a preview and the file it previews cannot disagree about where a frame sits.
+ */
+export const clipRetime = (speed: number, clipRate: RateInput, nativeRate: RateInput): number => {
+  const rate = clampClipSpeed(speed)
+  const native = rateValue(rateOf(nativeRate))
+  return native > 0 ? rate * (rateValue(rateOf(clipRate)) / native) : rate
 }
 
 /**

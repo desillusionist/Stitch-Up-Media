@@ -1,3 +1,5 @@
+import { FrameRate } from '../lib/frameRate'
+
 export type TaskStatus = 'pending' | 'encoding' | 'done' | 'error' | 'paused'
 
 export interface MediaStreamInfo {
@@ -57,6 +59,14 @@ export interface EncodingPreset {
   videoBitrate?: string // e.g. '8M'
   audioBitrate?: string // e.g. '320k'
   fps?: number
+  /**
+   * The rate the export is written at, as an exact rational — `30000/1001` rather than the decimal 29.97.
+   *
+   * The one the ENCODING tab offers by preset name. It wins over `fps` where both are present, so a rate
+   * chosen from the list keeps its exactness while a figure an older job stored as a plain number still
+   * reads. Absent with `fps` absent means "the source's own", resolved where the rate is needed.
+   */
+  fpsRate?: FrameRate
   crf?: number // 18-28
   hardwareAccelerated?: boolean // VideoToolbox on macOS
   proresProfile?: 'proxy' | 'lt' | 'standard' | 'hq' | '4444' | '4444xq'
@@ -474,6 +484,14 @@ export interface QueueTask {
    */
   sourceSpeed?: Record<string, ClipSpeed>
   /**
+   * The rate each clip's frames are INTERPRETED at, keyed by the clip that owns it, mirroring how
+   * trimPoints are keyed. Absent means the source's own rate, which leaves the clip's timing untouched.
+   *
+   * Held as an exact rational — `{ num: 30000, den: 1001 }` rather than `29.97` — because a rate is a count
+   * of frames over a count of seconds and a decimal of one drifts a frame over a long reel.
+   */
+  sourceFps?: Record<string, FrameRate>
+  /**
    * Lanes whose audio the export does NOT carry, by lane id.
    *
    * The same toggle that silences a lane while monitoring decides whether it reaches the output, so
@@ -504,6 +522,8 @@ export interface EditJobPatch {
   sourceCrop?: Record<string, SourceCrop>
   /** Per-clip speed, keyed like the fit and carried whole rather than interpreted. */
   sourceSpeed?: Record<string, ClipSpeed>
+  /** Per-clip interpreted rate, keyed like the speed and carried whole rather than interpreted. */
+  sourceFps?: Record<string, FrameRate>
   /** Lanes whose audio the export does not carry, carried whole like the fit. */
   mutedLanes?: Record<string, boolean>
   /**

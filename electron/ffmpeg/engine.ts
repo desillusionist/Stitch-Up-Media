@@ -4,8 +4,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, MAIN_LANE_ID, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
-import { clipDurationFor, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
+import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, nativeRateFor, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
+import { clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
+import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
@@ -74,6 +75,30 @@ const flacSampleFormat = (depth: EncodingPreset['audioBitDepth']): string => `-s
  */
 const gifLoopCount = (mode: EncodingPreset['gifMode']): string => (mode === 'regular' ? '-1' : '0')
 
+/**
+ * A probe's frame rate as a figure, whether it came back as a number, as `30000/1001`, or as neither.
+ *
+ * The probe reports a rate either way depending on the file, and the ONE figure the retiming needs is the
+ * source's own seconds-per-frame, so the two spellings are read here rather than at each of the callers.
+ */
+const parseFrameRate = (value: unknown): number => {
+  if (typeof value === 'number') return value
+  if (!value) return 0
+  const text = String(value)
+  if (text.includes('/')) {
+    const [a, b] = text.split('/').map(Number)
+    return b ? a / b : 0
+  }
+  return Number(text) || 0
+}
+
+/**
+ * The rate a job writes its output at, as the figure ffmpeg's own filters take: its exact rational where
+ * the ENCODING tab named one, else the plain figure an older job stored, else zero for "the source's own".
+ */
+const outputFpsOf = (preset: EncodingPreset): number =>
+  preset.fpsRate ? rateValue(preset.fpsRate) : preset.fps && preset.fps > 0 ? preset.fps : 0
+
 export class FFmpegEngine {
   private activeProcesses = new Map<string, ffmpeg.FfmpegCommand>()
   private sequenceFor(task: QueueTask, source: string) {
@@ -123,7 +148,22 @@ export class FFmpegEngine {
     }
     return { video, audio }
   }
-  private normalizeStitchSource(task: QueueTask, source: string, output: string, point: { in: number; out: number } | undefined, stitchCanvas: [number, number] | undefined, targetFps = 30, clipDuration = 0, fade?: ClipFade, clipIndex = 0, sourceSize?: { width: number; height: number }): Promise<void> {
+  /**
+   * The source-seconds-per-timeline-second a clip runs at, its INTERPRETED rate and its speed folded in.
+   *
+   * The one figure the encoders are handed in place of the speed, so a clip given a rate of its own — a 24p
+   * clip in a 30 fps timeline, or a run of images told what rate to run at — is retimed by the same rule the
+   * timeline and the monitor draw it with. `probedFps` is the source's own rate as measured by whichever
+   * probe the caller already made; an absent record and an equal rate leave this exactly the speed it was.
+   */
+  private retimeFor(task: QueueTask, source: string, index: number, probedFps: number): number {
+    const sequence = this.sequenceFor(task, source)
+    const native = nativeRateFor(task, source, sequence, () => ({ duration: 0, fps: probedFps }))
+    const rate = clipRateFor(task, source, index, native)
+    return clipRetime(speedFor(task, source, index).speed, rate, native)
+  }
+
+  private normalizeStitchSource(task: QueueTask, source: string, output: string, point: { in: number; out: number } | undefined, stitchCanvas: [number, number] | undefined, targetFps = 30, clipDuration = 0, fade?: ClipFade, clipIndex = 0, sourceSize?: { width: number; height: number }, retime?: number): Promise<void> {
     return new Promise((resolve, reject) => {
       const sequence = this.sequenceFor(task, source)
       const isSequence = Boolean(sequence)
@@ -152,12 +192,15 @@ export class FFmpegEngine {
       // The clip's own speed, retiming the picture and the sound by the one figure. Empty at the clip's
       // own speed, so a job that has never been retimed is handed the same filters it always was.
       const clipSpeed = speedFor(task, source, clipIndex)
+      // The retime is the speed with the clip's interpreted rate folded in, computed by the caller from the
+      // probe it already made; the fallback keeps a caller that has not measured a rate at the plain speed.
+      const retimeRate = retime ?? clipSpeed.speed
       // A clip with no picture has no frames to fill, so blending is a filter with nothing to do that is
       // not written for one. The size being unknown is what says so: an audio source has no video stream
       // to take a frame size from, which is the same thing the fit above already has to allow for.
       const hasPicture = Boolean(sourceSize && sourceSize.width > 0 && sourceSize.height > 0)
-      const speedVideo = speedVideoFilters(clipSpeed.speed, hasPicture ? clipSpeed.interpolation : 'sampling', outputRate)
-      const speedAudio = speedAudioFilters(clipSpeed.speed, clipSpeed.maintainPitch !== false, 48000)
+      const speedVideo = speedVideoFilters(retimeRate, hasPicture ? clipSpeed.interpolation : 'sampling', outputRate)
+      const speedAudio = speedAudioFilters(retimeRate, clipSpeed.maintainPitch !== false, 48000)
       const videoFilters = [
         ...(placement ?? [
           // No size to work the crop out against, so it is asked for in the source's own terms — the
@@ -256,6 +299,10 @@ export class FFmpegEngine {
     const clipSpeed = speedFor(task, source, 0)
     let expectedSeconds = 0
     let sourceHasAudio = false
+    // The source's own rate, filled by the probe below: the retime is the speed with the clip's INTERPRETED
+    // rate folded in against it, so a clip given a rate of its own writes the length the editor drew.
+    let probedFps = 0
+    let retime = clipSpeed.speed
     // The source's own pixel size, from the probe this path already makes: a fit is worked out from
     // the clip's shape and the frame rather than by ffmpeg from the stream, so it needs the shape.
     let sourceSize: { width: number; height: number } | null = sequence?.width && sequence?.height
@@ -266,10 +313,12 @@ export class FFmpegEngine {
     try {
       const probe = await probeFile(source)
       sourceHasAudio = probe.audioStreams.length > 0
+      probedFps = parseFrameRate(probe.videoStreams[0]?.fps)
+      retime = this.retimeFor(task, source, 0, probedFps)
       expectedSeconds = clipDurationFor(segmentTiming(
         sourceDuration(task, source, sequence, () => ({ duration: Number(probe.duration || 0) })),
         trim,
-      ).duration, clipSpeed.speed)
+      ).duration, retime)
       const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
       if (!sourceSize && resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
         sourceSize = { width: resolution[0], height: resolution[1] }
@@ -320,8 +369,8 @@ export class FFmpegEngine {
     // The retiming joins the same chain the framing does, after it: the picture is placed first and
     // then moved to where it falls at the new speed, which is the order the normalizer uses too. A job
     // whose visual is a sound file has no picture to fill between frames, so blending is not asked of it.
-    const speedVideo = speedVideoFilters(clipSpeed.speed, soundOnly ? 'sampling' : clipSpeed.interpolation, task.preset.fps || 0)
-    const speedAudio = speedAudioFilters(clipSpeed.speed, clipSpeed.maintainPitch !== false, task.preset.audioSampleRate || 48000)
+    const speedVideo = speedVideoFilters(retime, soundOnly ? 'sampling' : clipSpeed.interpolation, outputFpsOf(task.preset))
+    const speedAudio = speedAudioFilters(retime, clipSpeed.maintainPitch !== false, task.preset.audioSampleRate || 48000)
     this.applyPresetToCommand(cmd, task.preset, [...pictureFilters, ...speedVideo], {
       ...(clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) }),
       ...(draws ? { graphOwnsPicture: true } : {}),
@@ -337,7 +386,7 @@ export class FFmpegEngine {
     if (laneIsMuted(task, MAIN_LANE_ID)) cmd.outputOptions(['-an'])
     // A preset with no rate of its own means "source", and a still has none, so the
     // recorded rate becomes the output rate rather than leaving it to the encoder.
-    if (isStillImage && !task.preset.fps && task.preset.outputMode !== 'audio' && !task.preset.imageOutputMode) {
+    if (isStillImage && !outputFpsOf(task.preset) && task.preset.outputMode !== 'audio' && !task.preset.imageOutputMode) {
       cmd.outputOptions([`-r ${this.stillRate(task, source)}`])
     }
 
@@ -386,21 +435,15 @@ export class FFmpegEngine {
     // Each clip's own pixel size, from the probes this path already makes, because a per-clip fit
     // is worked out from the clip's shape and the frame rather than by ffmpeg from the streams.
     const sourceSizes = new Map<string, { width: number; height: number }>()
-    let targetFps = task.preset.fps || 0
+    let targetFps = outputFpsOf(task.preset)
     let clipDurations: number[] = []
+    // Read OUTSIDE the probe's own try because the normalization pass below uses them too: each source's own
+    // measured rate, and the widest of them, so a clip given a rate of its own is retimed against its own.
+    const nativeFpsByPath = new Map<string, number>()
+    let maxFps = 0
     try {
-      const parseFps = (value: any) => {
-        if (typeof value === 'number') return value
-        if (!value) return 0
-        const text = String(value)
-        if (text.includes('/')) {
-          const [a, b] = text.split('/').map(Number)
-          return b ? a / b : 0
-        }
-        return Number(text) || 0
-      }
       const probes = await Promise.all(task.sourcePaths.map((source) => probeFile(source)))
-      let maxW = 0, maxH = 0, maxFps = 0
+      let maxW = 0, maxH = 0
       for (let probeIndex = 0; probeIndex < probes.length; probeIndex++) {
         const probe = probes[probeIndex]
         const source = task.sourcePaths[probeIndex]
@@ -410,7 +453,9 @@ export class FFmpegEngine {
           sourceSizes.set(source, { width: resolution[0], height: resolution[1] })
         }
         const sequence = this.sequenceFor(task, source)
-        maxFps = Math.max(maxFps, sequence?.fps || parseFps(probe.videoStreams[0]?.fps))
+        const probed = sequence?.fps || parseFrameRate(probe.videoStreams[0]?.fps)
+        nativeFpsByPath.set(source, probed)
+        maxFps = Math.max(maxFps, probed)
       }
       const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
       stitchCanvas = task.preset.width && task.preset.height
@@ -420,13 +465,14 @@ export class FFmpegEngine {
       // Clip lengths use the same precedence as the timeline, backed by the probes
       // already fetched here, so the encoder and the drawn ramps agree on timing.
       const probeDurations = new Map(probes.map((probe, index) => [task.sourcePaths[index], Number(probe.duration || 0)]))
-      // The length each clip OCCUPIES is the trimmed source length divided by its speed, which is the
-      // figure the fades are placed against and the figure the whole output is summed from. The trim
-      // itself stays in SOURCE seconds and reaches ffmpeg through `applyTrimInput`.
+      // The length each clip OCCUPIES is the trimmed source length divided by its RETIME — the speed with
+      // the clip's interpreted rate folded in — which is the figure the fades are placed against and the
+      // figure the whole output is summed from. The trim itself stays in SOURCE seconds and reaches ffmpeg
+      // through `applyTrimInput`.
       clipDurations = task.sourcePaths.map((source, index) => clipDurationFor(segmentTiming(
         sourceDuration(task, source, this.sequenceFor(task, source), (sourcePath) => ({ duration: probeDurations.get(sourcePath) ?? 0 })),
         this.trimPoint(task, source, index),
-      ).duration, speedFor(task, source, index).speed))
+      ).duration, this.retimeFor(task, source, index, nativeFpsByPath.get(source) ?? maxFps)))
     } catch (error) {
       targetFps = targetFps || 30
       logEvent('ffmpeg', 'stitch canvas probe failed; using defaults', { taskId: task.id, error: String(error) })
@@ -438,7 +484,7 @@ export class FFmpegEngine {
       for (let index = 0; index < task.sourcePaths.length; index++) {
         const source = task.sourcePaths[index]
         const normalized = path.join(os.tmpdir(), `stitch_${task.id}_${index}.mkv`)
-        await this.normalizeStitchSource(task, source, normalized, this.trimPoint(task, source, index), stitchCanvas, targetFps, clipDurations[index] || 0, clipFades[index], index, sourceSizes.get(source))
+        await this.normalizeStitchSource(task, source, normalized, this.trimPoint(task, source, index), stitchCanvas, targetFps, clipDurations[index] || 0, clipFades[index], index, sourceSizes.get(source), this.retimeFor(task, source, index, nativeFpsByPath.get(source) ?? maxFps))
         normalizedSources.push(normalized)
       }
     } catch (error) {
@@ -539,34 +585,38 @@ export class FFmpegEngine {
    */
   private async concatComboVisuals(task: QueueTask, onError: (error: Error) => void): Promise<string | null> {
     const canvas: [number, number] | undefined = task.preset.width && task.preset.height ? [task.preset.width, task.preset.height] : undefined
-    const targetFps = task.preset.fps || 30
+    const targetFps = outputFpsOf(task.preset) || 30
     const normalized: string[] = []
     // Clip lengths and fades follow the same rules the editor draws, so a fade put on
     // a cut is rendered here too: the muxing step downstream only ever sees the single
     // concatenated video, and could never place one itself.
     const clipDurations: number[] = []
     const sourceSizes: Array<{ width: number; height: number } | undefined> = []
+    const comboRetimes: number[] = []
     for (let index = 0; index < task.sourcePaths.length; index++) {
       const source = task.sourcePaths[index]
       let probeDuration = 0
+      let probedFps = 0
       let sourceSize: { width: number; height: number } | undefined
       try {
         const probe = await probeFile(source)
         probeDuration = Number(probe.duration || 0)
+        probedFps = parseFrameRate(probe.videoStreams[0]?.fps)
         const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
         if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) sourceSize = { width: resolution[0], height: resolution[1] }
       } catch { /* fall back to configured timing */ }
+      comboRetimes.push(this.retimeFor(task, source, index, probedFps))
       clipDurations.push(clipDurationFor(segmentTiming(
         sourceDuration(task, source, this.sequenceFor(task, source), () => ({ duration: probeDuration })),
         this.trimPoint(task, source, index),
-      ).duration, speedFor(task, source, index).speed))
+      ).duration, comboRetimes[comboRetimes.length - 1]))
       sourceSizes.push(sourceSize)
     }
     const clipFades = resolveFades(clipDurations, task.sourcePaths.map((source, index) => transitionDuration(task, source, index)), { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })
     try {
       for (let index = 0; index < task.sourcePaths.length; index++) {
         const output = path.join(os.tmpdir(), `combo_${task.id}_${index}.mkv`)
-        await this.normalizeStitchSource(task, task.sourcePaths[index], output, this.trimPoint(task, task.sourcePaths[index], index), canvas, targetFps, clipDurations[index] || 0, clipFades[index], index, sourceSizes[index])
+        await this.normalizeStitchSource(task, task.sourcePaths[index], output, this.trimPoint(task, task.sourcePaths[index], index), canvas, targetFps, clipDurations[index] || 0, clipFades[index], index, sourceSizes[index], comboRetimes[index])
         normalized.push(output)
       }
     } catch (error) {
@@ -826,7 +876,7 @@ export class FFmpegEngine {
   private stillRate(task: QueueTask, source: string): number {
     const recorded = task.sourceMetadata?.[source]?.fps
     if (recorded && recorded > 0) return recorded
-    if (task.preset.fps && task.preset.fps > 0) return task.preset.fps
+    if (outputFpsOf(task.preset) > 0) return outputFpsOf(task.preset)
     return 25
   }
 
@@ -908,7 +958,7 @@ export class FFmpegEngine {
   }
 
   private pictureRateFor(preset: EncodingPreset): number {
-    return preset.fps && preset.fps > 0 ? preset.fps : 30
+    return outputFpsOf(preset) > 0 ? outputFpsOf(preset) : 30
   }
 
   /**
@@ -1164,8 +1214,11 @@ export class FFmpegEngine {
     // together with a non-CFR -vsync/-fps_mode. This is contradictory." So the rate is NOT written for a
     // run, which is also the honest reading of it: a numbered run is every frame of the source as its own
     // file, and a rate would be a question about how fast they PLAY, which is the animation's business.
-    if (preset.fps && preset.imageOutputMode !== 'sequence') {
-      cmd.fps(preset.fps)
+    if (outputFpsOf(preset) && preset.imageOutputMode !== 'sequence') {
+      // The rate is handed over as the exact rational where the job named one — ffmpeg's `-r` takes
+      // `30000/1001` — so an NTSC output does not drift a frame over a long reel the way its decimal would.
+      if (preset.fpsRate) cmd.outputOptions([`-r ${preset.fpsRate.num}/${preset.fpsRate.den}`])
+      else cmd.fps(outputFpsOf(preset))
     }
 
     // 4. Audio Codec

@@ -64,6 +64,9 @@ export const removeSourceFromTask = (item: QueueTask, sourcePath: string, source
   const nextSpeeds = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
     return [`${path}#${newIndex}`, item.sourceSpeed?.[`${path}#${oldIndex}`] || item.sourceSpeed?.[path]]
   }).filter(([, speed]) => Boolean(speed)))
+  const nextRates = Object.fromEntries(remainingEntries.map(({ path, index: oldIndex }, newIndex) => {
+    return [`${path}#${newIndex}`, item.sourceFps?.[`${path}#${oldIndex}`] || item.sourceFps?.[path]]
+  }).filter(([, rate]) => Boolean(rate)))
   const hasVisual = sourcePaths.some((path) => mediaKind(path) !== 'audio')
   if (!hasVisual && additionalAudioTracks.length) {
     sourcePaths = [...sourcePaths, ...additionalAudioTracks.map((track) => track.path)]
@@ -79,6 +82,7 @@ export const removeSourceFromTask = (item: QueueTask, sourcePath: string, source
     sourceFit: Object.keys(nextFits).length ? nextFits : undefined,
     sourceCrop: Object.keys(nextCrops).length ? nextCrops : undefined,
     sourceSpeed: Object.keys(nextSpeeds).length ? nextSpeeds : undefined,
+    sourceFps: Object.keys(nextRates).length ? nextRates : undefined,
     imageSequencePreviews: removedSequence ? undefined : remainingPreviews,
     sequenceInput: removedSequence ? undefined : item.sequenceInput,
     sequenceInputs,
@@ -128,6 +132,7 @@ export const withSourceList = (item: QueueTask, sourcePaths: string[], tracks: S
         sourceFit: rekeyClipMap(next.sourceFit, next.sourcePaths, sourcePaths),
         sourceCrop: rekeyClipMap(next.sourceCrop, next.sourcePaths, sourcePaths),
         sourceSpeed: rekeyClipMap(next.sourceSpeed, next.sourcePaths, sourcePaths),
+        sourceFps: rekeyClipMap(next.sourceFps, next.sourcePaths, sourcePaths),
       }
   return { ...ordered, additionalAudioTracks: tracks.length ? tracks : undefined, type: inferredMode(sourcePaths, tracks) }
 }

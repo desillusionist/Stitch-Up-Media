@@ -375,6 +375,17 @@ app.whenReady().then(async () => {
           if (String(inspector.durationHintAtOwnSpeed) !== '- (100%)') problems.push(`the reading beside DURATION is ${JSON.stringify(inspector.durationHintAtOwnSpeed)} rather than 100% of the source`)
           if (!/^\d\d:\d\d:\d\d\.\d\d$/.test(String(inspector.durationAtTwice))) problems.push(`the DURATION field at 2x reads ${JSON.stringify(inspector.durationAtTwice)} rather than a timecode`)
           if (String(inspector.durationHintAtTwice) !== '- (50%)') problems.push(`the reading beside DURATION at 2x is ${JSON.stringify(inspector.durationHintAtTwice)} rather than 50% of the source`)
+          // THE RATE THE CLIP'S FRAMES ARE READ AT, with the source's own beside it as the reference. ONE
+          // editable figure — the eight presets plus a custom rung — and a rate of the clip's own RETIMES it
+          // exactly as a speed does: the stubbed source is twelve seconds at 25 fps, so read at 12 its frames
+          // are stretched to twenty-five seconds of timeline, and putting the rate back restores the length.
+          if (String(inspector.fpsHint) !== 'SOURCE 25') problems.push(`the FPS field's reference reads ${JSON.stringify(inspector.fpsHint)} rather than the source's own rate`)
+          if (!String(inspector.fpsValueAtSource).startsWith('25/')) problems.push(`a clip left at its source rate reads ${JSON.stringify(inspector.fpsValueAtSource)} rather than 25 fps`)
+          for (const rate of ['24000/1001', '30000/1001', '60000/1001', 'custom']) {
+            if (!(inspector.fpsOptions || []).includes(rate)) problems.push(`the FPS field offers no ${rate} rung`)
+          }
+          if (inspector.durationAfterRate === inspector.durationBeforeRate) problems.push(`reading the clip at 12 fps left its length on ${JSON.stringify(inspector.durationAfterRate)}, so the rate never retimed it`)
+          if (String(inspector.durationAfterRateRestored) !== String(inspector.durationBeforeRate)) problems.push(`the rate was not put back: the length reads ${JSON.stringify(inspector.durationAfterRateRestored)} rather than ${JSON.stringify(inspector.durationBeforeRate)}`)
           // The way back, which appears only where there is something to put back.
           if (inspector.resetsAtOwnSpeed !== 0) problems.push(`${inspector.resetsAtOwnSpeed} reset button(s) are drawn on a clip nothing has been changed on`)
           if (!(inspector.resetsAtTwice >= 2)) problems.push(`a clip at 2x offers ${inspector.resetsAtTwice} reset button(s) rather than one for its speed and one for its length`)

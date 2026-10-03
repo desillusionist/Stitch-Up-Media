@@ -2,7 +2,8 @@ import { ClipTransition, EncodingPreset, QueueTask, SequenceInput } from '../typ
 import { CropFractions } from './outputFrame'
 import { mediaKind } from './mediaKind'
 import { outputCarriesPicture } from './outputKind'
-import { DEFAULT_CLIP_SPEED, clipDurationFor, speedFor } from './clipSpeed'
+import { DEFAULT_CLIP_SPEED, clipDurationFor, clipRetime, speedFor } from './clipSpeed'
+import { FrameRate, RateInput, frameCount, makeRate, rateOf, rateValue } from './frameRate'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
 const DEFAULT_STILL_SECONDS = 10
@@ -26,6 +27,17 @@ export interface TimelineSegment {
   sourceUsedSeconds: number
   /** The rate the clip is played at. 1 is its own speed, and an absent record leaves it here. */
   speed: number
+  /**
+   * The rate the clip's frames are INTERPRETED at, and the rate its source natively runs at.
+   *
+   * The two are the same for a clip left alone, and they differ only when a reader has given a clip a rate
+   * of its own — which is a retime exactly as a speed is, and is folded into `speed` above so every reader
+   * of that one figure follows it. They are kept here because the inspector shows the pair: the effective
+   * rate as the field, and the source's own as the reference beside it. Absent on a segment a harness built
+   * by hand, which reads as the source's own rate — no reinterpretation.
+   */
+  rate?: FrameRate
+  nativeRate?: FrameRate
   /** What fills the frames a non-unit speed leaves out or repeats. */
   speedInterpolation: 'sampling' | 'blending'
   /** Whether the sound keeps its own pitch while it is sped. */
@@ -370,6 +382,30 @@ export const sourceFps = (
 }
 
 /**
+ * The rate a source runs at natively, as an exact rational.
+ *
+ * The same precedence `sourceFps` has always used — a sequence's own rate, then the recorded rate, then the
+ * probe's — but held as `num/den`, so a source probed at 29.97 and a preset chosen at 29.97 are the same
+ * rate and a long reel's frame count does not drift.
+ */
+export const nativeRateFor = (
+  task: QueueTask,
+  sourcePath: string | undefined,
+  sequence = sequenceFor(task, sourcePath),
+  resolve?: TimingResolver,
+): FrameRate => rateOf(sourceFps(task, sourcePath, sequence, resolve))
+
+/**
+ * The rate a clip's frames are read at: its own record where it has one, and the source's native rate where
+ * it does not. Keyed like its trim and its speed, so it follows the clip through a reorder, and an absent
+ * record is not a rate of 1 — it is the source's own, which is what leaves the clip untouched.
+ */
+export const clipRateFor = (task: QueueTask, sourcePath: string | undefined, index: number, native: FrameRate): FrameRate => {
+  const record = task.sourceFps?.[`${sourcePath}#${index}`] ?? (sourcePath ? task.sourceFps?.[sourcePath] : undefined)
+  return record && record.num > 0 && record.den > 0 ? makeRate(record.num, record.den) : native
+}
+
+/**
  * How long a still image's clip should be.
  *
  * A record against the source wins over the job-wide default, so one still in a stitch can
@@ -429,17 +465,27 @@ const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: n
   const timing = segmentTiming(full, trimFor(task, sourcePath, index))
   const isStill = !sequence && mediaKind(sourcePath) === 'image'
   // The trim is measured in SOURCE seconds — that is what the encoder asks ffmpeg for — and the
-  // timeline length is that divided by the speed. At the clip's own speed the two are the same number,
-  // which is what every reader of `duration` before speed existed still gets. The speed is only read
-  // where the export can carry one, so a drawn timeline can never show a retiming the file will not.
-  const speed = canApplyClipSpeed(task, sourcePath) ? speedFor(task, sourcePath, index) : DEFAULT_CLIP_SPEED
+  // timeline length is that divided by the RETIME, which is the clip's speed with its interpreted rate
+  // folded in. At the source's own rate and its own speed the retime is one and the length is the trim,
+  // which is what every reader of `duration` before either existed still gets. Both are only read where the
+  // export can carry them, so a drawn timeline can never show a retiming the file will not.
+  const nativeRate = nativeRateFor(task, sourcePath, sequence, options.resolveTiming)
+  // The rate is only read where the export can carry a retime, exactly as the speed is: a clip drawn
+  // reinterpreted while the file is written at the source's own rate would be worse than one that could not
+  // be reinterpreted at all.
+  const carried = canApplyClipSpeed(task, sourcePath)
+  const rate = carried ? clipRateFor(task, sourcePath, index, nativeRate) : nativeRate
+  const speed = carried ? speedFor(task, sourcePath, index) : DEFAULT_CLIP_SPEED
+  const retime = clipRetime(speed.speed, rate, nativeRate)
   return {
     key: `${sourcePath}#${index}`,
     sourcePath,
     start,
-    duration: clipDurationFor(timing.duration, speed.speed),
+    duration: clipDurationFor(timing.duration, retime),
     sourceUsedSeconds: timing.duration,
-    speed: speed.speed,
+    speed: retime,
+    rate,
+    nativeRate,
     speedInterpolation: speed.interpolation,
     maintainPitch: speed.maintainPitch !== false,
     sourceIn: timing.sourceIn,
@@ -449,17 +495,20 @@ const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: n
   }
 }
 
+/** The whole frames a second a rate is COUNTED in, which is what a timecode's last field runs to. */
+const nominalRate = (input: RateInput): number => Math.max(1, Math.round(rateValue(input)))
+
 /** Same timecode shape the native preview prints: HH:MM:SS.FF */
-export const timecode = (seconds: number, fps: number) => {
+export const timecode = (seconds: number, input: RateInput) => {
   const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
-  const rate = fps > 0 ? Math.round(fps) : 25
-  const totalFrames = Math.round(safeSeconds * rate)
-  const frames = totalFrames % rate
-  const whole = Math.floor(totalFrames / rate)
+  const nominal = nominalRate(input)
+  const totalFrames = frameCount(safeSeconds, input)
+  const frames = totalFrames % nominal
+  const whole = Math.floor(totalFrames / nominal)
   return `${String(Math.floor(whole / 3600)).padStart(2, '0')}:${String(Math.floor(whole / 60) % 60).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}.${String(frames).padStart(2, '0')}`
 }
 
-export const frameStamp = (seconds: number, fps: number) => `FRAME ${frameNumber(seconds, fps)}`
+export const frameStamp = (seconds: number, input: RateInput) => `FRAME ${frameNumber(seconds, input)}`
 
 /**
  * The seconds a timecode of the window's own shape stands for: HH:MM:SS.FF.
@@ -469,8 +518,8 @@ export const frameStamp = (seconds: number, fps: number) => `FRAME ${frameNumber
  * groups are optional and may be left half-typed, so `13`, `00:13` and `00:00:13.10` all read; anything
  * that is not a figure at all answers with nothing, and the field leaves the value where it was.
  */
-export const secondsFromTimecode = (text: string, fps: number): number | null => {
-  const rate = fps > 0 ? Math.round(fps) : 25
+export const secondsFromTimecode = (text: string, input: RateInput): number | null => {
+  const rate = nominalRate(input)
   const trimmed = text.trim()
   if (!trimmed) return null
   const groups = trimmed.split(':')
@@ -493,7 +542,7 @@ export const secondsFromTimecode = (text: string, fps: number): number | null =>
  * A stamp carries the word FRAME because it is read on its own; a scale does not, because the column of
  * numbers under it says what they are — ten labels all saying FRAME would be nine words too many.
  */
-export const frameNumber = (seconds: number, fps: number) => String(Math.max(0, Math.round(seconds * fps))).padStart(6, '0')
+export const frameNumber = (seconds: number, input: RateInput) => String(frameCount(seconds, input)).padStart(6, '0')
 
 /**
  * Where the playhead is and how long the output is, as one line.
@@ -502,9 +551,9 @@ export const frameNumber = (seconds: number, fps: number) => String(Math.max(0, 
  * comparing the two numbers wants the numbers, and a unit repeated on both sides of the join is a unit
  * read twice. A framestamp is therefore spelled out here rather than by joining two stamps.
  */
-export const stampPair = (position: number, total: number, fps: number, mode: 'framestamp' | 'timestamp'): string => {
-  const rate = fps > 0 ? Math.round(fps) : 25
-  const frames = (seconds: number) => String(Math.max(0, Math.round(seconds * rate))).padStart(6, '0')
+export const stampPair = (position: number, total: number, input: RateInput, mode: 'framestamp' | 'timestamp'): string => {
+  const rate = input
+  const frames = (seconds: number) => String(frameCount(seconds, rate)).padStart(6, '0')
   return mode === 'framestamp'
     ? `FRAME ${frames(position)} of ${frames(total)}`
     : `${timecode(position, rate)} of ${timecode(total, rate)}`
@@ -519,8 +568,8 @@ export const stampPair = (position: number, total: number, fps: number, mode: 'f
 const rangeUnit = (mode: 'framestamp' | 'timestamp'): string => (mode === 'framestamp' ? 'FRAMES' : 'TIME')
 
 /** A length in whichever unit the window is showing, unpadded: a count of frames, or a timecode. */
-const rangeValue = (seconds: number, rate: number, mode: 'framestamp' | 'timestamp'): string =>
-  mode === 'framestamp' ? String(Math.max(0, Math.round(seconds * rate))) : timecode(seconds, rate)
+const rangeValue = (seconds: number, rate: RateInput, mode: 'framestamp' | 'timestamp'): string =>
+  mode === 'framestamp' ? String(frameCount(seconds, rate)) : timecode(seconds, rate)
 
 /** What a clip's own run through its source is read from. */
 export interface ClipRangeInput {
@@ -531,7 +580,7 @@ export interface ClipRangeInput {
   /** The whole source, which is what the clip is a piece of. */
   totalSeconds: number
   /** The rate the clip is measured at: the source's own, so the frames are the source's frames. */
-  fps: number
+  fps: RateInput
   mode: 'framestamp' | 'timestamp'
 }
 
@@ -545,8 +594,8 @@ export interface ClipRangeInput {
  * see from the range that nothing was taken away.
  */
 export const clipRangeLabel = ({ usedSeconds, sourceIn, totalSeconds, fps, mode }: ClipRangeInput): string => {
-  const rate = fps > 0 ? Math.round(fps) : 25
-  const padded = (seconds: number) => String(Math.max(0, Math.round(seconds * rate))).padStart(6, '0')
+  const rate = fps
+  const padded = (seconds: number) => String(frameCount(seconds, rate)).padStart(6, '0')
   const range = mode === 'framestamp'
     ? `[${padded(sourceIn)}-${padded(sourceIn + usedSeconds)}]`
     : `[${timecode(sourceIn, rate)}-${timecode(sourceIn + usedSeconds, rate)}]`
@@ -554,10 +603,8 @@ export const clipRangeLabel = ({ usedSeconds, sourceIn, totalSeconds, fps, mode 
 }
 
 /** How long the assembled output is, in the same terms — the other half of the line under the monitor. */
-export const outputRangeLabel = (seconds: number, fps: number, mode: 'framestamp' | 'timestamp'): string => {
-  const rate = fps > 0 ? Math.round(fps) : 25
-  return `TOTAL OUTPUT ${rangeUnit(mode)}: ${rangeValue(seconds, rate, mode)}`
-}
+export const outputRangeLabel = (seconds: number, fps: RateInput, mode: 'framestamp' | 'timestamp'): string =>
+  `TOTAL OUTPUT ${rangeUnit(mode)}: ${rangeValue(seconds, fps, mode)}`
 
 /**
  * Whether a clip uses the whole of its source, which is the same question as whether its trim takes
@@ -577,7 +624,7 @@ export interface ClipSummaryInput {
   /** The whole source, which is what the clip is a piece of. */
   totalSeconds: number
   /** The rate the clip is measured at: the source's own, or the project's for a track. */
-  fps: number
+  fps: RateInput
   /** How much of the source the output uses. */
   usedSeconds: number
   /** Where in the source that piece starts. */
@@ -599,8 +646,8 @@ export interface ClipSummaryInput {
  * the two figures would be the same figure.
  */
 export const clipSummary = ({ totalSeconds, fps, usedSeconds, sourceIn, trimmed, mode }: ClipSummaryInput): string => {
-  const rate = fps > 0 ? Math.round(fps) : 25
-  const frames = (seconds: number) => String(Math.max(0, Math.round(seconds * rate)))
+  const rate = fps
+  const frames = (seconds: number) => String(frameCount(seconds, rate))
   const stamp = (seconds: number) => (mode === 'framestamp' ? frames(seconds) : timecode(seconds, rate))
   const whole = mode === 'framestamp' ? `${frames(totalSeconds)} frames` : timecode(totalSeconds, rate)
   // A trim that takes NOTHING away is not a trim: a range that spans the whole source IS the source, and

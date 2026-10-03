@@ -68,14 +68,14 @@ const check = (label, actual, expected) => {
 }
 
 /** Runs one stitch to completion and hands back the file it wrote. */
-const stitch = (sources, outputFilename, sourceSpeed) => new Promise((resolve, reject) => {
+const stitch = (sources, outputFilename, sourceSpeed, sourceFps) => new Promise((resolve, reject) => {
   const engine = new FFmpegEngine()
   const directory = path.join(work, `${outputFilename}-dir`)
   fs.mkdirSync(directory, { recursive: true })
   const task = {
     id: `job-${outputFilename}`, type: 'stitch', status: 'pending', progress: 0,
     sourcePaths: sources, outputDirectory: directory, outputFilename,
-    preset, ...(sourceSpeed ? { sourceSpeed } : {}),
+    preset, ...(sourceSpeed ? { sourceSpeed } : {}), ...(sourceFps ? { sourceFps } : {}),
   }
   engine.runTask(task, () => {}, () => resolve(path.join(directory, outputFilename)), (error) => reject(error))
 })
@@ -107,6 +107,25 @@ const stitch = (sources, outputFilename, sourceSpeed) => new Promise((resolve, r
   check('half speed runs the clip twice as long', Math.abs(await secondsOf(slow) - 5) < 0.3, true)
   check('so the cut after it moves out to four seconds', await colourAt(slow, 3.4), 'red')
   check('and the green one still follows it', await colourAt(slow, 4.4), 'green')
+
+  console.log('\n== a clip read at a rate of its own ==')
+  // The same red clip, whose own frames are 30 a second, READ at 15: its sixty frames now last four seconds
+  // rather than two. This is the interpretation the editor draws and the encoder has to write — a rate of the
+  // clip's own retimes it exactly as a speed does, by the ratio between that rate and the source's own.
+  const reread = await stitch([red, green], 'reread.mp4', undefined, { [`${red}#0`]: { num: 15, den: 1 } })
+  check('a 30fps clip read at 15fps runs twice as long', Math.abs(await secondsOf(reread) - 5) < 0.3, true)
+  check('and holds the frames that length at 30 fps', Math.abs(await framesOf(reread) - 150) <= 3, true)
+  check('the cut after it lands where the longer length puts it', await colourAt(reread, 3.4), 'red')
+  check('and the green one still follows it', await colourAt(reread, 4.4), 'green')
+  check('the sound was retimed beside the picture', await hasAudio(reread), true)
+
+  console.log('\n== a rate of its own and a speed compose ==')
+  // Fifteen fps of a thirty fps source is half speed; a speed of two on top of it is the identity — so the
+  // export is the source's own length, and this is what says the two fold together rather than replacing
+  // one another.
+  const composed = await stitch([red, green], 'composed.mp4', { [`${red}#0`]: { speed: 2, interpolation: 'sampling' } }, { [`${red}#0`]: { num: 15, den: 1 } })
+  check('half a rate and double a speed come back to the source length', Math.abs(await secondsOf(composed) - 3) < 0.25, true)
+  check('so the cut is where it always was', await colourAt(composed, 1.4), 'red')
 
   console.log(failures === 0 ? '\nCLIP SPEED MATCHES THE EXPORT\n' : `\n${failures} CLIP SPEED CHECK(S) FAILED\n`)
   fs.rmSync(work, { recursive: true, force: true })

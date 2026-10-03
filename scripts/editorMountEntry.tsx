@@ -323,6 +323,14 @@ const measureInspector = async () => {
   let durationTypedCommitted: string | null = null
   let speedAfterEnter: string | null = null
   let durationAfterRefusal: string | null = null
+  // The clip's own RATE, and what reading it at another does to the length it occupies.
+  let fpsHint: string | null = null
+  let fpsOptions: (string | null)[] = []
+  let fpsValueAtSource: string | null = null
+  let fpsValueAfterRate: string | null = null
+  let durationBeforeRate: string | null = null
+  let durationAfterRate: string | null = null
+  let durationAfterRateRestored: string | null = null
   if (speedField) {
     const speed = () => scroller.querySelector('input[aria-label="The speed this clip is played at"]') as HTMLInputElement | null
     const press = (key: string) => {
@@ -404,6 +412,25 @@ const measureInspector = async () => {
     steppedPastCeiling = speed()?.value ?? null
     setNativeValue(speed() ?? speedField, '1')
     await wait(80)
+
+    // THE RATE THE CLIP'S FRAMES ARE READ AT, with the source's own beside it as the reference. ONE editable
+    // figure, and a rate of the clip's own RETIMES it exactly as a speed does: the stubbed source is twelve
+    // seconds at 25 fps, so read at 50 its frames run for six seconds of timeline.
+    const fpsControl = ([...scroller.querySelectorAll('.editor-field')] as HTMLElement[])
+      .find((field) => (field.querySelector('span')?.textContent ?? '').startsWith('FPS'))
+      ?.querySelector('.editor-select') as HTMLElement | null
+    fpsHint = hintOf('FPS')
+    fpsOptions = optionsOf(fpsControl)
+    fpsValueAtSource = valueOf(fpsControl)
+    durationBeforeRate = durationInput()?.value ?? null
+    chooseOption(fpsControl, '50/1')
+    await wait(140)
+    fpsValueAfterRate = valueOf(fpsControl)
+    durationAfterRate = durationInput()?.value ?? null
+    // Put it back to the source's own rate, so the drawer leaves the draft as it found it.
+    chooseOption(fpsControl, '25/1')
+    await wait(140)
+    durationAfterRateRestored = durationInput()?.value ?? null
   }
   ;(close as HTMLButtonElement).click()
   return {
@@ -445,6 +472,13 @@ const measureInspector = async () => {
     durationTypedCommitted,
     speedAfterEnter,
     durationAfterRefusal,
+    fpsHint,
+    fpsOptions,
+    fpsValueAtSource,
+    fpsValueAfterRate,
+    durationBeforeRate,
+    durationAfterRate,
+    durationAfterRateRestored,
   }
 }
 
