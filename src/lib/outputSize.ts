@@ -205,12 +205,30 @@ const fixedBytes = (bitsPerSecondValue: number, seconds: number, confidence: Siz
   return { low: bytes, high: bytes, confidence }
 }
 
+/**
+ * The picture codecs whose encoder takes a BITRATE at all.
+ *
+ * Everything else writes a fixed-rate family (ProRes), an intra-only stream with no rate control (DXV, Hap,
+ * QuickTime Animation), a picture codec keyed on its own quality rather than on a rate (PNG, JPEG, GIF), or
+ * is a passthrough (copy) — and a bitrate left on a preset from a codec it no longer sits beside must NOT
+ * size the file. That is the whole reason this lives here rather than beside the field: the ESTIMATE reads
+ * `videoBitrate` too, and a figure keyed to a rate the chosen codec ignores would sit still while FORMAT
+ * and PRESET moved around it. The EDITOR's own BITRATE field is gated on the same list.
+ */
+export const RATE_CODECS: Array<EncodingPreset['videoCodec']> = ['h264', 'hevc', 'vp9', 'av1', 'mpeg4']
+
+/** Whether the output codec has a bitrate to set at all. */
+export const codecTakesRate = (codec: EncodingPreset['videoCodec']): boolean => RATE_CODECS.includes(codec)
+
 const pictureSize = (input: SizeEstimateInput): Talk | undefined => {
   if (!input.picture) return { low: 0, high: 0, confidence: 'exact' }
   // A passthrough writes whatever the source was; there is no figure to work out from a preset.
   if (input.videoCodec === 'copy') return undefined
-  // A bitrate the job named wins over everything, whichever codec it is: it is what the encoder is told.
-  const named = bitsPerSecond(input.videoBitrate)
+  // A bitrate the job named wins over everything — but ONLY where the codec writes at a rate. A bitrate
+  // left behind by a codec the job no longer uses is a figure the encoder will never read, and honouring
+  // it froze the estimate on the codec that came before: switching to ProRes, PNG or a GIF left the same
+  // MB on screen whatever FORMAT and PRESET said.
+  const named = codecTakesRate(input.videoCodec) ? bitsPerSecond(input.videoBitrate) : 0
   if (named) return fixedBytes(named, input.seconds, 'close')
   const area = (input.width ?? 1920) * (input.height ?? 1080)
   const fps = input.fps && input.fps > 0 ? input.fps : 29.97

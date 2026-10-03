@@ -11,7 +11,7 @@ import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioF
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
 import { FrameRate, RATE_PRESETS, frameCount, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue } from '../lib/frameRate'
-import { estimateLabel, estimateOutputSize, framesFrom } from '../lib/outputSize'
+import { codecTakesRate, estimateLabel, estimateOutputSize, framesFrom } from '../lib/outputSize'
 import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } from '../lib/quickLookTarget'
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
@@ -94,8 +94,6 @@ const JPEG_QUALITY_CHOICES = [2, 5, 10, 20, 31] as const
  * Animation, PNG and GIF are intra-only with no rate control of any kind. A bitrate box beside any of them
  * would be an offer the encoder silently ignores, which is worse than a control that is not drawn.
  */
-const RATE_CODECS: Array<EncodingPreset['videoCodec']> = ['h264', 'hevc', 'vp9', 'av1', 'mpeg4']
-
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
 const TAP_THRESHOLD_MS = 250
 const SLOW_MOTION_RATE = 0.5
@@ -3147,9 +3145,8 @@ export const EditJobApp: React.FC = () => {
     draft.preset.videoCodec === 'prores' ? 'profile'
       : draft.preset.videoCodec === 'h264' || draft.preset.videoCodec === 'hevc' ? 'choice'
         : null
-  /** Whether the OUTPUT codec has a bitrate to set at all, and why not where it has none. */
   /** Whether the OUTPUT codec has a bitrate to set at all, and what to say about it either way. */
-  const ratePossible = !audioOnly && RATE_CODECS.includes(draft.preset.videoCodec)
+  const ratePossible = !audioOnly && codecTakesRate(draft.preset.videoCodec)
   // A codec that HAS a rate gets a description of the figure; one that has not gets the reason it has not,
   // which is a different sentence and never the other way round — the tooltip on H.264 said there was no
   // bitrate to set, beside a box that takes one.

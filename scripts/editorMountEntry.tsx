@@ -134,7 +134,7 @@ const coverTask = {
 const stillSourceTask = {
   id: 'mount-check-still-source', type: 'transcode', sourcePaths: ['/tmp/still.png'],
   outputDirectory: '/tmp', outputFilename: 'out.mp4', status: 'pending', progress: 0,
-  preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
+  preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p', videoBitrate: '8M' },
 }
 
 /** The other source kind the estimate was reported fixed for: a run of image frames read as a sequence. */

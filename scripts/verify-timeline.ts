@@ -2484,8 +2484,8 @@ void (async () => {
     check('k is a thousand', bitsPerSecond('320k'), 320000)
     check('and M is a million', bitsPerSecond('8M'), 8000000)
     check('while nonsense reads as nothing', [bitsPerSecond('fast'), bitsPerSecond(''), bitsPerSecond(undefined)], [undefined, undefined, undefined])
-    // A named bitrate wins over everything, a passthrough has nothing to work one out from at all, and a
-    // CRF delivery codec is a BRACKET rather than a figure — see the section on it below.
+    // A named bitrate wins over everything a rate-codec could work out — but ONLY where the codec writes at
+    // a rate, which is the rule pinned below, after ProRes's own target is defined.
     check('a named bitrate sizes a file', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'h264', videoBitrate: '8M', audioCodec: 'aac' }), { bytes: 10100000, confidence: 'close' })
     check('as does a stream copy', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'copy', audioCodec: 'aac' }), undefined)
     // ProRes IS a bitrate by specification, so its published target is scaled by the frame's own area and
@@ -2494,6 +2494,17 @@ void (async () => {
     check('a ProRes HQ at 1080p30 is its documented target for ten seconds', proresBytes(1920, 1080), 277750000)
     near('and twice the frame area is twice the size', (proresBytes(3840, 2160) as number) / (proresBytes(1920, 1080) as number), 4)
     near('and twice the rate is twice the size', (proresBytes(1920, 1080, 59.94) as number) / (proresBytes(1920, 1080) as number), 2)
+    // AND A BITRATE THE CODEC IGNORES MUST NOT SIZE ANYTHING. A preset carried into a format whose codec has
+    // no rate control kept its old bitrate, and the estimate honoured it — so a ProRes, a PNG or a JPG export
+    // read the same megabytes whatever FORMAT and PRESET said, which is the fixed figure a reader reported.
+    // The rate belongs to the ENCODER, and an encoder that is never told one must not be sized as if it were.
+    const withBitrate = (videoCodec: EncodingPreset['videoCodec']) => estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec, videoBitrate: '8M', width: 1920, height: 1080, fps: 30, audioCodec: 'aac' })
+    const proresWith = (videoBitrate?: string) => estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: true, sound: false, videoCodec: 'prores', proresProfile: 'hq', videoBitrate, width: 1920, height: 1080, fps: 30, audioCodec: 'aac' })?.bytes
+    check('a codec with no rate control ignores the bitrate beside it', proresWith('8M'), proresWith(undefined))
+    check('and a picture codec keyed on its own quality ignores it too', withBitrate('mjpeg')?.confidence, 'rough')
+    check('and a passthrough has no figure whatever is beside it', withBitrate('copy'), undefined)
+    check('while a delivery codec keeps the rate it was given', withBitrate('h264')?.bytes, 10100000)
+    check('and so does a second one, because the rate is the same rate', withBitrate('vp9')?.bytes, 10100000)
     // PCM is arithmetic rather than a setting, and it is the one figure the SUMMARY draws plainly.
     check('a WAV of PCM is its own arithmetic, and says it is exact', estimateOutputSize({ seconds: 10, frames: 0, containerized: true, picture: false, sound: true, videoCodec: 'copy', audioCodec: 'pcm', audioSampleRate: 48000, audioChannels: 2 }), { bytes: 1939200, confidence: 'exact' })
     // A content-dependent codec is a RANGE, never a number.

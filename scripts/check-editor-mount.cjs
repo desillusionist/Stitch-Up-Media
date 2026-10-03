@@ -575,7 +575,7 @@ app.whenReady().then(async () => {
     }
     if (!result.imageSource) problems.push('the still-image source job reported nothing about its estimate')
     else movingFigures('a still-image source\u2019s', result.imageSource, [
-      ['mp4h264', 'mp4hevc'], ['movhevc', 'movprores'], ['png', 'jpg'], ['pngStill', 'pngSequence'],
+      ['mp4hevc', 'movprores'], ['png', 'jpg'], ['pngStill', 'pngSequence'],
     ])
     if (!result.imageSequence) problems.push('the image-sequence source job reported nothing about its estimate')
     else movingFigures('an image-sequence source\u2019s', result.imageSequence, [['mp4h264', 'mp4hevc'], ['mp4hevc', 'movprores'], ['pngRunLevel0', 'pngRunLevel9']])

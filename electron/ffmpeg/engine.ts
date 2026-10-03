@@ -10,6 +10,7 @@ import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
+import { codecTakesRate } from '../../src/lib/outputSize'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
@@ -1206,7 +1207,7 @@ export class FFmpegEngine {
     if (videoFilters.length) cmd.outputOptions([`-vf ${videoFilters.join(',')}`])
 
     // 3. Bitrates & FPS
-    if (preset.videoBitrate && preset.videoCodec !== 'copy') {
+    if (preset.videoBitrate && codecTakesRate(preset.videoCodec)) {
       cmd.outputOptions(['-b:v ' + preset.videoBitrate])
     }
     // A SEQUENCE writes one file per frame and says so with `-vsync 0`, which is passthrough — and
