@@ -37,7 +37,7 @@ app.whenReady().then(async () => {
   await win.loadFile(htmlPath)
   // The mounts are on timers of their own, so this waits for the page to say it is finished rather
   // than for a fixed figure that would have to be raised whenever the render does more work.
-  const deadline = Date.now() + 20000
+  const deadline = Date.now() + 35000
   let done = false
   while (!done && Date.now() < deadline) {
     done = await win.webContents.executeJavaScript('Boolean(window.__MOUNT_DONE)')
@@ -556,6 +556,29 @@ app.whenReady().then(async () => {
         }
       }
     }
+    // AN IMAGE SOURCE'S ESTIMATE HAS TO MOVE WITH THE CODEC. A picture is sized by what it is written as,
+    // so the SUMMARY has to recalculate when FORMAT and PRESET are recombined for a still-image clip and
+    // for an image sequence — the two source kinds this was reported fixed for. Each figure is read as the
+    // text between ESTIMATED SIZE and the dirty marker, and a reading that could not be found is a problem
+    // of its own rather than a comparison of two nulls.
+    const figureOf = (summary) => {
+      const match = /ESTIMATED SIZE (.*?)(?:UNSAVED CHANGES|NO CHANGES|$)/.exec(String(summary ?? ''))
+      return match ? match[1].trim() : null
+    }
+    const movingFigures = (label, readings, pairs) => {
+      const missing = Object.entries(readings).filter(([, summary]) => figureOf(summary) == null).map(([key]) => key)
+      if (missing.length) problems.push(`${label} reported no ESTIMATED SIZE for ${missing.join(', ')}`)
+      for (const [left, right] of pairs) {
+        const a = figureOf(readings[left]); const b = figureOf(readings[right])
+        if (a != null && a === b) problems.push(`${label} estimate did not move between ${left} and ${right}: both read ${JSON.stringify(a)}`)
+      }
+    }
+    if (!result.imageSource) problems.push('the still-image source job reported nothing about its estimate')
+    else movingFigures('a still-image source\u2019s', result.imageSource, [
+      ['mp4h264', 'mp4hevc'], ['movhevc', 'movprores'], ['png', 'jpg'], ['pngStill', 'pngSequence'],
+    ])
+    if (!result.imageSequence) problems.push('the image-sequence source job reported nothing about its estimate')
+    else movingFigures('an image-sequence source\u2019s', result.imageSequence, [['mp4h264', 'mp4hevc'], ['mp4hevc', 'movprores'], ['pngRunLevel0', 'pngRunLevel9']])
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))

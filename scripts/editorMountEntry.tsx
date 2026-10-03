@@ -54,11 +54,13 @@ const bridge = {
   onSourceTiming: () => () => undefined,
   onSequencePreviewReady: () => () => undefined,
   onQueueFinished: () => () => undefined,
-  probeMedia: async () => ({
-    format: 'mp4', duration: 12, size: 0, bitrate: 0,
-    videoStreams: [{ codec: 'h264', resolution: '1920x1080', fps: 25 }],
-    audioStreams: [{ codec: 'aac', channels: 2, sampleRate: 48000 }],
-  }),
+  probeMedia: async (path: string) => (/[.](png|jpe?g|gif|tiff?|bmp|webp|heic|heif|avif)$/i.test(String(path))
+    ? { format: 'png', duration: 0, size: 0, bitrate: 0, videoStreams: [], audioStreams: [] }
+    : {
+      format: 'mp4', duration: 12, size: 0, bitrate: 0,
+      videoStreams: [{ codec: 'h264', resolution: '1920x1080', fps: 25 }],
+      audioStreams: [{ codec: 'aac', channels: 2, sampleRate: 48000 }],
+    }),
   pathExists: async () => true,
   createImageSequencePreview: async () => null,
   framesAt: async () => [],
@@ -122,11 +124,35 @@ const coverTask = {
   preset: { id: 'p', name: 'P', container: 'mp3', videoCodec: 'h264', audioCodec: 'mp3', resolution: '1080p' },
 }
 
+/**
+ * A job whose visual source is a STILL IMAGE rather than a video, in a container that carries a picture.
+ *
+ * This is one of the two source kinds the SUMMARY's estimate was reported to have stopped recalculating
+ * for: a picture is sized by the CODEC it is written as, so the figure has to move when FORMAT and PRESET
+ * are recombined, exactly as a true video's does.
+ */
+const stillSourceTask = {
+  id: 'mount-check-still-source', type: 'transcode', sourcePaths: ['/tmp/still.png'],
+  outputDirectory: '/tmp', outputFilename: 'out.mp4', status: 'pending', progress: 0,
+  preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
+}
+
+/** The other source kind the estimate was reported fixed for: a run of image frames read as a sequence. */
+const sequenceSourceTask = {
+  id: 'mount-check-sequence-source', type: 'transcode', sourcePaths: ['/tmp/frames/frame_0001.png'],
+  outputDirectory: '/tmp', outputFilename: 'out.mp4', status: 'pending', progress: 0,
+  preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
+  sequenceInput: {
+    dir: '/tmp/frames', pattern: 'frame_%04d.png', globPattern: '*.png', startNumber: 1, frameCount: 120,
+    hasGaps: false, missing: [], fps: 25, firstFrame: '/tmp/frames/frame_0001.png',
+  },
+}
+
 const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1086,6 +1112,88 @@ const drive = async () => {
     stampBefore: stampBeforeWheel,
     stampAfter: document.querySelector('.transport-stamp')?.textContent ?? null,
   }
+
+  // AN IMAGE SOURCE'S OWN ESTIMATE. A picture is sized by the CODEC it is written as, so the figure has to
+  // move when FORMAT and PRESET are recombined — exactly as a true video's does. It was reported as one
+  // fixed figure for a still-image clip and for an image sequence, so the three recombinations are read
+  // here: the codec, then the container, then a codec whose size does not come from a delivery bracket.
+  // APPLY first, so the window is CLEAN and the image job is adopted whole rather than merged with the
+  // edits the drives above left on it — otherwise the preset read here is the last job's, not this one's.
+  const applyBeforeImage = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyBeforeImage?.click()
+  await wait(200)
+  arrive(stillSourceTask, 'image-source')
+  await wait(500)
+  clickTab('EXPORT')
+  await wait(150)
+  const summaryNow = () => document.querySelector('.export-summary')?.textContent ?? null
+  const imageSourceSizes: Record<string, string | null> = { mp4h264: summaryNow() }
+  chooseOption(selectIn('PRESET'), 'hevc')
+  await wait(250)
+  imageSourceSizes.mp4hevc = summaryNow()
+  chooseOption(selectIn('FORMAT'), 'mov')
+  await wait(300)
+  imageSourceSizes.movhevc = summaryNow()
+  chooseOption(selectIn('PRESET'), 'prores-hq')
+  await wait(250)
+  imageSourceSizes.movprores = summaryNow()
+  chooseOption(selectIn('FORMAT'), 'png')
+  await wait(300)
+  imageSourceSizes.png = summaryNow()
+  // The image formats themselves, and the run-versus-still choice inside one — the recombination the report
+  // is most likely to be about, since those are the containers an image source is normally written into.
+  clickTab('IMAGE')
+  await wait(150)
+  const stillImageOutput = selectIn('IMAGE OUTPUT')
+  imageSourceSizes.pngStill = summaryNow()
+  if (stillImageOutput) chooseOption(stillImageOutput, 'sequence')
+  await wait(250)
+  imageSourceSizes.pngSequence = summaryNow()
+  clickTab('EXPORT')
+  await wait(150)
+  chooseOption(selectIn('FORMAT'), 'jpg')
+  await wait(300)
+  imageSourceSizes.jpg = summaryNow()
+  result.imageSource = imageSourceSizes
+
+  // AND THE SAME QUESTION FOR AN IMAGE SEQUENCE, the other source kind named. APPLY back to a clean draft
+  // first, so the sequence job is adopted whole.
+  const applyBeforeSequence = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyBeforeSequence?.click()
+  await wait(200)
+  arrive(sequenceSourceTask, 'image-sequence')
+  await wait(500)
+  clickTab('EXPORT')
+  await wait(150)
+  const sequenceSizes: Record<string, string | null> = { mp4h264: summaryNow() }
+  chooseOption(selectIn('PRESET'), 'hevc')
+  await wait(250)
+  sequenceSizes.mp4hevc = summaryNow()
+  chooseOption(selectIn('FORMAT'), 'mov')
+  await wait(300)
+  chooseOption(selectIn('PRESET'), 'prores-hq')
+  await wait(250)
+  sequenceSizes.movprores = summaryNow()
+  // AND THE PICTURE'S OWN SETTING, which the last pass proved moves a STILL's figure: a run of frames asked
+  // for at PNG level 0 against level 9 has to read differently too.
+  clickTab('EXPORT')
+  await wait(150)
+  chooseOption(selectIn('FORMAT'), 'png')
+  await wait(300)
+  clickTab('IMAGE')
+  await wait(150)
+  const sequenceOutput = selectIn('IMAGE OUTPUT')
+  if (sequenceOutput) chooseOption(sequenceOutput, 'sequence')
+  await wait(250)
+  sequenceSizes.pngRunDefault = summaryNow()
+  const sequenceCompression = selectIn('COMPRESSION')
+  if (sequenceCompression) chooseOption(sequenceCompression, '0')
+  await wait(250)
+  sequenceSizes.pngRunLevel0 = summaryNow()
+  if (sequenceCompression) chooseOption(sequenceCompression, '9')
+  await wait(250)
+  sequenceSizes.pngRunLevel9 = summaryNow()
+  result.imageSequence = sequenceSizes
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }
