@@ -21,7 +21,7 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, moveClipMap, nativeRateFor, nothingToTime, outputRangeLabel, rekeyClipMap, resolveFades, secondsFromTimecode, segmentTiming, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, usesClipFraming } from '../src/lib/timelineModel'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceValue, FRAME_CONTAINERS, imageOutputChoiceValue, imageOutputChoicesFor } from '../src/lib/containerSwitch'
@@ -281,6 +281,16 @@ console.log('\n== clips keep what belongs to them when they move ==')
   // Removing the clip a fade sits after leaves nothing to fade into.
   check('a removed clip takes its fade with it', rekeyClipMap({ 'a.mp4#0': 0.5, 'b.mp4#1': 1.5, 'c.mp4#2': 2 }, ['a.mp4', 'b.mp4', 'c.mp4'], ['a.mp4', 'b.mp4']), { 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 })
   check('an empty result is no map at all', rekeyClipMap({ 'a.mp4#0': 1 }, ['a.mp4'], ['b.mp4']), undefined)
+
+  // A MOVE of two copies of ONE file, which an in-order match cannot express: the two share a path, so
+  // neither `rekeyClipMap` nor anything reading the two path lists can tell which one was dragged. The
+  // caller that knows the two places passes them, and each record travels with ITS clip — the five-second
+  // trim that was first is second after the drag, and the four-second one that was second is first.
+  const twoCopies = { 'a.mp4#0': { in: 0, out: 5 }, 'a.mp4#1': { in: 6, out: 10 } }
+  check('a move carries each copy\u2019s own record with it', moveClipMap(twoCopies, ['a.mp4', 'a.mp4'], 1, 0), { 'a.mp4#0': { in: 6, out: 10 }, 'a.mp4#1': { in: 0, out: 5 } })
+  check('and an in-order match alone cannot, which is why the move is passed at all', rekeyClipMap(twoCopies, ['a.mp4', 'a.mp4'], ['a.mp4', 'a.mp4']), twoCopies)
+  check('a move among distinct files carries each record too', moveClipMap({ 'a.mp4#0': 0.5, 'b.mp4#1': 1.5, 'c.mp4#2': 2.5 }, ['a.mp4', 'b.mp4', 'c.mp4'], 2, 0), { 'c.mp4#0': 2.5, 'a.mp4#1': 0.5, 'b.mp4#2': 1.5 })
+  check('a move with a place that is not one leaves the map as it was', moveClipMap({ 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 }, ['a.mp4', 'b.mp4'], 5, 0), { 'a.mp4#0': 0.5, 'b.mp4#1': 1.5 })
 }
 
 console.log('\n== the rate a still image is rendered at ==')

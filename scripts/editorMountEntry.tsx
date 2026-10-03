@@ -148,11 +148,25 @@ const sequenceSourceTask = {
   },
 }
 
+/**
+ * The SAME FILE twice, which is the job shape the clip menu's REMOVE got wrong.
+ *
+ * Two segments of one source, given trims of their own so the two clips can be told apart by their LENGTH:
+ * the first runs five seconds and the second four. Removing the second has to leave the FIRST, and a removal
+ * that takes the first one with that path instead leaves a four-second clip where a five-second one was.
+ */
+const duplicateTask = {
+  id: 'mount-check-duplicate', type: 'stitch', sourcePaths: ['/tmp/clip.mp4', '/tmp/clip.mp4'],
+  outputDirectory: '/tmp', outputFilename: 'out.mp4', status: 'pending', progress: 0,
+  preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
+  trimPoints: { '/tmp/clip.mp4#0': { in: 0, out: 5 }, '/tmp/clip.mp4#1': { in: 6, out: 10 } },
+}
+
 const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1194,6 +1208,32 @@ const drive = async () => {
   await wait(250)
   sequenceSizes.pngRunLevel9 = summaryNow()
   result.imageSequence = sequenceSizes
+
+  // TWO COPIES OF ONE FILE, AND THE CLIP MENU'S REMOVE. Right-clicking the SECOND copy and removing it has
+  // to take THAT clip: the menu's source index was read back with `indexOf`, which answers with the first
+  // occurrence of a path however many there are, so removing any copy removed the first one. The two clips
+  // are told apart by their LENGTH — five seconds against four — so which one survived is a reading.
+  const applyBeforeDuplicate = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyBeforeDuplicate?.click()
+  await wait(200)
+  arrive(duplicateTask, 'duplicate-sources')
+  await wait(500)
+  const duplicateClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const beforeRemoval = duplicateClips().map((clip) => clip.textContent ?? null)
+  duplicateClips()[1]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const removeItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REMOVE SOURCE') as HTMLButtonElement | undefined
+  removeItem?.click()
+  await wait(150)
+  const confirmRemove = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REMOVE') as HTMLButtonElement | undefined
+  confirmRemove?.click()
+  await wait(300)
+  result.duplicate = {
+    beforeCount: beforeRemoval.length,
+    before: beforeRemoval,
+    afterCount: duplicateClips().length,
+    after: duplicateClips().map((clip) => clip.textContent ?? null),
+  }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

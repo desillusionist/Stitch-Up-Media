@@ -184,6 +184,37 @@ export const rekeyClipMap = <T>(
 }
 
 /**
+ * Re-keys a clip map after ONE clip is MOVED from one place to another, so its trims and fades travel with
+ * it even when the job holds the same file twice.
+ *
+ * `rekeyClipMap` matches occurrences in order, which is right for a removal or a reorder of DISTINCT paths —
+ * each file's k-th occurrence is the same clip either way. Two copies of one file share a path, though, and
+ * an in-order match cannot tell which of them moved: it leaves each record on the place it already had, so
+ * a drag that swaps the two reads as a reorder and changes nothing at all. A MOVE is unambiguous where a
+ * list of paths is not, so the caller that knows which clip was dragged passes the two places, and the
+ * records are moved by the same splice.
+ */
+export const moveClipMap = <T>(
+  map: Record<string, T> | undefined,
+  previousPaths: string[],
+  from: number,
+  to: number,
+): Record<string, T> | undefined => {
+  if (!map) return undefined
+  if (from < 0 || from >= previousPaths.length || to < 0 || to >= previousPaths.length) return rekeyClipMap(map, previousPaths, previousPaths)
+  const order = previousPaths.map((_, index) => index)
+  const [moved] = order.splice(from, 1)
+  order.splice(to, 0, moved)
+  const rekeyed: Record<string, T> = {}
+  order.forEach((previousIndex, nextIndex) => {
+    const sourcePath = previousPaths[previousIndex]
+    const value = map[`${sourcePath}#${previousIndex}`] ?? map[sourcePath]
+    if (value !== undefined) rekeyed[`${sourcePath}#${nextIndex}`] = value
+  })
+  return Object.keys(rekeyed).length ? rekeyed : undefined
+}
+
+/**
  * Consulted only when the task itself carries no timing for a source, which is
  * the normal case: `sourceInfo` and `sourceMetadata` are read all over the app
  * but are never actually populated, so durations have to be probed on demand.

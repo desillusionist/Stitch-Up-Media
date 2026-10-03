@@ -14,7 +14,7 @@ import { deriveOutputFilename } from './lib/outputNaming'
 import { mediaKind } from './lib/mediaKind'
 import { removeSourceFromTask, withSourceList } from './lib/sourceRemoval'
 import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
-import { rekeyClipMap } from './lib/timelineModel'
+import { moveClipMap, rekeyClipMap } from './lib/timelineModel'
 
 /**
  * The rate a still image is given when it is exported as video.
@@ -792,18 +792,32 @@ export const App: React.FC = () => {
     setTasks((prev) => prev.map((item) => item.id !== task.id ? item : { ...item, sourcePaths: [files[0], ...item.sourcePaths.filter((path) => path !== sourcePath)], status: 'pending' as const, progress: 0 }))
     if (files.length > 1) handleAddToExisting(task, files.slice(1))
   }
-  const handleReorderSources = (task: QueueTask, sourcePaths: string[]) => {
+  const handleReorderSources = (task: QueueTask, sourcePaths: string[], from?: number, to?: number) => {
     setTasks((prev) => prev.map((item) => item.id === task.id ? {
       ...item,
       sourcePaths,
-      // Keys are index-scoped, so trims and transitions have to follow the clip that
-      // moved rather than staying on whatever now occupies their old index.
-      trimPoints: rekeyClipMap(item.trimPoints, item.sourcePaths, sourcePaths),
-      transitions: rekeyClipMap(item.transitions, item.sourcePaths, sourcePaths),
-      sourceFit: rekeyClipMap(item.sourceFit, item.sourcePaths, sourcePaths),
-      sourceCrop: rekeyClipMap(item.sourceCrop, item.sourcePaths, sourcePaths),
-      sourceSpeed: rekeyClipMap(item.sourceSpeed, item.sourcePaths, sourcePaths),
-      sourceFps: rekeyClipMap(item.sourceFps, item.sourcePaths, sourcePaths),
+      // Keys are index-scoped, so a clip's records have to follow the clip that MOVED rather than staying
+      // on whatever now occupies its old index. When the two copies of one file are involved, the paths
+      // alone cannot say which is which — so the drag hands over the two places it moved between and the
+      // records are spliced the same way. Without that, a swap of two copies of a file kept each clip's
+      // trim on its old place and the drag read as a reorder that changed nothing.
+      ...(from != null && to != null
+        ? {
+            trimPoints: moveClipMap(item.trimPoints, item.sourcePaths, from, to),
+            transitions: moveClipMap(item.transitions, item.sourcePaths, from, to),
+            sourceFit: moveClipMap(item.sourceFit, item.sourcePaths, from, to),
+            sourceCrop: moveClipMap(item.sourceCrop, item.sourcePaths, from, to),
+            sourceSpeed: moveClipMap(item.sourceSpeed, item.sourcePaths, from, to),
+            sourceFps: moveClipMap(item.sourceFps, item.sourcePaths, from, to),
+          }
+        : {
+            trimPoints: rekeyClipMap(item.trimPoints, item.sourcePaths, sourcePaths),
+            transitions: rekeyClipMap(item.transitions, item.sourcePaths, sourcePaths),
+            sourceFit: rekeyClipMap(item.sourceFit, item.sourcePaths, sourcePaths),
+            sourceCrop: rekeyClipMap(item.sourceCrop, item.sourcePaths, sourcePaths),
+            sourceSpeed: rekeyClipMap(item.sourceSpeed, item.sourcePaths, sourcePaths),
+            sourceFps: rekeyClipMap(item.sourceFps, item.sourcePaths, sourcePaths),
+          }),
       status: item.status === 'done' ? 'pending' as const : item.status,
     } : item))
   }

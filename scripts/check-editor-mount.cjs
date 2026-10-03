@@ -579,6 +579,21 @@ app.whenReady().then(async () => {
     ])
     if (!result.imageSequence) problems.push('the image-sequence source job reported nothing about its estimate')
     else movingFigures('an image-sequence source\u2019s', result.imageSequence, [['mp4h264', 'mp4hevc'], ['mp4hevc', 'movprores'], ['pngRunLevel0', 'pngRunLevel9']])
+    // TWO COPIES OF ONE FILE: the clip menu's REMOVE has to take the clip it was opened on, not the first
+    // one with that path — which is what `indexOf` answers however many copies there are. The second copy
+    // was removed, and the first (five seconds against the second's four) is what has to be left behind.
+    const duplicate = result.duplicate
+    if (!duplicate) problems.push('the duplicate-source job reported nothing about its removal')
+    else {
+      if (duplicate.beforeCount !== 2) problems.push(`the duplicate-source job drew ${duplicate.beforeCount} clips rather than two`)
+      else {
+        if (!String(duplicate.before[0]).includes('00:00:05.00')) problems.push(`the first of two copies does not read its own five seconds: ${JSON.stringify(duplicate.before[0])}`)
+        if (!String(duplicate.before[1]).includes('00:00:04.00')) problems.push(`the second of two copies does not read its own four seconds: ${JSON.stringify(duplicate.before[1])}`)
+      }
+      if (duplicate.afterCount !== 1) problems.push(`removing one of two copies left ${duplicate.afterCount} clips rather than one`)
+      const surviving = String((duplicate.after || [])[0] ?? '')
+      if (!surviving.includes('00:00:05.00')) problems.push(`removing the second of two copies left the wrong clip behind: ${JSON.stringify(surviving)}`)
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))

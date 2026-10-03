@@ -154,7 +154,7 @@ const windowDirty = (draft: QueueTask, baseline: QueueTask) => isDirty(draft, ba
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
-  | { kind: 'clip'; x: number; y: number; sourceIndex: number; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean }
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
@@ -2147,13 +2147,18 @@ export const EditJobApp: React.FC = () => {
     // A right-click SELECTS as well as asks: both items in the menu describe this clip, and the
     // inspector goes on describing it until something else is selected.
     setSelected({ laneId, segmentIndex: index })
-    // The clip's own entry in the job, which is what a trim or a fit is keyed by.
-    const clipIndex = mainIndex ?? Math.max(0, draft.sourcePaths.indexOf(segment.sourcePath))
+    // The clip's own entry in the job, which is what a trim or a fit is keyed by. A segment knows its place
+    // by the key it was built with, NOT by looking its path up: the same file can appear twice in a job, and
+    // `indexOf` answers with the first occurrence whatever clip was right-clicked — which is why removing
+    // one of two copies removed the wrong one, and why the two could not be told apart anywhere else either.
+    const clipIndex = mainIndex ?? clipIndexOf(segment)
     setTimelineMenu({
       kind: 'clip',
       x: point.x,
       y: point.y,
-      sourceIndex: Math.max(0, draft.sourcePaths.indexOf(segment.sourcePath)),
+      // The place in `sourcePaths` this clip owns, taken from the lane when the lane IS the source list. An
+      // audio track is not in `sourcePaths` at all, so its clip names no index rather than a wrong one.
+      sourceIndex: mainIndex,
       mainIndex,
       // The lane and the place in it, so a menu opened on a clip can name THAT clip: an audio track is
       // not in `sourcePaths` at all, and an index that misses it names the first video instead.
@@ -4365,9 +4370,9 @@ export const EditJobApp: React.FC = () => {
               // The removal is the window's own edit until it applies, so it can be stepped back or
               // discarded like any other. A job left with nothing at all to encode cannot be held in
               // a draft, so that one stays the queue's to do — and it takes the job with it.
-              const without = removeSourceFromTask(draft, sourcePath, sourceIndex)
+              const without = removeSourceFromTask(draft, sourcePath, sourceIndex ?? undefined)
               if (without) updateDraft(without)
-              else void window.electronAPI?.removeEditJobSource(draft.id, sourcePath, sourceIndex)
+              else if (sourceIndex != null) void window.electronAPI?.removeEditJobSource(draft.id, sourcePath, sourceIndex)
             }}
           >REMOVE</button>
         </div>
