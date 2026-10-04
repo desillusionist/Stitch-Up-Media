@@ -77,18 +77,34 @@ export const clipRankAt = (paths: string[], sourcePath: string, index: number): 
   paths.slice(0, index + 1).filter((candidate) => candidate === sourcePath).length
 
 /**
+ * The numbers a task actually holds, or nothing when they are not the length of the list they describe.
+ *
+ * A SHORT array is worse than no array at all: past its end `clipNumberAt` falls back to the RANK, and a rank
+ * can land on a number a copy already carries — which is how two copies of one file came to read `COPY 2` at
+ * once. So a list that does not line up with the sources is ignored WHOLE, and the ranks stand instead, which
+ * are distinct per file by construction. An empty or absent list is the ordinary "never written down" case.
+ */
+const storedClipNumbers = (task: ClipIdSource): number[] | undefined => {
+  const numbers = task.clipNumbers
+  if (!numbers) return undefined
+  return numbers.length === (task.sourcePaths?.length ?? 0) ? numbers : undefined
+}
+
+/**
  * The numbers a job should carry, writing down the ranks for a job that has none yet.
  *
  * Written down at the same moment the ids are, and for the same reason: a rank is counted from the LIST, so
  * a job that was never reordered shows the right number without storing one — and the first change writes
  * the numbers down so that the clips keep them however far they move.
  */
-export const materializeClipNumbers = (task: ClipIdSource): number[] =>
-  (task.sourcePaths ?? []).map((sourcePath, index) => task.clipNumbers?.[index] ?? clipRankAt(task.sourcePaths ?? [], sourcePath, index))
+export const materializeClipNumbers = (task: ClipIdSource): number[] => {
+  const numbers = storedClipNumbers(task)
+  return (task.sourcePaths ?? []).map((sourcePath, index) => numbers?.[index] ?? clipRankAt(task.sourcePaths ?? [], sourcePath, index))
+}
 
 /** The number one clip is shown by: what it was given, or the rank it holds where it currently sits. */
 export const clipNumberAt = (task: ClipIdSource, index: number): number =>
-  task.clipNumbers?.[index] ?? clipRankAt(task.sourcePaths ?? [], task.sourcePaths?.[index] ?? '', index)
+  storedClipNumbers(task)?.[index] ?? clipRankAt(task.sourcePaths ?? [], task.sourcePaths?.[index] ?? '', index)
 
 /**
  * What a clip is CALLED when its file appears in the job more than once: `COPY 1`, `COPY 2`.

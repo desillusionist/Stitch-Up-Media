@@ -21,7 +21,7 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
@@ -412,6 +412,32 @@ console.log('\n== the numbers a run of added sources takes ==')
   // it reads only the list that exists before the add, so both would take the same figure.
   check('two copies added together run on', addedClipNumbers(task, ['a.mp4', 'a.mp4']), [2, 3])
   check('two different new files each number from one', addedClipNumbers(task, ['c.mp4', 'd.mp4']), [1, 1])
+}
+
+console.log('\n== a number list that does not fit its sources ==')
+{
+  // THE BUG. A clip-number array SHORTER than the source list made its tail fall back to the RANK, and the
+  // rank landed on a number a copy already carried — which is how two copies of one file came to read `COPY 2`
+  // at once. A list that is not the length of the sources is now ignored WHOLE, so the ranks stand instead.
+  const short = { sourcePaths: ['a.mp4', 'a.mp4'], clipNumbers: [2] }
+  check('a short number list is ignored whole', [clipNumberAt(short, 0), clipNumberAt(short, 1)], [1, 2])
+  check('so two copies read different numbers', [copyLabelFor(short, 0), copyLabelFor(short, 1)], ['COPY 1', 'COPY 2'])
+  check('and materializing ignores it too', materializeClipNumbers(short), [1, 2])
+  // A list that DOES fit is trusted, travel and all.
+  const fitted = { sourcePaths: ['a.mp4', 'a.mp4'], clipNumbers: [2, 1] }
+  check('a list that fits is trusted', [clipNumberAt(fitted, 0), clipNumberAt(fitted, 1)], [2, 1])
+}
+
+console.log('\n== where a pasted clip goes ==')
+{
+  // The candidates are the timeline's [+] markers, and the nearest to the skimmer wins — the head at zero,
+  // every cut, the tail at the end.
+  check('a skimmer at the head takes the head', nearestInsertPosition([0, 4, 10], 0), 0)
+  check('and one at the tail takes the tail', nearestInsertPosition([0, 4, 10], 10), 2)
+  check('just past a cut takes that cut', nearestInsertPosition([0, 4, 10], 4.5), 1)
+  check('nearer the start than the first cut takes the head', nearestInsertPosition([0, 4, 10], 1.5), 0)
+  check('a tie goes to the earlier marker', nearestInsertPosition([0, 4], 2), 0)
+  check('an empty timeline takes the only place there is', nearestInsertPosition([], 3), 0)
 }
 
 console.log('\n== the rate a still image is rendered at ==')

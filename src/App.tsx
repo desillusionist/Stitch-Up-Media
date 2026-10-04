@@ -98,9 +98,12 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     trimPoints: patch.trimPoints,
     mutedLanes: patch.mutedLanes,
     // The ids come with the list when the window reordered it, because only they can say which of two
-    // copies of one file moved where. The numbers come with them, so `CLIP n` stays on its clip too.
-    clipIds: patch.clipIds ?? listed.clipIds,
-    clipNumbers: patch.clipNumbers ?? listed.clipNumbers,
+    // copies of one file moved where. The numbers come with them, so `CLIP n` stays on its clip too. A list
+    // that is not the length of the sources is REJECTED rather than stored: a short array is worse than none,
+    // because the tail of it falls back to a position rank and a rank can repeat a number a copy already
+    // carries — which is what made two copies read `COPY 2` at once.
+    clipIds: patch.clipIds && patch.clipIds.length === listed.sourcePaths.length ? patch.clipIds : listed.clipIds,
+    clipNumbers: patch.clipNumbers && patch.clipNumbers.length === listed.sourcePaths.length ? patch.clipNumbers : listed.clipNumbers,
     status: task.status === 'done' ? 'pending' : task.status,
   }
   if (!patch.sourceTiming) return next

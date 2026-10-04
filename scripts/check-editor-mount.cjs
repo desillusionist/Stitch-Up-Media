@@ -81,7 +81,7 @@ app.whenReady().then(async () => {
   await win.loadFile(htmlPath)
   // The mounts are on timers of their own, so this waits for the page to say it is finished rather
   // than for a fixed figure that would have to be raised whenever the render does more work.
-  const deadline = Date.now() + 35000
+  const deadline = Date.now() + 60000
   let done = false
   while (!done && Date.now() < deadline) {
     done = await win.webContents.executeJavaScript('Boolean(window.__MOUNT_DONE)')
@@ -707,6 +707,18 @@ app.whenReady().then(async () => {
     // THE [+] PANEL AND THE DELETE KEY. The [+] has to be reachable over the trim handle that shares its
     // corner; its panel has to offer ADD SOURCE after a rule; ADD SOURCE has to insert at the [+]'s own place;
     // and Delete has to ask before it takes a clip, then take the one that was selected.
+    const copyNumbersOf = (labels) => (labels || []).map((label) => {
+      const match = /COPY (\d+)/.exec(String(label ?? ''))
+      return match ? Number(match[1]) : null
+    })
+    // Every copy label has to be a number, and no two copies may share one — the bug was two copies of one file
+    // both reading `COPY 2`.
+    const checkCopyNumbers = (labels, what) => {
+      const numbers = copyNumbersOf(labels)
+      if (numbers.length < 2) { problems.push(`${what} were not drawn as several copies: ${JSON.stringify(labels)}`); return }
+      if (numbers.some((value) => value == null)) { problems.push(`${what} are not all labelled as copies: ${JSON.stringify(labels)}`); return }
+      if (new Set(numbers).size !== numbers.length) problems.push(`${what} repeat a copy number: ${JSON.stringify(numbers)}`)
+    }
     const commands = result.timelineSourceCommands
     if (!commands) problems.push('the [+] panel / Delete drive reported nothing')
     else {
@@ -714,8 +726,31 @@ app.whenReady().then(async () => {
       if (!commands.cutReachable) problems.push('the [+] on a cut cannot be clicked: the trim handle is over it')
       if (!commands.panelDivider) problems.push('the [+] panel draws no rule before its source command')
       if (commands.clipsAfterAdd !== 3) problems.push(`ADD SOURCE inserted ${(commands.clipsAfterAdd || 0) - 2} clips rather than one`)
-      if (!String(commands.deleteConfirm).includes('REMOVE THIS CLIP')) problems.push(`the Delete key did not ask before removing a clip: ${JSON.stringify(commands.deleteConfirm)}`)
+      checkCopyNumbers(commands.labelsAfterAdd, 'the three copies')
+      // The Delete key asks the SAME question the clip's own REMOVE SOURCE asks — the menu's confirmation —
+      // rather than a second panel of its own.
+      if (!String(commands.deleteConfirm).startsWith('REMOVE ')) problems.push(`the Delete key did not ask the REMOVE SOURCE question: ${JSON.stringify(commands.deleteConfirm)}`)
+      if (!commands.menuHadKeepIt) problems.push(`the Delete key's question is not the menu's own shape`)
       if (commands.clipsAfterDelete !== 2) problems.push(`answering the Delete question left ${commands.clipsAfterDelete} clips rather than two`)
+    }
+    // DUPLICATE, COPY AND PASTE: the sub-question is offered, every route leaves a distinct copy of the file,
+    // and the counts move by one insert each time.
+    const duplicateDrive = result.timelineDuplicate
+    if (!duplicateDrive) problems.push('the DUPLICATE / paste drive reported nothing')
+    else {
+      if (duplicateDrive.dupBefore !== 2) problems.push(`the duplicate drive started with ${duplicateDrive.dupBefore} clips rather than two`)
+      if (duplicateDrive.dupAfterPaste !== 3) problems.push(`paste left ${duplicateDrive.dupAfterPaste} clips rather than three`)
+      if (!duplicateDrive.hasEndOption) problems.push('the DUPLICATE question offers no AT THE END')
+      if (duplicateDrive.dupAfterMenu !== 4) problems.push(`DUPLICATE PLACE AFTER left ${duplicateDrive.dupAfterMenu} clips rather than four`)
+      checkCopyNumbers(duplicateDrive.dupLabels, 'the duplicated copies')
+    }
+    // THE COPY NUMBERS WHEN A SHORTER LIST IS PUSHED BACK: the third copy must not read a figure another copy
+    // already carries, which is the label bug exactly.
+    const numbersDrive = result.copyNumbers
+    if (!numbersDrive) problems.push('the copy-numbers drive reported nothing')
+    else {
+      checkCopyNumbers(numbersDrive.pairLabelsAfterAdd, 'the copies after ADD SOURCE')
+      checkCopyNumbers(numbersDrive.pairLabelsAfterPush, 'the copies after the queue pushed a shorter list back')
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

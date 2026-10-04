@@ -775,3 +775,23 @@ export const segmentAt = (lane: TimelineLane | undefined, seconds: number): Time
   return lane.segments.find((segment) => seconds >= segment.start && seconds < segment.start + segment.duration)
     || (seconds >= lane.duration && lane.segments.length ? lane.segments[lane.segments.length - 1] : undefined)
 }
+
+/**
+ * Where a clip pasted at the skimmer goes: the [+] marker nearest it wins, and that marker IS the place.
+ *
+ * The candidates are the timeline's own boundaries — the head at zero, every cut, and the tail at the end —
+ * and each stands for the place an insert would take: index 0 before the first clip, index k after the k-th,
+ * and the length of the list at the end. So the figure that comes back is both the index of the boundary
+ * nearest the skimmer and the position in `sourcePaths` to insert at, which is the whole of the rule.
+ * A tie goes to the earlier boundary, and an empty timeline takes the only place there is.
+ */
+export const nearestInsertPosition = (boundaries: number[], skimmer: number): number => {
+  if (!boundaries.length) return 0
+  let best = 0
+  let bestDistance = Infinity
+  boundaries.forEach((time, index) => {
+    const distance = Math.abs(time - skimmer)
+    if (distance < bestDistance) { bestDistance = distance; best = index }
+  })
+  return best
+}

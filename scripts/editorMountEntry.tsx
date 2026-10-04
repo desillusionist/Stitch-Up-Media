@@ -176,11 +176,26 @@ const duplicateTask = {
   trimPoints: { [`${CLIP_FIXTURE}#0`]: { in: 0, out: 5 }, [`${CLIP_FIXTURE}#1`]: { in: 6, out: 10 } },
 }
 
+/**
+ * A pair whose copy numbers are NOT one and two, so a list that falls out of step with its sources shows.
+ *
+ * Two copies numbered 2 and 3 (as if a third had been removed), and a third is added in the window — then the
+ * queue pushes this two-source task back, which is the case that used to drop the window's numbers and leave
+ * the third copy to fall back to its rank, where a copy already carried the figure it landed on.
+ */
+const pairTask = {
+  id: 'mount-check-copy-pair', type: 'stitch', sourcePaths: [CLIP_FIXTURE, CLIP_FIXTURE],
+  clipIds: ['pair-0', 'pair-1'], clipNumbers: [2, 3],
+  outputDirectory: '/tmp', outputFilename: 'out.mp4', status: 'pending', progress: 0,
+  preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
+  trimPoints: { 'pair-0': { in: 0, out: 5 }, 'pair-1': { in: 6, out: 10 } },
+}
+
 const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1358,17 +1373,21 @@ const drive = async () => {
   addSourceButton?.click()
   await wait(600)
   const clipsAfterAdd = commandClips().length
-  // The DELETE key: select the inserted copy, ask, and answer.
+  const labelsAfterAdd = commandClips().map((clip) => clip.querySelector('.timeline-clip-name')?.textContent ?? null)
+  // The DELETE key: select the inserted copy, ask, and answer. It must ask the SAME question the clip's own
+  // REMOVE SOURCE asks — the menu's confirmation, not a second panel of its own.
   commandClips()[1]?.click()
   await wait(200)
   window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Delete', key: 'Delete', bubbles: true }))
   await wait(200)
-  const deleteConfirm = document.querySelector('.editor-conflict .panel-kicker')?.textContent ?? null
-  const removeClipButton = [...document.querySelectorAll('.editor-conflict-actions button')].find((button) => button.textContent?.trim() === 'REMOVE CLIP') as HTMLButtonElement | undefined
+  const menuText = [...document.querySelectorAll('.timeline-menu button')].map((button) => button.textContent?.trim() ?? '')
+  const deleteConfirm = [...document.querySelectorAll('.timeline-menu-head')].map((node) => node.textContent ?? '').find((text) => text.startsWith('REMOVE ')) ?? null
+  const menuHadKeepIt = menuText.includes('KEEP IT')
+  const removeClipButton = [...document.querySelectorAll('.timeline-menu-actions button')].find((button) => button.textContent?.trim() === 'REMOVE') as HTMLButtonElement | undefined
   removeClipButton?.click()
   await wait(300)
   const clipsAfterDelete = commandClips().length
-  result.timelineSourceCommands = { clipsBefore, cutReachable, panelDivider, clipsAfterAdd, deleteConfirm, clipsAfterDelete }
+  result.timelineSourceCommands = { clipsBefore, cutReachable, panelDivider, clipsAfterAdd, labelsAfterAdd, deleteConfirm, menuHadKeepIt, clipsAfterDelete }
 
   // TWO COPIES OF ONE FILE, AND THE CLIP MENU'S REMOVE. Right-clicking the SECOND copy and removing it has
   // to take THAT clip: the menu's source index was read back with `indexOf`, which answers with the first
@@ -1395,6 +1414,59 @@ const drive = async () => {
     afterCount: duplicateClips().length,
     after: duplicateClips().map((clip) => clip.textContent ?? null),
   }
+
+  // DUPLICATE, COPY AND PASTE. The menu's DUPLICATE asks its own sub-question (PLACE AFTER / AT THE END); Cmd-C
+  // takes the clip in hand and Cmd-V places it at the [+] nearest the skimmer. Every copy is the SAME file, so
+  // the copy numbers have to stay distinct across all of them — which is where the label bug was seen.
+  const flushEdits = () => {
+    const apply = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+    if (apply && !apply.disabled) apply.click()
+  }
+  flushEdits()
+  await wait(200)
+  arrive(duplicateTask, 'timeline-duplicate')
+  await wait(900)
+  const dupClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const dupBefore = dupClips().length
+  dupClips()[0]?.click()
+  await wait(150)
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', key: 'c', metaKey: true, bubbles: true }))
+  await wait(150)
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v', metaKey: true, bubbles: true }))
+  await wait(300)
+  const dupAfterPaste = dupClips().length
+  dupClips()[1]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const duplicateItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'DUPLICATE...') as HTMLButtonElement | undefined
+  duplicateItem?.click()
+  await wait(150)
+  const menuButtons = [...document.querySelectorAll('.timeline-menu button')].map((button) => button.textContent?.trim() ?? '')
+  const hasEndOption = menuButtons.includes('AT THE END')
+  const placeAfter = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'PLACE AFTER') as HTMLButtonElement | undefined
+  placeAfter?.click()
+  await wait(300)
+  const dupAfterMenu = dupClips().length
+  const dupLabels = dupClips().map((clip) => clip.querySelector('.timeline-clip-name')?.textContent ?? null)
+  result.timelineDuplicate = { dupBefore, dupAfterPaste, dupAfterMenu, hasEndOption, dupLabels }
+
+  // THE COPY NUMBERS WHEN THE QUEUE PUSHES A SHORTER LIST BACK. A third copy is added in the window, then the
+  // two-source task is pushed to it again — the case that dropped the window's numbers and left the third copy
+  // reading a figure it shared with the first.
+  flushEdits()
+  await wait(200)
+  arrive(pairTask, 'copy-numbers')
+  await wait(900)
+  const pairCut = [...document.querySelectorAll('.timeline-clip')][0]?.querySelector('.boundary-add:not(.is-head)') as HTMLElement | undefined
+  pairCut?.click()
+  await wait(200)
+  const pairAdd = [...document.querySelectorAll('.boundary-editor .boundary-source')].find((button) => button.textContent?.trim() === 'ADD SOURCE') as HTMLButtonElement | undefined
+  pairAdd?.click()
+  await wait(600)
+  const pairLabelsAfterAdd = [...document.querySelectorAll('.timeline-clip-name')].map((node) => node.textContent ?? null)
+  arrive(pairTask, 'copy-numbers-pushed')
+  await wait(500)
+  const pairLabelsAfterPush = [...document.querySelectorAll('.timeline-clip-name')].map((node) => node.textContent ?? null)
+  result.copyNumbers = { pairLabelsAfterAdd, pairLabelsAfterPush }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

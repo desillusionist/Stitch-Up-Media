@@ -7,7 +7,7 @@ import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
-import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipIds } from '../lib/clipIds'
+import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds } from '../lib/clipIds'
 import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
@@ -18,7 +18,7 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { pixelDepthLabel, proresDepthLabel } from '../lib/pixelDepth'
@@ -164,8 +164,23 @@ const windowDirty = (draft: QueueTask, baseline: QueueTask) => isDirty(draft, ba
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
-  | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean }
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean; duplicating?: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
+
+/**
+ * A clip the window has copied: its source and the records that describe it, ready to be placed again.
+ *
+ * The records are resolved at COPY time rather than read back at paste time, so what is pasted is the clip
+ * as it was when it was copied — an edit made in between does not follow it into the paste.
+ */
+type CopiedClip = {
+  sourcePath: string
+  trimPoints?: { in: number; out: number }
+  sourceFit?: SourceFit
+  sourceCrop?: SourceCrop
+  sourceSpeed?: ClipSpeed
+  sourceFps?: FrameRate
+}
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
 
@@ -386,8 +401,11 @@ export const EditJobApp: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [tab, setTab] = useState<Tab>('EXPORT')
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
-  /** The main-lane clip a Delete keypress has put up for removal, waiting on the reader's answer. */
-  const [confirmingClip, setConfirmingClip] = useState<{ sourcePath: string; index: number } | null>(null)
+  /** The clip the window has copied, waiting to be pasted at the skimmer's nearest [+]. */
+  const [copiedClip, setCopiedClip] = useState<CopiedClip | null>(null)
+  /** Read by the mount-time key handler, which cannot close over a value rebuilt on every render. */
+  const copiedClipRef = useRef<CopiedClip | null>(null)
+  copiedClipRef.current = copiedClip
   const [incomingConflict, setIncomingConflict] = useState<QueueTask | null>(null)
   // Resolved preview targets, keyed by the source they belong to. The target is not
   // always the stored path: an image sequence plays through a generated clip. They
@@ -419,6 +437,11 @@ export const EditJobApp: React.FC = () => {
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   const mainLaneIdRef = useRef<string | undefined>(undefined)
+  // The mount-time key handler reaches the clip commands through these, so it always runs the LATEST render's
+  // closures rather than the ones in force when it was bound.
+  const openRemoveConfirmRef = useRef<() => boolean>(() => false)
+  const copySelectedClipRef = useRef<() => boolean>(() => false)
+  const pasteCopiedClipRef = useRef<() => boolean>(() => false)
   /** Whether the PROPERTIES inspector is showing. It describes whatever is selected. */
   const [inspectorOpen, setInspectorOpen] = useState(false)
   /** The figure typed into the inspector's CUSTOM FPS field, held while it is open; null is the field shut. */
@@ -685,7 +708,7 @@ export const EditJobApp: React.FC = () => {
             ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, trimPoints: incoming.trimPoints, clipIds: incoming.clipIds, clipNumbers: incoming.clipNumbers }
             : kept),
           ...(mine
-            ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
+            ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, clipIds: currentDraft.clipIds, clipNumbers: currentDraft.clipNumbers, type: currentDraft.type }
             : {}),
         }
     baselineRef.current = incoming
@@ -1504,21 +1527,17 @@ export const EditJobApp: React.FC = () => {
         return
       }
       if (isTyping(event.target)) return
-      // DELETE removes the selected MAIN-LANE clip, which is a job source. It cannot be done in silence: a
-      // clip carries a trim, fades, a fit, a crop, a speed and a rate, so the reader is asked first — the
-      // same shape the DISCARD query has. A selection on an added audio lane is left to its own menu, whose
-      // removal is a track's rather than a source's.
+      // DELETE removes the selected MAIN-LANE clip, after asking. It asks in the SAME question the clip's own
+      // REMOVE SOURCE shows, at the clip's own box — one confirmation for both ways of asking rather than two
+      // that say different things. A selection on an added audio lane is left to its own menu.
       if (code === 'Delete' || code === 'Backspace') {
-        const sel = selectedRef.current
-        const task = draftRef.current
-        if (sel && task && sel.laneId === mainLaneIdRef.current) {
-          const index = materializeClipIds(task).indexOf(sel.clipKey)
-          if (index >= 0 && index < task.sourcePaths.length) {
-            event.preventDefault()
-            setConfirmingClip({ sourcePath: task.sourcePaths[index], index })
-            return
-          }
-        }
+        if (openRemoveConfirmRef.current()) { event.preventDefault(); return }
+      }
+      // COPY and PASTE the clip in hand. C takes it, records and all; V places it at the [+] nearest the
+      // skimmer, so the paste lands where the playhead is pointing rather than always at one end.
+      if ((event.metaKey || event.ctrlKey) && (code === 'KeyC' || code === 'KeyV')) {
+        const handled = code === 'KeyC' ? copySelectedClipRef.current() : pasteCopiedClipRef.current()
+        if (handled) { event.preventDefault(); return }
       }
       if (code === 'Space' || event.key === ' ') {
         event.preventDefault()
@@ -2063,19 +2082,16 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
-   * Takes the clip the Delete key put up for removal, once the reader has said so.
+   * Takes ONE clip out of the job, which is what both the menu's REMOVE SOURCE and the Delete key answer to.
    *
-   * The same removal the clip's own menu runs: the job is rebuilt without that ONE place, so the surviving
-   * clips keep their records. A job left with nothing at all to encode cannot be held in a draft, so that
-   * one is the queue's to do — and it takes the job with it.
+   * The job is rebuilt without that place, so the surviving clips keep their records. A job left with nothing
+   * at all to encode cannot be held in a draft, so that one is the queue's to do — and it takes the job with it.
    */
-  const performClipRemoval = (pending: { sourcePath: string; index: number }) => {
-    setConfirmingClip(null)
-    const task = draftRef.current
-    if (!task) return
-    const without = removeSourceFromTask(task, pending.sourcePath, pending.index)
+  const removeClipAt = (sourcePath: string, sourceIndex: number | null) => {
+    const task = draftRef.current ?? latest()
+    const without = removeSourceFromTask(task, sourcePath, sourceIndex ?? undefined)
     if (without) updateDraft(without)
-    else void window.electronAPI?.removeEditJobSource(task.id, pending.sourcePath, pending.index)
+    else if (sourceIndex != null) void window.electronAPI?.removeEditJobSource(task.id, sourcePath, sourceIndex)
   }
 
   /**
@@ -2101,6 +2117,125 @@ export const EditJobApp: React.FC = () => {
       clipNumbers: [...numbers.slice(0, at), ...addedNumbers, ...numbers.slice(at)],
     })
   }
+
+  /**
+   * The clip at a place, as the thing that would be placed again: its source and its own resolved records.
+   *
+   * Resolved HERE, at the moment of copying, so an edit made after the copy does not follow it into the paste.
+   */
+  const capturedClipAt = (task: QueueTask, index: number): CopiedClip => {
+    const sourcePath = task.sourcePaths[index]
+    const key = clipKey(task, sourcePath, index)
+    return {
+      sourcePath,
+      trimPoints: task.trimPoints?.[key],
+      sourceFit: task.sourceFit?.[key],
+      sourceCrop: task.sourceCrop?.[key],
+      sourceSpeed: task.sourceSpeed?.[key],
+      sourceFps: task.sourceFps?.[key],
+    }
+  }
+
+  /**
+   * Places a copy of a clip at a position in the join, with its records filed under the copy's OWN id.
+   *
+   * The source, the opaque id and the next copy number for its file go in at the same place, so the clips
+   * already in the job keep their records exactly where they were; the records the copy carries are written
+   * under the new id, which is what makes the duplicate a duplicate rather than a bare second import.
+   */
+  const insertClipCopy = (clip: CopiedClip, position: number) => {
+    const current = latest()
+    const at = Math.max(0, Math.min(position, current.sourcePaths.length))
+    const ids = materializeClipIds(current)
+    const numbers = materializeClipNumbers(current)
+    const newId = newClipId()
+    const number = addedClipNumbers(current, [clip.sourcePath])[0]
+    const withCopy = <T,>(value: T | undefined, map?: Record<string, T>): Record<string, T> | undefined =>
+      value !== undefined ? { ...(map ?? {}), [newId]: value } : map
+    updateDraft({
+      sourcePaths: [...current.sourcePaths.slice(0, at), clip.sourcePath, ...current.sourcePaths.slice(at)],
+      clipIds: [...ids.slice(0, at), newId, ...ids.slice(at)],
+      clipNumbers: [...numbers.slice(0, at), number, ...numbers.slice(at)],
+      trimPoints: withCopy(clip.trimPoints, current.trimPoints),
+      sourceFit: withCopy(clip.sourceFit, current.sourceFit),
+      sourceCrop: withCopy(clip.sourceCrop, current.sourceCrop),
+      sourceSpeed: withCopy(clip.sourceSpeed, current.sourceSpeed),
+      sourceFps: withCopy(clip.sourceFps, current.sourceFps),
+    })
+  }
+
+  /** Duplicates a clip to a place: right after itself, or at the end of the join. */
+  const duplicateClipTo = (index: number, position: 'after' | 'end') => {
+    const current = latest()
+    if (index < 0 || index >= current.sourcePaths.length) return
+    insertClipCopy(capturedClipAt(current, index), position === 'after' ? index + 1 : current.sourcePaths.length)
+  }
+
+  /**
+   * Opens the clip's REMOVE question for the SELECTED clip, which is what the Delete key asks.
+   *
+   * The same question the clip's own right-click menu shows, at the clip's own box — one confirmation for
+   * both ways of asking, rather than two that say different things. It answers whether it got that far, so a
+   * Delete with nothing selected falls through to whatever else the key does.
+   */
+  const openRemoveConfirm = (): boolean => {
+    const sel = selectedRef.current
+    const task = draftRef.current
+    if (!sel || !task || sel.laneId !== mainLaneIdRef.current) return false
+    const index = materializeClipIds(task).indexOf(sel.clipKey)
+    if (index < 0 || index >= task.sourcePaths.length) return false
+    const row = [...document.querySelectorAll<HTMLElement>('.timeline-clip')].find((node) => node.dataset.clipKey === sel.clipKey)
+    const rect = row?.getBoundingClientRect()
+    setTimelineMenu({
+      kind: 'clip',
+      x: rect ? Math.max(8, Math.min(window.innerWidth - 220, rect.left)) : 40,
+      y: rect ? Math.min(window.innerHeight - 170, rect.bottom + 6) : 120,
+      sourcePath: task.sourcePaths[index],
+      sourceIndex: index,
+      mainIndex: index,
+      laneId: sel.laneId,
+      segmentIndex: index,
+      label: sourceName(task.sourcePaths[index]),
+      fitKey: sel.clipKey,
+      visual: true,
+      fitReason: canApplyClipFit(task.preset) ? undefined : 'THIS JOB ENCODES NO PICTURE, SO THERE IS NOTHING TO FIT.',
+      confirming: true,
+    })
+    return true
+  }
+
+  /** Takes the selected main-lane clip into the window's clipboard, records and all. */
+  const copySelectedClip = (): boolean => {
+    const sel = selectedRef.current
+    const task = draftRef.current
+    if (!sel || !task || sel.laneId !== mainLaneIdRef.current) return false
+    const index = materializeClipIds(task).indexOf(sel.clipKey)
+    if (index < 0 || index >= task.sourcePaths.length) return false
+    setCopiedClip(capturedClipAt(task, index))
+    return true
+  }
+
+  /**
+   * Places the copied clip at the [+] nearest the skimmer, which is the one the paste goes to.
+   *
+   * The boundaries are the timeline's own [+] markers — the head at zero, every cut, the tail at the end —
+   * and the nearest to the playhead wins, so the pasted clip lands where the skimmer is pointing rather than
+   * always at one end.
+   */
+  const pasteCopiedClip = (): boolean => {
+    const clip = copiedClipRef.current
+    if (!clip) return false
+    const lane = model.lanes[0]
+    const boundaries = lane ? [0, ...lane.segments.map((segment) => segment.start + segment.duration)] : [0]
+    insertClipCopy(clip, nearestInsertPosition(boundaries, playback.position))
+    return true
+  }
+
+  // The mount-time key handler calls these through refs, so it reaches the LATEST render's closures rather
+  // than the ones the window had when the handler was bound.
+  openRemoveConfirmRef.current = openRemoveConfirm
+  copySelectedClipRef.current = copySelectedClip
+  pasteCopiedClipRef.current = pasteCopiedClip
 
   /**
    * Writes one clip's trim window, dropping the record entirely when the window keeps the whole source.
@@ -3364,19 +3499,6 @@ export const EditJobApp: React.FC = () => {
       </div>
     </div>}
 
-    {/* The Delete key's own question. A clip is not one thing thrown away: it carries a trim, fades, a fit, a
-        crop, a speed and a rate, all filed under it, so removing it takes all of them and the reader is asked. */}
-    {confirmingClip && <div className="editor-conflict" role="alert">
-      <div>
-        <span className="panel-kicker">REMOVE THIS CLIP?</span>
-        <p>{sourceName(confirmingClip.sourcePath)} leaves the job, and its trim, fades, fit, crop, speed and rate go with it.</p>
-      </div>
-      <div className="editor-conflict-actions">
-        <button onClick={() => setConfirmingClip(null)}>KEEP</button>
-        <button className="is-danger" onClick={() => performClipRemoval(confirmingClip)}>REMOVE CLIP</button>
-      </div>
-    </div>}
-
     <div className="editor-body">
       <main className="editor-main">
         <section className="editor-preview">
@@ -3787,6 +3909,7 @@ export const EditJobApp: React.FC = () => {
                         className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${selected && selected.laneId === lane.id && selected.clipKey === segment.key ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index ? ' is-dragging' : ''}`}
                         style={{ width: `${clipWidth}px` }}
                         title={clipTitle(segment)}
+                        data-clip-key={segment.key}
                         draggable={reorderable}
                         onClick={() => selectClip(lane.id, segment.key)}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
@@ -4610,12 +4733,7 @@ export const EditJobApp: React.FC = () => {
             onClick={() => {
               const { sourcePath, sourceIndex } = timelineMenu
               setTimelineMenu(null)
-              // The removal is the window's own edit until it applies, so it can be stepped back or
-              // discarded like any other. A job left with nothing at all to encode cannot be held in
-              // a draft, so that one stays the queue's to do — and it takes the job with it.
-              const without = removeSourceFromTask(draft, sourcePath, sourceIndex ?? undefined)
-              if (without) updateDraft(without)
-              else if (sourceIndex != null) void window.electronAPI?.removeEditJobSource(draft.id, sourcePath, sourceIndex)
+              removeClipAt(sourcePath, sourceIndex)
             }}
           >REMOVE</button>
         </div>
@@ -4645,6 +4763,15 @@ export const EditJobApp: React.FC = () => {
             >FIT TO HEIGHT</button>
           </>
         })()}
+        <span className="timeline-menu-divider" aria-hidden="true" />
+        {timelineMenu.duplicating ? <>
+          {/* The copy's own two places, asked as a sub-question of DUPLICATE rather than as two top-level
+              commands: right after the clip, or at the end of the join. */}
+          <span className="timeline-menu-head">DUPLICATE {sourceName(timelineMenu.sourcePath)}</span>
+          <button role="menuitem" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); if (index != null) duplicateClipTo(index, 'after') }}>PLACE AFTER</button>
+          <button role="menuitem" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); if (index != null) duplicateClipTo(index, 'end') }}>AT THE END</button>
+          <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, duplicating: false })}>CANCEL</button>
+        </> : <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, duplicating: true })}>DUPLICATE...</button>}
         <span className="timeline-menu-divider" aria-hidden="true" />
         <button role="menuitem" className="is-danger" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: true })}>REMOVE SOURCE</button>
       </>) : <>
