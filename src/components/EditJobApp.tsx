@@ -140,6 +140,7 @@ const sourceListMoved = (draft: QueueTask, baseline: QueueTask) =>
   // And the ids, because a swap of two copies of one file leaves the PATH list identical and only the ids
   // show that the list moved.
   || JSON.stringify(draft.clipIds ?? []) !== JSON.stringify(baseline.clipIds ?? [])
+  || JSON.stringify(draft.clipNumbers ?? []) !== JSON.stringify(baseline.clipNumbers ?? [])
 
 /**
  * Whether the window has unsaved edits: the slice the queue is compared on, plus the source list.
@@ -664,7 +665,7 @@ export const EditJobApp: React.FC = () => {
       : {
           ...incoming,
           ...(clipsMoved && !mine
-            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, clipIds: incoming.clipIds }
+            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, clipIds: incoming.clipIds, clipNumbers: incoming.clipNumbers }
             : kept),
           ...(mine
             ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
@@ -714,7 +715,7 @@ export const EditJobApp: React.FC = () => {
   const timelineSignature = draft ? JSON.stringify([
     draft.type, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
     draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo,
-    draft.preset.fps, draft.preset.fpsRate, draft.stillImageDuration, draft.transitions, draft.sourceSpeed, draft.sourceFps, draft.clipIds,
+    draft.preset.fps, draft.preset.fpsRate, draft.stillImageDuration, draft.transitions, draft.sourceSpeed, draft.sourceFps, draft.clipIds, draft.clipNumbers,
   ]) : ''
 
   // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source without intrinsic
@@ -2442,7 +2443,7 @@ export const EditJobApp: React.FC = () => {
       // Only when the window changed it: an untouched list is the queue's, and sending the window's
       // snapshot of it back would overwrite a reorder made in the queue while this window was open.
       ...(sourceListMoved(latest(), baselineRef.current ?? latest())
-        ? { sourcePaths: latest().sourcePaths, additionalAudioTracks: latest().additionalAudioTracks, clipIds: latest().clipIds }
+        ? { sourcePaths: latest().sourcePaths, additionalAudioTracks: latest().additionalAudioTracks, clipIds: latest().clipIds, clipNumbers: latest().clipNumbers }
         : {}),
     }
   }

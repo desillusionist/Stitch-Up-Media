@@ -447,6 +447,16 @@ export interface QueueTask {
    * or added to, because those shift places and an implicit id would shift with them. See `clipIds`.
    */
   clipIds?: string[]
+  /**
+   * The number a clip is SHOWN by when its file appears in the job more than once — `CLIP 1`, `CLIP 2` — one
+   * per occurrence, beside `clipIds` and travelling with it.
+   *
+   * An ORDINAL rather than an identity: it says which copy of a file a clip is, so a reader can tell two
+   * segments of one source apart. It is stored rather than counted from the list because counting is a
+   * POSITION, and a position renumbers the moment the list is reordered — the copy that read `CLIP 1` would
+   * stay behind and land on whatever slid into its place. Written down, it goes where the clip goes.
+   */
+  clipNumbers?: number[]
   outputDirectory: string
   outputFilename: string
   preset: EncodingPreset
@@ -553,12 +563,9 @@ export interface EditJobPatch {
   sourcePaths?: string[]
   /** Carried with the sources for the same reason, and absent on the same terms. */
   additionalAudioTracks?: NonNullable<QueueTask['additionalAudioTracks']>
-  /**
-   * The identity of each source, in the same order, sent whenever the list is reordered — so the queue
-   * knows which clip moved rather than re-keying every record onto the places the paths now fall in, which
-   * cannot tell two copies of one file apart. Carried whole, like the trims.
-   */
   clipIds?: string[]
+  /** The stable numbers the clips are shown by, sent with the list for the same reason the ids are. */
+  clipNumbers?: number[]
 }
 
 export interface PresetRule {

@@ -14,7 +14,7 @@ import { deriveOutputFilename } from './lib/outputNaming'
 import { mediaKind } from './lib/mediaKind'
 import { removeSourceFromTask, clipRecordsFor, withSourceList } from './lib/sourceRemoval'
 import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
-import { clipKey, legacyClipId, matchClipIdsToPaths, materializeClipIds, moveClipIds, newClipId } from './lib/clipIds'
+import { clipKey, legacyClipId, matchClipIdsToPaths, matchClipNumbersToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, nextClipNumber } from './lib/clipIds'
 
 /**
  * The rate a still image is given when it is exported as video.
@@ -95,8 +95,9 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     sourceFps: patch.sourceFps,
     mutedLanes: patch.mutedLanes,
     // The ids come with the list when the window reordered it, because only they can say which of two
-    // copies of one file moved where.
+    // copies of one file moved where. The numbers come with them, so `CLIP n` stays on its clip too.
     clipIds: patch.clipIds ?? listed.clipIds,
+    clipNumbers: patch.clipNumbers ?? listed.clipNumbers,
     status: task.status === 'done' ? 'pending' : task.status,
   }
   if (!patch.sourceTiming) return next
@@ -118,7 +119,7 @@ const editJobSignature = (task: QueueTask) => JSON.stringify([
   task.outputFilename, task.outputFilenameManuallySet, task.sourceBaseName, task.outputDirectory,
   task.trimPoints, task.sourceMetadata, task.sourceInfo, task.sequenceInput, task.sequenceInputs,
   task.imageSequencePreviews, task.quickLookSourceIndex, task.stillImageDuration, task.transitions,
-  task.sourceFit, task.sourceCrop, task.sourceSpeed, task.sourceFps, task.clipIds, task.mutedLanes,
+  task.sourceFit, task.sourceCrop, task.sourceSpeed, task.sourceFps, task.clipIds, task.clipNumbers, task.mutedLanes,
 ])
 
 export const App: React.FC = () => {
@@ -679,13 +680,15 @@ export const App: React.FC = () => {
       if (type === 'transcode' && chosen.some((item) => item.type !== 'transcode')) {
         const split = chosen.flatMap((item) => {
           const ids = materializeClipIds(item)
+          const itemNumbers = materializeClipNumbers(item)
           const trackPaths = (item.additionalAudioTracks || []).map((track) => track.path)
           return [...item.sourcePaths, ...trackPaths].map((sourcePath, index) => {
             // A source keeps its own id, and a promoted track keeps the legacy key its records already have.
             const key = index < item.sourcePaths.length ? ids[index] : legacyClipId(sourcePath, 0)
+            const number = index < item.sourcePaths.length ? itemNumbers[index] : 1
             return {
               ...item, id: `${item.id}-${index}-${Date.now()}`, type: 'transcode' as const,
-              sourcePaths: [sourcePath], clipIds: [key], additionalAudioTracks: undefined,
+              sourcePaths: [sourcePath], clipIds: [key], clipNumbers: [number], additionalAudioTracks: undefined,
               ...clipRecordsFor(item, key, sourcePath),
               outputFilename: `${sourcePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'output'}_${item.preset.suffix || item.preset.id}.${item.preset.container}`,
               status: 'pending' as const, progress: 0,
@@ -698,7 +701,7 @@ export const App: React.FC = () => {
         const item = chosen[0]
         const visual = item.sourcePaths.filter((source) => mediaKind(source) !== 'audio')
         const audio = (item.additionalAudioTracks || []).map((track) => track.path)
-        const makeJob = (paths: string[], suffix: string, index: number) => ({ ...item, id: `${item.id}-stitch-${index}-${Date.now()}`, type: 'stitch' as const, sourcePaths: paths, clipIds: matchClipIdsToPaths(item.sourcePaths, materializeClipIds(item), paths), additionalAudioTracks: undefined, trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, outputFilename: `${item.sourceBaseName || suffix}_${suffix}.${item.preset.container}`, status: 'pending' as const, progress: 0 })
+        const makeJob = (paths: string[], suffix: string, index: number) => ({ ...item, id: `${item.id}-stitch-${index}-${Date.now()}`, type: 'stitch' as const, sourcePaths: paths, clipIds: matchClipIdsToPaths(item.sourcePaths, materializeClipIds(item), paths), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, materializeClipNumbers(item), paths), additionalAudioTracks: undefined, trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, outputFilename: `${item.sourceBaseName || suffix}_${suffix}.${item.preset.container}`, status: 'pending' as const, progress: 0 })
         const split = [visual.length > 0 ? makeJob(visual, 'video', 0) : null, audio.length > 0 ? makeJob(audio, 'audio', 1) : null].filter(Boolean) as QueueTask[]
         setSelectedTaskIds(split.map((job) => job.id)); setSelectedTaskId(split[0]?.id); return [...prev.filter((candidate) => candidate.id !== item.id), ...split]
       }
@@ -721,6 +724,7 @@ export const App: React.FC = () => {
           // The ids are matched across the jobs being merged, so a clip keeps its own records through the
           // merge — though the fades and fits below are dropped because a reshuffled list is a new set of CUTS.
           clipIds: matchClipIdsToPaths(chosen.flatMap((item) => item.sourcePaths), chosen.flatMap((item) => materializeClipIds(item)), mergedPaths),
+          clipNumbers: matchClipNumbersToPaths(chosen.flatMap((item) => item.sourcePaths), chosen.flatMap((item) => materializeClipNumbers(item)), mergedPaths),
           additionalAudioTracks: wantsTracks
             ? [...allTracks, ...audioSources.map((source, index) => ({ id: `${base.id}-audio-source-${index}-${Date.now()}`, path: source, language: 'und' }))]
             : undefined,
@@ -737,20 +741,21 @@ export const App: React.FC = () => {
       return prev.map((item) => {
         if (item.id !== task.id) return item
         const itemIds = materializeClipIds(item)
+        const itemNumbers = materializeClipNumbers(item)
         if (type === 'multitrack' || type === 'combo') {
           const visualSources = item.sourcePaths.filter((source) => mediaKind(source) !== 'audio')
           const audioSources = item.sourcePaths.filter((source) => mediaKind(source) === 'audio')
           const existingTracks = item.additionalAudioTracks || []
           const addedTracks = audioSources.map((source, index) => ({ id: `${item.id}-audio-source-${index}-${Date.now()}`, path: source, language: 'und' }))
-          return { ...item, type, comboMode: type === 'combo' ? 'multitrack' as const : undefined, sourcePaths: visualSources, clipIds: matchClipIdsToPaths(item.sourcePaths, itemIds, visualSources), additionalAudioTracks: [...existingTracks, ...addedTracks], trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, status: 'pending' as const, progress: 0 }
+          return { ...item, type, comboMode: type === 'combo' ? 'multitrack' as const : undefined, sourcePaths: visualSources, clipIds: matchClipIdsToPaths(item.sourcePaths, itemIds, visualSources), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, itemNumbers, visualSources), additionalAudioTracks: [...existingTracks, ...addedTracks], trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, status: 'pending' as const, progress: 0 }
         }
         if (type === 'stitch') {
           const fallbackAudio = item.sourcePaths.length ? item.sourcePaths : (item.additionalAudioTracks || []).map((track) => track.path)
-          return { ...item, type, sourcePaths: fallbackAudio, clipIds: item.sourcePaths.length ? itemIds : fallbackAudio.map((path) => legacyClipId(path, 0)), additionalAudioTracks: undefined, trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, status: 'pending' as const, progress: 0 }
+          return { ...item, type, sourcePaths: fallbackAudio, clipIds: item.sourcePaths.length ? itemIds : fallbackAudio.map((path) => legacyClipId(path, 0)), clipNumbers: item.sourcePaths.length ? itemNumbers : fallbackAudio.map(() => 1), additionalAudioTracks: undefined, trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, status: 'pending' as const, progress: 0 }
         }
         const fallbackSource = item.sourcePaths[0] || item.additionalAudioTracks?.[0]?.path
         const nextPaths = fallbackSource ? [fallbackSource] : item.sourcePaths
-        return { ...item, type: 'transcode', comboMode: undefined, sourcePaths: nextPaths, clipIds: matchClipIdsToPaths(item.sourcePaths, itemIds, nextPaths), additionalAudioTracks: undefined, trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, status: 'pending' as const, progress: 0 }
+        return { ...item, type: 'transcode', comboMode: undefined, sourcePaths: nextPaths, clipIds: matchClipIdsToPaths(item.sourcePaths, itemIds, nextPaths), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, itemNumbers, nextPaths), additionalAudioTracks: undefined, trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, status: 'pending' as const, progress: 0 }
       })
     })
   }
@@ -807,7 +812,7 @@ export const App: React.FC = () => {
       const sourceMetadata = incomingStillFps ? { ...(item.sourceMetadata || {}), ...incomingStillFps } : item.sourceMetadata
       const resetCompleted = item.status === 'done' || item.skipped
       const nextPaths = videoSources.length ? videoSources : allAudioSources
-      return { ...item, type: stableNextType, comboMode: stableNextType === 'combo' ? (item.comboMode || 'multitrack') : undefined, sourcePaths: nextPaths, clipIds: matchClipIdsToPaths(item.sourcePaths, materializeClipIds(item), nextPaths), additionalAudioTracks: videoSources.length && tracks.length ? tracks : undefined, imageSequencePreviews: incomingSequencePreview && sequenceKey && incomingSequenceInput ? { ...(item.imageSequencePreviews || {}), [sequencePreviewKey(sequenceKey, incomingSequenceInput.fps, incomingSequenceInput.frameCount)]: incomingSequencePreview } : item.imageSequencePreviews, sequenceInput: item.sequenceInput || incomingSequenceInput, sequenceInputs: incomingSequenceInput && sequenceKey ? { ...(item.sequenceInputs || {}), [sequenceKey]: incomingSequenceInput } : item.sequenceInputs, sourceMetadata, status: resetCompleted ? 'pending' : item.status, skipped: resetCompleted ? false : item.skipped, progress: 0 }
+      return { ...item, type: stableNextType, comboMode: stableNextType === 'combo' ? (item.comboMode || 'multitrack') : undefined, sourcePaths: nextPaths, clipIds: matchClipIdsToPaths(item.sourcePaths, materializeClipIds(item), nextPaths), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, materializeClipNumbers(item), nextPaths), additionalAudioTracks: videoSources.length && tracks.length ? tracks : undefined, imageSequencePreviews: incomingSequencePreview && sequenceKey && incomingSequenceInput ? { ...(item.imageSequencePreviews || {}), [sequencePreviewKey(sequenceKey, incomingSequenceInput.fps, incomingSequenceInput.frameCount)]: incomingSequencePreview } : item.imageSequencePreviews, sequenceInput: item.sequenceInput || incomingSequenceInput, sequenceInputs: incomingSequenceInput && sequenceKey ? { ...(item.sequenceInputs || {}), [sequenceKey]: incomingSequenceInput } : item.sequenceInputs, sourceMetadata, status: resetCompleted ? 'pending' : item.status, skipped: resetCompleted ? false : item.skipped, progress: 0 }
     }))
   }
   const handleAddSource = async (task: QueueTask) => {
@@ -826,9 +831,11 @@ export const App: React.FC = () => {
       if (at < 0 || at >= item.sourcePaths.length) return item
       const sourcePaths = [...item.sourcePaths]
       const clipIds = materializeClipIds(item)
+      const clipNumbers = materializeClipNumbers(item)
       sourcePaths[at] = files[0]
       clipIds[at] = newClipId()
-      return { ...item, sourcePaths, clipIds, status: 'pending' as const, progress: 0 }
+      clipNumbers[at] = nextClipNumber(item, files[0])
+      return { ...item, sourcePaths, clipIds, clipNumbers, status: 'pending' as const, progress: 0 }
     }))
     if (files.length > 1) handleAddToExisting(task, files.slice(1))
   }
@@ -840,7 +847,9 @@ export const App: React.FC = () => {
       // ids, and the ids went where the clips went. A legacy job's ids are written down first, or they would
       // shift with the places they were standing in for.
       const clipIds = from != null && to != null ? moveClipIds(materializeClipIds(item), from, to) : item.clipIds
-      return { ...item, sourcePaths, clipIds, status: item.status === 'done' ? 'pending' as const : item.status }
+      // The number travels the same way, so `CLIP 1` stays on the clip it named.
+      const clipNumbers = from != null && to != null ? moveAlong(materializeClipNumbers(item), from, to) : item.clipNumbers
+      return { ...item, sourcePaths, clipIds, clipNumbers, status: item.status === 'done' ? 'pending' as const : item.status }
     }))
   }
   const handleReorderTracks = (task: QueueTask, tracks: NonNullable<QueueTask['additionalAudioTracks']>) => {

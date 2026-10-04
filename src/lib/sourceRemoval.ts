@@ -1,6 +1,6 @@
 import { QueueTask } from '../types'
 import { mediaKind } from './mediaKind'
-import { legacyClipId, matchClipIdsToPaths, materializeClipIds } from './clipIds'
+import { legacyClipId, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers } from './clipIds'
 
 /** The tracks a job carries, in the form the editor hands them over. */
 type SourceTracks = NonNullable<QueueTask['additionalAudioTracks']>
@@ -67,11 +67,13 @@ export const clipRecordsFor = (item: QueueTask, key: string, path: string): Pick
  */
 export const removeSourceFromTask = (item: QueueTask, sourcePath: string, sourceIndex?: number): QueueTask | null => {
   const ids = materializeClipIds(item)
+  const numbers = materializeClipNumbers(item)
   const remainingEntries = item.sourcePaths
     .map((path, index) => ({ path, index }))
     .filter(({ path, index }) => sourceIndex == null ? path !== sourcePath : index !== sourceIndex)
   let sourcePaths = remainingEntries.map(({ path }) => path)
   let clipIds = remainingEntries.map(({ index }) => ids[index])
+  let clipNumbers = remainingEntries.map(({ index }) => numbers[index])
   let additionalAudioTracks = (item.additionalAudioTracks || []).filter((track) => track.path !== sourcePath)
   const sequenceStillPresent = sourcePaths.includes(sourcePath)
   const removedSequence = item.sequenceInput?.firstFrame === sourcePath && !sequenceStillPresent
@@ -86,6 +88,7 @@ export const removeSourceFromTask = (item: QueueTask, sourcePath: string, source
     const promoted = additionalAudioTracks.map((track) => track.path)
     sourcePaths = [...sourcePaths, ...promoted]
     clipIds = [...clipIds, ...promoted.map((path) => legacyClipId(path, 0))]
+    clipNumbers = [...clipNumbers, ...promoted.map(() => 1)]
     additionalAudioTracks = []
   }
   if (!sourcePaths.length) return null
@@ -106,6 +109,7 @@ export const removeSourceFromTask = (item: QueueTask, sourcePath: string, source
     ...item,
     sourcePaths,
     clipIds,
+    clipNumbers,
     additionalAudioTracks: additionalAudioTracks.length ? additionalAudioTracks : undefined,
     trimPoints: prune(item.trimPoints),
     transitions: prune(item.transitions),
@@ -151,7 +155,14 @@ export const withSourceList = (item: QueueTask, sourcePaths: string[], tracks: S
   const keeping = clipIds && clipIds.length === sourcePaths.length
     ? clipIds
     : matchClipIdsToPaths(next.sourcePaths, materializeClipIds(next), sourcePaths)
+  // The numbers move with the ids they belong to, so a clip's `CLIP n` is the one it was given.
+  const fromIds = materializeClipIds(next)
+  const fromNumbers = materializeClipNumbers(next)
+  const keepingNumbers = keeping.map((id, index) => {
+    const at = fromIds.indexOf(id)
+    return at >= 0 ? fromNumbers[at] : index + 1
+  })
   const sameOrder = JSON.stringify(next.sourcePaths) === JSON.stringify(sourcePaths)
-  const ordered = sameOrder ? next : { ...next, sourcePaths, clipIds: keeping }
+  const ordered = sameOrder ? next : { ...next, sourcePaths, clipIds: keeping, clipNumbers: keepingNumbers }
   return { ...ordered, additionalAudioTracks: tracks.length ? tracks : undefined, type: inferredMode(sourcePaths, tracks) }
 }

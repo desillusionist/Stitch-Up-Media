@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { FileVideo, FileAudio, FileImage, Film, Layers, CheckCircle2, AlertCircle, Clock, Loader2, Folder, ExternalLink } from 'lucide-react'
 import { QueueTask } from '../types'
 import { sourceFps, stillSecondsFor } from '../lib/timelineModel'
-import { clipIdAt, clipKey } from '../lib/clipIds'
+import { clipIdAt, clipKey, clipNumberAt } from '../lib/clipIds'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { presetSummary } from '../lib/presetSummary'
 import { NumberField } from './NumberField'
@@ -193,7 +193,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     // Named by the shared rule, so a clip reads the same here as it does in the EDIT JOB's
     // timeline and its monitor.
     const base = sequence ? sequenceLabel(sequence) : (source.split(/[\\/]/).pop() || '')
-    return sourceCounts[source] > 1 ? `CLIP ${task.sourcePaths.slice(0, index + 1).filter((candidate) => candidate === source).length} // ${base}` : base
+    return sourceCounts[source] > 1 ? `CLIP ${clipNumberAt(task, index)} // ${base}` : base
   }
   const jobTitle = task.type === 'transcode' ? sourceLabel(task.sourcePaths[0] || fileName, 0) : task.type === 'stitch' ? `STITCH UP (${task.sourcePaths.length} clips)` : task.type === 'multitrack' ? `MULTI-TRACK (${audioCount} audio)` : 'COMBO'
   const sourceBriefDetails = (source: string, index: number) => {

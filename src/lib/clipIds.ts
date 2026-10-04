@@ -20,7 +20,7 @@
  */
 
 /** The source list and its ids, which is all an id lookup needs — a partial job is fine. */
-export type ClipIdSource = { sourcePaths?: string[]; clipIds?: string[] }
+export type ClipIdSource = { sourcePaths?: string[]; clipIds?: string[]; clipNumbers?: number[] }
 
 /** The key a clip's records had before ids existed, and the id a legacy clip falls back to. */
 export const legacyClipId = (sourcePath: string, index: number): string => `${sourcePath}#${index}`
@@ -67,6 +67,49 @@ export const clipKey = (
   index: number,
 ): string => (sourcePath != null && task.sourcePaths?.[index] === sourcePath ? clipIdAt(task, index) : legacyClipId(sourcePath ?? '', index))
 
+/**
+ * How many times a clip's file has appeared up to and including a place: the ordinal a clip is SHOWN by.
+ *
+ * Counted from a list, so it is a position; `materializeClipNumbers` is the one place that turns it into
+ * something that travels.
+ */
+export const clipRankAt = (paths: string[], sourcePath: string, index: number): number =>
+  paths.slice(0, index + 1).filter((candidate) => candidate === sourcePath).length
+
+/**
+ * The numbers a job should carry, writing down the ranks for a job that has none yet.
+ *
+ * Written down at the same moment the ids are, and for the same reason: a rank is counted from the LIST, so
+ * a job that was never reordered shows the right number without storing one — and the first change writes
+ * the numbers down so that the clips keep them however far they move.
+ */
+export const materializeClipNumbers = (task: ClipIdSource): number[] =>
+  (task.sourcePaths ?? []).map((sourcePath, index) => task.clipNumbers?.[index] ?? clipRankAt(task.sourcePaths ?? [], sourcePath, index))
+
+/** The number one clip is shown by: what it was given, or the rank it holds where it currently sits. */
+export const clipNumberAt = (task: ClipIdSource, index: number): number =>
+  task.clipNumbers?.[index] ?? clipRankAt(task.sourcePaths ?? [], task.sourcePaths?.[index] ?? '', index)
+
+/** The number the next added clip of a file takes: one past the highest its copies already carry. */
+export const nextClipNumber = (task: ClipIdSource, sourcePath: string): number => {
+  const numbers = materializeClipNumbers(task)
+  const paths = task.sourcePaths ?? []
+  const used = paths.map((path, index) => (path === sourcePath ? numbers[index] : 0))
+  return 1 + (used.length ? Math.max(0, ...used) : 0)
+}
+
+/** One list with an item MOVED, which is the same splice the paths take — used for ids and for numbers. */
+export const moveAlong = <T,>(list: T[], from: number, to: number): T[] => {
+  if (from < 0 || from >= list.length || to < 0 || to >= list.length || from === to) return list
+  const next = [...list]
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved)
+  return next
+}
+
+/** One list with the item at a place DROPPED. */
+export const dropAlong = <T,>(list: T[], index: number): T[] => list.filter((_, position) => position !== index)
+
 /** The id list after a clip is MOVED from one place to another, which is a splice of the list itself. */
 export const moveClipIds = (ids: string[], from: number, to: number): string[] => {
   if (from < 0 || from >= ids.length || to < 0 || to >= ids.length || from === to) return ids
@@ -96,4 +139,23 @@ export const matchClipIdsToPaths = (fromPaths: string[], fromIds: string[], requ
     else pool.set(path, [fromIds[index]])
   })
   return requestedPaths.map((path, index) => pool.get(path)?.shift() ?? legacyClipId(path, index))
+}
+
+/** The numbers for a requested source order, matched by path with occurrences taken in order. */
+export const matchClipNumbersToPaths = (fromPaths: string[], fromNumbers: number[], requestedPaths: string[]): number[] => {
+  const pool = new Map<string, number[]>()
+  const highest = new Map<string, number>()
+  fromPaths.forEach((path, index) => {
+    const list = pool.get(path)
+    if (list) list.push(fromNumbers[index])
+    else pool.set(path, [fromNumbers[index]])
+    highest.set(path, Math.max(highest.get(path) ?? 0, fromNumbers[index]))
+  })
+  return requestedPaths.map((path) => {
+    const reused = pool.get(path)?.shift()
+    if (reused !== undefined) return reused
+    const next = (highest.get(path) ?? 0) + 1
+    highest.set(path, next)
+    return next
+  })
 }

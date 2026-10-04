@@ -22,7 +22,7 @@ import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFac
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
-import { clipIdAt, matchClipIdsToPaths, materializeClipIds, moveClipIds, newClipId } from '../src/lib/clipIds'
+import { clipIdAt, clipNumberAt, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId } from '../src/lib/clipIds'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
@@ -303,8 +303,16 @@ console.log('\n== a clip keeps its records wherever it moves ==')
 
   // A MOVE: the ids are spliced with the paths, so not one record had to be re-keyed — it was already filed
   // under the clip, and the clip moved.
-  const moved: QueueTask = { ...base, clipIds: moveClipIds(materializeClipIds(base), 1, 0) }
+  const moved: QueueTask = { ...base, clipIds: moveClipIds(materializeClipIds(base), 1, 0), clipNumbers: moveAlong(materializeClipNumbers(base), 1, 0) }
   check('a move puts the second clip first, id and all', clipsOf(moved), [key1, key0])
+  // The label follows the clip rather than staying on the row it used to sit on: a job that was never
+  // reordered counts 1 then 2, and after the drag the clip that was second is still shown by 2 wherever
+  // it now sits — the bug the queue's screenshots showed, where the numbers stayed put and the lengths
+  // swapped under them.
+  check('two copies are shown as CLIP 1 and CLIP 2 where they first sit', [clipNumberAt(base, 0), clipNumberAt(base, 1)], [1, 2])
+  check('and the number travels with its clip when the second is dragged in front of the first', [clipNumberAt(moved, 0), clipNumberAt(moved, 1)], [2, 1])
+  const back: QueueTask = { ...moved, clipIds: moveClipIds(materializeClipIds(moved), 1, 0), clipNumbers: moveAlong(materializeClipNumbers(moved), 1, 0) }
+  check('and comes home with it when it is dragged back again', [clipsOf(back), clipNumberAt(back, 0), clipNumberAt(back, 1)], [[key0, key1], 1, 2])
   check('and the clip that moved kept its trims, fit, crop, speed and rate', recordsAt(moved, 0), { trim: 10, fit: 'height', crop: 0.6, speed: 0.5, rate: '48' })
   check('while the other keeps its own', recordsAt(moved, 1), { trim: 5, fit: 'width', crop: 0.8, speed: 2, rate: '12' })
 
