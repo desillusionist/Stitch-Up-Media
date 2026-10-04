@@ -65,7 +65,7 @@ const bridge = {
   createImageSequencePreview: async () => null,
   framesAt: async () => [],
   waveformFor: async () => [],
-  applySourceTiming: noop, syncEditJobTask: noop, cancelEditJob: noop,
+  applySourceTiming: noop, syncEditJobTask: noop, cancelEditJob: noop, saveSettings: noop,
   rememberPreview: noop, openEditJob: noop, quickLook: noop, diagnosticLog: noop,
   applyEditJob: async (patch: unknown) => { applied.push(patch) },
   // A sentinel rather than a real still: what is being checked is whether the MONITOR asks for one and
@@ -79,9 +79,20 @@ const bridge = {
 // nothing else, which is what "the render does not depend on IPC" is meant to demonstrate.
 ;(window as unknown as { electronAPI: unknown }).electronAPI = bridge
 
+/**
+ * The real clip the harness generated, so the monitor's element actually decodes one and reports its size.
+ *
+ * Every video task points at it: a source that cannot be decoded latches the monitor's error and never
+ * clears, because the element that would report a successful load is the very thing the error hides — so a
+ * missing file anywhere in the drive would poison every reading after it. The framing the monitor draws is
+ * measured against the picture the element loaded, and a repeated source is the case where it does not
+ * reload; a stub element that never loads cannot tell that from a picture of unknown size.
+ */
+const CLIP_FIXTURE = (window as unknown as { __clipFixture?: string }).__clipFixture || '/tmp/clip.mp4'
+
 /** A job of the plainest kind, so the render has a timeline, a monitor and settings to draw. */
 const task = {
-  id: 'mount-check', type: 'transcode', sourcePaths: ['/tmp/clip.mp4'],
+  id: 'mount-check', type: 'transcode', sourcePaths: [CLIP_FIXTURE],
   outputDirectory: '/tmp', outputFilename: 'out.mp4', status: 'pending', progress: 0,
   preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
 }
@@ -156,17 +167,17 @@ const sequenceSourceTask = {
  * that takes the first one with that path instead leaves a four-second clip where a five-second one was.
  */
 const duplicateTask = {
-  id: 'mount-check-duplicate', type: 'stitch', sourcePaths: ['/tmp/clip.mp4', '/tmp/clip.mp4'],
+  id: 'mount-check-duplicate', type: 'stitch', sourcePaths: [CLIP_FIXTURE, CLIP_FIXTURE],
   outputDirectory: '/tmp', outputFilename: 'out.mp4', status: 'pending', progress: 0,
   preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
-  trimPoints: { '/tmp/clip.mp4#0': { in: 0, out: 5 }, '/tmp/clip.mp4#1': { in: 6, out: 10 } },
+  trimPoints: { [`${CLIP_FIXTURE}#0`]: { in: 0, out: 5 }, [`${CLIP_FIXTURE}#1`]: { in: 6, out: 10 } },
 }
 
 const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1208,6 +1219,62 @@ const drive = async () => {
   await wait(250)
   sequenceSizes.pngRunLevel9 = summaryNow()
   result.imageSequence = sequenceSizes
+
+  // WHAT A COPY IS CALLED, AND FRAMING THE SECOND ONE. Two things are asked of the EDIT JOB here, both of
+  // which are invisible to the arithmetic: that a file imported twice is labelled by its copies on the
+  // timeline box, in the monitor's own line and in PROPERTIES; and that the FRAMING controls reach the SECOND
+  // copy. The monitor files the picture it measured under the clip that happened to be loaded, so a second
+  // copy of one file — which does not reload the element and so never measures again — read as a picture of
+  // unknown size with no framing to edit; and the controls described whichever clip the playhead was on rather
+  // than the one selected. This drives the fix: right-click the second copy, open PROPERTIES, and frame it.
+  const applyBeforeCopy = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  if (applyBeforeCopy && !applyBeforeCopy.disabled) applyBeforeCopy.click()
+  await wait(200)
+  arrive(duplicateTask, 'copy-framing')
+  // Long enough for the monitor's element to decode the real clip and report its size: the framing that follows
+  // is measured against that picture, which is the whole point of the drive.
+  await wait(900)
+  const copyClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const clipNames = copyClips().map((clip) => clip.querySelector('.timeline-clip-name')?.textContent ?? null)
+  // The SECOND copy, by its right-click menu: PROPERTIES selects it and must bring the playhead to it, so the
+  // clip selected, shown and described is the same one before a single framing figure is touched.
+  copyClips()[1]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const propertiesItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'PROPERTIES') as HTMLButtonElement | undefined
+  propertiesItem?.click()
+  await wait(300)
+  const activeCopyIndex = copyClips().findIndex((clip) => clip.classList.contains('is-active'))
+  const monitorLine = document.querySelector('.editor-preview small')?.textContent ?? null
+  const propertiesSource = rowValue('SOURCE')
+  // A crop on that copy: the FRAMING controls live under the VIDEO tab of EXPORT SETTINGS, so that tab is
+  // opened first, then FRAMING is unfolded and FREEFORM chosen, which is what turns a region on.
+  clickTab('VIDEO')
+  await wait(200)
+  const framingHead = [...document.querySelectorAll('.editor-group-name')].find((button) => button.querySelector('.editor-group-label')?.textContent?.trim() === 'FRAMING') as HTMLButtonElement | undefined
+  framingHead?.click()
+  await wait(200)
+  const cropSelect = [...document.querySelectorAll('.editor-select')].find((control) => [...control.querySelectorAll('.editor-select-option')].some((option) => option.getAttribute('data-value') === 'FREEFORM')) as HTMLElement | undefined
+  chooseOption(cropSelect ?? null, 'FREEFORM')
+  await wait(300)
+  const cropFields = [...document.querySelectorAll('.crop-row .mini-field input')].slice(0, 4).map((input) => (input as HTMLInputElement).value)
+  // THE MONITOR'S OWN CROP BOX, which can only be drawn against a picture it has measured: a repeated source
+  // whose size stayed filed under the first copy has no box here, which is what was reported.
+  const cropBoxDrawn = Boolean(document.querySelector('.editor-crop'))
+  const cropShades = document.querySelectorAll('.editor-crop-shade').length
+  const applyCopy = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyCopy?.click()
+  await wait(250)
+  const lastCopyPatch = applied[applied.length - 1] as { sourceCrop?: Record<string, unknown> } | undefined
+  result.copyFraming = {
+    clipNames,
+    activeCopyIndex,
+    monitorLine,
+    propertiesSource,
+    cropFields,
+    cropBoxDrawn,
+    cropShades,
+    cropKeys: lastCopyPatch?.sourceCrop ? Object.keys(lastCopyPatch.sourceCrop) : null,
+  }
 
   // TWO COPIES OF ONE FILE, AND THE CLIP MENU'S REMOVE. Right-clicking the SECOND copy and removing it has
   // to take THAT clip: the menu's source index was read back with `indexOf`, which answers with the first

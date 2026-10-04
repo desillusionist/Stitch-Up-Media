@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { FileVideo, FileAudio, FileImage, Film, Layers, CheckCircle2, AlertCircle, Clock, Loader2, Folder, ExternalLink } from 'lucide-react'
 import { QueueTask } from '../types'
 import { sourceFps, stillSecondsFor } from '../lib/timelineModel'
-import { clipIdAt, clipKey, clipNumberAt } from '../lib/clipIds'
+import { clipIdAt, clipKey, copyLabelFor } from '../lib/clipIds'
 import { sequenceLabel } from '../lib/sequenceLabel'
 import { presetSummary } from '../lib/presetSummary'
 import { NumberField } from './NumberField'
@@ -180,7 +180,6 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   }, [])
   const fileName = task.sourcePaths[0]?.split('/').pop() || 'Unknown'
   const audioCount = task.additionalAudioTracks?.length || 0
-  const sourceCounts = task.sourcePaths.reduce<Record<string, number>>((counts, source) => ({ ...counts, [source]: (counts[source] || 0) + 1 }), {})
   const sequenceFor = (source: string) => task.sequenceInputs?.[source] || (task.sequenceInput?.firstFrame === source ? task.sequenceInput : undefined)
   const isImageSource = (source: string) => /\.(jpg|jpeg|png|gif|webp|tif|tiff|bmp|heic|heif|avif)$/i.test(source)
   const formatFps = (fps?: number | string) => {
@@ -193,7 +192,10 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     // Named by the shared rule, so a clip reads the same here as it does in the EDIT JOB's
     // timeline and its monitor.
     const base = sequence ? sequenceLabel(sequence) : (source.split(/[\\/]/).pop() || '')
-    return sourceCounts[source] > 1 ? `CLIP ${clipNumberAt(task, index)} // ${base}` : base
+    // `COPY n` when the file appears more than once: a copy of a source is what the label names, so it travels
+    // with the clip exactly as its id and its records do.
+    const copy = copyLabelFor(task, index, source)
+    return copy ? `${copy} // ${base}` : base
   }
   const jobTitle = task.type === 'transcode' ? sourceLabel(task.sourcePaths[0] || fileName, 0) : task.type === 'stitch' ? `STITCH UP (${task.sourcePaths.length} clips)` : task.type === 'multitrack' ? `MULTI-TRACK (${audioCount} audio)` : 'COMBO'
   const sourceBriefDetails = (source: string, index: number) => {

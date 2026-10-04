@@ -7,7 +7,7 @@ import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
-import { clipIdAt, clipKey } from '../lib/clipIds'
+import { clipIdAt, clipKey, copyLabelFor } from '../lib/clipIds'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
@@ -846,7 +846,7 @@ export const EditJobApp: React.FC = () => {
   // rather than beside the monitor, because a tile is the shape of the frame: a frame the strips
   // saw late would be a strip laid out for a shape that is no longer the output's. It needs nothing
   // but the task and the media's own size, and both are known by this point in the render.
-  const playingNatural = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined
+  const playingNatural = naturalSize && naturalSize.key === playback.segment?.sourcePath ? naturalSize : undefined
   /**
    * Whether the output frame follows the source, which is what MATCH SOURCE means.
    *
@@ -932,6 +932,9 @@ export const EditJobApp: React.FC = () => {
   // for it, the same way the queue's cards name it.
   const focusedSequence = draft && focusedSource ? sequenceFor(draft, focusedSource) : undefined
   const focusedLabel = focusedSequence ? sequenceLabel(focusedSequence) : sourceName(focusedSource)
+  // What the monitor's own line calls the clip it is showing: `COPY n` when the file appears more than once,
+  // so the monitor names the same clip the timeline and the inspector do.
+  const focusedCopyLabel = draft ? copyLabelFor(draft, focusedSourceIndex) : undefined
 
   // An image sequence's generated clip is resolved here, once per rate, in the background. Nothing on
   // the playback path waits for it: the window draws the clip the queue remembers for it, and only
@@ -1384,7 +1387,12 @@ export const EditJobApp: React.FC = () => {
     const element = event.currentTarget
     const width = element instanceof HTMLVideoElement ? element.videoWidth : element.naturalWidth
     const height = element instanceof HTMLVideoElement ? element.videoHeight : element.naturalHeight
-    if (width > 0 && height > 0) setNaturalSize({ key: playback.segment?.key, width, height })
+    // Keyed by the SOURCE rather than by the clip. The element holds one file, and every clip cut from that
+    // file is the same picture; keying it by the segment made the size belong to whichever clip happened to
+    // be loaded, so a second copy of one file — which does not reload the element, so never fires this again
+    // — read as a picture whose size was unknown and had no framing to edit. The source is what the element
+    // really loaded, so that is what the measurement is filed under.
+    if (width > 0 && height > 0) setNaturalSize({ key: playback.segment?.sourcePath, width, height })
   }
 
   // The stage only exists once a queue item has arrived: until then the editor returns a
@@ -1868,6 +1876,9 @@ export const EditJobApp: React.FC = () => {
    * way everything else filed per clip does.
    */
   const inspectedClipIndex = inspectedSegment ? clipIndexOf(inspectedSegment) : 0
+  // The clip's copy label, `COPY n`, when its file appears in the job more than once — so PROPERTIES names
+  // the same clip the timeline box and the monitor do rather than naming a file twice over.
+  const inspectedCopyLabel = draft && inspectedSource ? copyLabelFor(draft, inspectedClipIndex, inspectedSource) : undefined
   const inspectedCanSpeed = Boolean(draft && inspectedSource && canApplyClipSpeed(draft, inspectedSource))
   // The SPEED the reader SET, not the segment's own `speed`, which now carries the interpreted rate folded
   // in as a retime. The two fields must show the figures that were chosen; the composition happens where
@@ -2123,7 +2134,13 @@ export const EditJobApp: React.FC = () => {
     const sequence = draft ? sequenceFor(draft, segment.sourcePath) : undefined
     return sequence ? sequenceLabel(sequence) : sourceName(segment.sourcePath)
   }
-  const clipTitle = (segment: TimelineSegment) => `${segmentLabel(segment)} - ${clipSummary({
+  // What a clip's box calls it: `COPY n // name` when the file appears in the job more than once, so two
+  // segments of one file are told apart on the timeline rather than only inside the inspector.
+  const segmentName = (segment: TimelineSegment) => {
+    const copy = draft ? copyLabelFor(draft, clipIndexOf(segment), segment.sourcePath) : undefined
+    return copy ? `${copy} // ${segmentLabel(segment)}` : segmentLabel(segment)
+  }
+  const clipTitle = (segment: TimelineSegment) => `${segmentName(segment)} - ${clipSummary({
     // The SOURCE's whole length, which is what the clip is a piece of — the sequence's own length for
     // an image sequence, the still's chosen length for a still, and the probe's for anything else.
     totalSeconds: sourceDuration(draft, segment.sourcePath, undefined, resolveTiming),
@@ -2144,6 +2161,24 @@ export const EditJobApp: React.FC = () => {
    * would be anyway in the common case, so there is nothing to see of the adjustment.
    */
   const menuPoint = (event: React.MouseEvent) => ({ x: event.clientX, y: event.clientY })
+  /**
+   * Points the editor at a clip: selects it, and brings the playhead onto a clip of the main lane.
+   *
+   * The window describes ONE clip. The inspector's PROPERTIES, the monitor's own line, its crop box and the
+   * FRAMING controls all name the clip under the playhead, so selecting a clip without moving the playhead
+   * left them describing whichever clip happened to be playing — which is why a SECOND copy of one file, which
+   * is reached by moving to it, could be selected and framed and the framing would land on the first. Bringing
+   * the playhead to the clip makes the selected, shown, described and framed clip the same one. A clip the
+   * playhead already rests inside does not move it, so selecting the clip being watched disturbs nothing.
+   */
+  const selectClip = (laneId: string, clipKey: string) => {
+    setSelected({ laneId, clipKey })
+    if (laneId !== mainLane?.id) return
+    const segment = mainLane?.segments.find((candidate) => candidate.key === clipKey)
+    if (!segment) return
+    const inside = playback.position >= segment.start && playback.position < segment.start + segment.duration
+    if (!inside) playback.seek(segment.start)
+  }
   const openClipMenu = (event: React.MouseEvent, segment: TimelineSegment, laneId: string, index: number) => {
     event.preventDefault()
     event.stopPropagation()
@@ -2151,7 +2186,7 @@ export const EditJobApp: React.FC = () => {
     const mainIndex = laneId === model.lanes[0]?.id ? index : null
     // A right-click SELECTS as well as asks: both items in the menu describe this clip, and the
     // inspector goes on describing it until something else is selected.
-    setSelected({ laneId, clipKey: segment.key })
+    selectClip(laneId, segment.key)
     setTimelineMenu({
       kind: 'clip',
       x: point.x,
@@ -2464,7 +2499,7 @@ export const EditJobApp: React.FC = () => {
   // generated frame the encoder writes may be a different shape, and a crop is of the source, not
   // of the canvas it is fitted to. Its pixel size is also what turns the crop's fractions into the
   // pixel figures the fields show when the unit is switched to px.
-  const picture = naturalSize && naturalSize.key === playback.segment?.key ? naturalSize : undefined
+  const picture = naturalSize && naturalSize.key === playback.segment?.sourcePath ? naturalSize : undefined
   const naturalAspect = picture ? picture.width / picture.height : null
   /** The clip being shown, and the fit it carries, which is what places it in the frame. */
   const activeFitKey = playback.segment ? playback.segment.key : null
@@ -3276,7 +3311,7 @@ export const EditJobApp: React.FC = () => {
                 </div>}
               </div>
             </div>
-            <small>{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
+            <small>{focusedCopyLabel ? `${focusedCopyLabel} // ` : ''}{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
             <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.sourceUsedSeconds, sourceIn: activeSegment.sourceIn, totalSeconds: sourceDuration(draft, activeSegment.sourcePath, undefined, resolveTiming), fps: activeSegment.nativeRate ?? rateOf(sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming)), mode: timestampMode })} | ${outputRangeLabel(duration, outputRate, timestampMode)}` : outputRangeLabel(duration, outputRate, timestampMode)}</small>
             {/* What the transport is doing. A single line, and the one place it is said: the pause glyph that
                 used to sit among the buttons said the same thing a second time, next to a PLAY toggle that
@@ -3362,7 +3397,7 @@ export const EditJobApp: React.FC = () => {
                 <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the properties inspector" title="Close">x</button>
               </div>
               <div className="inspector-scroll">
-                <EditorRow label="SOURCE" value={inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
+                <EditorRow label="SOURCE" value={inspectedCopyLabel ? `${inspectedCopyLabel} // ${inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)}` : inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
                 <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
                 {/* What the sound IS, which an inspector of an audio file had nothing to say about: the rate,
                     the sample size and the channels, and then how it is written. A lossy file has no sample
@@ -3584,7 +3619,7 @@ export const EditJobApp: React.FC = () => {
                         className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${selected && selected.laneId === lane.id && selected.clipKey === segment.key ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
                         style={{ width: `${laneWidthFor(segment.duration, zoom)}px` }}
                         title={clipTitle(segment)}
-                        onClick={() => setSelected({ laneId: lane.id, clipKey: segment.key })}
+                        onClick={() => selectClip(lane.id, segment.key)}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
                       >
                         {/* The cells share the lane exactly, so there is no gap at the end, and each
@@ -3634,7 +3669,7 @@ export const EditJobApp: React.FC = () => {
                             </svg>
                           </div>
                         })()}
-                        <span className="timeline-clip-name">{segmentLabel(segment)}</span>
+                        <span className="timeline-clip-name">{segmentName(segment)}</span>
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                         {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
@@ -4378,7 +4413,7 @@ export const EditJobApp: React.FC = () => {
         </div>
       </> : <>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); void openNativePreview({ sourcePath: target.sourcePath, sourceIndex: target.mainIndex ?? 0 }) }}>QUICK LOOK...</button>
-        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setSelected({ laneId: target.laneId, clipKey: target.fitKey }); setInspectorOpen(true) }}>PROPERTIES</button>
+        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); selectClip(target.laneId, target.fitKey); setInspectorOpen(true) }}>PROPERTIES</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
           const blocked = timelineMenu.fitReason

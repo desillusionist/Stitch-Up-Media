@@ -9,10 +9,29 @@
 // Run with `npm run check-mount`. React is bundled in its DEVELOPMENT build on purpose: it is this
 // harness's job to say what is wrong when the window does not draw, and the development build says
 // it in words where the production one only throws.
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, protocol } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
+const os = require('node:os')
 const { execFileSync } = require('node:child_process')
+const { Readable } = require('node:stream')
+
+// The app's own media scheme, registered the way the app registers it, so a <video> pointed at a real file
+// through `mediaUrl` actually decodes one. Without this the monitor's element never loads, never measures its
+// picture, and the framing it draws can only be guessed at — which is exactly the path a repeated source is
+// reported broken on.
+protocol.registerSchemesAsPrivileged([{ scheme: 'stitch-media', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true } }])
+
+/** One `bytes=start-end` range, or null when the request asks for the whole file. */
+const byteRange = (header, size) => {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(header || ''))
+  if (!match) return null
+  const start = match[1] ? Number(match[1]) : 0
+  const end = match[2] ? Math.min(Number(match[2]), size - 1) : size - 1
+  return start <= end && start < size ? { start, end } : null
+}
+
+const runFfmpeg = (args) => execFileSync('ffmpeg', args, { stdio: 'pipe' })
 
 const root = path.join(__dirname, '..')
 const entry = path.join(__dirname, 'editorMountEntry.tsx')
@@ -28,11 +47,36 @@ const css = fs.existsSync(cssPath)
   : undefined
 const style = css ? `<link rel="stylesheet" href="${path.join(cssPath, css)}">` : ''
 
+/**
+ * A real clip for the monitor to decode.
+ *
+ * The framing the monitor draws is measured against the picture the element LOADED, and the second copy of one
+ * file is precisely the case where the element never reloads — so a size filed under the first clip reads as
+ * unknown to the second and its crop cannot be drawn. A stub element that never loads cannot tell those two
+ * apart, so the file is real and the app's own media scheme serves it.
+ */
+const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-mount-'))
+const clipFixture = path.join(fixtureDir, 'clip.mp4')
+runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=25:duration=12', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-an', clipFixture])
+
 const htmlPath = path.join(__dirname, '.editor-mount.html')
-fs.writeFileSync(htmlPath, `<!doctype html><html><head><meta charset="utf-8">${style}</head><body><script>${fs.readFileSync(bundle, 'utf8')}</script></body></html>`, 'utf8')
+fs.writeFileSync(htmlPath, `<!doctype html><html><head><meta charset="utf-8">${style}</head><body><script>window.__clipFixture = ${JSON.stringify(clipFixture)}</script><script>${fs.readFileSync(bundle, 'utf8')}</script></body></html>`, 'utf8')
 
 app.disableHardwareAcceleration()
 app.whenReady().then(async () => {
+  // The media the monitor is pointed at, served the way the app serves it: a real file with a range handler, so
+  // the element decodes it and reports its own size — which is what the framing is measured against.
+  protocol.handle('stitch-media', async (request) => {
+    const target = new URL(request.url).searchParams.get('path')
+    if (!target || !path.isAbsolute(target)) return new Response('Missing media path', { status: 400 })
+    let size
+    try { size = fs.statSync(target).size } catch { return new Response('Not found', { status: 404 }) }
+    const range = byteRange(request.headers.get('Range'), size)
+    if (range) {
+      return new Response(Readable.toWeb(fs.createReadStream(target, { start: range.start, end: range.end })), { status: 206, headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(range.end - range.start + 1), 'Content-Range': `bytes ${range.start}-${range.end}/${size}`, 'Accept-Ranges': 'bytes' } })
+    }
+    return new Response(Readable.toWeb(fs.createReadStream(target)), { status: 200, headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(size), 'Accept-Ranges': 'bytes' } })
+  })
   const win = new BrowserWindow({ width: 1320, height: 840, show: false })
   await win.loadFile(htmlPath)
   // The mounts are on timers of their own, so this waits for the page to say it is finished rather
@@ -594,11 +638,37 @@ app.whenReady().then(async () => {
       const surviving = String((duplicate.after || [])[0] ?? '')
       if (!surviving.includes('00:00:05.00')) problems.push(`removing the second of two copies left the wrong clip behind: ${JSON.stringify(surviving)}`)
     }
+    // WHAT A COPY IS CALLED, AND FRAMING THE SECOND ONE. A file imported twice is labelled by its copies on
+    // the timeline box, in the monitor's line and in PROPERTIES; and the FRAMING controls have to reach that
+    // SECOND copy. The label read on the timeline is `COPY 1 // name` and `COPY 2 // name`; the playhead has
+    // to have moved to the second copy when PROPERTIES was opened on it, so the clip shown and described is
+    // the one framed; and the crop written has to be filed under the SECOND copy's key rather than the first.
+    const copyFraming = result.copyFraming
+    if (!copyFraming) problems.push('the copy-framing drive reported nothing')
+    else {
+      const names = (copyFraming.clipNames || []).map((name) => String(name ?? ''))
+      if (names.length !== 2) problems.push(`the duplicate job drew ${names.length} timeline boxes rather than two`)
+      else {
+        if (!names[0].includes('COPY 1')) problems.push(`the first copy's box is not labelled COPY 1: ${JSON.stringify(names[0])}`)
+        if (!names[1].includes('COPY 2')) problems.push(`the second copy's box is not labelled COPY 2: ${JSON.stringify(names[1])}`)
+      }
+      if (copyFraming.activeCopyIndex !== 1) problems.push(`opening PROPERTIES on the second copy left the playhead on clip ${copyFraming.activeCopyIndex} rather than the second one`)
+      if (!String(copyFraming.monitorLine).includes('COPY 2')) problems.push(`the monitor's own line does not name the copy it is showing: ${JSON.stringify(copyFraming.monitorLine)}`)
+      if (!String(copyFraming.propertiesSource).includes('COPY 2')) problems.push(`PROPERTIES does not name the copy it describes: ${JSON.stringify(copyFraming.propertiesSource)}`)
+      // The monitor's crop box is drawn against the picture it measured, and a repeated source does not reload
+      // the element — so this is the reading that says the size travelled from the first copy to the second.
+      if (!copyFraming.cropBoxDrawn) problems.push('the monitor drew no crop box for a crop set on the second copy, so its picture was never measured for it')
+      if (!(copyFraming.cropShades > 0)) problems.push('the monitor drew no crop shading for a crop set on the second copy')
+      const keys = (copyFraming.cropKeys || []).map((key) => String(key))
+      if (!keys.some((key) => key.endsWith('#1'))) problems.push(`framing the second copy was filed under ${JSON.stringify(keys)} rather than the second copy's own key`)
+      if (keys.some((key) => key.endsWith('#0'))) problems.push(`framing the second copy also touched the first copy: ${JSON.stringify(keys)}`)
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))
   fs.unlinkSync(htmlPath)
   fs.unlinkSync(bundle)
+  try { fs.rmSync(fixtureDir, { recursive: true, force: true }) } catch {}
   if (problems.length) {
     console.error(`\n${problems.length} MOUNT PROBLEM(S)\n${problems.map((problem) => `  - ${problem}`).join('\n')}\n`)
   } else {

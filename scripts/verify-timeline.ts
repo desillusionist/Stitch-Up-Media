@@ -22,7 +22,7 @@ import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFac
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
-import { clipIdAt, clipNumberAt, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId } from '../src/lib/clipIds'
+import { clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId } from '../src/lib/clipIds'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
@@ -350,6 +350,22 @@ console.log('\n== a clip keeps its records wherever it moves ==')
   check('and materializing writes the legacy keys down', materializeClipIds(legacy), ['a.mp4#0', 'a.mp4#1'])
   // The one list op that still takes bare paths: a reorder handed over without ids matches occurrences in order.
   check('a bare-path reorder matches each id to its path', matchClipIdsToPaths(['a.mp4', 'b.mp4'], ['A', 'B'], ['b.mp4', 'a.mp4']), ['B', 'A'])
+}
+
+console.log('\n== what a copy of one file is called ==')
+{
+  // A file imported once is named by the file. A file imported twice is named by its copies, and the number is
+  // the travel-along one, so a reorder carries the label with the clip — the reading the queue's screenshots
+  // got wrong was not the number existing but the label staying behind.
+  check('one import of a file needs no label', copyLabelFor({ sourcePaths: ['a.mp4'] }, 0), undefined)
+  const pair = { sourcePaths: ['a.mp4', 'a.mp4'] }
+  check('two copies are COPY 1 and COPY 2', [copyLabelFor(pair, 0), copyLabelFor(pair, 1)], ['COPY 1', 'COPY 2'])
+  const swapped = { sourcePaths: ['a.mp4', 'a.mp4'], clipNumbers: [2, 1] }
+  check('and the number travels with the clip it names', [copyLabelFor(swapped, 0), copyLabelFor(swapped, 1)], ['COPY 2', 'COPY 1'])
+  check('two different files each keep their own name', [copyLabelFor({ sourcePaths: ['a.mp4', 'b.mp4'] }, 0), copyLabelFor({ sourcePaths: ['a.mp4', 'b.mp4'] }, 1)], [undefined, undefined])
+  // The guard: an index has to name that path in the JOB's own list, or an audio track's lane index would
+  // count the copies of whatever file happens to sit at that place in `sourcePaths`.
+  check('an index that names another file is no label', copyLabelFor(pair, 0, 'b.mp4'), undefined)
 }
 
 console.log('\n== the rate a still image is rendered at ==')

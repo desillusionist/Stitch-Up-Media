@@ -90,6 +90,26 @@ export const materializeClipNumbers = (task: ClipIdSource): number[] =>
 export const clipNumberAt = (task: ClipIdSource, index: number): number =>
   task.clipNumbers?.[index] ?? clipRankAt(task.sourcePaths ?? [], task.sourcePaths?.[index] ?? '', index)
 
+/**
+ * What a clip is CALLED when its file appears in the job more than once: `COPY 1`, `COPY 2`.
+ *
+ * A file imported once needs no label — the name is the file's own — so this answers with nothing, and
+ * every surface that names a clip (`COPY n // name`) falls back to the plain name. The figure is the clip's
+ * travel-along NUMBER rather than its rank, so a reorder carries the label with the clip it names.
+ *
+ * `COPY` rather than `CLIP` because a clip is already what every item on the timeline is called; the label's
+ * job is to tell two imports of ONE file apart, which is what a copy is.
+ */
+export const copyLabelFor = (task: ClipIdSource, index: number, sourcePath?: string): string | undefined => {
+  const paths = task.sourcePaths ?? []
+  const path = sourcePath ?? paths[index]
+  if (path == null) return undefined
+  // The index has to be this path's own place in the job's list: an audio track's clip carries an index into
+  // its LANE, not into `sourcePaths`, so a label read from it would count the wrong file's copies.
+  if (paths[index] !== path) return undefined
+  return paths.filter((candidate) => candidate === path).length > 1 ? `COPY ${clipNumberAt(task, index)}` : undefined
+}
+
 /** The number the next added clip of a file takes: one past the highest its copies already carry. */
 export const nextClipNumber = (task: ClipIdSource, sourcePath: string): number => {
   const numbers = materializeClipNumbers(task)
