@@ -177,7 +177,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1274,6 +1274,66 @@ const drive = async () => {
     cropBoxDrawn,
     cropShades,
     cropKeys: lastCopyPatch?.sourceCrop ? Object.keys(lastCopyPatch.sourceCrop) : null,
+  }
+
+  // REORDER AND TRIM ON THE EDITOR'S TIMELINE. Two gestures the timeline now owns: dragging a clip to another
+  // place in the join, and dragging either edge of a clip's source window. The reorder has to splice the IDs and
+  // the copy numbers along with the paths, so the clip that moved keeps its identity; the trim has to write the
+  // clip that was trimmed and no other. The two clips are told apart by their LENGTHS, so the reorder is read as
+  // which duration now sits first.
+  arrive(duplicateTask, 'timeline-gestures')
+  await wait(900)
+  const gestureClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const clipDurations = (clips: HTMLElement[]) => clips.map((clip) => clip.querySelector('small')?.textContent ?? null)
+  const beforeOrder = clipDurations(gestureClips())
+
+  // TRIM: the second copy's OUT handle, dragged left, which shortens its run through the source.
+  const outHandle = gestureClips()[1]?.querySelector('.clip-trim-handle.is-out') as HTMLElement | null
+  const handleBox = outHandle?.getBoundingClientRect()
+  let trimReadout: string | null = null
+  let trimShades = 0
+  if (outHandle && handleBox) {
+    const x = handleBox.left + handleBox.width / 2
+    const y = handleBox.top + handleBox.height / 2
+    outHandle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+    await wait(60)
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x - 40, clientY: y }))
+    await wait(60)
+    trimReadout = (document.querySelector('.clip-trim-readout') as HTMLElement | null)?.textContent ?? null
+    trimShades = document.querySelectorAll('.clip-trim-shade').length
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x - 40, clientY: y }))
+    await wait(150)
+  }
+  const afterTrim = clipDurations(gestureClips())
+  const applyTrim = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyTrim?.click()
+  await wait(200)
+  const trimPatch = applied[applied.length - 1] as { trimPoints?: Record<string, { in: number; out: number }> } | undefined
+  const trimEntries = trimPatch?.trimPoints ? Object.entries(trimPatch.trimPoints).map(([key, value]) => [key, value]) : null
+
+  // REORDER: the second copy dragged onto the first. A native DragEvent carries a real DataTransfer, which is
+  // what the browser's drag machinery — and therefore React's synthetic events — need.
+  const transfer = new DataTransfer()
+  gestureClips()[1]?.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+  await wait(60)
+  gestureClips()[0]?.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+  await wait(60)
+  gestureClips()[0]?.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+  await wait(150)
+  const afterOrder = clipDurations(gestureClips())
+  const applyReorder = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyReorder?.click()
+  await wait(200)
+  const reorderPatch = applied[applied.length - 1] as { clipIds?: string[]; clipNumbers?: number[] } | undefined
+  result.timelineGestures = {
+    beforeOrder,
+    trimReadout,
+    trimShades,
+    afterTrim,
+    trimEntries,
+    afterOrder,
+    reorderIds: reorderPatch?.clipIds ?? null,
+    reorderNumbers: reorderPatch?.clipNumbers ?? null,
   }
 
   // TWO COPIES OF ONE FILE, AND THE CLIP MENU'S REMOVE. Right-clicking the SECOND copy and removing it has

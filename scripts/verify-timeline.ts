@@ -23,6 +23,7 @@ import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId } from '../src/lib/clipIds'
+import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
@@ -366,6 +367,40 @@ console.log('\n== what a copy of one file is called ==')
   // The guard: an index has to name that path in the JOB's own list, or an audio track's lane index would
   // count the copies of whatever file happens to sit at that place in `sourcePaths`.
   check('an index that names another file is no label', copyLabelFor(pair, 0, 'b.mp4'), undefined)
+}
+
+console.log('\n== trimming a clip ==')
+{
+  const whole = trimWindowOf(0, 10)
+  check('a window reads its in point and its run', whole, { in: 0, out: 10 })
+  // The OUT edge: dragged right it grows the clip, left it shortens it, and it stops at the end of the source.
+  check('the out edge stops at the end of the source', dragTrimWindow(whole, 'out', 5, 10), { in: 0, out: 10 })
+  check('and dragged left shortens the clip', dragTrimWindow(whole, 'out', -3, 10), { in: 0, out: 7 })
+  check('the in edge holds while the out edge moves', dragTrimWindow({ in: 2, out: 8 }, 'out', -1, 10), { in: 2, out: 7 })
+  // The IN edge: dragged right it trims the head, and it stops at zero and one minimum short of the out edge.
+  check('the in edge trims the head', dragTrimWindow(whole, 'in', 3, 10), { in: 3, out: 10 })
+  check('the out edge holds while the in edge moves', dragTrimWindow({ in: 2, out: 8 }, 'in', 2, 10), { in: 4, out: 8 })
+  check('the in edge cannot pass below zero', dragTrimWindow({ in: 2, out: 8 }, 'in', -5, 10), { in: 0, out: 8 })
+  check('and stops one minimum short of the out edge', dragTrimWindow({ in: 2, out: 8 }, 'in', 20, 10, 0.5).in, 7.5)
+  check('the out edge stops one minimum past the in edge', dragTrimWindow({ in: 2, out: 8 }, 'out', -20, 10, 0.5).out, 2.5)
+  check('an unknown length leaves the out edge unbounded', dragTrimWindow({ in: 0, out: 10 }, 'out', 5, 0), { in: 0, out: 15 })
+  // A window that keeps the whole source is NOT a decision, so it leaves no record behind.
+  check('a window keeping everything is no trim', windowIsWholeSource({ in: 0, out: 10 }, 10), true)
+  check('dropping anything off the tail is a trim', windowIsWholeSource({ in: 0, out: 9 }, 10), false)
+  check('trimming the head is a trim', windowIsWholeSource({ in: 1, out: 10 }, 10), false)
+  check('and an unknown length cannot be called whole', windowIsWholeSource({ in: 0, out: 10 }, 0), false)
+}
+
+console.log('\n== a timeline reorder moves every list together ==')
+{
+  const key0 = newClipId()
+  const key1 = newClipId()
+  const task = { sourcePaths: ['a.mp4', 'b.mp4'], clipIds: [key0, key1], clipNumbers: [1, 2] }
+  // The timeline's drag is the same splice of the three lists the queue's reorder is, so each clip keeps its id
+  // and its copy number while the ORDER it is joined in changes.
+  check('the paths take the new order', moveAlong(task.sourcePaths, 1, 0), ['b.mp4', 'a.mp4'])
+  check('and the ids travel with them', moveAlong(materializeClipIds(task), 1, 0), [key1, key0])
+  check('and so do the copy numbers', moveAlong(materializeClipNumbers(task), 1, 0), [2, 1])
 }
 
 console.log('\n== the rate a still image is rendered at ==')

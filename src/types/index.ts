@@ -544,6 +544,8 @@ export interface EditJobPatch {
   sourceSpeed?: Record<string, ClipSpeed>
   /** Per-clip interpreted rate, keyed like the speed and carried whole rather than interpreted. */
   sourceFps?: Record<string, FrameRate>
+  /** Per-clip trim windows, keyed by the clip that owns them, like the fit above. */
+  trimPoints?: Record<string, { in: number; out: number }>
   /** Lanes whose audio the export does not carry, carried whole like the fit. */
   mutedLanes?: Record<string, boolean>
   /**

@@ -663,6 +663,47 @@ app.whenReady().then(async () => {
       if (!keys.some((key) => key.endsWith('#1'))) problems.push(`framing the second copy was filed under ${JSON.stringify(keys)} rather than the second copy's own key`)
       if (keys.some((key) => key.endsWith('#0'))) problems.push(`framing the second copy also touched the first copy: ${JSON.stringify(keys)}`)
     }
+    // REORDERING AND TRIMMING ON THE TIMELINE. A clip dragged onto another has to take its place in the join
+    // along with its own identity and its copy number; an edge dragged has to write THAT clip's window into its
+    // source, and only that clip's. Two copies of one file are told apart by their lengths, so the reorder is
+    // read as which duration now sits first.
+    const gestures = result.timelineGestures
+    if (!gestures) problems.push('the timeline-gesture drive reported nothing')
+    else {
+      const before = (gestures.beforeOrder || []).map((value) => String(value ?? ''))
+      if (before.length !== 2) problems.push(`the timeline drew ${before.length} clips rather than two`)
+      else {
+        if (!before[0].includes('00:00:05')) problems.push(`the first copy does not lead with its five seconds: ${JSON.stringify(before[0])}`)
+        if (!before[1].includes('00:00:04')) problems.push(`the second copy does not read its four seconds: ${JSON.stringify(before[1])}`)
+      }
+      // The trim: the readout and the shade are what the drag shows while the pointer is down, and the window it
+      // writes is the second copy's, shortened from its out edge with its in point held.
+      if (!gestures.trimReadout) problems.push('dragging an edge showed no readout')
+      if (!(gestures.trimShades > 0)) problems.push('dragging an edge showed no shading of what it would take off')
+      const entries = (gestures.trimEntries || [])
+      // The job already trims BOTH copies (five and four seconds of the twelve-second source), so the reading
+      // is not "one entry" but "the second copy's window changed and the first copy's did not".
+      const trimmed = entries.find(([key]) => String(key).endsWith('#1'))
+      const held = entries.find(([key]) => String(key).endsWith('#0'))
+      if (!trimmed) problems.push(`the trim wrote nothing for the second copy: ${JSON.stringify(gestures.trimEntries)}`)
+      else {
+        if (!String(trimmed[0]).endsWith('#1')) problems.push(`the trim was filed under ${JSON.stringify(trimmed[0])} rather than the second copy's own key`)
+        if (Math.abs(trimmed[1].in - 6) > 1e-6) problems.push(`the trim moved the in point, which should have been held: ${JSON.stringify(trimmed[1])}`)
+        if (!(trimmed[1].out < 10 && trimmed[1].out > 6)) problems.push(`dragging the out edge left did not shorten the run: ${JSON.stringify(trimmed[1])}`)
+      }
+      if (held && (Math.abs(held[1].in) > 1e-6 || Math.abs(held[1].out - 5) > 1e-6)) problems.push(`the trim disturbed the first copy's own window: ${JSON.stringify(held[1])}`)
+      const afterTrim = (gestures.afterTrim || []).map((value) => String(value ?? ''))
+      if (afterTrim.length === 2 && afterTrim[1] === before[1]) problems.push(`dragging the out edge left the clip's length unchanged`)
+      // The reorder: the second copy dropped onto the first is now first, and the ids and numbers travelled.
+      const after = (gestures.afterOrder || []).map((value) => String(value ?? ''))
+      if (after.length === 2 && afterTrim.length === 2) {
+        if (after[0] !== afterTrim[1]) problems.push(`the dragged clip did not land first: ${JSON.stringify(after)} vs ${JSON.stringify(afterTrim)}`)
+        if (after[1] !== afterTrim[0]) problems.push(`the clip it was dropped on did not take second place: ${JSON.stringify(after)} vs ${JSON.stringify(afterTrim)}`)
+      }
+      const ids = (gestures.reorderIds || []).map((value) => String(value ?? ''))
+      if (ids.length !== 2 || !ids[0].endsWith('#1') || !ids[1].endsWith('#0')) problems.push(`the reorder did not carry the ids with the clips: ${JSON.stringify(ids)}`)
+      if (JSON.stringify(gestures.reorderNumbers) !== JSON.stringify([2, 1])) problems.push(`the reorder did not carry the copy numbers: ${JSON.stringify(gestures.reorderNumbers)}`)
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))

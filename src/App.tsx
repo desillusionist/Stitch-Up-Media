@@ -93,6 +93,9 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     sourceCrop: patch.sourceCrop,
     sourceSpeed: patch.sourceSpeed,
     sourceFps: patch.sourceFps,
+    // The window's own trims, whole like the transitions: trimming a clip is an edit this window makes, so an
+    // empty map is a decision about the job rather than a field left out of the patch.
+    trimPoints: patch.trimPoints,
     mutedLanes: patch.mutedLanes,
     // The ids come with the list when the window reordered it, because only they can say which of two
     // copies of one file moved where. The numbers come with them, so `CLIP n` stays on its clip too.

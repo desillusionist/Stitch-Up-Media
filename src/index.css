@@ -517,6 +517,25 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-lane .timeline-clip.is-selected { outline-color: var(--ui-accent); outline-style: solid; background: rgba(159, 191, 154, .14); }
 .timeline-lane .timeline-clip.is-trimmed { outline-style: dashed; }
 .timeline-lane-track.is-audio .timeline-clip { outline-color: var(--ui-paused); }
+/* Reordering: the clip in hand is dimmed, and the drop lands on the clip the pointer is over. The job's
+   sources ARE the main lane's clips, so this is a reorder of the join rather than a free move — nothing is
+   dropped between clips, because a concatenation has no room to drop into. */
+.timeline-lane .timeline-clip.is-dragging { opacity: .35; }
+/* Trimming: a grab handle on each edge of a main-lane clip, shown while the clip is in hand or hovered so a
+   lane at rest stays as wide as its time and nothing else. The shade is what the drag is about to take off
+   an end, and the readout says how long the window would be; the clip's own box does not move until release,
+   which is what keeps the handle under the pointer in a timeline whose clips are butted end to end. */
+.clip-trim-handle { position: absolute; top: 0; bottom: 0; width: 6px; z-index: 4; cursor: ew-resize; background: var(--ui-accent); opacity: 0; }
+.clip-trim-handle.is-in { left: 0; }
+.clip-trim-handle.is-out { right: 0; }
+.timeline-lane .timeline-clip:hover .clip-trim-handle,
+.timeline-lane .timeline-clip.is-selected .clip-trim-handle,
+.timeline-lane .timeline-clip.is-active .clip-trim-handle { opacity: .5; }
+.timeline-lane .timeline-clip .clip-trim-handle:hover { opacity: 1; }
+.clip-trim-shade { position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none; background: repeating-linear-gradient(45deg, rgba(3, 9, 16, .72) 0 4px, rgba(3, 9, 16, .32) 4px 8px); }
+.clip-trim-shade.is-head { left: 0; }
+.clip-trim-shade.is-tail { right: 0; }
+.clip-trim-readout { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 5; padding: 2px 6px; color: var(--ui-canvas); background: var(--ui-accent); font-size: 9px; letter-spacing: .04em; white-space: nowrap; pointer-events: none; }
 .timeline-fill { flex: 0 0 auto; min-width: 0; margin: 5px 0; border: 1px dashed var(--ui-border-dim); opacity: .5; }
 .timeline-playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ui-accent); cursor: ew-resize; z-index: 3; }
 /* A hairline is impossible to grab, so the skimmer carries a wider transparent area of its own.

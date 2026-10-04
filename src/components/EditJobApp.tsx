@@ -7,7 +7,8 @@ import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
-import { clipIdAt, clipKey, copyLabelFor } from '../lib/clipIds'
+import { clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong } from '../lib/clipIds'
+import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
@@ -107,6 +108,10 @@ const editableSlice = (task: QueueTask) => ({
   outputFilename: task.outputFilename,
   outputFilenameManuallySet: task.outputFilenameManuallySet ?? false,
   transitions: task.transitions,
+  // The trims are this window's too: a clip trimmed on the timeline is a change like any other, and
+  // leaving them out of the slice would make the window call itself clean the moment a trim was the
+  // first thing touched.
+  trimPoints: task.trimPoints,
   // The framing the window owns, exactly as it owns the transitions: a crop, a fit or a mute set on
   // its own is a change like any other, and leaving these out of the slice made the window call
   // itself clean the moment one of them was the first thing touched — so APPLY and OK stayed
@@ -553,6 +558,12 @@ export const EditJobApp: React.FC = () => {
   const undoRedoRef = useRef<{ undo: () => void; redo: () => void }>({ undo: () => undefined, redo: () => undefined })
   /** Boundary whose transition editor is open, by index of the clip it follows, or a timeline edge. */
   const [openBoundary, setOpenBoundary] = useState<number | 'head' | 'tail' | null>(null)
+  /** The clip whose edge is being dragged on the timeline, and the window that drag is proposing. */
+  const [trimDragKey, setTrimDragKey] = useState<string | null>(null)
+  const [trimPreview, setTrimPreview] = useState<TrimWindow | null>(null)
+  const trimPreviewRef = useRef<TrimWindow | null>(null)
+  /** The main-lane clip being dragged to another place, so a drop can name where it came from. */
+  const [draggingClipIndex, setDraggingClipIndex] = useState<number | null>(null)
   /**
    * Which lanes are muted, by lane id. It belongs to the task rather than to this window: a muted
    * lane is one the export does not carry, so it is written into the draft with the rest of the
@@ -643,8 +654,8 @@ export const EditJobApp: React.FC = () => {
       return
     }
     const userDirty = windowDirty(currentDraft, currentBaseline)
-    // Only the fields this window owns can conflict; trim points, probe results
-    // and source order arrive from the queue and should just be adopted.
+    // Only the fields this window owns can conflict; probe results and source order arrive from the
+    // queue and should just be adopted.
     if (userDirty && JSON.stringify(editableSlice(incoming)) !== JSON.stringify(editableSlice(currentBaseline))) {
       setIncomingConflict(incoming)
     }
@@ -665,7 +676,7 @@ export const EditJobApp: React.FC = () => {
       : {
           ...incoming,
           ...(clipsMoved && !mine
-            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, clipIds: incoming.clipIds, clipNumbers: incoming.clipNumbers }
+            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, trimPoints: incoming.trimPoints, clipIds: incoming.clipIds, clipNumbers: incoming.clipNumbers }
             : kept),
           ...(mine
             ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, type: currentDraft.type }
@@ -2012,6 +2023,75 @@ export const EditJobApp: React.FC = () => {
     applyTransition(edge === 'head' ? HEAD_FADE_KEY : TAIL_FADE_KEY, type, duration)
 
   /**
+   * Puts a main-lane clip at another place in the job, which is a reorder of its three lists together.
+   *
+   * The paths carry the order; the ids and the numbers are spliced the SAME way, so each clip keeps its
+   * identity and its `COPY n` however far it moves. Nothing else moves, because every per-clip record is
+   * already filed under the id that travelled — that is what ids are for.
+   */
+  const reorderClip = (from: number, to: number) => {
+    const current = latest()
+    if (from === to || from < 0 || to < 0 || from >= current.sourcePaths.length || to >= current.sourcePaths.length) return
+    updateDraft({
+      sourcePaths: moveAlong(current.sourcePaths, from, to),
+      clipIds: moveAlong(materializeClipIds(current), from, to),
+      clipNumbers: moveAlong(materializeClipNumbers(current), from, to),
+    })
+  }
+
+  /**
+   * Writes one clip's trim window, dropping the record entirely when the window keeps the whole source.
+   *
+   * A window that says "everything" is not a decision, so an untouched clip leaves no record behind — the
+   * same rule the speed, the fit and the crop follow.
+   */
+  const writeTrim = (key: string, window: TrimWindow, full: number) => {
+    const next = { ...(latest().trimPoints || {}) }
+    if (windowIsWholeSource(window, full)) delete next[key]
+    else next[key] = { in: window.in, out: window.out }
+    updateDraft({ trimPoints: Object.keys(next).length ? next : undefined })
+  }
+
+  /**
+   * Drags one edge of a clip's source window.
+   *
+   * The pointer's travel on the TIMELINE is a run of source once it is multiplied by the clip's retime, and
+   * the window is worked out from where the drag STARTED rather than step by step, so it cannot drift as the
+   * clip reflows under it. Nothing is written until the release: the timeline is a gapless concatenation, so
+   * a live write would move the very clip the pointer is trimming, and the drag is one step back either way.
+   */
+  const beginTrimDrag = (event: React.PointerEvent, segment: TimelineSegment, edge: 'in' | 'out') => {
+    event.preventDefault()
+    event.stopPropagation()
+    const full = sourceDuration(latest(), segment.sourcePath, undefined, resolveTiming)
+    const retime = segment.duration > 0 && segment.sourceUsedSeconds > 0 ? segment.sourceUsedSeconds / segment.duration : 1
+    const min = Math.max(MIN_TRIM_SECONDS, 1 / Math.max(1, rateValue(segment.nativeRate ?? rateOf(30))))
+    const pxPerSecond = Math.max(1e-6, laneWidthFor(1, zoom))
+    const startX = event.clientX
+    const from = trimWindowOf(segment.sourceIn, segment.sourceUsedSeconds)
+    const key = segment.key
+    trimPreviewRef.current = from
+    setTrimDragKey(key)
+    setTrimPreview(from)
+    const move = (moveEvent: PointerEvent) => {
+      const proposed = dragTrimWindow(from, edge, ((moveEvent.clientX - startX) / pxPerSecond) * retime, full, min)
+      trimPreviewRef.current = proposed
+      setTrimPreview(proposed)
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      const proposed = trimPreviewRef.current
+      trimPreviewRef.current = null
+      setTrimDragKey(null)
+      setTrimPreview(null)
+      if (proposed) writeTrim(key, proposed, full)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  /**
    * Records a source's timing from PROPERTIES: its rate, and for a still the length of
    * the clip made from it.
    *
@@ -2469,6 +2549,9 @@ export const EditJobApp: React.FC = () => {
       outputFilename: latest().outputFilename,
       outputFilenameManuallySet: latest().outputFilenameManuallySet,
       transitions: latest().transitions,
+      // The trims, whole: the window owns every clip's window into its source, so an emptied map is a
+      // decision about the job rather than a field left out of the patch.
+      trimPoints: latest().trimPoints,
       sourceFit: latest().sourceFit,
       sourceCrop: latest().sourceCrop,
       sourceSpeed: latest().sourceSpeed,
@@ -3613,14 +3696,28 @@ export const EditJobApp: React.FC = () => {
                 {model.lanes.map((lane) => (
                   <div className="timeline-lane" key={lane.id}>
                     <div className={`timeline-lane-track${lane.kind === 'audio' ? ' is-audio' : ''}`} onClick={seekFraction} title="Click to jump to this point">
-                    {lane.segments.map((segment, index) => (
+                    {lane.segments.map((segment, index) => {
+                      // The two gestures this clip offers: being dragged to another place (a reorder of the job's
+                      // sources, which only the main lane's clips are), and having either edge of its source
+                      // window trimmed. Both need the clip's place and its whole length, read once here.
+                      const sourceFull = draft ? sourceDuration(draft, segment.sourcePath, undefined, resolveTiming) : 0
+                      const reorderable = lane.id === mainLane?.id && lane.segments.length > 1
+                      const trimmable = lane.id === mainLane?.id && sourceFull > 0
+                      const trimming = trimDragKey === segment.key ? trimPreview : null
+                      const clipWidth = laneWidthFor(segment.duration, zoom)
+                      return (
                       <div
                         key={segment.key}
-                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${selected && selected.laneId === lane.id && selected.clipKey === segment.key ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}`}
-                        style={{ width: `${laneWidthFor(segment.duration, zoom)}px` }}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${selected && selected.laneId === lane.id && selected.clipKey === segment.key ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index ? ' is-dragging' : ''}`}
+                        style={{ width: `${clipWidth}px` }}
                         title={clipTitle(segment)}
+                        draggable={reorderable}
                         onClick={() => selectClip(lane.id, segment.key)}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
+                        onDragStart={reorderable ? (event) => { event.stopPropagation(); setDraggingClipIndex(index); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-stitch-clip', segment.key) } : undefined}
+                        onDragOver={reorderable ? (event) => { event.preventDefault(); event.stopPropagation() } : undefined}
+                        onDrop={reorderable ? (event) => { event.preventDefault(); event.stopPropagation(); if (draggingClipIndex != null && draggingClipIndex !== index) reorderClip(draggingClipIndex, index); setDraggingClipIndex(null) } : undefined}
+                        onDragEnd={reorderable ? () => setDraggingClipIndex(null) : undefined}
                       >
                         {/* The cells share the lane exactly, so there is no gap at the end, and each
                             shows the frame the playhead would show at that place on the lane. A tile
@@ -3706,8 +3803,29 @@ export const EditJobApp: React.FC = () => {
                             title="Fade out to black"
                           />
                         )}
+                        {/* What the drag is about to take off either end. The window is committed on release, so
+                            the clip's own box does not move while the pointer is down — the shading and the
+                            readout are the whole of the gesture until then, which is what keeps the handle under
+                            the pointer in a timeline whose clips are butted end to end. */}
+                        {trimmable && trimming && (() => {
+                          const out = segment.sourceIn + segment.sourceUsedSeconds
+                          const headPx = segment.sourceUsedSeconds > 0 ? clipWidth * Math.max(0, Math.min(trimming.in, out) - segment.sourceIn) / segment.sourceUsedSeconds : 0
+                          const tailPx = segment.sourceUsedSeconds > 0 ? clipWidth * Math.max(0, out - Math.max(trimming.out, segment.sourceIn)) / segment.sourceUsedSeconds : 0
+                          return <>
+                            {headPx > 0.5 && <span className="clip-trim-shade is-head" style={{ width: `${Math.min(clipWidth, headPx)}px` }} aria-hidden="true" />}
+                            {tailPx > 0.5 && <span className="clip-trim-shade is-tail" style={{ width: `${Math.min(clipWidth, tailPx)}px` }} aria-hidden="true" />}
+                          </>
+                        })()}
+                        {trimmable && (
+                          <>
+                            <span className="clip-trim-handle is-in" onPointerDown={(event) => beginTrimDrag(event, segment, 'in')} role="presentation" title="Drag to trim this clip's head" />
+                            <span className="clip-trim-handle is-out" onPointerDown={(event) => beginTrimDrag(event, segment, 'out')} role="presentation" title="Drag to trim this clip's tail" />
+                            {trimming && <span className="clip-trim-readout">{stamp(Math.max(0, trimming.out - trimming.in))}</span>}
+                          </>
+                        )}
                       </div>
-                    ))}
+                      )
+                    })}
                     {laneGap(lane) > 0 && <div className="timeline-fill" style={{ width: `${laneWidthFor(laneGap(lane), zoom)}px` }} title="No media on this lane" />}
                   </div>
                 </div>
