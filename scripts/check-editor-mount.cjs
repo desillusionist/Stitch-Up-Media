@@ -704,6 +704,19 @@ app.whenReady().then(async () => {
       if (ids.length !== 2 || !ids[0].endsWith('#1') || !ids[1].endsWith('#0')) problems.push(`the reorder did not carry the ids with the clips: ${JSON.stringify(ids)}`)
       if (JSON.stringify(gestures.reorderNumbers) !== JSON.stringify([2, 1])) problems.push(`the reorder did not carry the copy numbers: ${JSON.stringify(gestures.reorderNumbers)}`)
     }
+    // THE [+] PANEL AND THE DELETE KEY. The [+] has to be reachable over the trim handle that shares its
+    // corner; its panel has to offer ADD SOURCE after a rule; ADD SOURCE has to insert at the [+]'s own place;
+    // and Delete has to ask before it takes a clip, then take the one that was selected.
+    const commands = result.timelineSourceCommands
+    if (!commands) problems.push('the [+] panel / Delete drive reported nothing')
+    else {
+      if (commands.clipsBefore !== 2) problems.push(`the [+] drive started with ${commands.clipsBefore} clips rather than two`)
+      if (!commands.cutReachable) problems.push('the [+] on a cut cannot be clicked: the trim handle is over it')
+      if (!commands.panelDivider) problems.push('the [+] panel draws no rule before its source command')
+      if (commands.clipsAfterAdd !== 3) problems.push(`ADD SOURCE inserted ${(commands.clipsAfterAdd || 0) - 2} clips rather than one`)
+      if (!String(commands.deleteConfirm).includes('REMOVE THIS CLIP')) problems.push(`the Delete key did not ask before removing a clip: ${JSON.stringify(commands.deleteConfirm)}`)
+      if (commands.clipsAfterDelete !== 2) problems.push(`answering the Delete question left ${commands.clipsAfterDelete} clips rather than two`)
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))

@@ -68,6 +68,9 @@ const bridge = {
   applySourceTiming: noop, syncEditJobTask: noop, cancelEditJob: noop, saveSettings: noop,
   rememberPreview: noop, openEditJob: noop, quickLook: noop, diagnosticLog: noop,
   applyEditJob: async (patch: unknown) => { applied.push(patch) },
+  // The picker the [+] panel's ADD SOURCE opens. It answers with the same real clip, so an insert is a second
+  // copy of it — a file the job already holds, which is the case a copy number has to get right.
+  selectFiles: async () => [CLIP_FIXTURE],
   // A sentinel rather than a real still: what is being checked is whether the MONITOR asks for one and
   // draws it, not what ffmpeg would put in it — `check-tail` and the still graph's own assertions are
   // what answer that.
@@ -177,7 +180,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown } = { errors }
+const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1335,6 +1338,37 @@ const drive = async () => {
     reorderIds: reorderPatch?.clipIds ?? null,
     reorderNumbers: reorderPatch?.clipNumbers ?? null,
   }
+
+  // THE [+] PANEL'S OWN COMMANDS, AND THE DELETE KEY. The [+] sits on a clip's trailing edge, which is
+  // exactly where the trim handle now sits, so whether it can still be clicked is a HIT TEST rather than a
+  // reading of a z-index. That panel then carries a second decision after a rule — ADD SOURCE — which inserts
+  // at the place the [+] stood for. And a selected clip can be removed with the Delete key, after a question.
+  arrive(duplicateTask, 'timeline-source-commands')
+  await wait(900)
+  const commandClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const clipsBefore = commandClips().length
+  const cutAdd = commandClips()[0]?.querySelector('.boundary-add:not(.is-head)') as HTMLElement | null
+  const cutBox = cutAdd?.getBoundingClientRect()
+  const cutHit = cutBox ? document.elementFromPoint(cutBox.left + cutBox.width / 2, cutBox.top + cutBox.height / 2) : null
+  const cutReachable = Boolean(cutAdd && cutHit && (cutHit === cutAdd || cutAdd.contains(cutHit)))
+  cutAdd?.click()
+  await wait(200)
+  const panelDivider = Boolean(document.querySelector('.boundary-editor .boundary-divider'))
+  const addSourceButton = [...document.querySelectorAll('.boundary-editor .boundary-source')].find((button) => button.textContent?.trim() === 'ADD SOURCE') as HTMLButtonElement | undefined
+  addSourceButton?.click()
+  await wait(600)
+  const clipsAfterAdd = commandClips().length
+  // The DELETE key: select the inserted copy, ask, and answer.
+  commandClips()[1]?.click()
+  await wait(200)
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Delete', key: 'Delete', bubbles: true }))
+  await wait(200)
+  const deleteConfirm = document.querySelector('.editor-conflict .panel-kicker')?.textContent ?? null
+  const removeClipButton = [...document.querySelectorAll('.editor-conflict-actions button')].find((button) => button.textContent?.trim() === 'REMOVE CLIP') as HTMLButtonElement | undefined
+  removeClipButton?.click()
+  await wait(300)
+  const clipsAfterDelete = commandClips().length
+  result.timelineSourceCommands = { clipsBefore, cutReachable, panelDivider, clipsAfterAdd, deleteConfirm, clipsAfterDelete }
 
   // TWO COPIES OF ONE FILE, AND THE CLIP MENU'S REMOVE. Right-clicking the SECOND copy and removing it has
   // to take THAT clip: the menu's source index was read back with `indexOf`, which answers with the first

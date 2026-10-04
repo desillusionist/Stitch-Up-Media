@@ -118,6 +118,25 @@ export const nextClipNumber = (task: ClipIdSource, sourcePath: string): number =
   return 1 + (used.length ? Math.max(0, ...used) : 0)
 }
 
+/**
+ * The numbers a RUN of paths being added together should carry, in the order they are added.
+ *
+ * Worked out one at a time against the list built so far, so two copies of one file added in the SAME
+ * gesture are numbered one after the other rather than both taking the same figure — which is what
+ * `nextClipNumber` alone would give them, since it reads only the list that exists before the add.
+ */
+export const addedClipNumbers = (task: ClipIdSource, added: string[]): number[] => {
+  const paths = [...(task.sourcePaths ?? [])]
+  const numbers = [...materializeClipNumbers(task)]
+  return added.map((path) => {
+    const used = paths.map((candidate, index) => (candidate === path ? numbers[index] : 0))
+    const next = 1 + (used.length ? Math.max(0, ...used) : 0)
+    paths.push(path)
+    numbers.push(next)
+    return next
+  })
+}
+
 /** One list with an item MOVED, which is the same splice the paths take — used for ids and for numbers. */
 export const moveAlong = <T,>(list: T[], from: number, to: number): T[] => {
   if (from < 0 || from >= list.length || to < 0 || to >= list.length || from === to) return list

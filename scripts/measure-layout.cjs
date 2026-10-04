@@ -662,7 +662,7 @@ app.whenReady().then(async () => {
     if (!scaleRow.readout.inside) problems.push('the readout runs out of the label column')
   }
   if (laid.caseB && laid.caseB.selectedAudio) {
-    if (laid.caseB.selectedAudio.color !== 'rgb(159, 191, 154)') problems.push(`a selected clip is not drawn in the accent: ${laid.caseB.selectedAudio.color}`)
+    if (laid.caseB.selectedAudio.color !== 'rgb(197, 184, 121)') problems.push(`a selected clip is not drawn in amber: ${laid.caseB.selectedAudio.color}`)
     if (laid.caseB.selectedAudio.style !== 'solid') problems.push(`a selected clip is not drawn solid: ${laid.caseB.selectedAudio.style}`)
   }
   if (framing) {

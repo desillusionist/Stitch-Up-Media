@@ -27,7 +27,7 @@ import { fitSignature } from './sourceFit'
  * it too (by way of the `--filmstrip-tile` property the timeline sets from this figure), so the
  * picture that is extracted and the picture that is painted are the same size.
  */
-export const FILMSTRIP_CLIP_HEIGHT = 32
+export const FILMSTRIP_CLIP_HEIGHT = 38
 
 /** The multiple the tiles are generated at, so they stay crisp on a retina panel. */
 export const FILMSTRIP_SCALE = 2

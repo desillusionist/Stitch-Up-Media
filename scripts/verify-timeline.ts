@@ -22,7 +22,7 @@ import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFac
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
-import { clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId } from '../src/lib/clipIds'
+import { addedClipNumbers, clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
@@ -401,6 +401,17 @@ console.log('\n== a timeline reorder moves every list together ==')
   check('the paths take the new order', moveAlong(task.sourcePaths, 1, 0), ['b.mp4', 'a.mp4'])
   check('and the ids travel with them', moveAlong(materializeClipIds(task), 1, 0), [key1, key0])
   check('and so do the copy numbers', moveAlong(materializeClipNumbers(task), 1, 0), [2, 1])
+}
+
+console.log('\n== the numbers a run of added sources takes ==')
+{
+  const task = { sourcePaths: ['a.mp4', 'b.mp4'], clipNumbers: [1, 1] }
+  check('a file not in the job takes the first number', addedClipNumbers(task, ['c.mp4']), [1])
+  check('a copy of a file already there takes the next', addedClipNumbers(task, ['a.mp4']), [2])
+  // Two copies added in ONE gesture number one after the other, which `nextClipNumber` alone could not do —
+  // it reads only the list that exists before the add, so both would take the same figure.
+  check('two copies added together run on', addedClipNumbers(task, ['a.mp4', 'a.mp4']), [2, 3])
+  check('two different new files each number from one', addedClipNumbers(task, ['c.mp4', 'd.mp4']), [1, 1])
 }
 
 console.log('\n== the rate a still image is rendered at ==')

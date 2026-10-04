@@ -7,7 +7,7 @@ import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
-import { clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong } from '../lib/clipIds'
+import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipIds } from '../lib/clipIds'
 import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
@@ -386,6 +386,8 @@ export const EditJobApp: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [tab, setTab] = useState<Tab>('EXPORT')
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
+  /** The main-lane clip a Delete keypress has put up for removal, waiting on the reader's answer. */
+  const [confirmingClip, setConfirmingClip] = useState<{ sourcePath: string; index: number } | null>(null)
   const [incomingConflict, setIncomingConflict] = useState<QueueTask | null>(null)
   // Resolved preview targets, keyed by the source they belong to. The target is not
   // always the stored path: an image sequence plays through a generated clip. They
@@ -413,6 +415,10 @@ export const EditJobApp: React.FC = () => {
    * selected changes what is described.
    */
   const [selected, setSelected] = useState<{ laneId: string; clipKey: string } | null>(null)
+  /** Read by the mount-time key handler, which cannot close over a value rebuilt on every render. */
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const mainLaneIdRef = useRef<string | undefined>(undefined)
   /** Whether the PROPERTIES inspector is showing. It describes whatever is selected. */
   const [inspectorOpen, setInspectorOpen] = useState(false)
   /** The figure typed into the inspector's CUSTOM FPS field, held while it is open; null is the field shut. */
@@ -1498,6 +1504,22 @@ export const EditJobApp: React.FC = () => {
         return
       }
       if (isTyping(event.target)) return
+      // DELETE removes the selected MAIN-LANE clip, which is a job source. It cannot be done in silence: a
+      // clip carries a trim, fades, a fit, a crop, a speed and a rate, so the reader is asked first — the
+      // same shape the DISCARD query has. A selection on an added audio lane is left to its own menu, whose
+      // removal is a track's rather than a source's.
+      if (code === 'Delete' || code === 'Backspace') {
+        const sel = selectedRef.current
+        const task = draftRef.current
+        if (sel && task && sel.laneId === mainLaneIdRef.current) {
+          const index = materializeClipIds(task).indexOf(sel.clipKey)
+          if (index >= 0 && index < task.sourcePaths.length) {
+            event.preventDefault()
+            setConfirmingClip({ sourcePath: task.sourcePaths[index], index })
+            return
+          }
+        }
+      }
       if (code === 'Space' || event.key === ' ') {
         event.preventDefault()
         playbackRef.current.toggle()
@@ -1863,6 +1885,7 @@ export const EditJobApp: React.FC = () => {
    * single video stream, so it has no cut to offer.
    */
   const mainLane = model.lanes[0]
+  mainLaneIdRef.current = mainLane?.id
   const cuts = (mainLane?.segments ?? []).slice(0, -1).map((clip, index) => ({ index, sourcePath: clip.sourcePath }))
 
   // PROPERTIES reads the source under the playhead, which is the one the inspector was
@@ -2036,6 +2059,46 @@ export const EditJobApp: React.FC = () => {
       sourcePaths: moveAlong(current.sourcePaths, from, to),
       clipIds: moveAlong(materializeClipIds(current), from, to),
       clipNumbers: moveAlong(materializeClipNumbers(current), from, to),
+    })
+  }
+
+  /**
+   * Takes the clip the Delete key put up for removal, once the reader has said so.
+   *
+   * The same removal the clip's own menu runs: the job is rebuilt without that ONE place, so the surviving
+   * clips keep their records. A job left with nothing at all to encode cannot be held in a draft, so that
+   * one is the queue's to do — and it takes the job with it.
+   */
+  const performClipRemoval = (pending: { sourcePath: string; index: number }) => {
+    setConfirmingClip(null)
+    const task = draftRef.current
+    if (!task) return
+    const without = removeSourceFromTask(task, pending.sourcePath, pending.index)
+    if (without) updateDraft(without)
+    else void window.electronAPI?.removeEditJobSource(task.id, pending.sourcePath, pending.index)
+  }
+
+  /**
+   * Adds one or more sources AT a place in the join, from the [+] panel's ADD SOURCE.
+   *
+   * The files land at the position the [+] button stood for — before the first clip, between two, or after
+   * the last — so the panel's own place decides where the insert goes. Each new source gets an OPAQUE id
+   * like any other import and the next copy number for its file, and the ids and numbers are spliced at the
+   * same place as the paths so every clip already in the job keeps its own records exactly where they were.
+   */
+  const insertSources = async (position: number) => {
+    const files = await window.electronAPI?.selectFiles()
+    if (!files?.length) return
+    const current = latest()
+    const at = Math.max(0, Math.min(position, current.sourcePaths.length))
+    const ids = materializeClipIds(current)
+    const numbers = materializeClipNumbers(current)
+    const addedIds = newClipIds(files.length)
+    const addedNumbers = addedClipNumbers(current, files)
+    updateDraft({
+      sourcePaths: [...current.sourcePaths.slice(0, at), ...files, ...current.sourcePaths.slice(at)],
+      clipIds: [...ids.slice(0, at), ...addedIds, ...ids.slice(at)],
+      clipNumbers: [...numbers.slice(0, at), ...addedNumbers, ...numbers.slice(at)],
     })
   }
 
@@ -3301,6 +3364,19 @@ export const EditJobApp: React.FC = () => {
       </div>
     </div>}
 
+    {/* The Delete key's own question. A clip is not one thing thrown away: it carries a trim, fades, a fit, a
+        crop, a speed and a rate, all filed under it, so removing it takes all of them and the reader is asked. */}
+    {confirmingClip && <div className="editor-conflict" role="alert">
+      <div>
+        <span className="panel-kicker">REMOVE THIS CLIP?</span>
+        <p>{sourceName(confirmingClip.sourcePath)} leaves the job, and its trim, fades, fit, crop, speed and rate go with it.</p>
+      </div>
+      <div className="editor-conflict-actions">
+        <button onClick={() => setConfirmingClip(null)}>KEEP</button>
+        <button className="is-danger" onClick={() => performClipRemoval(confirmingClip)}>REMOVE CLIP</button>
+      </div>
+    </div>}
+
     <div className="editor-body">
       <main className="editor-main">
         <section className="editor-preview">
@@ -3856,6 +3932,20 @@ export const EditJobApp: React.FC = () => {
                   {selectedBoundary.fade < selectedBoundary.requested && <small className="boundary-clamped">RENDERS {selectedBoundary.fade.toFixed(2)}s</small>}
                 </div>
               )}
+              {/* The panel's SECOND decision, after a rule: what is placed AT this cut. The place is the one
+                  the [+] stood for — before the first clip, between two, or after the last. */}
+              <span className="boundary-divider" aria-hidden="true" />
+              <button
+                className="boundary-source"
+                onClick={() => {
+                  const at = selectedBoundary.kind === 'edge'
+                    ? (selectedBoundary.edge === 'head' ? 0 : latest().sourcePaths.length)
+                    : selectedBoundary.index + 1
+                  setOpenBoundary(null)
+                  void insertSources(at)
+                }}
+                title="Add a source at this place in the join"
+              >ADD SOURCE</button>
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close transition editor">x</button>
             </div>
           })()}
