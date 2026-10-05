@@ -86,6 +86,10 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     preset: patch.preset,
     outputFilename: patch.outputFilename,
     outputFilenameManuallySet: patch.outputFilenameManuallySet,
+    // COMBO/MULTI-TRACK's own mode, which the window owns like the trims: it decides whether the tracks
+    // are stacked or sequenced, and the queue's own switcher writes the same field. It is carried only
+    // when the patch names it, so a window that never touched it cannot clear the queue's choice.
+    ...(patch.comboMode !== undefined ? { comboMode: patch.comboMode } : {}),
     transitions: patch.transitions,
     // Whole, like the transitions: the window owns every clip's fit and every lane's mute, so an
     // emptied map is a decision about the job rather than a field left out of the patch.
@@ -121,7 +125,7 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
  * excluded, so encoding ticks cannot push refreshes into the child window.
  */
 const editJobSignature = (task: QueueTask) => JSON.stringify([
-  task.type, task.status, task.sourcePaths, task.additionalAudioTracks, task.preset,
+  task.type, task.comboMode, task.status, task.sourcePaths, task.additionalAudioTracks, task.preset,
   task.outputFilename, task.outputFilenameManuallySet, task.sourceBaseName, task.outputDirectory,
   task.trimPoints, task.sourceMetadata, task.sourceInfo, task.sequenceInput, task.sequenceInputs,
   task.imageSequencePreviews, task.quickLookSourceIndex, task.stillImageDuration, task.transitions,

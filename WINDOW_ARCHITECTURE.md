@@ -10,9 +10,13 @@ Controls the encoder cannot honour yet (burn-in effects, caption output) are sho
 
 ## Preview and timeline
 
-The panel plays the **assembled output**, not a single clip. `src/lib/timelineModel.ts` builds the consolidated timeline from the task, and the lanes are drawn to scale from the real trimmed durations. **STITCH** concatenates every source in order. **TRANSCODE**, **MULTI-TRACK** and **COMBO** map a single video stream with their audio tracks muxed alongside it from zero, so the finished length is the longer of the video and the longest track — which is exactly how the encoder reconciles them by padding video with a freeze frame. COMBO is modelled as multi-track because the encoder dispatches purely on `type` and never reads `comboMode`.
+The panel plays the **assembled output**, not a single clip. `src/lib/timelineModel.ts` builds the consolidated timeline from the task, and the lanes are drawn to scale from the real trimmed durations. **STITCH** concatenates every source in order. **TRANSCODE**, **MULTI-TRACK** and **COMBO** map a single video stream and mux their tracks alongside it, so with **stacked** tracks the finished length is the longer of the video and the longest track, which is exactly how the encoder reconciles them by padding video with a freeze frame.
 
-The main lane's media element is the master clock, so video and its embedded audio stay in sync by construction; added tracks are slaved to it and corrected only once they drift past a tolerance. Segment junctions are crossed by pointing the same element at the next source. Where an added track outlasts the video, a wall clock takes over so the playhead still advances.
+**COMBO's `comboMode` is a second axis of arrangement**, and it is read for a MULTI-TRACK as well as a COMBO because it is a question about how the TRACKS relate to each other rather than how many visuals they play under: `multitrack` stacks them from zero, `stitch` SEQUENCES them end to end into one lane and one output stream (the encoder builds that stream with a `concat` graph — `tracksConcatenate` is the one rule the model and the encoder share). A job whose tracks differ from its visual in length is padded in black either way.
+
+A **MULTI-TRACK/COMBO can retime its visual and its tracks**: `canApplyClipSpeed` allows it, and `executeMultiTrack` places the same `speedVideoFilters`/`speedAudioFilters` chains a CONVERT uses — the visual's on its own chain and each track's in that track's per-stream chain — so FPS/SPEED/DURATION are offered there and the drawn length is the written one.
+
+The main lane's media element is the master clock, so video and its embedded audio stay in sync by construction; added tracks are slaved to it and corrected only once they drift past a tolerance, and a slaved track PAST its own end is paused rather than re-parked (see `slavedAudioAt`). Segment junctions are crossed by pointing the same element at the next source. Where an added track outlasts the video, a wall clock takes over so the playhead still advances.
 
 Local files stream through the `stitch-media` scheme registered in `electron/main.ts`. A plain `file://` URL cannot work: the dev renderer runs on `http://localhost`, where Chromium refuses `file://` media. Byte ranges are resolved explicitly rather than delegated, because a media element only becomes seekable when it receives a `206` with a correct `Content-Range`.
 
@@ -26,13 +30,13 @@ Fades are written on **every path that can carry one**. A STITCH and a concatena
 
 The `[+]` affordance sits on each lane's boundaries: on each cut and at both ends of the main lane, and at both ends of an added track's single clip. Fades are placed by `fade`/`afade` inside the same filter chains the scaling already uses — a second `-vf` would silently replace the first, so they compose rather than append. **CROSSFADE is deliberately absent**: it overlaps clips, which the concat demuxer cannot express, and it shortens the total duration, so it needs the encoder rework and a timeline that accounts for the overlap.
 
-### Audio lanes and the split view
+### Audio lanes and the two-up view
 
 A lane is **named for what it holds**, not for what the export writes: an all-sound job's main lane reads `AUDIO 1` whether the preset supplies a black picture beside the track or not, and an added track reads `AUDIO n`. Its KIND still follows the file, so a sound lane is drawn as a waveform either way.
 
 An added audio track is a lane of its own and gets the same in-timeline controls the video lane's clips do — the trim handles (the encoder already applies a track's trim through `applyTrimInput`), a `[+]` with FADE IN/OUT, and ADD SOURCE, which inserts into `additionalAudioTracks` at that lane's own place. When **any** lane asks for a fade the multi-track path filters the audio **per output stream** (`-filter:a:N`), each lane's own `afade`s appended to the resample/layout chain it always had; a job with no fade keeps the one shared `-af`, so the common path is untouched.
 
-While a trim handle is down the monitor becomes a **split view**: the clip being trimmed keeps the main pane (its landing frame, moved by the drag) and the clip it is being cut against is drawn in a second pane on the side the handle is on — the previous clip's last frame on the LEFT for an IN handle, the next clip's first on the RIGHT for an OUT. The neighbour pane is a preview aid drawn at its own proportions; the main pane keeps the export's exact framing.
+While a trim handle is down the monitor becomes a **two-up view** that fills the whole panel: the two frames the cut will join sit side by side, each paned to the OUTPUT's own aspect ratio, and the export frame's enclosure is hidden (`is-trimming`) so nothing else is over them. The clip being trimmed is on the side the handle is NOT — the previous clip's last frame on the LEFT for an IN handle, the next clip's first on the RIGHT for an OUT. The drag's own drawer shows the run a handle is REMOVING as hatching inside the clip and the run it is ADDING as an amber outline outside it, since the clip's box does not move until release.
 
 ### Setting trim
 

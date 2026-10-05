@@ -226,6 +226,20 @@ export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: 
 /** The lane the clips themselves are on, whose audio is whatever they have embedded. */
 export const MAIN_LANE_ID = 'main'
 
+/** The lane a COMBO/MULTI-TRACK's tracks are SEQUENCED on, when they are stitched rather than stacked. */
+export const STITCHED_AUDIO_LANE_ID = 'audio-stitch'
+
+/**
+ * Whether a job's added tracks are SEQUENCED into one lane rather than stacked in parallel.
+ *
+ * This is what COMBO's `comboMode` means: the modes differ in how the tracks relate to each other, not in
+ * how many visuals they play under — a MULTI-TRACK is one visual with tracks, a COMBO is several — so the
+ * mode is honoured for both. STITCH sequences the tracks end to end into one lane and one output stream (a
+ * second axis of concatenation); the default ('multitrack') stacks them, each starting at zero.
+ */
+export const tracksConcatenate = (task: Pick<QueueTask, 'type' | 'comboMode'>): boolean =>
+  (task.type === 'combo' || task.type === 'multitrack') && task.comboMode === 'stitch'
+
 /**
  * The empty AUDIO lane every job carries, so there is somewhere to add a source in any mode.
  *
@@ -307,8 +321,13 @@ export const usesClipFraming = (task: QueueTask, sourcePath: string | undefined,
  */
 export const canApplyClipSpeed = (task: Pick<QueueTask, 'type' | 'sourcePaths' | 'preset'>, sourcePath: string | undefined): boolean => {
   if (clipsConcatenate(task)) return true
-  if (task.type !== 'transcode') return false
-  return Boolean(sourcePath) && mediaKind(sourcePath as string) !== 'audio' && !isStillFrameJob(task as QueueTask)
+  if (isStillFrameJob(task as QueueTask)) return false
+  if (!sourcePath) return false
+  if (task.type === 'transcode') return mediaKind(sourcePath) !== 'audio'
+  // MULTI-TRACK and a single-visual COMBO map their one visual straight through and mux their tracks: the
+  // encoder retimes both now, so the controls belong on both. A still has no frames to retime, and its
+  // length is a choice of its own rather than a speed.
+  return (task.type === 'multitrack' || task.type === 'combo') && mediaKind(sourcePath) !== 'image'
 }
 
 /**
@@ -780,28 +799,43 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   })
 
   // Audio tracks play in parallel from the start, keyed by index zero, which is
-  // how the queue stores their trim points and how the encoder reads them.
+  // how the queue stores their trim points and how the encoder reads them. A job whose tracks are
+  // SEQUENCED instead (COMBO/MULTI-TRACK 'stitch' tracks) carries them on ONE lane, end to end.
   const tracks = task.additionalAudioTracks || []
-  tracks.forEach((track, index) => {
-    const segment = segmentFor(task, track.path, 0, 0, options)
+  const trackSegment = (track: NonNullable<QueueTask['additionalAudioTracks']>[number], start: number) => {
+    const segment = segmentFor(task, track.path, 0, start, options)
     // A track's own head and tail fades, resolved by the same clamp the main lane's are, so the drawn
-    // ramp is what the encoder will write — see `applyTrackFades`.
+    // ramp is what the encoder will write.
     const fade = resolveFades([segment.duration], [], {
       head: trackEdgeFade(task, segment.key, 'head'),
       tail: trackEdgeFade(task, segment.key, 'tail'),
     })[0]
     segment.fadeIn = fade.fadeIn
     segment.fadeOut = fade.fadeOut
-    const language = (track.language || '').toLowerCase()
-    lanes.push({
-      id: track.id,
-      label: `AUDIO ${index + 1}${language && language !== 'und' ? ` ${language.toUpperCase()}` : ''}`,
-      kind: 'audio',
-      embedded: false,
-      segments: [segment],
-      duration: segment.duration,
+    return segment
+  }
+  if (tracksConcatenate(task)) {
+    let cursor = 0
+    const segments = tracks.map((track) => {
+      const segment = trackSegment(track, cursor)
+      cursor += segment.duration
+      return segment
     })
-  })
+    lanes.push({ id: STITCHED_AUDIO_LANE_ID, label: 'AUDIO 1', kind: 'audio', embedded: false, segments, duration: cursor })
+  } else {
+    tracks.forEach((track, index) => {
+      const segment = trackSegment(track, 0)
+      const language = (track.language || '').toLowerCase()
+      lanes.push({
+        id: track.id,
+        label: `AUDIO ${index + 1}${language && language !== 'und' ? ` ${language.toUpperCase()}` : ''}`,
+        kind: 'audio',
+        embedded: false,
+        segments: [segment],
+        duration: segment.duration,
+      })
+    })
+  }
 
   // A lane with nothing to land yet, so there is somewhere to add sound in every mode — see
   // `EMPTY_AUDIO_LANE_ID`. A job whose main lane is ALREADY a sound lane reads AUDIO 1 there, so a second

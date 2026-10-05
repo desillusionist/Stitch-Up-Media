@@ -196,13 +196,18 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-frame-window .editor-screen-message { position: absolute; inset: 0; display: grid; place-items: center; }
 .editor-frame b { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
 /* The trim's two-up view: the two frames the cut will join, side by side, each paned to the OUTPUT's own
-   aspect ratio so both read as the export will frame it. Above the black tail so a cut at the end of the
-   picture still shows it. */
-.editor-trim-pair { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; background: rgba(3, 9, 16, .94); pointer-events: none; }
-.editor-trim-pane { position: relative; flex: 0 1 auto; min-width: 0; max-width: 50%; max-height: 100%; display: flex; align-items: center; justify-content: center; background: #030910; border: 1px solid var(--ui-accent); }
+   aspect ratio so both read as the export will frame it. It covers the WHOLE monitor, and the frame's own
+   enclosure is hidden while it is up (see `is-trimming`), so the two frames fill the screen. */
+.editor-trim-pair { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; background: rgba(3, 9, 16, .96); pointer-events: none; }
+.editor-trim-pane { position: relative; flex: 1 1 0; min-width: 0; max-height: 100%; display: flex; align-items: center; justify-content: center; background: #030910; border: 1px solid var(--ui-accent); }
 .editor-trim-pane-media { width: 100%; height: 100%; object-fit: contain; }
 .editor-trim-pane-label { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
 .editor-trim-pane-none { padding: 12px; color: var(--ui-muted); font-size: 10px; }
+/* While a trim is in hand the monitor IS the two-up view: the export frame's own enclosure, the inset box
+   and the crop box would sit over the two frames the cut is being judged between. */
+.editor-stage.is-trimming .editor-frame,
+.editor-stage.is-trimming .editor-insets,
+.editor-stage.is-trimming .editor-crop { display: none; }
 /* The crop box, drawn on the picture rather than on the output frame. What it removes is
    dimmed by four explicit bands (see cropBands) rather than one spread shadow, which used
    to shade the output frame outline and the whole stage along with it. */
@@ -550,6 +555,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .clip-trim-shade { position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none; background: repeating-linear-gradient(45deg, rgba(3, 9, 16, .72) 0 4px, rgba(3, 9, 16, .32) 4px 8px); }
 .clip-trim-shade.is-head { left: 0; }
 .clip-trim-shade.is-tail { right: 0; }
+/* The EXPANSION drawer: the run a handle is ADDING, drawn outside the clip's box because the box does not
+   move until release. An amber outline with translucent fill, against the removal shade's dark hatching
+   INSIDE the clip, so growing and shrinking are told apart at a glance. */
+.clip-trim-grow { position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none; border: 1px dashed var(--crt-amber); background-image: repeating-linear-gradient(45deg, rgba(197, 184, 121, .22) 0 3px, rgba(197, 184, 121, .06) 3px 7px); }
+.clip-trim-grow.is-head { right: 100%; border-right: 0; }
+.clip-trim-grow.is-tail { left: 100%; border-left: 0; }
 .clip-trim-readout { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 5; padding: 2px 6px; color: var(--crt-black); background: var(--crt-amber); font-size: 9px; letter-spacing: .04em; white-space: nowrap; pointer-events: none; }
 /* A clip's own marking, over its own frames: the strip is drawn by its own rule below, and the selected one
    keeps the amber box in that view too. */

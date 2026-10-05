@@ -42,6 +42,8 @@ const noop = async () => undefined
 /** Every patch the window has sent, so the harness can read what a choice turned into. */
 const applied: unknown[] = []
 const savedSettings: unknown[] = []
+/** What the next file picker answers with, so a drive can add an AUDIO file rather than the video fixture. */
+let nextSelection: string[] | null = null
 const bridge = {
   getSettings: async () => ({
     maxConcurrentTasks: 1, useHardwareAcceleration: false, notifyOnCompletion: false,
@@ -71,7 +73,7 @@ const bridge = {
   applyEditJob: async (patch: unknown) => { applied.push(patch) },
   // The picker the [+] panel's ADD SOURCE opens. It answers with the same real clip, so an insert is a second
   // copy of it — a file the job already holds, which is the case a copy number has to get right.
-  selectFiles: async () => [CLIP_FIXTURE],
+  selectFiles: async () => nextSelection ?? [CLIP_FIXTURE],
   // A sentinel rather than a real still: what is being checked is whether the MONITOR asks for one and
   // draws it, not what ffmpeg would put in it — `check-tail` and the still graph's own assertions are
   // what answer that.
@@ -196,7 +198,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; comboMode?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1311,6 +1313,7 @@ const drive = async () => {
   const handleBox = outHandle?.getBoundingClientRect()
   let trimReadout: string | null = null
   let trimShades = 0
+  let growBands = 0
   let playheadMoved = false
   if (outHandle && handleBox) {
     const x = handleBox.left + handleBox.width / 2
@@ -1326,6 +1329,14 @@ const drive = async () => {
     // The MONITOR follows the dragged edge: the playhead is put where the cut will land, which is what the
     // monitor draws, so the skimmer's own position is the reading that says the live view is on.
     playheadMoved = playheadLeft() !== beforePlayhead
+    // GROWING draws its own drawer OUTSIDE the clip's box, where removing draws shading inside it. This clip
+    // is trimmed to four of twelve seconds, so dragging the out edge RIGHT grows it — captured here and then
+    // put back at the shrink position before release, so the released window is the one asserted below.
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x + 90, clientY: y }))
+    await wait(60)
+    growBands = document.querySelectorAll('.clip-trim-grow').length
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x - 40, clientY: y }))
+    await wait(40)
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x - 40, clientY: y }))
     await wait(150)
   }
@@ -1354,6 +1365,7 @@ const drive = async () => {
     beforeOrder,
     trimReadout,
     trimShades,
+    growBands,
     playheadMoved,
     afterTrim,
     trimEntries,
@@ -1491,6 +1503,7 @@ const drive = async () => {
   let splitSide: string | null = null
   let splitLabel: string | null = null
   let splitLabels: string[] = []
+  let splitFrameHidden = false
   let splitPanes = 0
   if (inHandle) {
     const box = inHandle.getBoundingClientRect()
@@ -1504,11 +1517,12 @@ const drive = async () => {
     splitSide = paneLabels[0] === 'PREV LAST' ? 'left' : paneLabels[0] === 'NEXT FIRST' ? 'right' : null
     splitLabel = paneLabels[0] || null
     splitLabels = paneLabels
+    splitFrameHidden = Boolean(document.querySelector('.editor-stage.is-trimming'))
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: at.clientX + 20, clientY: at.clientY }))
     await wait(120)
   }
   const splitGone = document.querySelector('.editor-trim-pair') === null
-  result.splitView = { splitSide, splitLabel, splitPanes, splitGone, splitLabels }
+  result.splitView = { splitSide, splitLabel, splitPanes, splitGone, splitLabels, splitFrameHidden }
 
   // THE AUDIO LANE'S OWN CONTROLS. A multitrack job's added track is a lane of its own: its clip has to offer
   // the same trim handles the video lane's do, and a [+] whose panel offers ADD SOURCE — but a fade on an
@@ -1605,7 +1619,7 @@ const drive = async () => {
   await wait(900)
   const clipStamp = () => document.querySelector('.timeline-clip small')?.textContent ?? null
   const beforeStamp = clipStamp()
-  const kicker = [...document.querySelectorAll('.panel-kicker')].find((node) => (node.textContent || '').startsWith('TIMELINE //')) as HTMLElement | undefined
+  const kicker = document.querySelector('.timeline-gutter-ruler') as HTMLElement | undefined
   kicker?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 120 }))
   await wait(150)
   const stampItems = [...document.querySelectorAll('.timeline-menu button')].map((button) => button.textContent?.trim() ?? '')
@@ -1654,6 +1668,55 @@ const drive = async () => {
   modePlaceAfter?.click()
   await wait(300)
   result.modeChange = { beforeMode, afterMode: modeKicker(), clips: modeClips().length }
+
+  // THE FIRST SOUND ASKS HOW THE TRACKS RELATE. Adding an AUDIO file through a [+] on a job with no tracks
+  // must offer MULTI-TRACK (stacked) or STITCH TRACKS (sequenced) before anything is inserted, and the
+  // answer must reach the queue as `comboMode`.
+  flushEdits()
+  await wait(200)
+  arrive(task, 'audio-ask')
+  await wait(900)
+  nextSelection = ['/tmp/added.wav']
+  const askClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  ;(askClips()[0]?.querySelector('.boundary-add.is-head') as HTMLElement | null)?.click()
+  await wait(150)
+  const askAdd = [...document.querySelectorAll('.boundary-editor .boundary-source')].find((button) => button.textContent?.trim() === 'ADD SOURCE') as HTMLButtonElement | undefined
+  askAdd?.click()
+  await wait(300)
+  const askButtons = [...document.querySelectorAll('.boundary-editor button')].map((button) => button.textContent?.trim() ?? '')
+  const stitchChoice = [...document.querySelectorAll('.boundary-editor button')].find((button) => button.textContent?.trim() === 'STITCH TRACKS') as HTMLButtonElement | undefined
+  stitchChoice?.click()
+  await wait(300)
+  nextSelection = null
+  const lanesAfterAsk = document.querySelectorAll('.timeline-lane').length
+  const applyAsk = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyAsk?.click()
+  await wait(250)
+  const askPatch = applied[applied.length - 1] as { comboMode?: string; additionalAudioTracks?: unknown[] } | undefined
+  result.audioAsk = { askButtons, lanesAfterAsk, comboMode: askPatch?.comboMode ?? null, trackCount: askPatch?.additionalAudioTracks?.length ?? 0 }
+
+  // THE TITLE AND THE LANES FOR A COMBO'S OWN MODE. A combo's heading names which of its two arrangements it
+  // is, and its tracks land on ONE lane when they are sequenced rather than one each.
+  flushEdits()
+  await wait(200)
+  const comboTask = {
+    id: 'mount-check-combo', type: 'combo', comboMode: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: [CLIP_FIXTURE, CLIP_FIXTURE],
+    additionalAudioTracks: [{ id: 't1', path: '/tmp/track-a.wav', language: 'und' }, { id: 't2', path: '/tmp/track-b.wav', language: 'und' }],
+    outputDirectory: '/tmp', outputFilename: 'combo.mp4',
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: '1080p' },
+  }
+  arrive(comboTask, 'combo-stitch')
+  await wait(900)
+  const headerTitle = () => (document.querySelector('.editor-header .panel-kicker')?.textContent ?? '')
+  const comboStitchTitle = headerTitle()
+  const comboStitchLanes = document.querySelectorAll('.timeline-lane').length
+  arrive({ ...comboTask, comboMode: 'multitrack' }, 'combo-multitrack')
+  await wait(600)
+  const comboMultiTitle = headerTitle()
+  const comboMultiLanes = document.querySelectorAll('.timeline-lane').length
+  const comboMultiLabels = [...document.querySelectorAll('.timeline-lane-head span')].map((node) => node.textContent ?? '')
+  result.comboMode = { comboStitchTitle, comboStitchLanes, comboMultiTitle, comboMultiLanes, comboMultiLabels }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

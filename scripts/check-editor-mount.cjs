@@ -680,6 +680,7 @@ app.whenReady().then(async () => {
       // writes is the second copy's, shortened from its out edge with its in point held.
       if (!gestures.trimReadout) problems.push('dragging an edge showed no readout')
       if (!(gestures.trimShades > 0)) problems.push('dragging an edge showed no shading of what it would take off')
+      if (!(gestures.growBands > 0)) problems.push('growing a clip by dragging an edge showed no drawer for the run it is adding')
       if (!gestures.playheadMoved) problems.push('the monitor did not follow the edge while a trim was dragged')
       const entries = (gestures.trimEntries || [])
       // The job already trims BOTH copies (five and four seconds of the twelve-second source), so the reading
@@ -765,6 +766,7 @@ app.whenReady().then(async () => {
       if (splitView.splitSide !== 'left') problems.push(`the IN handle's neighbour pane is on the ${JSON.stringify(splitView.splitSide)} rather than the left`)
       const splitLabels = (splitView.splitLabels || []).map((value) => String(value ?? ''))
       if (splitLabels[0] !== 'PREV LAST' || splitLabels[1] !== 'THIS CLIP') problems.push(`the IN handle's two panes are labelled ${JSON.stringify(splitLabels)} rather than PREV LAST and THIS CLIP`)
+      if (!splitView.splitFrameHidden) problems.push('the export frame enclosure is not hidden while a trim is in hand')
       if (!splitView.splitGone) problems.push('the two-up view outlived the handle it belongs to')
     }
     // THE AUDIO LANE'S OWN CONTROLS. An added track is a lane of its own and gets the same trim handles the
@@ -841,6 +843,25 @@ app.whenReady().then(async () => {
       const emptyButtons = (emptyLane.buttons || []).map((value) => String(value ?? ''))
       if (!emptyButtons.includes('ADD SOURCE')) problems.push(`the empty lane's [+] panel offers no ADD SOURCE: ${JSON.stringify(emptyButtons)}`)
       if (emptyButtons.includes('FADE')) problems.push(`the empty lane's [+] panel offers a FADE with no clip to fade: ${JSON.stringify(emptyButtons)}`)
+    }
+    // THE FIRST SOUND ASKS HOW THE TRACKS RELATE.
+    const audioAsk = result.audioAsk
+    if (!audioAsk) problems.push('the audio-ask drive reported nothing')
+    else {
+      const askButtons = (audioAsk.askButtons || []).map((value) => String(value ?? ''))
+      if (!(askButtons.includes('MULTI-TRACK') && askButtons.includes('STITCH TRACKS'))) problems.push(`the first-sound question does not offer both arrangements: ${JSON.stringify(askButtons)}`)
+      if (audioAsk.comboMode !== 'stitch') problems.push(`choosing STITCH TRACKS did not reach the queue as comboMode: ${JSON.stringify(audioAsk.comboMode)}`)
+      if (audioAsk.trackCount !== 1) problems.push(`the answered add left ${audioAsk.trackCount} tracks rather than one`)
+      if (audioAsk.lanesAfterAsk !== 2) problems.push(`a sequenced track did not land on one lane beside the video: ${audioAsk.lanesAfterAsk} lanes`)
+    }
+    // A COMBO'S OWN MODE, IN THE TITLE AND ON THE LANES.
+    const comboMode = result.comboMode
+    if (!comboMode) problems.push('the combo-mode drive reported nothing')
+    else {
+      if (comboMode.comboStitchTitle !== 'STITCH UP MEDIA // EDIT JOB // COMBO (STITCH TRACKS)') problems.push(`a sequenced COMBO's title reads ${JSON.stringify(comboMode.comboStitchTitle)}`)
+      if (comboMode.comboStitchLanes !== 2) problems.push(`a sequenced COMBO drew ${comboMode.comboStitchLanes} lanes rather than the video and one sequenced audio lane`)
+      if (comboMode.comboMultiTitle !== 'STITCH UP MEDIA // EDIT JOB // COMBO (MULTI-TRACK)') problems.push(`a stacked COMBO's title reads ${JSON.stringify(comboMode.comboMultiTitle)}`)
+      if (comboMode.comboMultiLanes !== 3) problems.push(`a stacked COMBO drew ${comboMode.comboMultiLanes} lanes rather than the video and one lane per track`)
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

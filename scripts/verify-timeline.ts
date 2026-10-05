@@ -21,7 +21,7 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, trimFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
@@ -302,6 +302,32 @@ console.log('\n== the empty audio lane ==')
   check('and a job with a real track has its own lanes instead', buildTimeline(trackJob, { resolveTiming: () => ({ duration: 5 }) }).lanes.map((lane) => lane.id), ['main', 't'])
   const stitchOfVideo = { ...videoJob, type: 'stitch', sourcePaths: ['/a.mp4', '/b.mp4'] } as unknown as QueueTask
   check('a stitch of pictures gets one too', buildTimeline(stitchOfVideo, { resolveTiming: () => ({ duration: 4 }) }).lanes.map((lane) => lane.id), ['main', EMPTY_AUDIO_LANE_ID])
+}
+
+console.log('\n== tracks sequenced on one lane ==')
+{
+  // COMBO's own mode is how the TRACKS relate to each other. 'stitch' sequences them into one lane and one
+  // output stream — a second axis of concatenation — while the default stacks them in parallel from zero.
+  const preset = { id: 'p', name: 'P', container: 'mkv', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' }
+  const job = (over: Partial<QueueTask> = {}) => ({
+    id: 'sq', type: 'combo', comboMode: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: ['/v1.mp4', '/v2.mp4'],
+    additionalAudioTracks: [{ id: 't1', path: '/a.wav', language: 'und' }, { id: 't2', path: '/b.wav', language: 'eng' }],
+    outputDirectory: '/o', outputFilename: 'o.mkv', preset, ...over,
+  }) as unknown as QueueTask
+  const timing = { resolveTiming: (path: string) => ({ duration: path === '/a.wav' ? 3 : path === '/b.wav' ? 4 : 2 }) }
+  check('the mode is read for a combo and a multi-track alike', [tracksConcatenate(job()), tracksConcatenate({ ...job(), type: 'multitrack' } as unknown as QueueTask), tracksConcatenate(job({ comboMode: 'multitrack' }))], [true, true, false])
+  const sequenced = buildTimeline(job(), timing)
+  check('a sequenced COMBO keeps its tracks on ONE lane', sequenced.lanes.map((lane) => lane.id), ['main', STITCHED_AUDIO_LANE_ID])
+  const audioLane = sequenced.lanes[1]
+  check('with one segment per track, in order', audioLane.segments.map((segment) => segment.sourcePath), ['/a.wav', '/b.wav'])
+  check('each starting where the last ended', [audioLane.segments[0].start, audioLane.segments[1].start], [0, 3])
+  near('and the lane running to their sum', audioLane.duration, 7)
+  near('so the output runs to the longer of the visuals and the sequenced tracks', sequenced.duration, 7)
+  const stacked = buildTimeline(job({ comboMode: 'multitrack' }), timing)
+  check('while a stacked COMBO keeps one lane per track', stacked.lanes.map((lane) => lane.id), ['main', 't1', 't2'])
+  check('each playing from zero', stacked.lanes.slice(1).map((lane) => lane.segments[0].start), [0, 0])
+  near('and the output running to the longest', stacked.duration, 4)
 }
 
 console.log('\n== a combo exposes cuts too ==')
@@ -2552,12 +2578,14 @@ void (async () => {
     check('a track whose clip has run out is past at the clip\u2019s own end', [slavedAudioAt(7.9, track).past, slavedAudioAt(8, track).past], [false, true])
     check('while the instant it is parked at never runs past the source it keeps', slavedAudioAt(99, track).at, 8)
 
-    // Where the encoder can carry a speed and where it cannot. The drawn timeline reads the record only
-    // where the export does, so a speed that cannot be written is not drawn either.
+    // Where the encoder can carry a speed. The drawn timeline reads the record only where the export does,
+    // so a speed that cannot be written is not drawn either. A MULTI-TRACK and a single-visual COMBO can
+    // now carry one — the encoder retimes their visual and their tracks — so the timeline draws it too.
     check('a stitch can carry a clip speed', canApplyClipSpeed(speedTask, '/a.mp4'), true)
     const multi = { ...speedTask, type: 'multitrack' } as unknown as QueueTask
-    check('a multi-track job cannot', canApplyClipSpeed(multi, '/a.mp4'), false)
-    check('and the drawn timeline ignores a record it cannot encode', buildTimeline(multi, { resolveTiming: timing }).lanes[0].segments[0].duration, 10)
+    check('a multi-track job can now too', canApplyClipSpeed(multi, '/a.mp4'), true)
+    check('so its visual is drawn retimed', buildTimeline(multi, { resolveTiming: timing }).lanes[0].segments[0].duration, 5)
+    check('a still has no frames to retime', canApplyClipSpeed({ ...multi, sourcePaths: ['/a.png'] } as unknown as QueueTask, '/a.png'), false)
     const convert = { ...speedTask, type: 'transcode', sourcePaths: ['/a.mp4'] } as unknown as QueueTask
     check('a single visual convert can', canApplyClipSpeed(convert, '/a.mp4'), true)
     const soundConvert = { ...speedTask, type: 'transcode', sourcePaths: ['/a.wav'] } as unknown as QueueTask

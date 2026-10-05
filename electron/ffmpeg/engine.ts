@@ -4,8 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, nativeRateFor, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, trackEdgeFade, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
-import { clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
+import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, nativeRateFor, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, trackEdgeFade, tracksConcatenate, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
+import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
@@ -692,21 +692,23 @@ export class FFmpegEngine {
     const isSequenceVideo = Boolean(videoSequence)
     const isStillCover = !videoOverride && !isSequenceVideo && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(videoSource)
     const videoTrim = videoOverride ? undefined : this.trimPoint(task, videoSource, 0)
-    let longestAudioDuration = 0
-    // Each track's own played length, so a fade on it is placed against the length it actually runs for.
-    const trackDurations: number[] = []
     // The visual's own pixel size, from the probe this path already makes, for the same reason the
     // transcode path reads it: a fit is worked out from the clip's shape and the frame.
     let videoSize: { width: number; height: number } | null = null
     let probedDuration = 0
+    let probedFps = 0
     // Whether the visual brings an audio stream of its own, which is what decides how the added tracks
     // are NUMBERED in the output. A still cover and an image sequence have none by construction, and a
     // video's own answer comes from the probe below. Guessed at rather than probed, the tags that name
     // each track's language would be written against a stream that may not exist.
     let videoHasAudio = !isStillCover && !isSequenceVideo
+    // Each track's own played length in SOURCE seconds, and its probed rate, both read once.
+    const trackDurations: number[] = []
+    const trackFps: number[] = []
     try {
       const videoProbe = await probeFile(videoSource)
       probedDuration = Number(videoProbe.duration || 0)
+      probedFps = parseFrameRate(videoProbe.videoStreams[0]?.fps)
       videoHasAudio = videoProbe.audioStreams.length > 0
       const resolution = videoProbe.videoStreams[0]?.resolution?.split('x').map(Number)
       if (resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
@@ -715,13 +717,12 @@ export class FFmpegEngine {
         videoSize = { width: videoSequence.width, height: videoSequence.height }
       }
       const audioProbes = await Promise.all(extraAudios.map((track) => probeFile(track.path)))
-      longestAudioDuration = audioProbes.reduce((max, probe, index) => {
+      audioProbes.forEach((probe, index) => {
+        trackFps[index] = parseFrameRate(probe.videoStreams[0]?.fps)
         const point = this.trimPoint(task, extraAudios[index].path, 0)
         const full = Number(probe.duration || 0)
-        const played = point && point.out > point.in ? Math.min(full - point.in, point.out - point.in) : full
-        trackDurations[index] = played
-        return Math.max(max, played)
-      }, 0)
+        trackDurations[index] = point && point.out > point.in ? Math.min(full - point.in, point.out - point.in) : full
+      })
     } catch (error) {
       logEvent('ffmpeg', 'duration reconciliation probe failed; using container durations', { taskId: task.id, error: String(error) })
     }
@@ -729,20 +730,29 @@ export class FFmpegEngine {
     // sequence's length is its frames at its rate, and a still's is a length the job chose. Asked of a
     // probe instead, a sequence could only answer with the length of its first frame — which is nothing,
     // because a still has no length in its container — and the tail below then quietly became nothing too.
-    const videoDuration = segmentTiming(
-      sourceDuration(task, videoSource, videoSequence, () => ({ duration: probedDuration })),
-      videoTrim,
-    ).duration
+    // The RETIME is folded in exactly as the timeline folds it in (`clipDurationFor`), so a MULTI-TRACK or
+    // COMBO can retime its visual and the drawn length is the written one.
+    const visualSpeed = videoOverride ? DEFAULT_CLIP_SPEED : speedFor(task, videoSource, 0)
+    const visualRetime = videoOverride ? 1 : this.retimeFor(task, videoSource, 0, probedFps)
+    const trackRetimes = extraAudios.map((track, index) => this.retimeFor(task, track.path, 0, trackFps[index] ?? 0))
+    const videoDuration = clipDurationFor(
+      segmentTiming(sourceDuration(task, videoSource, videoSequence, () => ({ duration: probedDuration })), videoTrim).duration,
+      visualRetime,
+    )
+    const trackTimelineDurations = trackDurations.map((seconds, index) => clipDurationFor(seconds || 0, trackRetimes[index]))
+    // What the tracks amount to as ONE run of sound: the sum where they are SEQUENCED, the longest where
+    // they are stacked. That is the figure the output is reconciled against either way.
+    const audioRun = trackTimelineDurations.reduce((run, seconds) => (tracksConcatenate(task) ? run + seconds : Math.max(run, seconds)), 0)
     // A multi-track output runs to the longer of the visual and its tracks, the visual being padded when a
     // track outlasts it. A still cover is the exception: it is bounded by the tracks it plays under, having
     // no length of its own to run out of.
     const expectedSeconds = isStillCover && extraAudios.length > 0
-      ? longestAudioDuration
-      : Math.max(videoDuration, longestAudioDuration)
+      ? audioRun
+      : Math.max(videoDuration, audioRun)
     // A visual shorter than its longest track is padded out, and that filter joins the same chain as any
     // scaling rather than replacing it. The padding such a visual gets is BLACK — which is what the tail
     // of a run-out picture should be, and what an added track plays under.
-    const tailDuration = isStillCover ? 0 : Math.max(0, longestAudioDuration - videoDuration)
+    const tailDuration = isStillCover ? 0 : Math.max(0, audioRun - videoDuration)
     // The fades the encoder will WRITE, on the same clamp the timeline draws with. The main visual's two
     // edges fade the picture and its own sound; each added track's edges fade THAT track and nothing else,
     // which is why the audio is filtered per output stream below. A combo's visual was already normalized
@@ -754,12 +764,19 @@ export class FFmpegEngine {
         videoDuration,
       )
     const trackFades = extraAudios.map((track, index) => this.fadeFilters(
-      resolveFades([trackDurations[index] || 0], [], {
+      resolveFades([trackTimelineDurations[index] || 0], [], {
         head: trackEdgeFade(task, clipKey(task, track.path, 0), 'head'),
         tail: trackEdgeFade(task, clipKey(task, track.path, 0), 'tail'),
       })[0],
-      trackDurations[index] || 0,
+      trackTimelineDurations[index] || 0,
     ))
+    // The retime filters, composed exactly as the transcode and normalize paths compose them: the picture
+    // moved to where it falls at the new rate with the output rate pinned beside it, and the sound retimed
+    // by atempo (pitch kept) or asetrate. Empty at the source's own rate, so an untouched job is handed the
+    // same chain it always was.
+    const speedVideo = speedVideoFilters(visualRetime, visualSpeed.interpolation === 'blending' ? 'blending' : 'sampling', outputFpsOf(task.preset))
+    const speedMainAudio = speedAudioFilters(visualRetime, visualSpeed.maintainPitch !== false, 48000)
+    const trackSpeedAudio = extraAudios.map((track, index) => speedAudioFilters(trackRetimes[index], speedFor(task, track.path, 0).maintainPitch !== false, 48000))
     let cmd = videoOverride ? ffmpeg(videoOverride) : (videoSequence ? this.sequenceCommand(videoSequence, videoTrim) : ffmpeg(videoSource))
     if (isStillCover && extraAudios.length > 0) {
       cmd.inputOptions(['-loop 1', '-framerate 2'])
@@ -820,7 +837,10 @@ export class FFmpegEngine {
     if (!pictured && carriesMainAudio) outputOptions.push('-map 0:a?')
     else if (!pictured && extraAudios.length === 0) outputOptions.push('-an')
 
-    if (!pictured) extraAudios.forEach((track, idx) => {
+    // A SEQUENCED set of tracks is ONE output stream, built by the graph below and mapped as `[aout]`;
+    // stacked tracks are one stream each, mapped here. The two are the same list of inputs either way.
+    const tracksStitched = tracksConcatenate(task) && extraAudios.length > 0
+    if (!pictured && !tracksStitched) extraAudios.forEach((track, idx) => {
       const inputIdx = idx + 1
       outputOptions.push(`-map ${inputIdx}:a:0`)
       // Metadata tags for language and title, written against the index the stream has in the OUTPUT
@@ -847,7 +867,7 @@ export class FFmpegEngine {
     const tailFilter = tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
       ? [`tpad=stop_mode=add:color=black:stop_duration=${tailDuration.toFixed(3)}`]
       : []
-    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : [...tailFilter, ...pictureFilters, ...mainFades.video], {
+    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : [...tailFilter, ...pictureFilters, ...speedVideo, ...mainFades.video], {
       ...(clipChain ? { clipChain } : {}),
       ...(pictured ? { graphOwnsPicture: true } : {}),
       ...(attachCover ? { keepsArtwork: true } : {}),
@@ -858,25 +878,42 @@ export class FFmpegEngine {
     if (task.preset.audioCodec === 'copy') cmd.audioCodec('aac')
     // The drawing's own graph resamples and lays the audio out, so the chain is not written twice.
     const channels = this.exportChannels(task.preset, 2)
-    // THE AUDIO IS FILTERED PER OUTPUT STREAM, not with one `-af` across all of them, once ANY lane asks
-    // for a fade: a single chain would put the main lane's fade on every added track and every track's
-    // fade on the main lane. Each output stream gets the same resample/layout it always had, with that
-    // lane's own `afade`s appended. A job with no fade is handed the one `-af` it has always had, so the
-    // common path is untouched.
     const audioBase = `aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=${channelLayoutFor(channels)}`
-    const fadeSomewhere = mainFades.audio.length > 0 || trackFades.some((fade) => fade.audio.length > 0)
-    if (!pictured && !fadeSomewhere) {
-      cmd.outputOptions([`-ar 48000`, `-ac ${channels}`, `-af ${audioBase}`])
-    } else if (!pictured) {
-      cmd.outputOptions([`-ar 48000`, `-ac ${channels}`])
-      // The main lane's own sound is the FIRST audio output where it is carried and the visual has one;
-      // otherwise the tracks begin at zero. The same figure the metadata tags are written against.
-      const firstTrackOut = carriesMainAudio && videoHasAudio ? 1 : 0
-      if (carriesMainAudio && videoHasAudio) cmd.outputOptions([`-filter:a:0 ${[audioBase, ...mainFades.audio].join(',')}`])
-      extraAudios.forEach((_track, idx) => {
-        const chain = [audioBase, ...(trackFades[idx]?.audio ?? [])]
-        cmd.outputOptions([`-filter:a:${firstTrackOut + idx} ${chain.join(',')}`])
+    const mainChain = [audioBase, ...speedMainAudio, ...mainFades.audio]
+    const firstTrackOut = carriesMainAudio && videoHasAudio ? 1 : 0
+    if (!pictured && tracksStitched) {
+      // A SEQUENCED set of tracks: each input is retimed, faded and resampled in its own chain, and the
+      // chains are CONCATENATED into one stream — the second axis of concatenation a COMBO(a STITCH of
+      // tracks) asks for. One stream is mapped, so the tracks play one after another rather than together.
+      const parts = extraAudios.map((_track, idx) => {
+        const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? [])]
+        return `[${idx + 1}:a]${chain.join(',')}[t${idx}]`
       })
+      const labels = extraAudios.map((_track, idx) => `[t${idx}]`).join('')
+      parts.push(`${labels}concat=n=${extraAudios.length}:v=0:a=1[aout]`)
+      cmd.complexFilter(parts.join(';'))
+      cmd.outputOptions([`-ar 48000`, `-ac ${channels}`])
+      outputOptions.push('-map [aout]')
+      const language = extraAudios[0].language
+      if (language) outputOptions.push(`-metadata:s:a:${firstTrackOut} language=${language}`)
+      if (extraAudios[0].title) outputOptions.push(`-metadata:s:a:${firstTrackOut} title="${extraAudios[0].title}"`)
+      if (carriesMainAudio && videoHasAudio) cmd.outputOptions([`-filter:a:0 ${mainChain.join(',')}`])
+    } else if (!pictured) {
+      // THE AUDIO IS FILTERED PER OUTPUT STREAM once any lane needs its own chain — a fade, or a retime —
+      // because a single `-af` would put one lane's on all of them. Each output stream gets the same
+      // resample/layout it always had, with that lane's own filters appended. A job needing neither is
+      // handed the one `-af` it has always had, so the common path is untouched.
+      const perStream = mainChain.length > 1 || trackFades.some((fade) => fade.audio.length > 0) || trackSpeedAudio.some((chain) => chain.length > 0)
+      cmd.outputOptions([`-ar 48000`, `-ac ${channels}`])
+      if (!perStream) {
+        cmd.outputOptions([`-af ${audioBase}`])
+      } else {
+        if (carriesMainAudio && videoHasAudio) cmd.outputOptions([`-filter:a:0 ${mainChain.join(',')}`])
+        extraAudios.forEach((_track, idx) => {
+          const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? [])]
+          cmd.outputOptions([`-filter:a:${firstTrackOut + idx} ${chain.join(',')}`])
+        })
+      }
     }
     cmd.outputOptions(outputOptions)
 

@@ -1324,6 +1324,53 @@ const main = async () => {
   check('while a job with no fade keeps the one shared audio filter it always had', /(^| )-af aresample=48000/.test(plainTrackCmd), true)
   check('and writes no per-stream filters at all', / -filter:a:/.test(plainTrackCmd), false)
 
+  // SEQUENCED TRACKS AND RETIMING IN A MULTI-TRACK/COMBO. 'stitch' tracks are concatenated into ONE stream
+  // that plays end to end, where stacked tracks are one stream each from zero; and a MULTI-TRACK/COMBO can
+  // retime its visual and its tracks through the same filters a CONVERT uses. Read as the LENGTH of the
+  // file and the NUMBER of audio streams, which are the two things the mode and the retime change.
+  console.log('\n== sequenced tracks and retiming ==')
+  const audioStreams = async (file) => String(await probeValue(file, 'stream=codec_type')).split('\n').map((line) => line.trim()).filter((line) => line === 'audio').length
+  const videoTone4 = path.join(root, 'visual-tone-4.mp4')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:size=320x240:rate=25:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', videoTone4])
+  const shortTone = path.join(root, 'short-tone.wav')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=1', '-c:a', 'pcm_s16le', shortTone])
+
+  // Two 5s tracks SEQUENCED behind a 2s picture: the output runs to their SUM. The same two STACKED would
+  // run to the longest, and carry two audio streams rather than one.
+  const sequenced = {
+    id: 'track-sequence', type: 'multitrack', comboMode: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: [video], additionalAudioTracks: [{ id: 't1', path: audio, language: 'und' }, { id: 't2', path: audio, language: 'und' }],
+    outputDirectory: root, outputFilename: 'track-sequence.mp4', preset,
+  }
+  await encode(sequenced)
+  const sequencedOut = path.join(root, 'track-sequence.mp4')
+  check('two tracks sequenced run one after the other', Number(await probeValue(sequencedOut, 'format=duration')), 10)
+  check('and they are written as ONE audio stream', await audioStreams(sequencedOut), 1)
+  const stackedTwo = { ...sequenced, id: 'track-stack', comboMode: 'multitrack', outputFilename: 'track-stack.mp4' }
+  await encode(stackedTwo)
+  const stackedOut = path.join(root, 'track-stack.mp4')
+  check('while the same two stacked run alongside each other', Number(await probeValue(stackedOut, 'format=duration')), 5)
+  check('and are two streams', await audioStreams(stackedOut), 2)
+
+  // RETIMING. A visual at 2x writes half its own length, with its embedded sound retimed beside it; a track
+  // at 2x contributes half of its trimmed run, through the per-stream chain.
+  const visualRetime = {
+    id: 'retime-visual', type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: [videoTone4], additionalAudioTracks: [{ id: 't1', path: shortTone, language: 'und' }],
+    sourceSpeed: { [`${videoTone4}#0`]: { speed: 2, interpolation: 'sampling', maintainPitch: true } },
+    outputDirectory: root, outputFilename: 'retime-visual.mp4', preset,
+  }
+  await encode(visualRetime)
+  check('a visual retimed at 2x writes half its run', Number(await probeValue(path.join(root, 'retime-visual.mp4'), 'format=duration')), 2)
+  const trackRetime = {
+    id: 'retime-track', type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: [videoTone4], additionalAudioTracks: [{ id: 't1', path: audio, language: 'und' }],
+    sourceSpeed: { [`${audio}#0`]: { speed: 2, interpolation: 'sampling', maintainPitch: true } },
+    outputDirectory: root, outputFilename: 'retime-track.mp4', preset,
+  }
+  await encode(trackRetime)
+  check('a track retimed at 2x contributes half of its run', Number(await probeValue(path.join(root, 'retime-track.mp4'), 'format=duration')), 4)
+
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')
   process.exit(failures.length ? 1 : 0)

@@ -535,6 +535,8 @@ export interface EditJobPatch {
   preset: EncodingPreset
   outputFilename: string
   outputFilenameManuallySet?: boolean
+  /** COMBO/MULTI-TRACK interpretation: stacked tracks, or a second axis of concatenation. */
+  comboMode?: QueueTask['comboMode']
   transitions?: Record<string, ClipTransition>
   /** Per-clip output fit, keyed like the transitions and carried whole rather than interpreted. */
   sourceFit?: Record<string, SourceFit>

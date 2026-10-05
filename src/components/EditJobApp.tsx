@@ -473,6 +473,13 @@ export const EditJobApp: React.FC = () => {
   /** Read by the mount-time key handler, which cannot close over a value rebuilt on every render. */
   const copiedClipRef = useRef<CopiedClip | null>(null)
   copiedClipRef.current = copiedClip
+  /**
+   * The first sound added to a job, held while the window asks how its tracks should relate.
+   *
+   * A job that has no tracks is about to gain a second axis of arrangement — stacked, or sequenced end to
+   * end — and that is the reader's choice rather than the job's. The files are held until it is made.
+   */
+  const [audioChoice, setAudioChoice] = useState<{ position: number; visuals: string[]; audios: string[] } | null>(null)
   const [incomingConflict, setIncomingConflict] = useState<QueueTask | null>(null)
   // Resolved preview targets, keyed by the source they belong to. The target is not
   // always the stored path: an image sequence plays through a generated clip. They
@@ -847,7 +854,7 @@ export const EditJobApp: React.FC = () => {
   // Rebuilding is cheap but churns identities, so it is keyed to the inputs that
   // actually change the timeline.
   const timelineSignature = draft ? JSON.stringify([
-    draft.type, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
+    draft.type, draft.comboMode, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
     draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo,
     draft.preset.fps, draft.preset.fpsRate, draft.stillImageDuration, draft.transitions, draft.sourceSpeed, draft.sourceFps, draft.clipIds, draft.clipNumbers,
   ]) : ''
@@ -2196,67 +2203,83 @@ export const EditJobApp: React.FC = () => {
    * before APPLY rather than leaving a stale heading over a list that no longer matches. The queue re-reads
    * the same rule when the patch lands, so the two cannot disagree — see `inferredMode`.
    */
-  const withListType = (item: QueueTask, sourcePaths: string[], tracks: QueueTask['additionalAudioTracks']): Partial<QueueTask> => {
+  const withListType = (
+    item: QueueTask,
+    sourcePaths: string[],
+    tracks: QueueTask['additionalAudioTracks'],
+    mode?: QueueTask['comboMode'],
+  ): Partial<QueueTask> => {
     const list = tracks && tracks.length ? tracks : undefined
     const type = inferredMode(sourcePaths, list ?? [])
+    // `comboMode` is kept for a MULTI-TRACK as well as a COMBO: it is a question about how the TRACKS
+    // relate to each other, not about how many visuals they play under.
+    const carriesTracks = type === 'combo' || type === 'multitrack'
     return {
       sourcePaths,
       additionalAudioTracks: list,
       type,
-      comboMode: type === 'combo' ? (item.comboMode || 'multitrack') : undefined,
+      comboMode: carriesTracks ? (mode ?? item.comboMode ?? 'multitrack') : undefined,
     }
+  }
+
+  /** Where a run of files lands: visuals spliced into the join at the place, audio appended as tracks. */
+  const applyInsert = (position: number, visuals: string[], audios: string[], mode?: QueueTask['comboMode']) => {
+    const current = latest()
+    const at = Math.max(0, Math.min(position, current.sourcePaths.length))
+    const ids = materializeClipIds(current)
+    const numbers = materializeClipNumbers(current)
+    const sourcePaths = [...current.sourcePaths.slice(0, at), ...visuals, ...current.sourcePaths.slice(at)]
+    const tracks = [...(current.additionalAudioTracks || []), ...audios.map((path) => ({ id: newTrackId(), path, language: 'und' }))]
+    updateDraft({
+      ...withListType(current, sourcePaths, tracks, mode),
+      clipIds: [...ids.slice(0, at), ...newClipIds(visuals.length), ...ids.slice(at)],
+      clipNumbers: [...numbers.slice(0, at), ...addedClipNumbers(current, visuals), ...numbers.slice(at)],
+    })
   }
 
   /**
    * Adds one or more sources AT a place in the join, from the [+] panel's ADD SOURCE.
    *
-   * The files land at the position the [+] button stood for — before the first clip, between two, or after
-   * the last — so the panel's own place decides where the insert goes. Each new source gets an OPAQUE id
-   * like any other import and the next copy number for its file, and the ids and numbers are spliced at the
-   * same place as the paths so every clip already in the job keeps its own records exactly where they were.
-   *
    * A source lands on the lane it BELONGS to rather than the one the [+] stood on: an added track is not in
    * `sourcePaths` at all, so an AUDIO file goes to the track list and everything else splices into the join.
    * Without that, an audio file added from the video lane's [+] landed in `sourcePaths`, where the
    * multi-track encoder never reads it — a source that was added and then silently not used.
+   *
+   * THE FIRST SOUND ASKS HOW THE TRACKS RELATE. A job with no tracks is about to gain a second axis of
+   * arrangement — stacked, or sequenced end to end — which is the reader's choice rather than the job's, so
+   * it is asked before anything is inserted. The answer is `comboMode`.
    */
   const insertSources = async (position: number) => {
     const files = await window.electronAPI?.selectFiles()
     if (!files?.length) return
-    const current = latest()
     const visuals = files.filter((file) => mediaKind(file) !== 'audio')
     const audios = files.filter((file) => mediaKind(file) === 'audio')
-    const at = Math.max(0, Math.min(position, current.sourcePaths.length))
-    const ids = materializeClipIds(current)
-    const numbers = materializeClipNumbers(current)
-    const addedIds = newClipIds(visuals.length)
-    const addedNumbers = addedClipNumbers(current, visuals)
-    const sourcePaths = [...current.sourcePaths.slice(0, at), ...visuals, ...current.sourcePaths.slice(at)]
-    const clipIds = [...ids.slice(0, at), ...addedIds, ...ids.slice(at)]
-    const clipNumbers = [...numbers.slice(0, at), ...addedNumbers, ...numbers.slice(at)]
-    const tracks = [...(current.additionalAudioTracks || []), ...audios.map((path) => ({ id: newTrackId(), path, language: 'und' }))]
-    updateDraft({ ...withListType(current, sourcePaths, tracks), clipIds, clipNumbers })
+    if (audios.length && !(latest().additionalAudioTracks || []).length) {
+      setAudioChoice({ position, visuals, audios })
+      return
+    }
+    applyInsert(position, visuals, audios)
   }
 
   /**
-   * Adds one or more sources to the TRACK list, at a place, from an added audio lane's [+] panel.
-   *
-   * An added track is not in `sourcePaths`, so its place in the join is a place in `additionalAudioTracks`
-   * and the insert goes there — with an opaque id of its own each, exactly as the queue gives a track, so
-   * nothing collides with the tracks already there. The paths are left alone, so the visual lane and every
-   * clip's records stay exactly where they were.
+   * Adds sources from an added audio lane's [+] panel: audio becomes another track, a picture joins the
+   * join. The same first-sound question is asked here, this being the other [+] that can put the first track
+   * on a job.
    */
   const insertTrackSources = async (position: number) => {
     const files = await window.electronAPI?.selectFiles()
     if (!files?.length) return
     const current = latest()
-    const audios = files.filter((file) => mediaKind(file) === 'audio')
     const visuals = files.filter((file) => mediaKind(file) !== 'audio')
+    const audios = files.filter((file) => mediaKind(file) === 'audio')
+    if (audios.length && !(current.additionalAudioTracks || []).length) {
+      setAudioChoice({ position: current.sourcePaths.length, visuals, audios })
+      return
+    }
+    // A track goes at the lane's own place in the TRACK list; a picture is appended to the join.
     const tracks = [...(current.additionalAudioTracks || [])]
     const at = Math.max(0, Math.min(position, tracks.length))
     tracks.splice(at, 0, ...audios.map((path) => ({ id: newTrackId(), path, language: 'und' })))
-    // A VISUAL added from an audio lane goes to the join rather than the track list: a track is HEARD, and
-    // a picture on one would be mapped for its sound and nothing else.
     const sourcePaths = [...current.sourcePaths, ...visuals]
     updateDraft({
       ...withListType(current, sourcePaths, tracks),
@@ -2974,6 +2997,9 @@ export const EditJobApp: React.FC = () => {
       sourceFps: latest().sourceFps,
       mutedLanes: latest().mutedLanes,
       sourceTiming: sourceTimingOverrides(latest()),
+      // The tracks' own mode, sent so the ask that decides it in this window reaches the queue; the queue's
+      // own switcher writes the same field and pushes it back, so the two never disagree about it.
+      comboMode: latest().comboMode,
       // Only when the window changed it: an untouched list is the queue's, and sending the window's
       // snapshot of it back would overwrite a reorder made in the queue while this window was open.
       ...(sourceListMoved(latest(), baselineRef.current ?? latest())
@@ -3707,7 +3733,7 @@ export const EditJobApp: React.FC = () => {
     <header className="editor-header">
       {/* The job's own mode is part of the title now, after a second ` // `, rather than a boxed tag at the far
           end of the bar: the heading already names the window, and the mode belongs with it. */}
-      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB // {draft.type === 'stitch' ? 'STITCH UP' : draft.type === 'multitrack' ? 'MULTI-TRACK' : draft.type === 'combo' ? 'COMBO' : 'CONVERT'}</span><h1>{sourceName(focusedSource)}</h1></div>
+      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB // {draft.type === 'stitch' ? 'STITCH UP' : draft.type === 'multitrack' ? 'MULTI-TRACK' : draft.type === 'combo' ? ((draft.comboMode ?? 'multitrack') === 'stitch' ? 'COMBO (STITCH TRACKS)' : 'COMBO (MULTI-TRACK)') : 'CONVERT'}</span><h1>{sourceName(focusedSource)}</h1></div>
     </header>
 
     {incomingConflict && <div className="editor-conflict" role="alert">
@@ -3727,7 +3753,7 @@ export const EditJobApp: React.FC = () => {
                 be drawn around the picture rather than around the panel. The stage is also the
                 pan surface: everything drawn lives in one layer inside it and moves together
                 when a zoom has left more than the panel can show. */}
-            <div className={`editor-stage${drawable ? ' is-pannable' : ''}${canPlacePicture ? ' is-placing' : ''}${cropDragging ? ' is-cropping' : ''}`} ref={attachStage} onPointerDown={beginMonitorDrag}>
+            <div className={`editor-stage${drawable ? ' is-pannable' : ''}${canPlacePicture ? ' is-placing' : ''}${cropDragging ? ' is-cropping' : ''}${trimNeighbour ? ' is-trimming' : ''}`} ref={attachStage} onPointerDown={beginMonitorDrag}>
               <div className="editor-stage-pan" style={{ transform: `translate(${panX}px, ${panY}px)` }}>
                 {/* The frame's own window: the picture is drawn inside it and clipped by it, so
                     what the monitor shows is the output's own area and not the picture spilling
@@ -3794,42 +3820,6 @@ export const EditJobApp: React.FC = () => {
                               onClick={toggleFromClick}
                             />
                             : <span className="editor-screen-message">{screenMessage}</span>}
-                  {/* The TRIM'S TWO-UP VIEW: while a handle is down the monitor shows the two frames the cut
-                      will join, side by side, each in the OUTPUT's own aspect ratio so both read as the export
-                      will frame them. The clip being trimmed is on the side the handle is NOT, so an IN handle
-                      (cutting the head) has its neighbour — the previous clip's LAST frame — on the left, and an
-                      OUT handle (cutting the tail) has the next clip's FIRST on the right. The main element runs
-                      on behind, moved to the landing frame by the drag itself. */}
-                  {trimNeighbour && (() => {
-                    const current = playback.segment
-                    const currentTarget = current ? pictureSourceFor(current) : null
-                    const currentHasPicture = Boolean(current) && sourceVideo[current!.sourcePath] !== false
-                    const neighbour = trimNeighbour.segment
-                    const neighbourTarget = pictureSourceFor(neighbour)
-                    const neighbourHasPicture = sourceVideo[neighbour.sourcePath] !== false
-                    const aspect = outputFrame ? `${outputFrame.width} / ${outputFrame.height}` : '16 / 9'
-                    const neighbourPane = <TrimPairPane
-                      key="neighbour"
-                      label={trimNeighbour.side === 'left' ? 'PREV LAST' : 'NEXT FIRST'}
-                      sourcePath={neighbour.sourcePath}
-                      still={Boolean(neighbour.still)}
-                      videoUrl={neighbourHasPicture && neighbourTarget ? mediaUrl(neighbourTarget) : null}
-                      seekTo={trimNeighbour.at}
-                      aspect={aspect}
-                    />
-                    const currentPane = <TrimPairPane
-                      key="current"
-                      label="THIS CLIP"
-                      sourcePath={current?.sourcePath ?? ''}
-                      still={Boolean(current?.still)}
-                      videoUrl={currentHasPicture && currentTarget ? mediaUrl(currentTarget) : null}
-                      seekTo={current ? sourceTimeAt(playback.position, current) : 0}
-                      aspect={aspect}
-                    />
-                    return <div className="editor-trim-pair">
-                      {trimNeighbour.side === 'left' ? <>{neighbourPane}{currentPane}</> : <>{currentPane}{neighbourPane}</>}
-                    </div>
-                  })()}
                 </div>
                 {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}x{outputFrame?.height}</b></div>}
                 {/* The box the clip's own margins leave inside the frame. The background the export
@@ -3846,6 +3836,43 @@ export const EditJobApp: React.FC = () => {
                   ))}
                 </div>}
               </div>
+              {/* The TRIM'S TWO-UP VIEW: while a handle is down the monitor shows the two frames the cut
+                  will join, side by side, filling the whole preview. Each pane is shaped to the OUTPUT's
+                  own aspect ratio so both read as the export will frame them. The clip being trimmed is on
+                  the side the handle is NOT, so an IN handle (cutting the head) has its neighbour — the
+                  previous clip's LAST frame — on the left, and an OUT handle (cutting the tail) has the
+                  next clip's FIRST on the right. The main element runs on behind, moved to the landing
+                  frame by the drag itself, and the frame's own enclosure is hidden (see `is-trimming`). */}
+              {trimNeighbour && (() => {
+                const current = playback.segment
+                const currentTarget = current ? pictureSourceFor(current) : null
+                const currentHasPicture = Boolean(current) && sourceVideo[current!.sourcePath] !== false
+                const neighbour = trimNeighbour.segment
+                const neighbourTarget = pictureSourceFor(neighbour)
+                const neighbourHasPicture = sourceVideo[neighbour.sourcePath] !== false
+                const aspect = outputFrame ? `${outputFrame.width} / ${outputFrame.height}` : '16 / 9'
+                const neighbourPane = <TrimPairPane
+                  key="neighbour"
+                  label={trimNeighbour.side === 'left' ? 'PREV LAST' : 'NEXT FIRST'}
+                  sourcePath={neighbour.sourcePath}
+                  still={Boolean(neighbour.still)}
+                  videoUrl={neighbourHasPicture && neighbourTarget ? mediaUrl(neighbourTarget) : null}
+                  seekTo={trimNeighbour.at}
+                  aspect={aspect}
+                />
+                const currentPane = <TrimPairPane
+                  key="current"
+                  label="THIS CLIP"
+                  sourcePath={current?.sourcePath ?? ''}
+                  still={Boolean(current?.still)}
+                  videoUrl={currentHasPicture && currentTarget ? mediaUrl(currentTarget) : null}
+                  seekTo={current ? sourceTimeAt(playback.position, current) : 0}
+                  aspect={aspect}
+                />
+                return <div className="editor-trim-pair">
+                  {trimNeighbour.side === 'left' ? <>{neighbourPane}{currentPane}</> : <>{currentPane}{neighbourPane}</>}
+                </div>
+              })()}
             </div>
             <small>{focusedCopyLabel ? `${focusedCopyLabel} // ` : ''}{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
             <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.sourceUsedSeconds, sourceIn: activeSegment.sourceIn, totalSeconds: sourceDuration(draft, activeSegment.sourcePath, undefined, resolveTiming), fps: activeSegment.nativeRate ?? rateOf(sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming)), mode: timestampMode })} | ${outputRangeLabel(duration, outputRate, timestampMode)}` : outputRangeLabel(duration, outputRate, timestampMode)}</small>
@@ -4102,7 +4129,7 @@ export const EditJobApp: React.FC = () => {
             <div className="editor-note">&gt; THIS JOB MAPS ONE FRAME TO ONE FRAME, SO THERE IS NOTHING TO TIME. CHANGE THE FORMAT IN EXPORT SETTINGS TO TREAT THE IMAGE AS A {Math.round(draft.stillImageDuration || 10)}s CLIP.</div>
           </> : <>
           <div className="timeline-head">
-            <div className="panel-kicker" onContextMenu={(event) => { event.preventDefault(); const point = menuPoint(event); setTimelineMenu({ kind: 'stamp', x: point.x, y: point.y }) }} title="Right-click to choose the unit lengths are shown in">TIMELINE // {draft.type.toUpperCase()}</div>
+            <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
             <div className="timeline-zoom">
               <button onClick={() => setZoom((current) => clampZoom(current / 2))} disabled={zoom <= ZOOM_MIN} aria-label="Make the timeline shorter" title="Magnify out"><ZoomOut size={11} /></button>
               <span className="timeline-zoom-value">{Math.round(zoom * 100) / 100}x</span>
@@ -4129,7 +4156,13 @@ export const EditJobApp: React.FC = () => {
                 ruler nor the skimmer can travel under the column. Its rows carry the same heights
                 as the lanes opposite, so the two columns cannot drift apart. */}
             <div className="timeline-gutter">
-              <div className="timeline-gutter-ruler">{stamp(playback.position)}</div>
+              {/* The live readout IS the timestamp/framestamp label, so the unit is chosen on it: right-click
+                  the stamp to switch between timecode and frame count. */}
+              <div
+                className="timeline-gutter-ruler"
+                onContextMenu={(event) => { event.preventDefault(); const point = menuPoint(event); setTimelineMenu({ kind: 'stamp', x: point.x, y: point.y }) }}
+                title="Right-click to choose whether lengths read as a timestamp or a framestamp"
+              >{stamp(playback.position)}</div>
               {model.lanes.map((lane) => (
                 <div className="timeline-lane-head" key={lane.id} onContextMenu={(event) => openLaneMenu(event, lane.id, lane.label)} title="Right-click to choose how this lane's clips are drawn">
                   <button
@@ -4271,9 +4304,17 @@ export const EditJobApp: React.FC = () => {
                           const out = segment.sourceIn + segment.sourceUsedSeconds
                           const headPx = segment.sourceUsedSeconds > 0 ? clipWidth * Math.max(0, Math.min(trimming.in, out) - segment.sourceIn) / segment.sourceUsedSeconds : 0
                           const tailPx = segment.sourceUsedSeconds > 0 ? clipWidth * Math.max(0, out - Math.max(trimming.out, segment.sourceIn)) / segment.sourceUsedSeconds : 0
+                          // EXPANSION has its own drawer, drawn OUTSIDE the clip's box: the box does not move until
+                          // release, so what a handle ADDS would otherwise show nothing at all — the removed run
+                          // shading is inside the clip and a growing one has no inside to shade. The two are told
+                          // apart by their style: removal is hatched inside, growth is an amber outline outside.
+                          const growHeadPx = segment.sourceUsedSeconds > 0 ? clipWidth * Math.max(0, segment.sourceIn - trimming.in) / segment.sourceUsedSeconds : 0
+                          const growTailPx = segment.sourceUsedSeconds > 0 ? clipWidth * Math.max(0, trimming.out - out) / segment.sourceUsedSeconds : 0
                           return <>
                             {headPx > 0.5 && <span className="clip-trim-shade is-head" style={{ width: `${Math.min(clipWidth, headPx)}px` }} aria-hidden="true" />}
                             {tailPx > 0.5 && <span className="clip-trim-shade is-tail" style={{ width: `${Math.min(clipWidth, tailPx)}px` }} aria-hidden="true" />}
+                            {growHeadPx > 0.5 && <span className="clip-trim-grow is-head" style={{ width: `${growHeadPx}px` }} aria-hidden="true" />}
+                            {growTailPx > 0.5 && <span className="clip-trim-grow is-tail" style={{ width: `${growTailPx}px` }} aria-hidden="true" />}
                           </>
                         })()}
                         {trimmable && (
@@ -4369,6 +4410,19 @@ export const EditJobApp: React.FC = () => {
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close transition editor">x</button>
             </div>
           })()}
+          {audioChoice && (
+            // THE FIRST SOUND ASKS HOW THE TRACKS RELATE. The files are held rather than inserted until the
+            // choice is made, and the answer is the job's `comboMode` — the same field the queue's own card
+            // switches, so the two windows agree about it.
+            <div className="boundary-editor">
+              <span className="boundary-title">ADD AUDIO AS</span>
+              <div className="boundary-options">
+                <button onClick={() => { const choice = audioChoice; setAudioChoice(null); applyInsert(choice.position, choice.visuals, choice.audios, 'multitrack') }} title="The tracks play together, each from zero">MULTI-TRACK</button>
+                <button onClick={() => { const choice = audioChoice; setAudioChoice(null); applyInsert(choice.position, choice.visuals, choice.audios, 'stitch') }} title="The tracks play one after another, on one lane">STITCH TRACKS</button>
+              </div>
+              <button className="boundary-close" onClick={() => setAudioChoice(null)} aria-label="Cancel adding audio">x</button>
+            </div>
+          )}
           {model.unusedVideoSources.length > 0 && <div className="editor-note">&gt; {model.unusedVideoSources.length} EXTRA VIDEO SOURCE(S) ({model.unusedVideoSources.map(sourceName).join(', ')}) ARE NOT USED HERE: THIS JOB MAPS ONE VIDEO STREAM. A STITCH JOB CONCATENATES THEM.</div>}
           {showBoundaries && <div className="editor-note">&gt; [+] ON A CUT FADES BOTH SIDES OF IT; [+] AT THE TIMELINE'S ENDS FADES FROM OR TO BLACK. THE ENCODER APPLIES THEM AND THE MONITOR MIRRORS THEM.</div>}
           <div className="editor-note">&gt; LANE WIDTHS ARE THE REAL TRIMMED DURATIONS; AUDIO PLAYS ALONGSIDE THE VIDEO FROM ZERO, SO THE OUTPUT RUNS TO {duration > 0 ? stamp(duration) : 'AN UNKNOWN LENGTH'}.</div>
