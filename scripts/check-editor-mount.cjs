@@ -64,8 +64,12 @@ runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'tes
 const clipAudioFixture = path.join(fixtureDir, 'clip-audio.mp4')
 runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=25:duration=12', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=12', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', clipAudioFixture])
 
+// A plain SOUND file, for the per-clip level the PROPERTIES panel offers on an audio source.
+const soundFixture = path.join(fixtureDir, 'sound.wav')
+runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=12', '-c:a', 'pcm_s16le', soundFixture])
+
 const htmlPath = path.join(__dirname, '.editor-mount.html')
-fs.writeFileSync(htmlPath, `<!doctype html><html><head><meta charset="utf-8">${style}</head><body><script>window.__clipFixture = ${JSON.stringify(clipFixture)}</script><script>window.__clipAudioFixture = ${JSON.stringify(clipAudioFixture)}</script><script>${fs.readFileSync(bundle, 'utf8')}</script></body></html>`, 'utf8')
+fs.writeFileSync(htmlPath, `<!doctype html><html><head><meta charset="utf-8">${style}</head><body><script>window.__clipFixture = ${JSON.stringify(clipFixture)}</script><script>window.__clipAudioFixture = ${JSON.stringify(clipAudioFixture)}</script><script>window.__soundFixture = ${JSON.stringify(soundFixture)}</script><script>${fs.readFileSync(bundle, 'utf8')}</script></body></html>`, 'utf8')
 
 app.disableHardwareAcceleration()
 app.whenReady().then(async () => {
@@ -883,6 +887,38 @@ app.whenReady().then(async () => {
       if (!(embedded.embedKeys || []).length) problems.push('a mute on an embedded stream did not reach the queue as embeddedAudio')
       const extractTrack = embedded.extractTrack
       if (!extractTrack || extractTrack.streamIndex !== 0 || !extractTrack.sourceClipId) problems.push(`EXTRACT AUDIO TO TRACK did not land a track naming the stream it came from: ${JSON.stringify(extractTrack)}`)
+    }
+    // A PER-CLIP LEVEL ON A SOUND SOURCE.
+    const soundLevel = result.soundLevel
+    if (!soundLevel) problems.push('the sound-level drive reported nothing')
+    else {
+      if (!soundLevel.hasField) problems.push('a sound clip offered no LEVEL field in PROPERTIES')
+      if (soundLevel.gainDb !== -15) problems.push(`a sound clip\u2019s level did not reach the queue as embeddedAudio: ${JSON.stringify(soundLevel.gainDb)}`)
+    }
+    // A TRACK'S OWN LEVEL, ON ITS LANE.
+    const trackGain = result.trackGain
+    if (!trackGain) problems.push('the track-gain drive reported nothing')
+    else {
+      if (trackGain.shown !== '0') problems.push(`a track\u2019s LEVEL started at ${JSON.stringify(trackGain.shown)} rather than unity`)
+      if (trackGain.gainDb !== -12) problems.push(`a track\u2019s LEVEL did not reach the queue as its own gainDb: ${JSON.stringify(trackGain.gainDb)}`)
+    }
+    // SHIFT SELECTION, GROUP RESET TRIM AND GROUP REMOVE.
+    const groups = result.timelineGroups
+    if (!groups) problems.push('the group-selection drive reported nothing')
+    else {
+      if (groups.groupSelected !== 3) problems.push(`Shift selected ${groups.groupSelected} clips rather than the run of three`)
+      if (!/RESET TRIM \(3\)/.test(String(groups.resetLabel ?? ''))) problems.push(`the group\u2019s RESET TRIM reads ${JSON.stringify(groups.resetLabel)} rather than naming the three`)
+      if (groups.groupTrimPoints != null) problems.push(`RESET TRIM on a group left trims behind: ${JSON.stringify(groups.groupTrimPoints)}`)
+      if (!/REMOVE 2 CLIPS/.test(String(groups.removeHead ?? ''))) problems.push(`the group removal is headed ${JSON.stringify(groups.removeHead)}`)
+      if (groups.remaining !== 1) problems.push(`removing two of three clips left ${JSON.stringify(groups.remaining)}`)
+    }
+    // THE SPLIT: a bare C cuts the selected clip in two at the skimmer.
+    const split = result.splitClip
+    if (!split) problems.push('the split drive reported nothing')
+    else {
+      if (split.before !== 1) problems.push(`the split drive started with ${split.before} clips rather than one`)
+      if (split.after !== 2) problems.push(`pressing C made ${split.after} clips rather than two (key gave ${split.afterKey}, menu disabled ${JSON.stringify(split.menuDisabled)}, skimmer ${JSON.stringify(split.readout)} of ${JSON.stringify(split.clipText)})`)
+      if (split.paths !== 2 || split.halves !== 2 || split.idCount !== 2) problems.push(`the split\u2019s lists do not line up: paths ${split.paths}, halves ${split.halves}, ids ${split.idCount} (${JSON.stringify(split.trims)})`)
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

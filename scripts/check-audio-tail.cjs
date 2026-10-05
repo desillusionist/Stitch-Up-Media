@@ -146,6 +146,15 @@ const rmsAt = async (file, start, duration) => {
   return Math.sqrt(sum / Math.max(1, count))
 }
 
+/** The same reading of ONE named audio stream, for a file whose streams are not all the same sound. */
+const rmsStream = async (file, stream, start, duration) => {
+  const raw = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', file, '-map', `0:a:${stream}`, '-ss', String(start), '-t', String(duration), '-f', 's16le', '-ac', '1', '-ar', '8000', '-'], { encoding: 'buffer' })
+  const count = Math.floor(raw.length / 2)
+  let sum = 0
+  for (let index = 0; index < count; index += 1) { const value = raw.readInt16LE(index * 2) / 32768; sum += value * value }
+  return Math.sqrt(sum / Math.max(1, count))
+}
+
 /**
  * The average colour of where a drawing IS: a centre strip for a line, a centre column for bars and bands.
  *
@@ -1439,6 +1448,48 @@ const main = async () => {
   const convertLevelCmd = await captureCommand(convertLevel)
   check('a CONVERT names the picture beside the streams it names', / -map 0:v:0/.test(convertLevelCmd), true)
   check('and maps only the enabled stream', / -map 0:a:0/.test(convertLevelCmd) && !/ -map 0:a:1/.test(convertLevelCmd), true)
+
+  // A TRACK'S OWN LEVEL, and the extraction that has to CARRY it. A track's gain is written on that track's
+  // own stream — before the mix, so each track's level is independent — and extracting a levelled stream has
+  // to hand the level to the new track, so the mix is unchanged at the moment of extraction.
+  console.log('\n== a track\u2019s own level, and the level an extraction carries ==')
+  const trackGain = {
+    id: 'track-gain', type: 'multitrack', outputFilename: 'track-gain.mp4', ...baseTask,
+    sourcePaths: [twoAudio], additionalAudioTracks: [{ id: 't1', path: shortTone, language: 'und', gainDb: -20 }],
+  }
+  const trackGainCmd = await captureCommand(trackGain)
+  // The fixture's visual carries TWO audio streams, so an untouched main lane maps both (`-map 0:a?`) and the
+  // added track is the THIRD output stream — the count the per-stream filters and the tags are indexed by.
+  check('a track\u2019s level is written on that track\u2019s own stream', / -filter:a:2 [^\n]*volume=0\.1/.test(trackGainCmd), true)
+  check('and the level is written nowhere else', (trackGainCmd.match(/volume=/g) || []).length === 1, true)
+  const plainTrackGain = { ...trackGain, id: 'track-none', outputFilename: 'track-none.mp4', additionalAudioTracks: [{ id: 't1', path: shortTone, language: 'und' }] }
+  await captureCommand(plainTrackGain)
+  await encode(trackGain)
+  await encode(plainTrackGain)
+  const tGain = await rmsStream(path.join(root, 'track-gain.mp4'), 2, 0.3, 0.4)
+  const tPlain = await rmsStream(path.join(root, 'track-none.mp4'), 2, 0.3, 0.4)
+  check(`and the track really is about a tenth as loud (${tGain.toFixed(4)} vs ${tPlain.toFixed(4)})`, tGain < tPlain * 0.25 && tGain > tPlain * 0.03, true)
+
+  // THE ACCEPTANCE: a clip at a non-unity level, extracted to a track, sounds the same before and after.
+  const beforeExtract = { id: 'carry-before', type: 'multitrack', outputFilename: 'carry-before.mp4', ...baseTask, sourcePaths: [twoAudio], embeddedAudio: { [embedClipId]: [{ index: 0, gainDb: -20 }] } }
+  await encode(beforeExtract)
+  const beforeRms = await rmsStream(path.join(root, 'carry-before.mp4'), 0, 1, 0.4)
+  const afterExtract = {
+    id: 'carry-after', type: 'multitrack', outputFilename: 'carry-after.mp4', ...baseTask, sourcePaths: [twoAudio],
+    additionalAudioTracks: [{ id: 'x1', path: twoAudio, language: 'und', streamIndex: 0, sourceClipId: embedClipId, gainDb: -20 }],
+  }
+  await encode(afterExtract)
+  // The extracted stream is the SECOND output stream after extraction (the picture keeps the other one), and
+  // the two readings have to agree: the level travelled with the stream rather than being left behind.
+  const afterRms = await rmsStream(path.join(root, 'carry-after.mp4'), 1, 1, 0.4)
+  check(`the extracted track sounds the same as the clip did (${afterRms.toFixed(4)} vs ${beforeRms.toFixed(4)})`, beforeRms > 0 && Math.abs(afterRms - beforeRms) < beforeRms * 0.3, true)
+  check('and the level it carried is written on the track\u2019s own stream', /volume=0\.1/.test(await captureCommand(afterExtract)), true)
+
+  // A SOUND CLIP'S OWN LEVEL, on the CONVERT path: an audio file's one stream IS the export's stream, so the
+  // level joins the chain the retime and the fades use rather than needing a map list of its own.
+  const soundLevel = { id: 'sound-level', type: 'transcode', outputFilename: 'sound-level.mp4', status: 'pending', progress: 0, sourcePaths: [audio], outputDirectory: root, preset, embeddedAudio: { [`${audio}#0`]: [{ index: 0, gainDb: -20 }] } }
+  const soundCmd = await captureCommand(soundLevel)
+  check('a sound clip\u2019s own level is written on the export\u2019s audio chain', / -af [^\n]*volume=0\.1/.test(soundCmd), true)
 
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')

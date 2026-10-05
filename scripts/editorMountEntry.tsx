@@ -97,6 +97,8 @@ const bridge = {
 const CLIP_FIXTURE = (window as unknown as { __clipFixture?: string }).__clipFixture || '/tmp/clip.mp4'
 /** A clip that CARRIES a soundtrack, for the embedded-audio controls, which a silent fixture cannot drive. */
 const CLIP_AUDIO = (window as unknown as { __clipAudioFixture?: string }).__clipAudioFixture || '/tmp/clip-audio.mp4'
+/** A plain sound file, for the per-clip LEVEL the inspector offers on an audio source. */
+const SOUND_FIXTURE = (window as unknown as { __soundFixture?: string }).__soundFixture || '/tmp/sound.wav'
 
 /** A job of the plainest kind, so the render has a timeline, a monitor and settings to draw. */
 const task = {
@@ -200,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; comboMode?: unknown; embeddedAudio?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1807,6 +1809,127 @@ const drive = async () => {
     streamRows, streamLabels, dotDimmedBefore, dotDimmedAfter, embedKeys,
     extractTrack: (extractPatch?.additionalAudioTracks || []).find((track) => track.sourceClipId) ?? null,
   }
+
+  // A PER-CLIP LEVEL ON AN AUDIO SOURCE: the inspector offers a LEVEL on a sound clip, and it reaches the
+  // queue as `embeddedAudio` under that clip's own id.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-sound', type: 'transcode', sourcePaths: [SOUND_FIXTURE] }, 'sound-level')
+  await wait(1200)
+  ;(document.querySelector('.timeline-clip') as HTMLElement | null)?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  await wait(120)
+  ;(document.querySelector('.timeline-clip') as HTMLElement | null)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const soundProps = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'PROPERTIES') as HTMLButtonElement | undefined
+  soundProps?.click()
+  await wait(300)
+  const soundLevelField = [...document.querySelectorAll('.inspector-scroll .editor-field')].some((field) => (field.querySelector('span')?.textContent ?? '').startsWith('LEVEL'))
+  const soundLevelInput = [...document.querySelectorAll('.inspector-scroll .editor-field input')].find((input) => (input.getAttribute('aria-label') ?? '').includes('level in dB')) as HTMLInputElement | undefined
+  if (soundLevelInput) setNativeValue(soundLevelInput, '-15')
+  await wait(150)
+  const applySound = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applySound?.click()
+  await wait(250)
+  const soundPatch = applied[applied.length - 1] as { embeddedAudio?: Record<string, Array<{ gainDb?: number }>> } | undefined
+  const soundGain = soundPatch?.embeddedAudio ? Object.values(soundPatch.embeddedAudio)[0]?.[0]?.gainDb ?? null : null
+  result.soundLevel = { hasField: soundLevelField, gainDb: soundGain }
+
+  // A TRACK'S LEVEL, on its lane: an added track's head carries a dB field beside its M, and setting it reaches
+  // the queue as that track's own `gainDb`.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-gain', type: 'multitrack', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 't1', path: CLIP_AUDIO, language: 'und' }] }, 'track-gain')
+  await wait(900)
+  const gainInput = document.querySelector('.lane-gain-input') as HTMLInputElement | null
+  const gainShown = gainInput?.value ?? null
+  if (gainInput) setNativeValue(gainInput, '-12')
+  await wait(150)
+  const applyGain = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyGain?.click()
+  await wait(250)
+  const gainPatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ id: string; gainDb?: number }> } | undefined
+  result.trackGain = { shown: gainShown, gainDb: gainPatch?.additionalAudioTracks?.find((track) => track.id === 't1')?.gainDb ?? null }
+
+  // GROUP SELECTION AND THE SPLIT. Shift takes a RUN of clips on one lane; RESET TRIM then acts on all of them.
+  // A bare C cuts the selected clip in two at the skimmer.
+  flushEdits()
+  await wait(200)
+  const groupTask = {
+    ...task, id: 'mount-groups', type: 'stitch',
+    sourcePaths: [CLIP_FIXTURE, CLIP_FIXTURE, CLIP_FIXTURE],
+    trimPoints: { [`${CLIP_FIXTURE}#0`]: { in: 1, out: 5 }, [`${CLIP_FIXTURE}#1`]: { in: 1, out: 5 }, [`${CLIP_FIXTURE}#2`]: { in: 1, out: 5 } },
+  }
+  arrive(groupTask, 'groups')
+  await wait(900)
+  const groupClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  groupClips()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  await wait(80)
+  groupClips()[2]?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: true }))
+  await wait(120)
+  const groupSelected = document.querySelectorAll('.timeline-clip.is-selected').length
+  groupClips()[1]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 80, clientY: 60 }))
+  await wait(150)
+  const resetGroupItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => (button.textContent ?? '').startsWith('RESET TRIM')) as HTMLButtonElement | undefined
+  const resetLabel = resetGroupItem?.textContent ?? null
+  resetGroupItem?.click()
+  await wait(200)
+  const applyGroup = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyGroup?.click()
+  await wait(250)
+  const groupPatch = applied[applied.length - 1] as { trimPoints?: Record<string, unknown> } | undefined
+  // GROUP REMOVE: two of the three, asked through Delete and the one confirmation.
+  arrive(groupTask, 'group-remove')
+  await wait(700)
+  groupClips()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  await wait(80)
+  groupClips()[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: true }))
+  await wait(120)
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Delete', bubbles: true }))
+  await wait(180)
+  const removeHead = ([...document.querySelectorAll('.timeline-menu-head')].map((node) => node.textContent ?? '')).join(' | ')
+  const removeGo = [...document.querySelectorAll('.timeline-menu-actions button')].find((button) => button.textContent?.trim() === 'REMOVE') as HTMLButtonElement | undefined
+  removeGo?.click()
+  await wait(200)
+  const applyRemove = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyRemove?.click()
+  await wait(250)
+  const removePatch = applied[applied.length - 1] as { sourcePaths?: string[] } | undefined
+  result.timelineGroups = { groupSelected, resetLabel, groupTrimPoints: groupPatch?.trimPoints ?? null, removeHead, remaining: removePatch?.sourcePaths?.length ?? null }
+
+  // THE SPLIT. The clip is clicked at its own middle — which is where the lane's click-to-seek puts the
+  // skimmer — and a bare C cuts it there.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-split' }, 'split')
+  await wait(900)
+  const splitClip = document.querySelector('.timeline-clip') as HTMLElement | null
+  const splitRect = splitClip?.getBoundingClientRect()
+  const splitClipsBefore = document.querySelectorAll('.timeline-clip').length
+  if (splitClip && splitRect) {
+    splitClip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: splitRect.left + splitRect.width / 2, clientY: splitRect.top + splitRect.height / 2 }))
+    await wait(200)
+  }
+  const splitReadout = (document.querySelector('.timeline-gutter-ruler') as HTMLElement | null)?.textContent ?? null
+  const splitClipText = (document.querySelector('.timeline-clip small') as HTMLElement | null)?.textContent ?? null
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyC', bubbles: true }))
+  await wait(250)
+  const afterKey = document.querySelectorAll('.timeline-clip').length
+  let splitMenuDisabled: boolean | null = null
+  if (afterKey === splitClipsBefore) {
+    splitClip?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: (splitRect?.left ?? 60) + 4, clientY: (splitRect?.top ?? 60) + 4 }))
+    await wait(150)
+    const splitItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'SPLIT AT SKIMMER') as HTMLButtonElement | undefined
+    splitMenuDisabled = splitItem ? Boolean(splitItem.disabled) : null
+    splitItem?.click()
+    await wait(200)
+  }
+  const splitClipsAfter = document.querySelectorAll('.timeline-clip').length
+  const applySplit = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applySplit?.click()
+  await wait(250)
+  const splitPatch = applied[applied.length - 1] as { sourcePaths?: string[]; trimPoints?: Record<string, { in: number; out: number }>; clipIds?: string[] } | undefined
+  const splitTrims = splitPatch?.trimPoints ? Object.values(splitPatch.trimPoints) : []
+  result.splitClip = { before: splitClipsBefore, afterKey, after: splitClipsAfter, menuDisabled: splitMenuDisabled, paths: splitPatch?.sourcePaths?.length ?? null, halves: splitTrims.length, idCount: splitPatch?.clipIds?.length ?? null, readout: splitReadout, clipText: splitClipText, trims: splitTrims }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

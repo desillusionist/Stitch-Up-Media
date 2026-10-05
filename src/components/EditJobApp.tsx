@@ -18,7 +18,7 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
 import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
 import { presetSummary } from '../lib/presetSummary'
@@ -199,7 +199,7 @@ const windowDirty = (draft: QueueTask, baseline: QueueTask) => isDirty(draft, ba
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
-  | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean; duplicating?: boolean; extracting?: boolean }
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean; duplicating?: boolean; extracting?: boolean; multi?: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
   /** The TIMELINE kicker's own menu: which unit the window shows lengths in. */
   | { kind: 'stamp'; x: number; y: number }
@@ -525,15 +525,26 @@ export const EditJobApp: React.FC = () => {
    * selected changes what is described.
    */
   const [selected, setSelected] = useState<{ laneId: string; clipKey: string } | null>(null)
+  /**
+   * The clips in hand TOGETHER, by their own keys — the anchor plus whatever Shift has added.
+   *
+   * A group is a set of KEYS rather than of places, so it survives a reorder the way every other per-clip
+   * record does. `selected` stays the ANCHOR: the inspector and the context menu describe it, and a Shift
+   * click measures its range from it.
+   */
+  const [multiSelected, setMultiSelected] = useState<string[]>([])
   /** Read by the mount-time key handler, which cannot close over a value rebuilt on every render. */
   const selectedRef = useRef(selected)
   selectedRef.current = selected
+  const multiSelectedRef = useRef(multiSelected)
+  multiSelectedRef.current = multiSelected
   const mainLaneIdRef = useRef<string | undefined>(undefined)
   // The mount-time key handler reaches the clip commands through these, so it always runs the LATEST render's
   // closures rather than the ones in force when it was bound.
   const openRemoveConfirmRef = useRef<() => boolean>(() => false)
   const copySelectedClipRef = useRef<() => boolean>(() => false)
   const pasteCopiedClipRef = useRef<() => boolean>(() => false)
+  const splitSelectedRef = useRef<() => boolean>(() => false)
   /** Whether the PROPERTIES inspector is showing. It describes whatever is selected. */
   const [inspectorOpen, setInspectorOpen] = useState(false)
   /** The figure typed into the inspector's CUSTOM FPS field, held while it is open; null is the field shut. */
@@ -693,6 +704,9 @@ export const EditJobApp: React.FC = () => {
   const [trimNeighbour, setTrimNeighbour] = useState<{ side: 'left' | 'right'; segment: TimelineSegment; at: number } | null>(null)
   const [trimPreview, setTrimPreview] = useState<TrimWindow | null>(null)
   const trimPreviewRef = useRef<TrimWindow | null>(null)
+  /** The OTHER clips a grouped trim is moving, keyed like the primary, so each shows its own drawer. */
+  const [trimGroup, setTrimGroup] = useState<Record<string, TrimWindow>>({})
+  const trimGroupRef = useRef<Record<string, TrimWindow>>({})
   /** The main-lane clip being dragged to another place, so a drop can name where it came from. */
   const [draggingClipIndex, setDraggingClipIndex] = useState<number | null>(null)
   /**
@@ -1012,10 +1026,35 @@ export const EditJobApp: React.FC = () => {
     return { gain: defaultEnabled ? gainForDb(embeddedGainDb(task, clipId, 0)) : 1, muted: laneMuted || !defaultEnabled }
   }
 
+  /**
+   * The level and mute of a lane's OWN element — an added track, or a sound-only main lane.
+   *
+   * A track's level is the track's (`gainDb`, keyed by its stable id and written per stream by the export);
+   * a sound-only main lane's is its clip's own embedded level. Either way the monitor is applying the very
+   * figure the encoder writes for that stream, so a track sounds in the preview as it will in the file.
+   */
+  const laneLevelFor = (laneId: string): { gain: number; muted: boolean } => {
+    const task = draftRef.current
+    if (!task) return { gain: 1, muted: false }
+    const track = (task.additionalAudioTracks || []).find((candidate) => candidate.id === laneId)
+    if (track) return { gain: gainForDb(track.gainDb ?? 0), muted: Boolean(task.mutedLanes?.[track.id]) }
+    if (laneId === MAIN_LANE_ID) {
+      const path = task.sourcePaths[0]
+      const laneMuted = Boolean(task.mutedLanes?.[MAIN_LANE_ID])
+      if (!path || mediaKind(path) !== 'audio') return { gain: 1, muted: laneMuted }
+      const clipId = clipKey(task, path, 0)
+      return {
+        gain: gainForDb(embeddedGainDb(task, clipId, 0)),
+        muted: laneMuted || clipAudioDropped(task, clipId, path, sourceProbes[path]?.audioStreams?.length ?? 0),
+      }
+    }
+    return { gain: 1, muted: Boolean(task.mutedLanes?.[laneId]) }
+  }
+
   const playback = useConsolidatedPlayback(
     model ?? { lanes: [], duration: 0, unusedVideoSources: [] },
     audioElementsRef,
-    { playable: Boolean(model && model.duration > 0), fps: primaryFps, levelFor: monitorLevelFor },
+    { playable: Boolean(model && model.duration > 0), fps: primaryFps, levelFor: monitorLevelFor, laneLevelFor },
   )
 
   const focusedSourceIndex = playback.segmentIndex
@@ -1681,6 +1720,11 @@ export const EditJobApp: React.FC = () => {
         const handled = code === 'KeyC' ? copySelectedClipRef.current() : pasteCopiedClipRef.current()
         if (handled) { event.preventDefault(); return }
       }
+      // A bare C CUTS the selected clip in two at the skimmer — a split, not a copy. Bound by PHYSICAL key
+      // (`KeyC`) like J/K/L, so a non-Latin layout whose C key types another letter still cuts.
+      if (code === 'KeyC' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (splitSelectedRef.current()) { event.preventDefault(); return }
+      }
       if (code === 'Space' || event.key === ' ') {
         event.preventDefault()
         playbackRef.current.toggle()
@@ -2126,6 +2170,25 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * Sets one added track's own LEVEL, in dB.
+   *
+   * The track IS the record — it is a field of the track rather than a map beside it — so it travels with the
+   * track through a reorder, a removal or a change of mode, and the export and the monitor both read it there.
+   * Unity leaves no field, so an untouched track is exactly the track it was.
+   */
+  const setTrackGain = (trackId: string, gainDb: number) => {
+    const current = latest()
+    const tracks = (current.additionalAudioTracks || []).map((track) => {
+      if (track.id !== trackId) return track
+      const next = { ...track }
+      if (!Number.isFinite(gainDb) || Math.abs(gainDb) <= 1e-9) delete next.gainDb
+      else next.gainDb = Math.max(-60, Math.min(24, gainDb))
+      return next
+    })
+    updateDraft({ additionalAudioTracks: tracks })
+  }
+
+  /**
    * Writes one clip's embedded-stream record: a mute, a level, both, or neither.
    *
    * A stream put back to enabled-at-unity leaves no entry, and a clip with none of its own leaves no
@@ -2164,10 +2227,16 @@ export const EditJobApp: React.FC = () => {
     const clipTrim = current.trimPoints?.[clipId]
     const tracks = [...(current.additionalAudioTracks ?? [])]
     const trimPoints = { ...(current.trimPoints ?? {}) }
+    const mutedLanes = { ...(current.mutedLanes ?? {}) }
     indices.forEach((streamIndex) => {
       if (extractedBy(current, clipId, path, streamIndex)) return
-      const track = { id: newTrackId(), path, language: 'und', streamIndex, sourceClipId: clipId }
+      // The clip's own LEVEL and MUTE travel with the stream, so the mix is unchanged at the moment of
+      // extraction and only a later edit to the track changes it — the acceptance this is built to.
+      const gainDb = embeddedGainDb(current, clipId, streamIndex)
+      const wasMuted = Boolean(embeddedStreamsFor(current, clipId).find((entry) => entry.index === streamIndex)?.muted)
+      const track = { id: newTrackId(), path, language: 'und', streamIndex, sourceClipId: clipId, ...(gainDb ? { gainDb } : {}) }
       tracks.push(track)
+      if (wasMuted) mutedLanes[track.id] = true
       // The extracted run begins where the picture's own window does, so the two are in sync until the
       // track is trimmed on its own — which is exactly the J/L cut it is for.
       if (clipTrim && (clipTrim.in > 0 || clipTrim.out > clipTrim.in)) trimPoints[trackKey(current, track)] = { in: clipTrim.in, out: clipTrim.out }
@@ -2175,6 +2244,7 @@ export const EditJobApp: React.FC = () => {
     updateDraft({
       ...withListType(current, current.sourcePaths, tracks),
       trimPoints: Object.keys(trimPoints).length ? trimPoints : undefined,
+      mutedLanes: Object.keys(mutedLanes).length ? mutedLanes : undefined,
     })
   }
   /**
@@ -2440,17 +2510,136 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * Cuts the selected main-lane clip in two at the skimmer, which is a split of the clip's SOURCE WINDOW.
+   *
+   * The FIRST half keeps the clip's own id, so every record it carries stays on it; the SECOND is a new clip
+   * with an id and a copy number of its own, and the records that describe the clip — its fit, its crop, its
+   * speed, its rate and its own sound — are copied onto it, because the two halves ARE the one clip still.
+   * The two windows are written explicitly (`[in, at]` and `[at, out]`), so neither half is the whole source
+   * and the join reads as one continuous run. A fade at the ORIGINAL clip's tail moves to the second half,
+   * since the boundary it fades into is now that half's, and the new interior cut starts with none.
+   *
+   * The skimmer has to be strictly INSIDE the clip: a cut at either edge is not a cut, and a frame's worth of
+   * guard is what keeps one from making an empty half.
+   */
+  const splitSelectedClip = (): boolean => {
+    const sel = selectedRef.current
+    const task = draftRef.current
+    if (!sel || !task || !model || sel.laneId !== mainLaneIdRef.current) return false
+    const lane = model.lanes.find((candidate) => candidate.id === sel.laneId)
+    const segment = lane?.segments.find((candidate) => candidate.key === sel.clipKey)
+    if (!segment) return false
+    const index = materializeClipIds(task).indexOf(sel.clipKey)
+    if (index < 0 || index >= task.sourcePaths.length) return false
+    const retime = segment.duration > 0 && segment.sourceUsedSeconds > 0 ? segment.sourceUsedSeconds / segment.duration : 1
+    const out = segment.sourceIn + segment.sourceUsedSeconds
+    const inside = Math.max(0, Math.min(segment.duration, playback.position - segment.start))
+    const at = segment.sourceIn + inside * retime
+    const min = Math.max(MIN_TRIM_SECONDS, 1 / Math.max(1, rateValue(segment.nativeRate ?? rateOf(30))))
+    if (at <= segment.sourceIn + min || at >= out - min) return false
+    const oldId = segment.key
+    const newId = newClipId()
+    const number = nextClipNumber(task, segment.sourcePath)
+    const ids = materializeClipIds(task)
+    const numbers = materializeClipNumbers(task)
+    const sourcePaths = [...task.sourcePaths.slice(0, index + 1), segment.sourcePath, ...task.sourcePaths.slice(index + 1)]
+    const withRecord = <T,>(map?: Record<string, T>): Record<string, T> | undefined => {
+      const value = map?.[oldId]
+      return value === undefined ? map : { ...(map ?? {}), [newId]: value }
+    }
+    const trimPoints = { ...(task.trimPoints ?? {}) }
+    trimPoints[oldId] = { in: segment.sourceIn, out: at }
+    trimPoints[newId] = { in: at, out: out }
+    const transitions = { ...(task.transitions ?? {}) }
+    if (transitions[oldId] !== undefined) { transitions[newId] = transitions[oldId]; delete transitions[oldId] }
+    else delete transitions[newId]
+    updateDraft({
+      ...withListType(task, sourcePaths, task.additionalAudioTracks),
+      clipIds: [...ids.slice(0, index + 1), newId, ...ids.slice(index + 1)],
+      clipNumbers: [...numbers.slice(0, index + 1), number, ...numbers.slice(index + 1)],
+      trimPoints,
+      sourceFit: withRecord(task.sourceFit),
+      sourceCrop: withRecord(task.sourceCrop),
+      sourceSpeed: withRecord(task.sourceSpeed),
+      sourceFps: withRecord(task.sourceFps),
+      embeddedAudio: withRecord(task.embeddedAudio),
+      transitions: Object.keys(transitions).length ? transitions : undefined,
+    })
+    return true
+  }
+
+  /**
    * Takes a clip's trim away, leaving it the whole of its source again.
    *
    * The record IS the decision, so there is nothing to reset to but the absence of one: the key is deleted
    * and the map is left undefined when it becomes empty, exactly as an untouched clip is. Every list, strip
    * and monitor reads that one record, so the clip is back to its full length everywhere at once.
    */
-  const resetClipTrim = (key: string) => {
-    const next = { ...(latest().trimPoints || {}) }
-    if (next[key] === undefined) return
-    delete next[key]
-    updateDraft({ trimPoints: Object.keys(next).length ? next : undefined })
+  /**
+   * RESET TRIM for the whole selection: every clip in hand goes back to the whole of its source at once.
+   *
+   * The record IS the decision, so there is nothing to reset to but the absence of one: the keys are deleted
+   * and the map is left undefined when it becomes empty, exactly as an untouched clip is.
+   */
+  const resetTrimSelected = () => {
+    const current = latest()
+    const keys = multiSelectedRef.current.length ? multiSelectedRef.current : (selectedRef.current ? [selectedRef.current.clipKey] : [])
+    if (!keys.length) return
+    const next = { ...(current.trimPoints || {}) }
+    let changed = false
+    keys.forEach((key) => { if (next[key] !== undefined) { delete next[key]; changed = true } })
+    if (changed) updateDraft({ trimPoints: Object.keys(next).length ? next : undefined })
+  }
+
+  /**
+   * Takes the whole SELECTION out of the job: main-lane clips from the source list, added tracks from the
+   * track list, each by its own id.
+   *
+   * The main-lane clips are removed from the END backwards, so an earlier index is still valid as its
+   * neighbours go — the same order `withSourceList` uses. A removal that would leave nothing to encode is
+   * left to the queue, which owns taking the job away, exactly as a single removal is.
+   */
+  const removeSelectedClips = (): boolean => {
+    const current = draftRef.current
+    if (!current) return false
+    const keys = multiSelectedRef.current.length ? multiSelectedRef.current : (selectedRef.current ? [selectedRef.current.clipKey] : [])
+    if (!keys.length) return false
+    const ids = materializeClipIds(current)
+    const trackIds = new Set((current.additionalAudioTracks || []).map((track) => track.id))
+    const mainIndices = keys.map((key) => ids.indexOf(key)).filter((index) => index >= 0).sort((earlier, later) => later - earlier)
+    const chosenTracks = keys.filter((key) => trackIds.has(key))
+    let next: QueueTask | null = current
+    mainIndices.forEach((index) => { if (next) next = removeSourceFromTask(next, next.sourcePaths[index], index) })
+    if (next && chosenTracks.length) {
+      const tracks = (next.additionalAudioTracks || []).filter((track) => !chosenTracks.includes(track.id))
+      next = { ...next, additionalAudioTracks: tracks.length ? tracks : undefined, type: inferredMode(next.sourcePaths, tracks) }
+    }
+    if (next) { updateDraft(next); setMultiSelected([]); return true }
+    if (mainIndices.length) void window.electronAPI?.removeEditJobSource(current.id, current.sourcePaths[mainIndices[0]], mainIndices[0])
+    return true
+  }
+
+  /**
+   * Moves the whole SELECTED run of main-lane clips to a place in the join, keeping their own order.
+   *
+   * The clips in hand are lifted out together and put back as one block, so a drag of a group reorders the
+   * group rather than the one clip under the pointer; the paths, the ids and the numbers are reordered the
+   * same way, so each clip keeps its records and its `COPY n`.
+   */
+  const moveSelectionTo = (targetIndex: number) => {
+    const current = latest()
+    const keys = multiSelectedRef.current
+    if (keys.length < 2) return
+    const ids = materializeClipIds(current)
+    const numbers = materializeClipNumbers(current)
+    const paths = current.sourcePaths
+    const chosen = ids.map((id, index) => ({ id, index })).filter((entry) => keys.includes(entry.id))
+    if (chosen.length < 2) return
+    const chosenSet = new Set(chosen.map((entry) => entry.index))
+    const rest = paths.map((_, index) => index).filter((index) => !chosenSet.has(index))
+    const at = Math.max(0, Math.min(targetIndex, rest.length))
+    const order = [...rest.slice(0, at), ...chosen.map((entry) => entry.index), ...rest.slice(at)]
+    updateDraft({ sourcePaths: order.map((index) => paths[index]), clipIds: order.map((index) => ids[index]), clipNumbers: order.map((index) => numbers[index]) })
   }
 
   /**
@@ -2487,7 +2676,23 @@ export const EditJobApp: React.FC = () => {
   const openRemoveConfirm = (): boolean => {
     const sel = selectedRef.current
     const task = draftRef.current
-    if (!sel || !task || sel.laneId !== mainLaneIdRef.current) return false
+    const keys = multiSelectedRef.current
+    if (!task) return false
+    // A GROUP removal asks about the selection rather than about one clip, and names how many are going.
+    if (keys.length > 1) {
+      const row = [...document.querySelectorAll<HTMLElement>('.timeline-clip')].find((node) => node.dataset.clipKey === keys[0])
+      const rect = row?.getBoundingClientRect()
+      setTimelineMenu({
+        kind: 'clip',
+        x: rect ? Math.max(8, Math.min(window.innerWidth - 220, rect.left)) : 40,
+        y: rect ? Math.min(window.innerHeight - 170, rect.bottom + 6) : 120,
+        sourcePath: '', sourceIndex: null, mainIndex: null,
+        laneId: sel?.laneId ?? '', segmentIndex: 0, label: `${keys.length} CLIPS`, fitKey: keys[0],
+        visual: true, confirming: true, multi: true,
+      })
+      return true
+    }
+    if (!sel || sel.laneId !== mainLaneIdRef.current) return false
     const index = materializeClipIds(task).indexOf(sel.clipKey)
     if (index < 0 || index >= task.sourcePaths.length) return false
     const row = [...document.querySelectorAll<HTMLElement>('.timeline-clip')].find((node) => node.dataset.clipKey === sel.clipKey)
@@ -2542,6 +2747,7 @@ export const EditJobApp: React.FC = () => {
   openRemoveConfirmRef.current = openRemoveConfirm
   copySelectedClipRef.current = copySelectedClip
   pasteCopiedClipRef.current = pasteCopiedClip
+  splitSelectedRef.current = splitSelectedClip
 
   /**
    * Writes one clip's trim window, dropping the record entirely when the window keeps the whole source.
@@ -2549,10 +2755,12 @@ export const EditJobApp: React.FC = () => {
    * A window that says "everything" is not a decision, so an untouched clip leaves no record behind — the
    * same rule the speed, the fit and the crop follow.
    */
-  const writeTrim = (key: string, window: TrimWindow, full: number) => {
+  const writeTrims = (entries: Array<{ key: string; window: TrimWindow; full: number }>) => {
     const next = { ...(latest().trimPoints || {}) }
-    if (windowIsWholeSource(window, full)) delete next[key]
-    else next[key] = { in: window.in, out: window.out }
+    entries.forEach(({ key, window, full }) => {
+      if (windowIsWholeSource(window, full)) delete next[key]
+      else next[key] = { in: window.in, out: window.out }
+    })
     updateDraft({ trimPoints: Object.keys(next).length ? next : undefined })
   }
 
@@ -2570,7 +2778,6 @@ export const EditJobApp: React.FC = () => {
   const beginTrimDrag = (event: React.PointerEvent, segment: TimelineSegment, edge: 'in' | 'out', lane: TimelineLane) => {
     event.preventDefault()
     event.stopPropagation()
-    const full = sourceDuration(latest(), segment.sourcePath, undefined, resolveTiming)
     const retime = segment.duration > 0 && segment.sourceUsedSeconds > 0 ? segment.sourceUsedSeconds / segment.duration : 1
     const min = Math.max(MIN_TRIM_SECONDS, 1 / Math.max(1, rateValue(segment.nativeRate ?? rateOf(30))))
     const pxPerSecond = Math.max(1e-6, laneWidthFor(1, zoom))
@@ -2602,21 +2809,44 @@ export const EditJobApp: React.FC = () => {
     trimPreviewRef.current = from
     setTrimDragKey(key)
     setTrimPreview(from)
+    // The clips this drag moves TOGETHER: every selected clip that can be trimmed, when more than one is in
+    // hand. Each takes the SAME timeline delta on the SAME edge, so a video clip and an audio track trimmed
+    // together land their cuts on one instant — the synchronized trim, written in one step.
+    const selectedKeys = multiSelected.includes(key) && multiSelected.length > 1 ? multiSelected : [key]
+    const members = selectedKeys.map((memberKey) => {
+      const member = model?.lanes.flatMap((candidate) => candidate.segments).find((candidate) => candidate.key === memberKey)
+      if (!member) return null
+      const memberFull = sourceDuration(latest(), member.sourcePath, undefined, resolveTiming)
+      if (!(memberFull > 0)) return null
+      const memberRetime = member.duration > 0 && member.sourceUsedSeconds > 0 ? member.sourceUsedSeconds / member.duration : 1
+      return { key: memberKey, from: trimWindowOf(member.sourceIn, member.sourceUsedSeconds), full: memberFull, retime: memberRetime }
+    }).filter((member): member is { key: string; from: TrimWindow; full: number; retime: number } => member !== null)
+    const atStart: Record<string, TrimWindow> = {}
+    members.forEach((member) => { atStart[member.key] = member.from })
+    trimGroupRef.current = atStart
+    setTrimGroup({ ...atStart })
     const move = (moveEvent: PointerEvent) => {
-      const proposed = dragTrimWindow(from, edge, ((moveEvent.clientX - startX) / pxPerSecond) * retime, full, min)
-      trimPreviewRef.current = proposed
-      setTrimPreview(proposed)
-      playback.seek(edgePosition(proposed))
+      const deltaTimeline = (moveEvent.clientX - startX) / pxPerSecond
+      const next: Record<string, TrimWindow> = {}
+      members.forEach((member) => { next[member.key] = dragTrimWindow(member.from, edge, deltaTimeline * member.retime, member.full, min) })
+      trimPreviewRef.current = next[key]
+      trimGroupRef.current = next
+      setTrimPreview(next[key])
+      setTrimGroup({ ...next })
+      playback.seek(edgePosition(next[key]))
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
-      const proposed = trimPreviewRef.current
+      const finalPreviews = trimGroupRef.current
       trimPreviewRef.current = null
+      trimGroupRef.current = {}
       setTrimDragKey(null)
       setTrimPreview(null)
+      setTrimGroup({})
       setTrimNeighbour(null)
-      if (proposed) writeTrim(key, proposed, full)
+      const entries = members.map((member) => ({ key: member.key, window: finalPreviews[member.key], full: member.full })).filter((entry) => Boolean(entry.window))
+      if (entries.length) writeTrims(entries)
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -2782,8 +3012,24 @@ export const EditJobApp: React.FC = () => {
    * the playhead to the clip makes the selected, shown, described and framed clip the same one. A clip the
    * playhead already rests inside does not move it, so selecting the clip being watched disturbs nothing.
    */
-  const selectClip = (laneId: string, clipKey: string) => {
+  const selectClip = (laneId: string, clipKey: string, shift = false) => {
+    const anchor = selectedRef.current
+    if (shift && anchor) {
+      // ON ONE LANE, Shift takes the whole RUN between the anchor and the clip clicked — the same gesture
+      // a list uses. Across lanes there is no run to take, so the clip is added to (or dropped from) the set.
+      const lane = model?.lanes.find((candidate) => candidate.id === laneId)
+      const from = lane?.segments.findIndex((candidate) => candidate.key === anchor.clipKey) ?? -1
+      const to = lane?.segments.findIndex((candidate) => candidate.key === clipKey) ?? -1
+      if (lane && anchor.laneId === laneId && from >= 0 && to >= 0) {
+        const [lo, hi] = from <= to ? [from, to] : [to, from]
+        setMultiSelected(lane.segments.slice(lo, hi + 1).map((candidate) => candidate.key))
+        return
+      }
+      setMultiSelected((current) => current.includes(clipKey) ? current.filter((candidate) => candidate !== clipKey) : [...current, clipKey])
+      return
+    }
     setSelected({ laneId, clipKey })
+    setMultiSelected([clipKey])
     if (laneId !== mainLane?.id) return
     const segment = mainLane?.segments.find((candidate) => candidate.key === clipKey)
     if (!segment) return
@@ -2796,8 +3042,11 @@ export const EditJobApp: React.FC = () => {
     const point = menuPoint(event)
     const mainIndex = laneId === model.lanes[0]?.id ? index : null
     // A right-click SELECTS as well as asks: both items in the menu describe this clip, and the
-    // inspector goes on describing it until something else is selected.
-    selectClip(laneId, segment.key)
+    // inspector goes on describing it until something else is selected. A right-click on a clip that is
+    // ALREADY in a group keeps the group (so REMOVE/RESET can be asked of all of them at once) and only
+    // moves the ANCHOR to the clip under the pointer.
+    if (multiSelectedRef.current.includes(segment.key)) setSelected({ laneId, clipKey: segment.key })
+    else selectClip(laneId, segment.key)
     setTimelineMenu({
       kind: 'clip',
       x: point.x,
@@ -2888,6 +3137,9 @@ export const EditJobApp: React.FC = () => {
     const first = segments[index]
     const second = segments[index + 1]
     if (!first || !second) return null
+    // A cut between SEQUENCED tracks is a place to insert, not a place to fade: the concat graph that joins
+    // them writes no cross-fade, so the panel offers ADD SOURCE and says why a fade is not offered.
+    if (!boundaryIsMainLane) return { kind: 'track-cut' as const, index }
     const transition = draft.transitions?.[first.key]
     const requested = transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
     const maxFade = maxFadeAtBoundary(first.duration, second.duration)
@@ -4267,6 +4519,16 @@ export const EditJobApp: React.FC = () => {
                     {streams.length > 1 && <div className="editor-note">&gt; THE MONITOR PLAYS THE FILE'S DEFAULT STREAM ONLY; EVERY STREAM ABOVE IS WRITTEN AS YOU SET IT. EXTRACT A STREAM TO A TRACK TO HEAR IT ON ITS OWN.</div>}
                   </EditorGroup>
                 })()}
+                {/* A SOUND clip's own LEVEL. A lone audio file's one stream IS the stream the export writes,
+                    so a level on it is a level on the output — on the paths that carry that clip's own sound,
+                    a CONVERT or a STITCH (each audio clip of a stitch is normalized on its own). It is keyed
+                    by the clip's id like every other per-clip record, so it travels with the clip. */}
+                {inspectedOnMainLane && !inspectedHasPicture && (draft.type === 'transcode' || draft.type === 'stitch') && (sourceProbes[inspectedSource]?.audioStreams?.length ?? 0) > 0 && (() => {
+                  const clipId = clipKey(draft, inspectedSource, inspectedClipIndex)
+                  return <EditorField label="LEVEL" hint="dB" reason="This clip's own level: 0 dB is unity. It is written as a `volume` filter on this clip's stream in the export, before anything is mixed, and the monitor applies the same gain.">
+                    <NumberField className="editor-input" min={-60} max={24} step={0.5} value={embeddedGainDb(draft, clipId, 0)} onValue={(value) => writeEmbeddedStream(clipId, 0, { gainDb: value })} ariaLabel="This clip's level in dB" />
+                  </EditorField>
+                })()}
               </div>
             </div>
           )}
@@ -4322,6 +4584,15 @@ export const EditJobApp: React.FC = () => {
                     aria-pressed={Boolean(muted[lane.id])}
                     title={lane.embedded ? 'Mute this stream. The export will not carry it.' : 'Mute this track. The export will not carry it.'}
                   >M</button>
+                  {/* An added track's own LEVEL, beside its MUTE: the track's level is the track's, written
+                      per stream by the export and applied to this lane's element by the monitor. A track
+                      that is SEQUENCED with others is one of several on the lane, so its level is not set
+                      here — the lane holds no single track to set it on. */}
+                  {(() => {
+                    const track = (draft.additionalAudioTracks || []).find((candidate) => candidate.id === lane.id)
+                    if (!track) return null
+                    return <label className="lane-gain"><NumberField className="lane-gain-input" min={-60} max={24} step={0.5} value={track.gainDb ?? 0} onValue={(value) => setTrackGain(track.id, value)} ariaLabel={`${lane.label} level in dB`} title="This track's level in dB. 0 dB is unity; the export writes it on this track's own stream and the monitor follows." /><span>dB</span></label>
+                  })()}
                   <span>{lane.label}</span>
                 </div>
               ))}
@@ -4345,21 +4616,30 @@ export const EditJobApp: React.FC = () => {
                       // source of its own, and the encoder applies that trim (`applyTrimInput` for a
                       // track input). Only a source with no length at all has nothing to trim.
                       const trimmable = sourceFull > 0
-                      const trimming = trimDragKey === segment.key ? trimPreview : null
+                      const trimming = trimDragKey === segment.key ? trimPreview : (trimGroup[segment.key] ?? null)
                       const clipWidth = laneWidthFor(segment.duration, zoom)
                       return (
                       <div
                         key={segment.key}
-                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${selected && selected.laneId === lane.id && selected.clipKey === segment.key ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index ? ' is-dragging' : ''}`}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${multiSelected.includes(segment.key) ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index ? ' is-dragging' : ''}`}
                         style={{ width: `${clipWidth}px` }}
                         title={clipTitle(segment)}
                         data-clip-key={segment.key}
                         draggable={reorderable}
-                        onClick={() => selectClip(lane.id, segment.key)}
+                        onClick={(event) => selectClip(lane.id, segment.key, event.shiftKey)}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
                         onDragStart={reorderable ? (event) => { event.stopPropagation(); setDraggingClipIndex(index); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-stitch-clip', segment.key) } : undefined}
                         onDragOver={reorderable ? (event) => { event.preventDefault(); event.stopPropagation() } : undefined}
-                        onDrop={reorderable ? (event) => { event.preventDefault(); event.stopPropagation(); if (draggingClipIndex != null && draggingClipIndex !== index) reorderClip(draggingClipIndex, index); setDraggingClipIndex(null) } : undefined}
+                        onDrop={reorderable ? (event) => {
+                          event.preventDefault(); event.stopPropagation()
+                          if (draggingClipIndex != null && draggingClipIndex !== index) {
+                            // A drag of a clip IN A GROUP moves the whole group as one block; a drag of one on
+                            // its own is the plain reorder it has always been.
+                            if (multiSelected.length > 1 && multiSelected.includes(segment.key)) moveSelectionTo(index)
+                            else reorderClip(draggingClipIndex, index)
+                          }
+                          setDraggingClipIndex(null)
+                        } : undefined}
                         onDragEnd={reorderable ? () => setDraggingClipIndex(null) : undefined}
                       >
                         {/* The cells share the lane exactly, so there is no gap at the end, and each
@@ -4431,12 +4711,15 @@ export const EditJobApp: React.FC = () => {
                             title={lane.id === mainLane?.id ? 'Fade in from black' : `Fade in on ${lane.label}`}
                           />
                         )}
-                        {lane.id === mainLane?.id && index < lane.segments.length - 1 && (
+                        {/* A CUT between SEQUENCED tracks, which is the same [+] the main lane's cuts carry: the
+                            place between two of them is a place a source can be inserted into the track list,
+                            even though a FADE across it is not something the concat graph writes. */}
+                        {(lane.id === mainLane?.id || lane.id === STITCHED_AUDIO_LANE_ID) && index < lane.segments.length - 1 && (
                           <button
                             className={`boundary-add${(draft.transitions?.[segment.key]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === index ? ' is-open' : ''}`}
                             onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id && openBoundary.at === index ? null : { laneId: lane.id, at: index }) }}
-                            aria-label={`Add a transition after ${sourceName(segment.sourcePath)}`}
-                            title={`Transition after ${sourceName(segment.sourcePath)}`}
+                            aria-label={`Add a source between the tracks of ${lane.label}`}
+                            title={`Insert between the tracks of ${lane.label}`}
                           />
                         )}
                         {index === lane.segments.length - 1 && (
@@ -4513,7 +4796,18 @@ export const EditJobApp: React.FC = () => {
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close the add-source panel">x</button>
             </div>
           )}
-          {selectedBoundary && selectedBoundary.kind !== 'empty' && (() => {
+          {selectedBoundary && selectedBoundary.kind === 'track-cut' && boundaryLane && (
+            // A cut between two SEQUENCED tracks: a place a source can be inserted into the track list. A fade
+            // across it is not written by the concat graph, so it is said rather than offered.
+            <div className="boundary-editor">
+              <span className="boundary-title">{boundaryLane.label} // CUT {selectedBoundary.index + 1}|{selectedBoundary.index + 2}</span>
+              <span className="boundary-divider" aria-hidden="true" />
+              <button className="boundary-source" onClick={() => { const at = selectedBoundary.index + 1; setOpenBoundary(null); void insertTrackSources(at) }} title="Insert a source between these two tracks">ADD SOURCE</button>
+              <span className="boundary-clamped">A FADE ACROSS SEQUENCED TRACKS IS NOT WRITTEN</span>
+              <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close this panel">x</button>
+            </div>
+          )}
+          {selectedBoundary && selectedBoundary.kind !== 'empty' && selectedBoundary.kind !== 'track-cut' && (() => {
             const set = (type: TransitionType, duration?: number) => {
               if (selectedBoundary.kind === 'cut') { setBoundaryTransition(selectedBoundary.index, type, duration); return }
               // An edge on the MAIN lane is the timeline's own; on an added track it is that clip's, keyed so
@@ -5235,21 +5529,20 @@ export const EditJobApp: React.FC = () => {
       </> : timelineMenu.kind === 'clip' ? (timelineMenu.confirming ? <>
         {/* The removal is the one thing in here that cannot be taken back by the window, so it asks
             first. A source that is the job's last takes the job with it, and says so outright. */}
-        <span className="timeline-menu-head">REMOVE {sourceName(timelineMenu.sourcePath)}?</span>
-        <p className="timeline-menu-note">{draft.sourcePaths.length <= 1 && !draft.additionalAudioTracks?.length
-          ? 'THIS IS THE JOB\'S LAST SOURCE, SO REMOVING IT REMOVES THE JOB.'
-          : 'THE CLIP GOES FROM THE TIMELINE AND FROM THE JOB\'S SOURCE LIST.'}</p>
+        <span className="timeline-menu-head">{timelineMenu.multi ? `REMOVE ${multiSelected.length} CLIPS?` : `REMOVE ${sourceName(timelineMenu.sourcePath)}?`}</span>
+        <p className="timeline-menu-note">{timelineMenu.multi
+          ? 'EVERY CLIP IN HAND GOES FROM THE TIMELINE AND FROM THE JOB\'S SOURCE LIST.'
+          : draft.sourcePaths.length <= 1 && !draft.additionalAudioTracks?.length
+            ? 'THIS IS THE JOB\'S LAST SOURCE, SO REMOVING IT REMOVES THE JOB.'
+            : 'THE CLIP GOES FROM THE TIMELINE AND FROM THE JOB\'S SOURCE LIST.'}</p>
         <div className="timeline-menu-actions">
           <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: undefined })}>KEEP IT</button>
-          <button
-            role="menuitem"
-            className="is-danger"
-            onClick={() => {
-              const { sourcePath, sourceIndex } = timelineMenu
-              setTimelineMenu(null)
-              removeClipAt(sourcePath, sourceIndex)
-            }}
-          >REMOVE</button>
+          <button role="menuitem" className="is-danger" onClick={() => {
+            if (timelineMenu.multi) { setTimelineMenu(null); removeSelectedClips(); return }
+            const { sourcePath, sourceIndex } = timelineMenu
+            setTimelineMenu(null)
+            removeClipAt(sourcePath, sourceIndex)
+          }}>REMOVE</button>
         </div>
       </> : <>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); void openNativePreview({ sourcePath: target.sourcePath, sourceIndex: target.mainIndex ?? 0 }) }}>QUICK LOOK...</button>
@@ -5259,7 +5552,15 @@ export const EditJobApp: React.FC = () => {
             SOURCE swaps the FILE at this place, and needs a place: an added audio track is not in
             `sourcePaths`, so it names none and the item is out of reach there. */}
         <span className="timeline-menu-divider" aria-hidden="true" />
-        <button role="menuitem" disabled={draft.trimPoints?.[timelineMenu.fitKey] === undefined} onClick={() => { const key = timelineMenu.fitKey; setTimelineMenu(null); resetClipTrim(key) }}>RESET TRIM</button>
+        <button role="menuitem" disabled={!multiSelected.some((key) => draft.trimPoints?.[key] !== undefined)} onClick={() => { setTimelineMenu(null); resetTrimSelected() }} title={multiSelected.length > 1 ? `Take the trim away from all ${multiSelected.length} clips in hand` : undefined}>RESET TRIM{multiSelected.length > 1 ? ` (${multiSelected.length})` : ''}</button>
+        {/* The CUT, at the skimmer. Offered only for a clip on the source list, and only while the playhead is
+            strictly inside it — a cut at either edge makes no second clip. */}
+        {timelineMenu.mainIndex != null && (() => {
+          const lane = model.lanes.find((candidate) => candidate.id === timelineMenu.laneId)
+          const segment = lane?.segments[timelineMenu.segmentIndex]
+          const inside = Boolean(segment && playback.position > segment.start + 1e-6 && playback.position < segment.start + segment.duration - 1e-6)
+          return <button role="menuitem" disabled={!inside} title={inside ? 'Cut this clip in two at the skimmer (C)' : 'Move the skimmer inside this clip to cut it'} onClick={() => { setTimelineMenu(null); splitSelectedClip() }}>SPLIT AT SKIMMER</button>
+        })()}
         <button role="menuitem" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void replaceClipAt(index) }}>REPLACE SOURCE...</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]

@@ -304,6 +304,16 @@ export interface AudioTrackItem {
   language: string // e.g. 'eng', 'spa', 'fra'
   title?: string
   /**
+   * The track's own LEVEL, in dB, with 0 (unity) as the default.
+   *
+   * A track is a lane of its own, so its level is the track's rather than the mix's: the export writes it as
+   * a `volume=` on that track's own stream (and, where the tracks are summed for a drawing, as a weight on
+   * that input), and the monitor applies the same gain to the same lane's element. Keyed by the track's own
+   * stable id — it IS a field of the track, which is the record that travels with it through every list
+   * operation — so a reorder, a removal or a change of mode cannot leave a level behind on the wrong lane.
+   */
+  gainDb?: number
+  /**
    * The EMBEDDED audio stream this track was EXTRACTED from, as ffmpeg names it (`input:a:streamIndex`).
    *
    * An extracted track's `path` is the VIDEO it came out of, so the export has to be told which of that

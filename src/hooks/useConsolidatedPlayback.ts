@@ -102,7 +102,7 @@ export interface ConsolidatedPlayback {
 export const useConsolidatedPlayback = (
   model: TimelineModel,
   audioElements: React.RefObject<Record<string, HTMLAudioElement | null>>,
-  options: { playable: boolean; fps: number; levelFor?: (segment: TimelineSegment) => { gain: number; muted: boolean } },
+  options: { playable: boolean; fps: number; levelFor?: (segment: TimelineSegment) => { gain: number; muted: boolean }; laneLevelFor?: (laneId: string) => { gain: number; muted: boolean } },
 ): ConsolidatedPlayback => {
   const { playable, fps } = options
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -191,6 +191,20 @@ export const useConsolidatedPlayback = (
    */
   const levelForRef = useRef(options.levelFor)
   levelForRef.current = options.levelFor
+  /**
+   * A LANE's own level, for the elements that carry an added track or a sound-only main lane.
+   *
+   * Each such lane plays through its own `<audio>`, so a track's LEVEL is that element's `volume`, and its
+   * mute is the element's `muted` — the same two figures the export writes for that stream, read from the
+   * one resolver so the monitor and the file cannot disagree.
+   */
+  const laneLevelForRef = useRef(options.laneLevelFor)
+  laneLevelForRef.current = options.laneLevelFor
+  /** The added lanes' levels as one string, so a gain or a mute change re-applies without a re-render. */
+  const laneLevelSignature = addedAudioLanes.map((lane) => {
+    const level = laneLevelForRef.current?.(lane.id)
+    return level ? `${lane.id}:${Math.round(level.gain * 1000)}:${level.muted}` : lane.id
+  }).join('|')
   /**
    * Whether the main lane has no picture at all, which is what a CONVERT of a sound file is.
    *
@@ -519,10 +533,15 @@ export const useConsolidatedPlayback = (
       const clip = laneSegment && laneSegment.speed > 0 ? laneSegment.speed : 1
       element.playbackRate = Math.min(MAX_PLAYBACK_RATE, composed * clip)
       element.preservesPitch = preservesPitchFor(shuttleRate) && (!laneSegment || laneSegment.maintainPitch !== false)
+      // The lane's own LEVEL and MUTE, applied to its own element — the same gain the export writes on that
+      // stream, so a track sounds in the monitor as it will in the file.
+      const level = laneLevelForRef.current?.(lane.id)
+      element.volume = level ? Math.max(0, Math.min(1, level.gain)) : 1
+      element.muted = level ? level.muted : false
       if (playing) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
-  }, [playing, shuttleRate, speed, segment?.key, audioLaneSignature, audioElements, applyPendingSeek, applyRate, startPlayback])
+  }, [playing, shuttleRate, speed, segment?.key, audioLaneSignature, laneLevelSignature, audioElements, applyPendingSeek, applyRate, startPlayback])
 
   // Frame loop: advance the playhead, cross junctions, correct drift.
   useEffect(() => {

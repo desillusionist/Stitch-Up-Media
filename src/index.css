@@ -506,6 +506,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .lane-mute { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 9px; line-height: 1; }
 .lane-mute:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .lane-mute.is-muted { color: var(--ui-error); border-color: var(--ui-error); background: rgba(201, 133, 133, .12); }
+/* A track's own LEVEL, beside its mute. Compact, because the lane label column is a fixed width and the
+   name beside it still has to read; the field is the one instrument that turns a track's gain. */
+.lane-gain { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; color: var(--ui-muted); font-size: 8px; }
+.lane-gain-input { width: 40px; padding: 1px 3px; color: var(--ui-foreground); background: transparent; border: 1px solid var(--ui-border-dim); font-family: inherit; font-size: 9px; text-align: right; }
+.lane-gain-input:focus { outline: 1px solid var(--ui-accent); }
 .timeline-lane-track { position: relative; flex: 1; display: flex; align-items: stretch; min-width: 0; cursor: pointer; }
 /* A clip is drawn at the width the timeline's rate gives its trimmed length, and at no other
    width: the zoom decides that rate and the window has no say in it. Widths were once a percentage

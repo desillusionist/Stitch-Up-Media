@@ -12,7 +12,7 @@ import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { codecTakesRate } from '../../src/lib/outputSize'
 import { clipKey, trackKey } from '../../src/lib/clipIds'
-import { embeddedAudioCustomised, enabledEmbeddedStreams, gainForDb } from '../../src/lib/embeddedAudio'
+import { embeddedAudioCustomised, embeddedGainDb, enabledEmbeddedStreams, gainForDb } from '../../src/lib/embeddedAudio'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
@@ -167,12 +167,12 @@ export class FFmpegEngine {
   }
 
   /**
-   * The `volume` link for an embedded stream's own level, empty at unity so an untouched stream is unfiltered.
+   * The `volume` link for one stream's own level, empty at unity so an untouched stream is unfiltered.
    *
    * Written as a linear gain from the dB the reader set, on that stream's own chain — a single `-af` would
-   * put one stream's level on all of them the moment a clip carried more than one.
+   * put one stream's level on all of them the moment a clip or a track carried more than one.
    */
-  private embeddedGainFilters(gainDb: number | undefined): string[] {
+  private gainFilters(gainDb: number | undefined): string[] {
     const gain = gainForDb(gainDb ?? 0)
     return Math.abs(gain - 1) > 1e-6 ? [`volume=${gain}`] : []
   }
@@ -232,8 +232,12 @@ export class FFmpegEngine {
         ...fades.video,
       ]
       command.videoCodec('libx264').outputOptions([`-vf ${videoFilters.join(',')}`, '-preset veryfast', '-pix_fmt yuv420p', '-video_track_timescale 90000'])
+      // A SOUND clip's own level joins the chain the retime and the fades already use, so a stitch of audio
+      // files is levelled clip by clip. Nothing is written for a clip at unity, which leaves the chain — and
+      // the command — exactly what it was.
+      const clipGain = mediaKind(source) === 'audio' ? this.gainFilters(embeddedGainDb(task, clipKey(task, source, clipIndex), 0)) : []
       command.audioCodec('aac').audioFrequency(48000).audioChannels(2)
-        .outputOptions([`-af ${['aresample=48000:async=1', ...speedAudio, 'aformat=sample_fmts=fltp:channel_layouts=stereo', ...fades.audio].join(',')}`, '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
+        .outputOptions([`-af ${['aresample=48000:async=1', ...speedAudio, 'aformat=sample_fmts=fltp:channel_layouts=stereo', ...fades.audio, ...clipGain].join(',')}`, '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
         .on('end', () => resolve()).on('error', reject).save(output)
     })
   }
@@ -376,7 +380,12 @@ export class FFmpegEngine {
     // before the preset's filters are built, because the chain that fits it into the frame is one of them.
     const customPicture = soundOnly ? this.usablePicture(task.preset.audioPicture === 'custom' ? task.preset.audioPictureImage : undefined) : null
     const pictureFilters = customPicture ? this.addStillPicture(cmd, task.preset, customPicture) : []
-    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, this.exportChannels(task.preset, 2), expectedSeconds)
+    // The clip's own id and its own LEVEL, read here because the DRAWING path below needs the level at the
+    // moment it builds its graph — a sound clip's one stream IS the export's stream on this path, so the gain
+    // is written on that stream's own chain (or, for a drawing, on its input before the graph sums it).
+    const embeddedClipId = clipKey(task, source, 0)
+    const clipGainDb = mediaKind(source) === 'audio' ? embeddedGainDb(task, embeddedClipId, 0) : 0
+    if (draws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), 48000, this.exportChannels(task.preset, 2), expectedSeconds, [clipGainDb])
     else if (soundOnly && !customPicture) this.addBlackPicture(cmd, task.preset, expectedSeconds)
 
     // A fit chosen for this clip's picture is the clip's own framing, and this is the one path where
@@ -404,7 +413,6 @@ export class FFmpegEngine {
     // The clip's OWN embedded sound, where a reader has told it which streams to carry or set a level on
     // one: the enabled streams are named one at a time rather than left to ffmpeg's own selection, so a
     // muted or EXTRACTED stream is not written at all. An untouched clip keeps the default path exactly.
-    const embeddedClipId = clipKey(task, source, 0)
     const embeddedCustom = mediaKind(source) === 'video'
       && embeddedAudioCustomised(task, embeddedClipId, source)
       && task.preset.audioEnabled !== false
@@ -415,7 +423,7 @@ export class FFmpegEngine {
     // The sound is retimed beside the picture, in the same terms: `atempo` keeps the pitch, or
     // `asetrate` shifts it with the speed. A stream-copied sound cannot be filtered at all and a
     // source with no sound has nothing to retime, so the chain is only written where it applies.
-    const audioChain = [...speedAudio, ...fades.audio]
+    const audioChain = [...speedAudio, ...fades.audio, ...this.gainFilters(clipGainDb)]
     if (!embeddedCustom && audioChain.length && sourceHasAudio && !draws && task.preset.audioCodec !== 'copy' && task.preset.audioEnabled !== false) {
       cmd.outputOptions([`-af ${audioChain.join(',')}`])
     }
@@ -432,7 +440,7 @@ export class FFmpegEngine {
           // One chain per output stream: the clip's own retime and fades on each, with that stream's level
           // appended — which is the only way two streams of one clip can carry two different levels.
           embeddedEnabled.forEach((stream, outIndex) => {
-            const chain = [...audioChain, ...this.embeddedGainFilters(stream.gainDb)]
+            const chain = [...audioChain, ...this.gainFilters(stream.gainDb)]
             if (chain.length) cmd.outputOptions([`-filter:a:${outIndex} ${chain.join(',')}`])
           })
         }
@@ -858,7 +866,14 @@ export class FFmpegEngine {
     ]
     const pictured = drawsSound && audible.length > 0
     if (pictured) {
-      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, this.exportChannels(task.preset, 2), expectedSeconds)
+      // The tracks summed for a drawing carry their OWN levels into the mix, one weight per input, because a
+      // gain applied after `amix` would move every track together. The main lane is only in `audible` when
+      // the visual HAS sound of its own, which a still cover does not, so the two lists line up.
+      const audibleGains: Array<number | undefined> = [
+        ...(carriesMainAudio && videoHasAudio ? [undefined] : []),
+        ...extraAudios.map((track) => track.gainDb),
+      ]
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, this.exportChannels(task.preset, 2), expectedSeconds, audibleGains)
     }
     const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
@@ -896,8 +911,9 @@ export class FFmpegEngine {
       && task.preset.audioEnabled !== false
     const mainStreams = embeddedCustom ? enabledEmbeddedStreams(task, embeddedClipId as string, videoSource, videoAudioCount) : null
     // The output stream each track's audio lands on: after the main lane's own streams, however many
-    // there are — one for the untouched default, or one per enabled embedded stream.
-    const firstTrackOut = mainStreams ? mainStreams.length : (carriesMainAudio && videoHasAudio ? 1 : 0)
+    // there are — one per enabled embedded stream where the clip was told which to carry, or every stream
+    // of the input where it is left to `-map 0:a?`, which maps ALL of them.
+    const firstTrackOut = mainStreams ? mainStreams.length : (carriesMainAudio && videoHasAudio ? Math.max(1, videoAudioCount) : 0)
     if (!pictured) {
       if (mainStreams) {
         mainStreams.forEach((stream) => outputOptions.push(`-map 0:a:${stream.index}`))
@@ -957,14 +973,14 @@ export class FFmpegEngine {
     // embedded selection has one per enabled stream, each with that stream's own level appended — a single
     // `-af` would put one stream's level on all of them.
     const mainChains = mainStreams
-      ? mainStreams.map((stream) => [audioBase, ...speedMainAudio, ...mainFades.audio, ...this.embeddedGainFilters(stream.gainDb)])
+      ? mainStreams.map((stream) => [audioBase, ...speedMainAudio, ...mainFades.audio, ...this.gainFilters(stream.gainDb)])
       : (carriesMainAudio && videoHasAudio ? [[audioBase, ...speedMainAudio, ...mainFades.audio]] : [])
     if (!pictured && tracksStitched) {
       // A SEQUENCED set of tracks: each input is retimed, faded and resampled in its own chain, and the
       // chains are CONCATENATED into one stream — the second axis of concatenation a COMBO(a STITCH of
       // tracks) asks for. One stream is mapped, so the tracks play one after another rather than together.
       const parts = extraAudios.map((track, idx) => {
-        const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? [])]
+        const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...this.gainFilters(track.gainDb)]
         const source = track.streamIndex != null ? `${idx + 1}:a:${track.streamIndex}` : `${idx + 1}:a`
         return `[${source}]${chain.join(',')}[t${idx}]`
       })
@@ -982,14 +998,19 @@ export class FFmpegEngine {
       // level — because a single `-af` would put one lane's on all of them. Each output stream gets the same
       // resample/layout it always had, with that lane's own filters appended. A job needing none is
       // handed the one `-af` it has always had, so the common path is untouched.
-      const perStream = mainChains.some((chain) => chain.length > 1) || trackFades.some((fade) => fade.audio.length > 0) || trackSpeedAudio.some((chain) => chain.length > 0)
+      const perStream = mainChains.some((chain) => chain.length > 1)
+        || trackFades.some((fade) => fade.audio.length > 0)
+        || trackSpeedAudio.some((chain) => chain.length > 0)
+        // A track with a LEVEL of its own needs its own chain too: a shared `-af` would put that level on
+        // every stream, which is the one thing a per-track gain must not do.
+        || extraAudios.some((track) => this.gainFilters(track.gainDb).length > 0)
       cmd.outputOptions([`-ar 48000`, `-ac ${channels}`])
       if (!perStream) {
         cmd.outputOptions([`-af ${audioBase}`])
       } else {
         mainChains.forEach((chain, outIndex) => cmd.outputOptions([`-filter:a:${outIndex} ${chain.join(',')}`]))
-        extraAudios.forEach((_track, idx) => {
-          const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? [])]
+        extraAudios.forEach((track, idx) => {
+          const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...this.gainFilters(track.gainDb)]
           cmd.outputOptions([`-filter:a:${firstTrackOut + idx} ${chain.join(',')}`])
         })
       }
@@ -1155,15 +1176,27 @@ export class FFmpegEngine {
    * `duration` is how long the export's sound runs — what the progress line sweeps across — and the line's
    * own on/off comes from the preset, so the default lives in one place rather than at each call site.
    */
-  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number): void {
+  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number, gainDbs: Array<number | undefined> = []): void {
     const { width, height } = this.frameBoxFor(preset)
+    // EACH SOURCE IS LEVELLED BEFORE IT IS SUMMED. A drawing built from several inputs sums them with `amix`,
+    // and a level applied after the sum would move every one of them together — so the gain is written on
+    // that input's own chain and the mix takes the labels, which is the only way two tracks in one drawing
+    // can stay at two different levels. Nothing is written for a source at unity, so an untouched job's
+    // graph is the one it always was.
+    const pre: string[] = []
+    const labels = sources.map((source, index) => {
+      const gain = this.gainFilters(gainDbs[index])
+      if (!gain.length) return source
+      pre.push(`[${source}]${gain.join(',')}[lv${index}]`)
+      return `lv${index}`
+    })
     const graph = visualizationGraph({
       template: preset.visualization ?? 'waveform',
       width,
       height,
       fps: this.pictureRateFor(preset),
       color: drawingColorOf(preset),
-      sources,
+      sources: labels,
       background,
       rate,
       channels,
@@ -1172,7 +1205,7 @@ export class FFmpegEngine {
       eq: eqStyleOf(preset),
       tune: drawingTuneOf(preset),
     })
-    cmd.outputOptions([`-filter_complex ${graph}`, '-map [v]', '-map [aout]', '-shortest'])
+    cmd.outputOptions([`-filter_complex ${[...pre, graph].join(';')}`, '-map [v]', '-map [aout]', '-shortest'])
   }
 
   /**
