@@ -199,6 +199,56 @@ const keysMeasure = `(async () => {
   }
 })()`
 
+/**
+ * A LANE OF JOINED TRACKS, which is the multi-segment case.
+ *
+ * A COMBO/MULTI-TRACK whose tracks are STITCHED, or a STITCH UP of sound, carries several tracks end to end
+ * on ONE lane. What must hold: the element for the track under the playhead sounds and its neighbours stay
+ * parked (so the SECOND track is heard at all rather than only the first), and once the playhead is past the
+ * lane's own end every element is parked (so a finished track cannot cycle its last syllable under a picture
+ * that has run on).
+ */
+const joinedMeasure = `(async () => {
+  const p = window.__playback
+  const joined = window.__joinedAudio
+  if (!p) return { HARNESS_ERROR: 'no playback hook' }
+  if (!Array.isArray(joined) || joined.length < 2 || !joined[0] || !joined[1]) return { HARNESS_ERROR: 'the joined lane did not mount two elements' }
+  const first = joined[0], second = joined[1]
+  try {
+    await Promise.all([first, second].map((a) => a.readyState >= 1 ? Promise.resolve() : new Promise((resolve, reject) => {
+      a.addEventListener('loadedmetadata', resolve, { once: true })
+      a.addEventListener('error', () => reject(new Error('the joined track would not load: ' + (a.error && a.error.code))), { once: true })
+      setTimeout(() => reject(new Error('no metadata after 20s')), 20000)
+    })))
+  } catch (error) { return { HARNESS_ERROR: String(error && error.message) } }
+  const live = () => window.__playback
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const quarter = window.__duration / 4
+  // 1) INSIDE THE FIRST TRACK: it sounds and the second stays parked.
+  live().seek(quarter / 2)
+  live().toggle()
+  await sleep(300)
+  const firstPlayingInside = !first.paused && first.playbackRate > 0
+  const secondParkedInsideFirst = second.paused
+  // 2) INSIDE THE SECOND TRACK: the handover — the first parks, the second sounds.
+  live().seek(quarter * 1.5)
+  await sleep(300)
+  const firstParkedInsideSecond = first.paused
+  const secondPlayingInside = !second.paused && second.playbackRate > 0
+  // 3) PAST THE LANE'S OWN END: neither sounds.
+  live().seek(window.__duration * 0.75)
+  await sleep(300)
+  const firstParkedPastEnd = first.paused
+  const secondParkedPastEnd = second.paused
+  live().pause()
+  return {
+    firstPlayingInside, secondParkedInsideFirst,
+    firstParkedInsideSecond, secondPlayingInside,
+    firstParkedPastEnd, secondParkedPastEnd,
+    quarter: +quarter.toFixed(3),
+  }
+})()`
+
 const runFfmpeg = (args) => new Promise((resolve, reject) => {
   execFile('ffmpeg', args, { maxBuffer: 8 * 1024 * 1024 }, (error, _stdout, stderr) => {
     if (error) reject(new Error(String(stderr || error.message)))
@@ -275,6 +325,7 @@ app.whenReady().then(async () => {
     if (variant === 'stable' && !results[variant].HARNESS_ERROR) {
       results.scrub = await run(scrubMeasure)
       results.keys = await run(keysMeasure)
+      results.joined = await run(joinedMeasure)
     }
   }
 
@@ -317,6 +368,17 @@ app.whenReady().then(async () => {
     if (!(keys.revAdvanced < -0.2)) problems.push(`a backward shuttle did not walk the playhead back: it moved ${keys.revAdvanced}s over 0.6s`)
   } else if (results.keys) {
     problems.push(`the keys could not be measured: ${results.keys.HARNESS_ERROR}`)
+  }
+  // A LANE OF JOINED TRACKS: every track is heard, only the one under the playhead, and none past the end.
+  if (results.joined && !results.joined.HARNESS_ERROR) {
+    const joined = results.joined
+    if (!joined.firstPlayingInside) problems.push('the first track of a joined lane was not heard while the playhead was inside it')
+    if (!joined.secondParkedInsideFirst) problems.push('the second track of a joined lane sounded while the playhead was still inside the first')
+    if (!joined.firstParkedInsideSecond) problems.push('the first track of a joined lane kept sounding after the playhead left it (the phantom tail)')
+    if (!joined.secondPlayingInside) problems.push('only the first track of a joined lane was heard; the second never sounded')
+    if (!joined.firstParkedPastEnd || !joined.secondParkedPastEnd) problems.push('a finished joined lane kept sounding past its own end')
+  } else if (results.joined) {
+    problems.push(`the joined lane could not be measured: ${results.joined.HARNESS_ERROR}`)
   }
   if (!problems.length) {
     // The element is handed a real, seekable video through the app's own URL: it must play it at the

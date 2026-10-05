@@ -116,5 +116,26 @@ export const embeddedAudioCustomised = (
 ): boolean =>
   Boolean(task.embeddedAudio?.[clipId]) || (task.additionalAudioTracks || []).some((track) => track.sourceClipId === clipId && track.path === path)
 
+/**
+ * How many embedded streams a clip is treated as carrying.
+ *
+ * The PROBE is the authority where it has answered. Where it has not — a clip whose probe is still in
+ * flight, or one read from a record before the file was ever probed — the records and the extractions are
+ * enough to know there is at least ONE stream, which is what the monitor needs so that a clip whose only
+ * stream has been muted or extracted is silenced rather than going on sounding under the track that took it.
+ */
+export const embeddedStreamCount = (
+  task: Pick<QueueTask, 'embeddedAudio' | 'additionalAudioTracks'>,
+  clipId: string,
+  path: string,
+  probed: number,
+): number => {
+  const records = embeddedStreamsFor(task, clipId)
+  const extracted = (task.additionalAudioTracks || [])
+    .filter((track) => track.sourceClipId === clipId && track.path === path)
+    .map((track) => (track.streamIndex ?? 0) + 1)
+  return Math.max(1, probed, ...records.map((entry) => entry.index + 1), ...extracted)
+}
+
 /** dB to a linear gain, which is what `volume=` and an element's own `volume` both take. */
 export const gainForDb = (db: number): number => (Number.isFinite(db) ? Math.pow(10, db / 20) : 1)

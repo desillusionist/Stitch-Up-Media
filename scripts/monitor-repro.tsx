@@ -22,6 +22,7 @@ type ReproGlobals = {
   __playback?: ConsolidatedPlayback
   __video?: HTMLVideoElement | null
   __audio?: HTMLAudioElement | null
+  __joinedAudio?: Array<HTMLAudioElement | null>
   __renders: number
   __log: Array<{ kind: string; src: string }>
 }
@@ -47,6 +48,13 @@ const model = {
     // there is no video element, so this element is the only thing that can be audible, and it is the one the
     // per-tick seek used to jog.
     { id: 'sound', label: 'AUDIO', kind: 'audio' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'sound#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceUsedSeconds: globals.__duration, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false }] },
+    // A LANE OF TWO JOINED TRACKS, half the file's length, so the handover between them and the SILENCE after
+    // the second are both measurable. Its segments stop at half the file, which leaves a stretch of timeline
+    // past its end where neither track may sound — the phantom tail the two-segment lane used to play.
+    { id: 'joined', label: 'AUDIO', kind: 'audio' as const, embedded: false, duration: globals.__duration / 2, segments: [
+      { key: 'joined#0', sourcePath: globals.__file, start: 0, duration: globals.__duration / 4, sourceUsedSeconds: globals.__duration / 4, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false },
+      { key: 'joined#1', sourcePath: globals.__file, start: globals.__duration / 4, duration: globals.__duration / 4, sourceUsedSeconds: globals.__duration / 4, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false },
+    ] },
   ],
   duration: globals.__duration,
   unusedVideoSources: [] as string[],
@@ -65,7 +73,8 @@ const Monitor: React.FC<{ variant: 'stable' | 'inline' }> = ({ variant }) => {
   React.useEffect(() => {
     globals.__playback = playback
     globals.__video = playback.videoRef.current
-    globals.__audio = audioElements.current.sound ?? null
+    globals.__audio = audioElements.current['sound#0'] ?? null
+    globals.__joinedAudio = [audioElements.current['joined#0'] ?? null, audioElements.current['joined#1'] ?? null]
   }, [playback])
   const attach = variant === 'stable'
     ? playback.attachVideo
@@ -79,7 +88,9 @@ const Monitor: React.FC<{ variant: 'stable' | 'inline' }> = ({ variant }) => {
       muted
       style={{ width: 240, background: '#000' }}
     />
-    <audio ref={(element) => { audioElements.current.sound = element }} src={mediaUrl(globals.__file)} preload="auto" />
+    <audio ref={(element) => { audioElements.current['sound#0'] = element }} src={mediaUrl(globals.__file)} preload="auto" />
+    <audio ref={(element) => { audioElements.current['joined#0'] = element }} src={mediaUrl(globals.__file)} preload="auto" />
+    <audio ref={(element) => { audioElements.current['joined#1'] = element }} src={mediaUrl(globals.__file)} preload="auto" />
   </>
 }
 

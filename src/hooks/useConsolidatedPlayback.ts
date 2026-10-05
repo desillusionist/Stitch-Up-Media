@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
+import { TimelineModel, TimelineSegment, audioSlaveKey, laneNeedsOwnAudio } from '../lib/timelineModel'
 import { nextShuttleRate, nextForwardRung } from '../lib/shuttleRates'
 import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
 import { DEFAULT_PREVIEW_SPEED, MAX_PLAYBACK_RATE, PreviewSpeed, clampPreviewSpeed, playbackRateFor, preservesPitchFor } from '../lib/previewSpeed'
-import { slavedAudioAt, sourceTimeAt, timelineTimeAt } from '../lib/clipSpeed'
+import { sourceTimeAt, timelineTimeAt } from '../lib/clipSpeed'
 import { scrubRateFor } from '../lib/scrubAudio'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
@@ -102,7 +102,7 @@ export interface ConsolidatedPlayback {
 export const useConsolidatedPlayback = (
   model: TimelineModel,
   audioElements: React.RefObject<Record<string, HTMLAudioElement | null>>,
-  options: { playable: boolean; fps: number; levelFor?: (segment: TimelineSegment) => { gain: number; muted: boolean }; laneLevelFor?: (laneId: string) => { gain: number; muted: boolean } },
+  options: { playable: boolean; fps: number },
 ): ConsolidatedPlayback => {
   const { playable, fps } = options
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -149,30 +149,27 @@ export const useConsolidatedPlayback = (
 
   const mainSegments = model.lanes[0]?.segments ?? []
   const segment = mainSegments[segmentIndex]
+  const slaveLanes = model.lanes.filter(laneNeedsOwnAudio)
   /**
-   * The lanes the transport drives, which is every lane that has an element of its own.
+   * One entry per SEGMENT of those lanes, not one per lane.
    *
-   * Every added track, and a main lane that is AUDIO: such a lane has no picture for the video element to
-   * carry, so its own <audio> is the only thing that can play it — which is what a CONVERT of an audio
-   * file needs in order to be heard as well as drawn. Only a single-segment one, because this loop slaves
-   * one element to one segment.
+   * A lane can hold several tracks joined end to end — a COMBO/MULTI-TRACK whose tracks are STITCHED, or a
+   * STITCH UP of sound — and a single element slaved to the lane's first segment played only that one and
+   * left the rest silent. An element per segment, each with the segment's own source, is what lets every
+   * track of a joined lane be heard and what stops a finished segment from sounding under the one after it.
    *
-   * The editor renders an element for exactly these lanes; the two tests have to agree.
+   * The editor renders an element for exactly these segments; the two lists have to agree.
    */
-  const addedAudioLanes = model.lanes.filter((lane) => {
-    if (!lane.segments.length) return false
-    if (!lane.embedded) return true
-    return lane.kind === 'audio' && lane.segments.length === 1
-  })
-  const audioLaneSignature = addedAudioLanes.map((lane) => lane.id).join('|')
+  const slaves = slaveLanes.flatMap((lane) => lane.segments.map((segment, index) => ({ key: audioSlaveKey(lane.id, index), segment })))
+  const slaveSignature = slaves.map((slave) => slave.key).join('|')
 
   // Read inside event handlers and the frame loop so they never capture stale values.
   const stateRef = useRef({ segment, playing, position, duration: model.duration })
   stateRef.current = { segment, playing, position, duration: model.duration }
   const segmentsRef = useRef(mainSegments)
   segmentsRef.current = mainSegments
-  const lanesRef = useRef(addedAudioLanes)
-  lanesRef.current = addedAudioLanes
+  const slavesRef = useRef(slaves)
+  slavesRef.current = slaves
   const segmentIndexRef = useRef(segmentIndex)
   segmentIndexRef.current = segmentIndex
   const shuttleRef = useRef(shuttleRate)
@@ -182,29 +179,6 @@ export const useConsolidatedPlayback = (
   speedRef.current = speed
   const fpsRef = useRef(fps)
   fpsRef.current = Math.max(1, fps)
-  /**
-   * The clip's own level for the monitor, read fresh every render.
-   *
-   * A preview cannot isolate one stream of a multi-stream file, so this is the level of the stream the
-   * element will actually play; the editor resolves it and this only applies it. It is a ref so the
-   * apply function can be stable while still reading the latest answer.
-   */
-  const levelForRef = useRef(options.levelFor)
-  levelForRef.current = options.levelFor
-  /**
-   * A LANE's own level, for the elements that carry an added track or a sound-only main lane.
-   *
-   * Each such lane plays through its own `<audio>`, so a track's LEVEL is that element's `volume`, and its
-   * mute is the element's `muted` — the same two figures the export writes for that stream, read from the
-   * one resolver so the monitor and the file cannot disagree.
-   */
-  const laneLevelForRef = useRef(options.laneLevelFor)
-  laneLevelForRef.current = options.laneLevelFor
-  /** The added lanes' levels as one string, so a gain or a mute change re-applies without a re-render. */
-  const laneLevelSignature = addedAudioLanes.map((lane) => {
-    const level = laneLevelForRef.current?.(lane.id)
-    return level ? `${lane.id}:${Math.round(level.gain * 1000)}:${level.muted}` : lane.id
-  }).join('|')
   /**
    * Whether the main lane has no picture at all, which is what a CONVERT of a sound file is.
    *
@@ -229,23 +203,25 @@ export const useConsolidatedPlayback = (
   }, [])
 
   const syncAddedAudio = useCallback((seconds: number, force: boolean) => {
-    lanesRef.current.forEach((lane) => {
-      const element = audioElements.current?.[lane.id]
-      const laneSegment = lane.segments[0]
-      if (!element || !laneSegment) return
-      // The track's own speed maps the timeline offset onto the source: a clip retimed to 2x is two
-      // source seconds in for every one the playhead has crossed, which is the same mapping the
-      // picture element is given and the same one the encoder writes — see `sourceTimeAt`.
-      const { at: desired, past } = slavedAudioAt(seconds, laneSegment)
-      // PAST THE LANE'S OWN END there is nothing left to play. Assigning `currentTime` at the clip's out
-      // point every frame is what re-seeks a finished element to its own last instant sixty times a
-      // second — heard as the final syllable cycling while the picture runs on — so the track is parked
-      // and paused instead, and `force` (a seek or a scrub) does not override that.
-      if (past) {
+    slavesRef.current.forEach(({ key, segment }) => {
+      const element = audioElements.current?.[key]
+      if (!element) return
+      // ONLY THE SEGMENT THE PLAYHEAD IS INSIDE SOUNDS. A lane of several joined tracks has an element per
+      // segment, so every element must be parked outside its own span: a segment before the playhead is not
+      // yet playing, and one the playhead has LEFT is exactly the final syllable that used to cycle under the
+      // picture while the rest of the job ran on. `sourceTimeAt` clamps to the segment, so a seek is only
+      // ever asked for while the playhead is inside it.
+      const active = stateRef.current.playing && seconds >= segment.start && seconds < segment.start + segment.duration
+      if (!active) {
         if (!element.paused) element.pause()
         return
       }
+      // The track's own speed maps the timeline offset onto the source: a clip retimed to 2x is two
+      // source seconds in for every one the playhead has crossed, which is the same mapping the
+      // picture element is given and the same one the encoder writes — see `sourceTimeAt`.
+      const desired = sourceTimeAt(seconds, segment)
       if (force || Math.abs(element.currentTime - desired) > DRIFT_TOLERANCE) element.currentTime = desired
+      if (element.paused) void element.play().catch(() => { /* element may still be loading */ })
     })
   }, [audioElements])
 
@@ -298,21 +274,6 @@ export const useConsolidatedPlayback = (
    * one while the indicator still read 2x, 4x or 8x. Reverse was unaffected because
    * it seeks rather than plays.
    */
-  /**
-   * Applies the clip's own level and mute to the monitor element, so what is heard matches what is written.
-   *
-   * The volume is the clip's embedded gain for the stream the element plays, and the mute is the lane's
-   * mute OR that stream having been dropped — by a per-stream mute, or by being extracted to a track.
-   */
-  const applyLevel = useCallback(() => {
-    const video = videoRef.current
-    if (!video) return
-    const current = stateRef.current.segment
-    const level = current && levelForRef.current ? levelForRef.current(current) : undefined
-    video.volume = level ? Math.max(0, Math.min(1, level.gain)) : 1
-    video.muted = level ? level.muted : false
-  }, [])
-
   const applyRate = useCallback(() => {
     const video = videoRef.current
     if (!video) return
@@ -326,8 +287,7 @@ export const useConsolidatedPlayback = (
     // Pitch-corrected for a steady speed, raised for a fast-forward — see `preservesPitchFor` — and
     // raised again for a clip that asked for its pitch to ride the speed.
     video.preservesPitch = preservesPitchFor(shuttleRef.current) && (!current || current.maintainPitch !== false)
-    applyLevel()
-  }, [applyLevel])
+  }, [])
 
   const onLoaded = useCallback(() => {
     const video = videoRef.current
@@ -400,14 +360,6 @@ export const useConsolidatedPlayback = (
   }, [onLoaded, onMediaError, applyRate, unbindVideo])
 
   useEffect(() => () => { unbindVideo() }, [unbindVideo])
-
-  // The clip's own level can change without the segment changing — a mute or a level written in the
-  // inspector — so it is applied on its own signature as well as on every segment change.
-  const levelSignature = (() => {
-    const level = segment && levelForRef.current ? levelForRef.current(segment) : undefined
-    return level ? `${Math.round(level.gain * 1000)}:${level.muted}` : ''
-  })()
-  useEffect(() => { applyLevel() }, [applyLevel, levelSignature, segment?.key])
 
   /** The clock that owns the playhead whenever no element is entitled to. */
   const readPosition = useCallback(() => {
@@ -523,25 +475,20 @@ export const useConsolidatedPlayback = (
     // the track outright, which is what this was, is why J had no sound at all.
     const reverse = shuttleRate < 0
     const composed = reverse ? (Math.abs(shuttleRate) || 1) * speed : playbackRateFor(shuttleRate, speed)
-    lanesRef.current.forEach((lane) => {
-      const element = audioElements.current?.[lane.id]
+    slavesRef.current.forEach(({ key, segment: slaveSegment }) => {
+      const element = audioElements.current?.[key]
       if (!element) return
       // The lane's clip carries its own speed, and the track is driven at the composed rate times it, so
       // a retimed track is heard as fast as the picture beside it plays. Its pitch follows the same rule
       // the picture element's does: kept unless the clip asked for it to ride the speed.
-      const laneSegment = lane.segments[0]
-      const clip = laneSegment && laneSegment.speed > 0 ? laneSegment.speed : 1
+      const clip = slaveSegment.speed > 0 ? slaveSegment.speed : 1
       element.playbackRate = Math.min(MAX_PLAYBACK_RATE, composed * clip)
-      element.preservesPitch = preservesPitchFor(shuttleRate) && (!laneSegment || laneSegment.maintainPitch !== false)
-      // The lane's own LEVEL and MUTE, applied to its own element — the same gain the export writes on that
-      // stream, so a track sounds in the monitor as it will in the file.
-      const level = laneLevelForRef.current?.(lane.id)
-      element.volume = level ? Math.max(0, Math.min(1, level.gain)) : 1
-      element.muted = level ? level.muted : false
-      if (playing) void element.play().catch(() => { /* element may still be loading */ })
-      else element.pause()
+      element.preservesPitch = preservesPitchFor(shuttleRate) && slaveSegment.maintainPitch !== false
     })
-  }, [playing, shuttleRate, speed, segment?.key, audioLaneSignature, laneLevelSignature, audioElements, applyPendingSeek, applyRate, startPlayback])
+    // START, STOP AND SEEK each element onto its OWN segment in one place, so a lane of several joined tracks
+    // resumes the one under the playhead and parks the rest rather than starting them all together.
+    syncAddedAudio(stateRef.current.position, false)
+  }, [playing, shuttleRate, speed, segment?.key, slaveSignature, audioElements, applyPendingSeek, applyRate, startPlayback, syncAddedAudio])
 
   // Frame loop: advance the playhead, cross junctions, correct drift.
   useEffect(() => {
@@ -625,14 +572,16 @@ export const useConsolidatedPlayback = (
     // playhead and handed back the rate they would have had without the scrub.
     syncAddedAudio(settled, true)
     const rate = playbackRateFor(shuttleRef.current, speedRef.current)
-    lanesRef.current.forEach((lane) => {
-      const element = audioElements.current?.[lane.id]
+    slavesRef.current.forEach(({ key, segment: slaveSegment }) => {
+      const element = audioElements.current?.[key]
       if (!element) return
-      const laneSegment = lane.segments[0]
-      const clip = laneSegment && laneSegment.speed > 0 ? laneSegment.speed : 1
+      const clip = slaveSegment.speed > 0 ? slaveSegment.speed : 1
       element.playbackRate = Math.min(MAX_PLAYBACK_RATE, rate * clip)
-      element.preservesPitch = preservesPitchFor(shuttleRef.current) && (!laneSegment || laneSegment.maintainPitch !== false)
-      if (wasPlaying) void element.play().catch(() => { /* element may still be loading */ })
+      element.preservesPitch = preservesPitchFor(shuttleRef.current) && slaveSegment.maintainPitch !== false
+      // The segment the settled playhead rests inside is the only one woken, so a scrub that ended over the
+      // second of a joined lane leaves the first parked.
+      const active = wasPlaying && settled >= slaveSegment.start && settled < slaveSegment.start + slaveSegment.duration
+      if (active) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
   }, [syncAddedAudio, applyPendingSeek, startPlayback, audioElements])
@@ -647,14 +596,19 @@ export const useConsolidatedPlayback = (
    * while the playhead walks back — and fires only past `SCRUB_DRIFT_SECONDS`, a handful of times at most.
    */
   const driveScrubAudio = useCallback((position: number, rate: number) => {
-    lanesRef.current.forEach((lane) => {
-      const element = audioElements.current?.[lane.id]
-      const laneSegment = lane.segments[0]
-      if (!element || !laneSegment) return
-      const laneClip = laneSegment.speed > 0 ? laneSegment.speed : 1
+    slavesRef.current.forEach(({ key, segment }) => {
+      const element = audioElements.current?.[key]
+      if (!element) return
+      // ONLY the segment under the scrub's playhead is driven: the rest are parked, so a scrub across a lane
+      // of joined tracks hands the sound from one segment to the next rather than playing them all at once.
+      if (position < segment.start || position >= segment.start + segment.duration) {
+        if (!element.paused) element.pause()
+        return
+      }
+      const laneClip = segment.speed > 0 ? segment.speed : 1
       element.playbackRate = Math.min(MAX_PLAYBACK_RATE, rate * laneClip)
       element.preservesPitch = true
-      const desired = sourceTimeAt(position, laneSegment)
+      const desired = sourceTimeAt(position, segment)
       if (Math.abs(element.currentTime - desired) > SCRUB_DRIFT_SECONDS) element.currentTime = desired
     })
   }, [audioElements])
@@ -675,9 +629,13 @@ export const useConsolidatedPlayback = (
     scrubTickRef.current = { at: performance.now(), position: stateRef.current.position, rate: 1 }
     resumeAfterScrubRef.current = stateRef.current.playing && shuttleRef.current >= 0
     if (!resumeAfterScrubRef.current) return
-    lanesRef.current.forEach((lane) => {
-      const element = audioElements.current?.[lane.id]
+    // Only the segment under the playhead is woken: the rest of a joined lane's segments are parked, and
+    // playing them all here is what would put every track of the lane on at once for the gesture's length.
+    const position = stateRef.current.position
+    slavesRef.current.forEach(({ key, segment }) => {
+      const element = audioElements.current?.[key]
       if (!element) return
+      if (position < segment.start || position >= segment.start + segment.duration) return
       element.preservesPitch = true
       void element.play().catch(() => { /* element may still be loading */ })
     })

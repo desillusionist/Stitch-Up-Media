@@ -25,7 +25,7 @@ import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clip
 import { addedClipNumbers, clipIdAt, clipKey, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, trackKey } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
-import { clipAudioDropped, embeddedAudioCustomised, embeddedGainDb, enabledEmbeddedStreams, extractedBy, gainForDb } from '../src/lib/embeddedAudio'
+import { clipAudioDropped, embeddedAudioCustomised, embeddedGainDb, embeddedStreamCount, enabledEmbeddedStreams, extractedBy, gainForDb } from '../src/lib/embeddedAudio'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceValue, FRAME_CONTAINERS, imageOutputChoiceValue, imageOutputChoicesFor } from '../src/lib/containerSwitch'
@@ -2901,6 +2901,17 @@ void (async () => {
     // The claim alone is the whole record: deleting the track puts the stream straight back, with nothing to undo.
     const restored = { ...extracted, additionalAudioTracks: task.additionalAudioTracks } as unknown as QueueTask
     check('deleting the track puts the stream back', enabledEmbeddedStreams(restored, clipId, '/v.mp4', 3).map((stream) => stream.index), [0, 1, 2])
+    // HOW MANY STREAMS A CLIP IS TREATED AS CARRYING, which the monitor needs where the probe has not answered.
+    // A record of a mute at index 1 is itself the evidence of a SECOND stream, so a clip whose probe is not in
+    // yet still knows the size of its sound — which is what lets the picture stop sounding under the track that
+    // took its only stream, rather than the element playing the file as if nothing had happened.
+    const twoMuted = { ...task, embeddedAudio: { [clipId]: [{ index: 0, muted: true }, { index: 1, muted: true }] } } as unknown as QueueTask
+    check('a record of two streams is itself the count', embeddedStreamCount(twoMuted, clipId, '/v.mp4', 0), 2)
+    check('the probe wins where it has answered', embeddedStreamCount(twoMuted, clipId, '/v.mp4', 5), 5)
+    check('and a clip with nothing known still counts as one', embeddedStreamCount(task, clipId, '/v.mp4', 0), 1)
+    const onlyExtracted = { ...task, additionalAudioTracks: [{ id: 'x0', path: '/v.mp4', language: 'und', streamIndex: 0, sourceClipId: clipId }] } as unknown as QueueTask
+    check('an extracted stream is itself evidence of a stream', embeddedStreamCount(onlyExtracted, clipId, '/v.mp4', 0), 1)
+    check('so the picture is dropped rather than sounding under the track', clipAudioDropped(onlyExtracted, clipId, '/v.mp4', embeddedStreamCount(onlyExtracted, clipId, '/v.mp4', 0)), true)
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

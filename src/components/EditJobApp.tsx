@@ -18,9 +18,9 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
+import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
-import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
+import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamCount, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
 import { presetSummary } from '../lib/presetSummary'
 import { pixelDepthLabel, proresDepthLabel } from '../lib/pixelDepth'
 import { sequenceLabel } from '../lib/sequenceLabel'
@@ -709,6 +709,8 @@ export const EditJobApp: React.FC = () => {
   const trimGroupRef = useRef<Record<string, TrimWindow>>({})
   /** The main-lane clip being dragged to another place, so a drop can name where it came from. */
   const [draggingClipIndex, setDraggingClipIndex] = useState<number | null>(null)
+  /** The SEQUENCED audio track being dragged to another place, so a drop can re-order the track list. */
+  const [draggingTrackIndex, setDraggingTrackIndex] = useState<number | null>(null)
   /**
    * Which lanes are muted, by lane id. It belongs to the task rather than to this window: a muted
    * lane is one the export does not carry, so it is written into the draft with the rest of the
@@ -1018,9 +1020,11 @@ export const EditJobApp: React.FC = () => {
     const at = materializeClipIds(task).indexOf(segment.key)
     if (at < 0) return { gain: 1, muted: false }
     const path = segment.sourcePath
-    const count = sourceProbes[path]?.audioStreams?.length ?? 0
-    if (count === 0) return { gain: 1, muted: false }
     const clipId = materializeClipIds(task)[at]
+    // The element plays the file's DEFAULT stream (index 0), so that is the one asked about here. There is no
+    // early return for a clip with no probed audio: a clip whose only stream has been muted or EXTRACTED
+    // must be silenced rather than going on sounding under the track that now carries it, and a clip with no
+    // stream at all answers enabled-by-default — which is silent anyway, because the file carries no sound.
     const laneMuted = Boolean(task.mutedLanes?.[MAIN_LANE_ID])
     const defaultEnabled = embeddedStreamEnabled(task, clipId, path, 0)
     return { gain: defaultEnabled ? gainForDb(embeddedGainDb(task, clipId, 0)) : 1, muted: laneMuted || !defaultEnabled }
@@ -1045,7 +1049,7 @@ export const EditJobApp: React.FC = () => {
       const clipId = clipKey(task, path, 0)
       return {
         gain: gainForDb(embeddedGainDb(task, clipId, 0)),
-        muted: laneMuted || clipAudioDropped(task, clipId, path, sourceProbes[path]?.audioStreams?.length ?? 0),
+        muted: laneMuted || clipAudioDropped(task, clipId, path, embeddedStreamCount(task, clipId, path, sourceProbes[path]?.audioStreams?.length ?? 0)),
       }
     }
     return { gain: 1, muted: Boolean(task.mutedLanes?.[laneId]) }
@@ -1054,7 +1058,7 @@ export const EditJobApp: React.FC = () => {
   const playback = useConsolidatedPlayback(
     model ?? { lanes: [], duration: 0, unusedVideoSources: [] },
     audioElementsRef,
-    { playable: Boolean(model && model.duration > 0), fps: primaryFps, levelFor: monitorLevelFor, laneLevelFor },
+    { playable: Boolean(model && model.duration > 0), fps: primaryFps },
   )
 
   const focusedSourceIndex = playback.segmentIndex
@@ -1534,12 +1538,22 @@ export const EditJobApp: React.FC = () => {
 
   const timelineDuration = model?.duration ?? 0
   const playheadFraction = timelineDuration > 0 ? Math.max(0, Math.min(1, playback.position / timelineDuration)) : 0
-  const audioLaneIds = (model?.lanes ?? []).filter((lane) => lane.kind === 'audio' || !lane.embedded).map((lane) => lane.id).join('|')
+  /**
+   * The lanes whose sound the monitor plays through elements of their own, and ONE element per segment of
+   * them. The transport builds its own slave list from the same two rules — see `laneNeedsOwnAudio` and
+   * `audioSlaveKey` — and the two have to agree, or an element is rendered that nothing plays.
+   */
+  const audioLanes = (model?.lanes ?? []).filter(laneNeedsOwnAudio)
+  const audioSlaveKeys = audioLanes.flatMap((lane) => lane.segments.map((_, index) => audioSlaveKey(lane.id, index)))
+  const audioSlaveSignature = audioSlaveKeys.join('|')
+  /** Which lane each slave element belongs to, so its MUTE and LEVEL are that lane's own. */
+  const laneIdBySlaveKey = new Map<string, string>()
+  audioLanes.forEach((lane) => lane.segments.forEach((_, index) => laneIdBySlaveKey.set(audioSlaveKey(lane.id, index), lane.id)))
   /** Read by the lane refs below, which are made once and so must not close over a value that changes. */
   const mutedRef = useRef(muted)
   mutedRef.current = muted
   /**
-   * The ref each audio lane's element is given: one per lane, created once and never changed.
+   * The ref each audio SEGMENT's element is given: one per segment, created once and never changed.
    *
    * Stable for the reason the monitor's video ref had to be. A ref written during render is a new
    * function every time, so React detaches and reattaches it on every render — and the monitor
@@ -1553,12 +1567,13 @@ export const EditJobApp: React.FC = () => {
    */
   const audioLaneCallbacksRef = useRef<Record<string, (element: HTMLAudioElement | null) => void>>({})
   const audioLaneRefs = audioLaneCallbacksRef.current
-  audioLaneIds.split('|').filter(Boolean).forEach((laneId) => {
-    if (audioLaneRefs[laneId]) return
-    audioLaneRefs[laneId] = (element) => {
-      if (audioElementsRef.current[laneId] === element) return
-      audioElementsRef.current[laneId] = element
-      if (element) element.muted = Boolean(mutedRef.current[laneId])
+  audioSlaveKeys.forEach((slaveKey) => {
+    if (audioLaneRefs[slaveKey]) return
+    const laneId = laneIdBySlaveKey.get(slaveKey)
+    audioLaneRefs[slaveKey] = (element) => {
+      if (audioElementsRef.current[slaveKey] === element) return
+      audioElementsRef.current[slaveKey] = element
+      if (element && laneId) element.muted = Boolean(mutedRef.current[laneId])
     }
   })
   /**
@@ -1838,19 +1853,35 @@ export const EditJobApp: React.FC = () => {
     playback.setSpeed(steppedPreviewSpeed(playback.speed, event.deltaY < 0 ? 1 : -1))
   }
 
-  // Mutes are applied to the elements directly and never reach the task. The
-  // segment key is a dependency because the video element remounts around stills.
+  // Level and mute are applied to the ELEMENTS directly and never reach the task — and they are the SAME
+  // figures the export writes. The main element takes the clip's own level and is MUTED when the clip's
+  // sound has been dropped (every stream muted, or extracted to a track), so a picture cannot go on sounding
+  // under the track that now carries it; each added lane's element takes its own track level.
+  const monitorSignature = [
+    playback.segment?.key ?? '',
+    previewGain,
+    JSON.stringify(muted),
+    JSON.stringify(draft?.embeddedAudio ?? null),
+    JSON.stringify((draft?.additionalAudioTracks ?? []).map((track) => [track.id, track.gainDb])),
+    JSON.stringify((draft?.additionalAudioTracks ?? []).map((track) => [track.sourceClipId, track.streamIndex, track.path])),
+    Object.keys(sourceProbes).length,
+  ].join('|')
   useEffect(() => {
     const video = playback.videoRef.current
     if (video) {
-      video.muted = Boolean(muted.main)
-      video.volume = previewGain
+      const level = playback.segment ? monitorLevelFor(playback.segment) : undefined
+      video.muted = Boolean(muted.main) || Boolean(level?.muted)
+      video.volume = Math.max(0, Math.min(1, previewGain * (level?.gain ?? 1)))
     }
-    audioLaneIds.split('|').filter(Boolean).forEach((laneId) => {
-      const element = audioElementsRef.current[laneId]
-      if (element) element.muted = Boolean(muted[laneId])
+    audioSlaveKeys.forEach((slaveKey) => {
+      const element = audioElementsRef.current[slaveKey]
+      if (!element) return
+      const laneId = laneIdBySlaveKey.get(slaveKey) ?? ''
+      const level = laneLevelFor(laneId)
+      element.muted = Boolean(muted[laneId]) || level.muted
+      element.volume = Math.max(0, Math.min(1, level.gain))
     })
-  }, [muted, audioLaneIds, playback.videoRef, playback.segment?.key, previewGain])
+  }, [monitorSignature, audioSlaveSignature, playback.videoRef, playback.segment])
 
   /**
    * Keeps the skimmer in view.
@@ -2189,6 +2220,28 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * Mutes or unmutes a WHOLE clip's embedded sound: every stream at once.
+   *
+   * The M toggle on a VIDEO lane is about the lane's own stream and is the only mute there, so a picture
+   * whose sound is carried by a track beside it has no way to be silenced on its own — this is that control.
+   * It keeps each stream's LEVEL, so switching the sound off and back on does not throw the levels away.
+   */
+  const setClipMuted = (clipId: string, count: number, muted: boolean) => {
+    const current = latest()
+    const streams = embeddedStreamsFor(current, clipId)
+    const records: EmbeddedAudioStream[] = []
+    for (let index = 0; index < Math.max(1, count); index += 1) {
+      const gainDb = streams.find((entry) => entry.index === index)?.gainDb
+      if (muted) records.push({ index, muted: true, ...(gainDb ? { gainDb } : {}) })
+      else if (gainDb) records.push({ index, gainDb })
+    }
+    const map = { ...(current.embeddedAudio ?? {}) }
+    if (records.length) map[clipId] = records
+    else delete map[clipId]
+    updateDraft({ embeddedAudio: Object.keys(map).length ? map : undefined })
+  }
+
+  /**
    * Writes one clip's embedded-stream record: a mute, a level, both, or neither.
    *
    * A stream put back to enabled-at-unity leaves no entry, and a clip with none of its own leaves no
@@ -2350,16 +2403,17 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
-   * Takes ONE clip out of the job, which is what both the menu's REMOVE SOURCE and the Delete key answer to.
+   * Puts a SEQUENCED audio track at another place in the track list.
    *
-   * The job is rebuilt without that place, so the surviving clips keep their records. A job left with nothing
-   * at all to encode cannot be held in a draft, so that one is the queue's to do — and it takes the job with it.
+   * A joined lane's order IS the track list's order, so the drag is a splice of that list and nothing else.
+   * A plain track's records are filed under its own key (`path#0`), which is not its place, so they travel
+   * with it the way a main clip's do — no re-keying.
    */
-  const removeClipAt = (sourcePath: string, sourceIndex: number | null) => {
-    const task = draftRef.current ?? latest()
-    const without = removeSourceFromTask(task, sourcePath, sourceIndex ?? undefined)
-    if (without) updateDraft(without)
-    else if (sourceIndex != null) void window.electronAPI?.removeEditJobSource(task.id, sourcePath, sourceIndex)
+  const reorderTrack = (from: number, to: number) => {
+    const current = latest()
+    const tracks = current.additionalAudioTracks || []
+    if (from === to || from < 0 || to < 0 || from >= tracks.length || to >= tracks.length) return
+    updateDraft({ additionalAudioTracks: moveAlong(tracks, from, to) })
   }
 
   /**
@@ -2592,32 +2646,35 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
-   * Takes the whole SELECTION out of the job: main-lane clips from the source list, added tracks from the
-   * track list, each by its own id.
+   * Takes a set of clips out of the job: main-lane clips from the source list, added tracks from the track
+   * list, EACH BY ITS OWN KEY.
    *
-   * The main-lane clips are removed from the END backwards, so an earlier index is still valid as its
-   * neighbours go — the same order `withSourceList` uses. A removal that would leave nothing to encode is
-   * left to the queue, which owns taking the job away, exactly as a single removal is.
+   * A track is found by `trackKey`, never by its path: an EXTRACTED track's path is the very video it came
+   * out of, so removing it by path took the picture with it. The main-lane clips are removed from the END
+   * backwards, so an earlier index is still valid as its neighbours go. A removal that would leave nothing
+   * to encode is left to the queue, which owns taking the job away, exactly as a single removal is.
    */
-  const removeSelectedClips = (): boolean => {
+  const removeClips = (keys: string[]): boolean => {
     const current = draftRef.current
-    if (!current) return false
-    const keys = multiSelectedRef.current.length ? multiSelectedRef.current : (selectedRef.current ? [selectedRef.current.clipKey] : [])
-    if (!keys.length) return false
+    if (!current || !keys.length) return false
     const ids = materializeClipIds(current)
-    const trackIds = new Set((current.additionalAudioTracks || []).map((track) => track.id))
+    const tracks = current.additionalAudioTracks || []
+    const chosenTracks = tracks.filter((track) => keys.includes(trackKey(current, track))).map((track) => track.id)
     const mainIndices = keys.map((key) => ids.indexOf(key)).filter((index) => index >= 0).sort((earlier, later) => later - earlier)
-    const chosenTracks = keys.filter((key) => trackIds.has(key))
     let next: QueueTask | null = current
     mainIndices.forEach((index) => { if (next) next = removeSourceFromTask(next, next.sourcePaths[index], index) })
     if (next && chosenTracks.length) {
-      const tracks = (next.additionalAudioTracks || []).filter((track) => !chosenTracks.includes(track.id))
-      next = { ...next, additionalAudioTracks: tracks.length ? tracks : undefined, type: inferredMode(next.sourcePaths, tracks) }
+      const kept = (next.additionalAudioTracks || []).filter((track) => !chosenTracks.includes(track.id))
+      next = { ...next, additionalAudioTracks: kept.length ? kept : undefined, type: inferredMode(next.sourcePaths, kept) }
     }
     if (next) { updateDraft(next); setMultiSelected([]); return true }
     if (mainIndices.length) void window.electronAPI?.removeEditJobSource(current.id, current.sourcePaths[mainIndices[0]], mainIndices[0])
     return true
   }
+
+  /** Takes the whole SELECTION out, which is the group's REMOVE and the Delete key. */
+  const removeSelectedClips = (): boolean =>
+    removeClips(multiSelectedRef.current.length ? multiSelectedRef.current : (selectedRef.current ? [selectedRef.current.clipKey] : []))
 
   /**
    * Moves the whole SELECTED run of main-lane clips to a place in the join, keeping their own order.
@@ -2915,22 +2972,6 @@ export const EditJobApp: React.FC = () => {
     updateDraft({ sourceFps: Object.keys(map).length ? map : undefined })
   }
 
-  /**
-   * The lanes that need an element of their own to be heard.
-   *
-   * Every added track, and — because a job can be nothing but audio — a main lane that IS audio. Such a
-   * lane has no picture for the video element to ride on, so its own <audio> is the only thing that can
-   * play it. The transport can slave one element to one segment, so a lane of several joined tracks is
-   * left out rather than played in part.
-   *
-   * The same test is made in the transport, which is what drives these elements; the two have to agree,
-   * or an element is rendered that nothing plays or played that nothing rendered.
-   */
-  const audioLanes = model.lanes.filter((lane) => {
-    if (!lane.segments.length) return false
-    if (!lane.embedded) return true
-    return lane.kind === 'audio' && lane.segments.length === 1
-  })
   const playable = model.duration > 0
   const stamp = (seconds: number) => timestampMode === 'framestamp' ? frameStamp(seconds, sourceRateValue) : timecode(seconds, sourceRateValue)
   /**
@@ -2976,10 +3017,14 @@ export const EditJobApp: React.FC = () => {
     return sequence ? sequenceLabel(sequence) : sourceName(segment.sourcePath)
   }
   // What a clip's box calls it: `COPY n // name` when the file appears in the job more than once, so two
-  // segments of one file are told apart on the timeline rather than only inside the inspector.
+  // segments of one file are told apart on the timeline rather than only inside the inspector. An EXTRACTED
+  // track's file is the video it came out of, so it is named for what it IS — `AU // name` — rather than for
+  // the picture it no longer carries.
   const segmentName = (segment: TimelineSegment) => {
     const copy = draft ? copyLabelFor(draft, clipIndexOf(segment), segment.sourcePath) : undefined
-    return copy ? `${copy} // ${segmentLabel(segment)}` : segmentLabel(segment)
+    const name = copy ? `${copy} // ${segmentLabel(segment)}` : segmentLabel(segment)
+    const track = (draft?.additionalAudioTracks || []).find((candidate) => trackKey(draft, candidate) === segment.key)
+    return track?.sourceClipId != null ? `AU // ${name}` : name
   }
   const clipTitle = (segment: TimelineSegment) => `${segmentName(segment)} - ${clipSummary({
     // The SOURCE's whole length, which is what the clip is a piece of — the sequence's own length for
@@ -4491,6 +4536,15 @@ export const EditJobApp: React.FC = () => {
                     collapsed={collapsedSections.includes('embedded-audio')}
                     onToggle={toggleSection}
                   >
+                    {/* The whole clip's sound on one switch: every stream dropped at once. It is the pick a
+                        reader wants when the sound has moved to a track beside the picture and the picture
+                        must stop sounding under it, without muting the entire VIDEO lane. */}
+                    <EditorToggle
+                      label="CLIP SOUND"
+                      checked={!clipAudioDropped(draft, clipId, inspectedSource, embeddedStreamCount(draft, clipId, inspectedSource, streams.length))}
+                      onChange={(checked) => setClipMuted(clipId, streams.length, !checked)}
+                      reason="On, the clip's own sound is carried. Off, every stream is dropped — from the export and from the monitor — while each stream's LEVEL is kept for when it is switched back on. The M on the video lane's head mutes the whole lane instead."
+                    />
                     {streams.map((stream, sourceIndex) => {
                       const streamIndex = stream.index ?? sourceIndex
                       const extracted = Boolean(extractedBy(draft, clipId, inspectedSource, streamIndex))
@@ -4612,6 +4666,10 @@ export const EditJobApp: React.FC = () => {
                       // window trimmed. Both need the clip's place and its whole length, read once here.
                       const sourceFull = draft ? sourceDuration(draft, segment.sourcePath, undefined, resolveTiming) : 0
                       const reorderable = lane.id === mainLane?.id && lane.segments.length > 1
+                      // A lane of SEQUENCED tracks re-orders the same way, but its splice is of the TRACK list
+                      // rather than of the job's sources, so the drop is told which list it is moving in.
+                      const reorderIsTracks = lane.id === STITCHED_AUDIO_LANE_ID && lane.segments.length > 1
+                      const canReorder = reorderable || reorderIsTracks
                       // Every lane's clips can be trimmed: an ADDED AUDIO TRACK is one clip with a whole
                       // source of its own, and the encoder applies that trim (`applyTrimInput` for a
                       // track input). Only a source with no length at all has nothing to trim.
@@ -4621,17 +4679,22 @@ export const EditJobApp: React.FC = () => {
                       return (
                       <div
                         key={segment.key}
-                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${multiSelected.includes(segment.key) ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index ? ' is-dragging' : ''}`}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${multiSelected.includes(segment.key) ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index || draggingTrackIndex === index ? ' is-dragging' : ''}`}
                         style={{ width: `${clipWidth}px` }}
                         title={clipTitle(segment)}
                         data-clip-key={segment.key}
-                        draggable={reorderable}
+                        draggable={canReorder}
                         onClick={(event) => selectClip(lane.id, segment.key, event.shiftKey)}
                         onContextMenu={(event) => openClipMenu(event, segment, lane.id, index)}
-                        onDragStart={reorderable ? (event) => { event.stopPropagation(); setDraggingClipIndex(index); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-stitch-clip', segment.key) } : undefined}
-                        onDragOver={reorderable ? (event) => { event.preventDefault(); event.stopPropagation() } : undefined}
-                        onDrop={reorderable ? (event) => {
+                        onDragStart={canReorder ? (event) => { event.stopPropagation(); if (reorderIsTracks) setDraggingTrackIndex(index); else setDraggingClipIndex(index); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-stitch-clip', segment.key) } : undefined}
+                        onDragOver={canReorder ? (event) => { event.preventDefault(); event.stopPropagation() } : undefined}
+                        onDrop={canReorder ? (event) => {
                           event.preventDefault(); event.stopPropagation()
+                          if (reorderIsTracks) {
+                            if (draggingTrackIndex != null && draggingTrackIndex !== index) reorderTrack(draggingTrackIndex, index)
+                            setDraggingTrackIndex(null)
+                            return
+                          }
                           if (draggingClipIndex != null && draggingClipIndex !== index) {
                             // A drag of a clip IN A GROUP moves the whole group as one block; a drag of one on
                             // its own is the plain reorder it has always been.
@@ -4640,7 +4703,7 @@ export const EditJobApp: React.FC = () => {
                           }
                           setDraggingClipIndex(null)
                         } : undefined}
-                        onDragEnd={reorderable ? () => setDraggingClipIndex(null) : undefined}
+                        onDragEnd={canReorder ? () => { setDraggingClipIndex(null); setDraggingTrackIndex(null) } : undefined}
                       >
                         {/* The cells share the lane exactly, so there is no gap at the end, and each
                             shows the frame the playhead would show at that place on the lane. A tile
@@ -4696,7 +4759,7 @@ export const EditJobApp: React.FC = () => {
                         {/* A visual clip that carries audio says so, and says whether the export still
                             carries it: green while it does, grey while the lane is muted. */}
                         {lane.kind === 'video' && sourceAudio[segment.sourcePath]
-                          ? <span className={`clip-audio${muted[lane.id] || clipAudioDropped(draft, clipKey(draft, segment.sourcePath, clipIndexOf(segment)), segment.sourcePath, sourceProbes[segment.sourcePath]?.audioStreams?.length ?? 0) ? ' is-muted' : ''}`} aria-hidden="true" />
+                          ? <span className={`clip-audio${muted[lane.id] || clipAudioDropped(draft, clipKey(draft, segment.sourcePath, clipIndexOf(segment)), segment.sourcePath, embeddedStreamCount(draft, clipKey(draft, segment.sourcePath, clipIndexOf(segment)), segment.sourcePath, sourceProbes[segment.sourcePath]?.audioStreams?.length ?? 0)) ? ' is-muted' : ''}`} aria-hidden="true" />
                           : null}
                         {/* The lane's own boundaries. The main lane's are the cuts of the join: a [+] on a cut
                             fades both sides, and a [+] at either end fades from or to black. An added audio
@@ -5505,16 +5568,19 @@ export const EditJobApp: React.FC = () => {
       </aside>
     </div>
 
-    {audioLanes.map((lane) => {
-      const laneSegment = lane.segments[0]
-      const url = laneSegment ? sourceUrlFor(laneSegment) : null
+    {audioLanes.flatMap((lane) => lane.segments.map((segment, index) => {
+      // ONE ELEMENT PER SEGMENT, keyed by the segment's place on its lane rather than by the segment's record
+      // key: two added tracks of one file share the record key `path#0`, so keying by it would give the
+      // second track the first one's element and leave it silent. The transport drives exactly these keys.
+      const slaveKey = audioSlaveKey(lane.id, index)
+      const url = sourceUrlFor(segment)
       return url ? <audio
-        key={lane.id}
-        ref={audioLaneRefs[lane.id]}
+        key={slaveKey}
+        ref={audioLaneRefs[slaveKey]}
         src={url}
         preload="auto"
       /> : null
-    })}
+    }))}
 
     {/* Fixed rather than positioned inside the timeline, so it is never clipped by the scroll
         area it was opened from. */}
@@ -5538,10 +5604,9 @@ export const EditJobApp: React.FC = () => {
         <div className="timeline-menu-actions">
           <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: undefined })}>KEEP IT</button>
           <button role="menuitem" className="is-danger" onClick={() => {
-            if (timelineMenu.multi) { setTimelineMenu(null); removeSelectedClips(); return }
-            const { sourcePath, sourceIndex } = timelineMenu
             setTimelineMenu(null)
-            removeClipAt(sourcePath, sourceIndex)
+            if (timelineMenu.multi) removeSelectedClips()
+            else removeClips([timelineMenu.fitKey])
           }}>REMOVE</button>
         </div>
       </> : <>

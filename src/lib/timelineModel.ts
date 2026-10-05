@@ -4,7 +4,7 @@ import { mediaKind } from './mediaKind'
 import { outputCarriesPicture } from './outputKind'
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedFor } from './clipSpeed'
 import { clipKey, trackKey } from './clipIds'
-import { FrameRate, RateInput, frameCount, makeRate, rateOf, rateValue } from './frameRate'
+import { FrameRate, RateInput, frameCount, makeRate, rateLabel, rateOf, rateValue } from './frameRate'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
 const DEFAULT_STILL_SECONDS = 10
@@ -250,6 +250,27 @@ export const tracksConcatenate = (task: Pick<QueueTask, 'type' | 'comboMode'>): 
  * own lanes instead.
  */
 export const EMPTY_AUDIO_LANE_ID = '__audio__'
+
+/**
+ * Whether a lane's sound is played by elements of its OWN rather than by the monitor's video element.
+ *
+ * Every ADDED track is such a lane — it has no picture for the video element to ride on — and so is a main
+ * lane that is nothing but AUDIO (a CONVERT of a sound file, a STITCH of sound, a lone sound in a COMBO).
+ * Only a main lane carrying a PICTURE is left to the video element, which plays the picture and its sound
+ * together, as the file holds them.
+ */
+export const laneNeedsOwnAudio = (lane: TimelineLane): boolean =>
+  lane.segments.length > 0 && (!lane.embedded || lane.kind === 'audio')
+
+/**
+ * The key one lane SEGMENT's own playback element is filed under.
+ *
+ * By the lane and the segment's PLACE on it rather than by the segment's record key: a record key is what a
+ * clip's trim, fade and gain are filed under, and two added tracks of ONE file share that key — `path#0` —
+ * so keying an element by it would hand the second track the first one's element and leave it silent. A
+ * place on a lane is unique by construction, which is what an element needs.
+ */
+export const audioSlaveKey = (laneId: string, index: number): string => `${laneId}#${index}`
 
 /**
  * Whether the export carries a lane's audio.
@@ -684,14 +705,14 @@ export const clipSummary = ({ totalSeconds, fps, usedSeconds, sourceIn, trimmed,
   // A trim that takes NOTHING away is not a trim: a range that spans the whole source IS the source, and
   // "2160 trimmed frames [0000-2160]" about a clip that uses all of it is a range drawn around everything.
   // A still is the same case — its chosen length is the whole of it — so it says source too.
-  if (!trimmed || usesAllSource({ sourceUsedSeconds: usedSeconds, sourceIn }, totalSeconds)) return `${whole} at ${rate} fps | source`
+  if (!trimmed || usesAllSource({ sourceUsedSeconds: usedSeconds, sourceIn }, totalSeconds)) return `${whole} at ${rateLabel(rate)} fps | source`
   const used = mode === 'framestamp' ? `${frames(usedSeconds)} trimmed frames` : `${timecode(usedSeconds, rate)} trimmed`
   // The range is padded to four digits in frames, because a range is read as a box of digits rather
   // than as two numbers, and a ragged box is read twice.
   const range = mode === 'framestamp'
     ? `[${stamp(sourceIn).padStart(4, '0')}-${stamp(sourceIn + usedSeconds).padStart(4, '0')}]`
     : `[${stamp(sourceIn)}-${stamp(sourceIn + usedSeconds)}]`
-  return `${whole} at ${rate} fps | ${used} ${range}`
+  return `${whole} at ${rateLabel(rate)} fps | ${used} ${range}`
 }
 
 /**
