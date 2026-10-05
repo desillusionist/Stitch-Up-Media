@@ -79,6 +79,20 @@ export const clipKey = (
 ): string => (sourcePath != null && task.sourcePaths?.[index] === sourcePath ? clipIdAt(task, index) : legacyClipId(sourcePath ?? '', index))
 
 /**
+ * The key an ADDED TRACK's records are filed under, which is not `clipKey` for an EXTRACTED one.
+ *
+ * A track's file is not in `sourcePaths`, so `clipKey` answers with the legacy `path#0` it always has, and
+ * that is what a plain added track keeps. An EXTRACTED track is the exception: its path IS the visual it
+ * came out of, and that visual's place zero resolves to the CLIP's id — so `clipKey` would hand the track
+ * the clip's own key, and the picture and the audio pulled out of it would become one record, trimming and
+ * fading together. The track's own OPAQUE id, which it alone carries, keeps them apart.
+ */
+export const trackKey = (
+  task: ClipIdSource,
+  track: { id: string; path: string; sourceClipId?: string },
+): string => (track.sourceClipId != null ? `${track.path}#${track.id}` : clipKey(task, track.path, 0))
+
+/**
  * How many times a clip's file has appeared up to and including a place: the ordinal a clip is SHOWN by.
  *
  * Counted from a list, so it is a position; `materializeClipNumbers` is the one place that turns it into

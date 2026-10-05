@@ -59,7 +59,7 @@ export function probeFile(filePath: string): Promise<MediaProbeInfo> {
 
       const audioStreams = (data.streams || [])
         .filter((s: ffmpeg.FfprobeStream) => s.codec_type === 'audio')
-        .map((s: ffmpeg.FfprobeStream) => {
+        .map((s: ffmpeg.FfprobeStream, audioIndex: number) => {
           // Read as numbers, because ffprobe answers `N/A` and `0` for figures it cannot give: a lossy codec
           // has no bits per sample at all, and a wav written without a layout says `unknown` rather than
           // stereo. Each of those is an ABSENCE, and a zero or the word `unknown` shown as a fact would be a
@@ -74,6 +74,12 @@ export function probeFile(filePath: string): Promise<MediaProbeInfo> {
             language: (s.tags as any)?.language || 'und',
             bitDepth: sampleBits > 0 ? sampleBits : undefined,
             channelLayout: s.channel_layout && s.channel_layout !== 'unknown' ? s.channel_layout : undefined,
+            // The stream's place among the AUDIO streams, which is what `-map 0:a:N` addresses — not
+            // `s.index`, which counts every stream in the container (video included) and would name the
+            // wrong one the moment a picture sat beside the sound. The title rides along where the
+            // container carries one, so a reader can tell two tracks of one file apart.
+            index: audioIndex,
+            title: (s.tags as any)?.title || undefined,
           }
         })
 

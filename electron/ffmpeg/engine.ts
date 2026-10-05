@@ -11,7 +11,8 @@ import { mediaKind } from '../../src/lib/mediaKind'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { codecTakesRate } from '../../src/lib/outputSize'
-import { clipKey } from '../../src/lib/clipIds'
+import { clipKey, trackKey } from '../../src/lib/clipIds'
+import { embeddedAudioCustomised, enabledEmbeddedStreams, gainForDb } from '../../src/lib/embeddedAudio'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
@@ -126,8 +127,8 @@ export class FFmpegEngine {
     }
     return command
   }
-  private trimPoint(task: QueueTask, source: string, index: number) {
-    return task.trimPoints?.[clipKey(task, source, index)] || task.trimPoints?.[source]
+  private trimPoint(task: QueueTask, source: string, index: number, key?: string) {
+    return task.trimPoints?.[key ?? clipKey(task, source, index)] || task.trimPoints?.[source]
   }
   /**
    * Fade filters for one clip, appended to the same chains the scaling already
@@ -158,11 +159,22 @@ export class FFmpegEngine {
    * timeline and the monitor draw it with. `probedFps` is the source's own rate as measured by whichever
    * probe the caller already made; an absent record and an equal rate leave this exactly the speed it was.
    */
-  private retimeFor(task: QueueTask, source: string, index: number, probedFps: number): number {
+  private retimeFor(task: QueueTask, source: string, index: number, probedFps: number, key?: string): number {
     const sequence = this.sequenceFor(task, source)
     const native = nativeRateFor(task, source, sequence, () => ({ duration: 0, fps: probedFps }))
-    const rate = clipRateFor(task, source, index, native)
-    return clampClipSpeed(clipRetime(speedFor(task, source, index).speed, rate, native))
+    const rate = clipRateFor(task, source, index, native, key)
+    return clampClipSpeed(clipRetime(speedFor(task, source, index, key).speed, rate, native))
+  }
+
+  /**
+   * The `volume` link for an embedded stream's own level, empty at unity so an untouched stream is unfiltered.
+   *
+   * Written as a linear gain from the dB the reader set, on that stream's own chain — a single `-af` would
+   * put one stream's level on all of them the moment a clip carried more than one.
+   */
+  private embeddedGainFilters(gainDb: number | undefined): string[] {
+    const gain = gainForDb(gainDb ?? 0)
+    return Math.abs(gain - 1) > 1e-6 ? [`volume=${gain}`] : []
   }
 
   private normalizeStitchSource(task: QueueTask, source: string, output: string, point: { in: number; out: number } | undefined, stitchCanvas: [number, number] | undefined, targetFps = 30, clipDuration = 0, fade?: ClipFade, clipIndex = 0, sourceSize?: { width: number; height: number }, retime?: number): Promise<void> {
@@ -301,6 +313,9 @@ export class FFmpegEngine {
     const clipSpeed = speedFor(task, source, 0)
     let expectedSeconds = 0
     let sourceHasAudio = false
+    // The number of AUDIO streams the source carries, from the probe below: it is the range a clip's own
+    // per-stream controls are offered over, and the count an explicit map list is built against.
+    let audioStreamCount = 0
     // The source's own rate, filled by the probe below: the retime is the speed with the clip's INTERPRETED
     // rate folded in against it, so a clip given a rate of its own writes the length the editor drew.
     let probedFps = 0
@@ -315,6 +330,7 @@ export class FFmpegEngine {
     try {
       const probe = await probeFile(source)
       sourceHasAudio = probe.audioStreams.length > 0
+      audioStreamCount = probe.audioStreams.length
       probedFps = parseFrameRate(probe.videoStreams[0]?.fps)
       retime = this.retimeFor(task, source, 0, probedFps)
       expectedSeconds = clipDurationFor(segmentTiming(
@@ -385,12 +401,42 @@ export class FFmpegEngine {
       ...(clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) }),
       ...(draws ? { graphOwnsPicture: true } : {}),
     })
+    // The clip's OWN embedded sound, where a reader has told it which streams to carry or set a level on
+    // one: the enabled streams are named one at a time rather than left to ffmpeg's own selection, so a
+    // muted or EXTRACTED stream is not written at all. An untouched clip keeps the default path exactly.
+    const embeddedClipId = clipKey(task, source, 0)
+    const embeddedCustom = mediaKind(source) === 'video'
+      && embeddedAudioCustomised(task, embeddedClipId, source)
+      && task.preset.audioEnabled !== false
+      && task.preset.container !== 'gif'
+      && task.preset.imageOutputMode !== 'sequence'
+      && !laneIsMuted(task, MAIN_LANE_ID)
+    const embeddedEnabled = embeddedCustom ? enabledEmbeddedStreams(task, embeddedClipId, source, audioStreamCount) : []
     // The sound is retimed beside the picture, in the same terms: `atempo` keeps the pitch, or
     // `asetrate` shifts it with the speed. A stream-copied sound cannot be filtered at all and a
     // source with no sound has nothing to retime, so the chain is only written where it applies.
     const audioChain = [...speedAudio, ...fades.audio]
-    if (audioChain.length && sourceHasAudio && !draws && task.preset.audioCodec !== 'copy' && task.preset.audioEnabled !== false) {
+    if (!embeddedCustom && audioChain.length && sourceHasAudio && !draws && task.preset.audioCodec !== 'copy' && task.preset.audioEnabled !== false) {
       cmd.outputOptions([`-af ${audioChain.join(',')}`])
+    }
+    // Naming a stream at all turns OFF ffmpeg's automatic selection for every kind, so the picture has to be
+    // named too wherever the container carries one. A pictureless container already says `-vn`.
+    if (embeddedCustom) {
+      const carriesPicture = task.preset.outputMode !== 'audio' && outputCarriesPicture(task.preset.container)
+      if (carriesPicture) cmd.outputOptions(['-map 0:v:0'])
+      if (embeddedEnabled.length === 0) {
+        cmd.outputOptions(['-an'])
+      } else {
+        embeddedEnabled.forEach((stream) => cmd.outputOptions([`-map 0:a:${stream.index}`]))
+        if (task.preset.audioCodec !== 'copy') {
+          // One chain per output stream: the clip's own retime and fades on each, with that stream's level
+          // appended — which is the only way two streams of one clip can carry two different levels.
+          embeddedEnabled.forEach((stream, outIndex) => {
+            const chain = [...audioChain, ...this.embeddedGainFilters(stream.gainDb)]
+            if (chain.length) cmd.outputOptions([`-filter:a:${outIndex} ${chain.join(',')}`])
+          })
+        }
+      }
     }
     // A muted lane is one the export does not carry, so its audio is dropped outright rather than
     // encoded and left silent: a file with no audio stream says so without being listened to.
@@ -702,6 +748,9 @@ export class FFmpegEngine {
     // video's own answer comes from the probe below. Guessed at rather than probed, the tags that name
     // each track's language would be written against a stream that may not exist.
     let videoHasAudio = !isStillCover && !isSequenceVideo
+    // How many audio streams the visual carries, from the probe below: the range a clip's own per-stream
+    // embedded controls are offered over, and the count an explicit map list is built against.
+    let videoAudioCount = 0
     // Each track's own played length in SOURCE seconds, and its probed rate, both read once.
     const trackDurations: number[] = []
     const trackFps: number[] = []
@@ -710,6 +759,7 @@ export class FFmpegEngine {
       probedDuration = Number(videoProbe.duration || 0)
       probedFps = parseFrameRate(videoProbe.videoStreams[0]?.fps)
       videoHasAudio = videoProbe.audioStreams.length > 0
+      videoAudioCount = videoProbe.audioStreams.length
       const resolution = videoProbe.videoStreams[0]?.resolution?.split('x').map(Number)
       if (resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
         videoSize = { width: resolution[0], height: resolution[1] }
@@ -719,7 +769,7 @@ export class FFmpegEngine {
       const audioProbes = await Promise.all(extraAudios.map((track) => probeFile(track.path)))
       audioProbes.forEach((probe, index) => {
         trackFps[index] = parseFrameRate(probe.videoStreams[0]?.fps)
-        const point = this.trimPoint(task, extraAudios[index].path, 0)
+        const point = this.trimPoint(task, extraAudios[index].path, 0, trackKey(task, extraAudios[index]))
         const full = Number(probe.duration || 0)
         trackDurations[index] = point && point.out > point.in ? Math.min(full - point.in, point.out - point.in) : full
       })
@@ -734,7 +784,7 @@ export class FFmpegEngine {
     // COMBO can retime its visual and the drawn length is the written one.
     const visualSpeed = videoOverride ? DEFAULT_CLIP_SPEED : speedFor(task, videoSource, 0)
     const visualRetime = videoOverride ? 1 : this.retimeFor(task, videoSource, 0, probedFps)
-    const trackRetimes = extraAudios.map((track, index) => this.retimeFor(task, track.path, 0, trackFps[index] ?? 0))
+    const trackRetimes = extraAudios.map((track, index) => this.retimeFor(task, track.path, 0, trackFps[index] ?? 0, trackKey(task, track)))
     const videoDuration = clipDurationFor(
       segmentTiming(sourceDuration(task, videoSource, videoSequence, () => ({ duration: probedDuration })), videoTrim).duration,
       visualRetime,
@@ -765,8 +815,8 @@ export class FFmpegEngine {
       )
     const trackFades = extraAudios.map((track, index) => this.fadeFilters(
       resolveFades([trackTimelineDurations[index] || 0], [], {
-        head: trackEdgeFade(task, clipKey(task, track.path, 0), 'head'),
-        tail: trackEdgeFade(task, clipKey(task, track.path, 0), 'tail'),
+        head: trackEdgeFade(task, trackKey(task, track), 'head'),
+        tail: trackEdgeFade(task, trackKey(task, track), 'tail'),
       })[0],
       trackTimelineDurations[index] || 0,
     ))
@@ -776,7 +826,7 @@ export class FFmpegEngine {
     // same chain it always was.
     const speedVideo = speedVideoFilters(visualRetime, visualSpeed.interpolation === 'blending' ? 'blending' : 'sampling', outputFpsOf(task.preset))
     const speedMainAudio = speedAudioFilters(visualRetime, visualSpeed.maintainPitch !== false, 48000)
-    const trackSpeedAudio = extraAudios.map((track, index) => speedAudioFilters(trackRetimes[index], speedFor(task, track.path, 0).maintainPitch !== false, 48000))
+    const trackSpeedAudio = extraAudios.map((track, index) => speedAudioFilters(trackRetimes[index], speedFor(task, track.path, 0, trackKey(task, track)).maintainPitch !== false, 48000))
     let cmd = videoOverride ? ffmpeg(videoOverride) : (videoSequence ? this.sequenceCommand(videoSequence, videoTrim) : ffmpeg(videoSource))
     if (isStillCover && extraAudios.length > 0) {
       cmd.inputOptions(['-loop 1', '-framerate 2'])
@@ -785,7 +835,7 @@ export class FFmpegEngine {
 
     extraAudios.forEach((track) => {
       cmd.input(track.path)
-      this.applyTrimInput(cmd, this.trimPoint(task, track.path, 0))
+      this.applyTrimInput(cmd, this.trimPoint(task, track.path, 0, trackKey(task, track)))
     })
 
     // What the export does with the picture, which is three different things. A DRAWING takes the place
@@ -834,21 +884,45 @@ export class FFmpegEngine {
     // a job left with no audio anywhere says so, rather than being handed one by ffmpeg's own
     // default mapping of the first stream it found. A drawing's own graph carries the audio, so neither
     // is mapped here at all — mapping it twice would mux it twice.
-    if (!pictured && carriesMainAudio) outputOptions.push('-map 0:a?')
-    else if (!pictured && extraAudios.length === 0) outputOptions.push('-an')
+    //
+    // An untouched clip keeps `-map 0:a?` and ffmpeg's own selection. A clip a reader has told WHICH
+    // streams to carry — or taken a stream OUT of — is mapped one stream at a time, so a muted or
+    // extracted stream is not written at all and no stream is carried by both the picture and a track.
+    const embeddedClipId = videoOverride ? undefined : clipKey(task, videoSource, 0)
+    const embeddedCustom = !pictured
+      && !videoOverride
+      && carriesMainAudio
+      && embeddedAudioCustomised(task, embeddedClipId as string, videoSource)
+      && task.preset.audioEnabled !== false
+    const mainStreams = embeddedCustom ? enabledEmbeddedStreams(task, embeddedClipId as string, videoSource, videoAudioCount) : null
+    // The output stream each track's audio lands on: after the main lane's own streams, however many
+    // there are — one for the untouched default, or one per enabled embedded stream.
+    const firstTrackOut = mainStreams ? mainStreams.length : (carriesMainAudio && videoHasAudio ? 1 : 0)
+    if (!pictured) {
+      if (mainStreams) {
+        mainStreams.forEach((stream) => outputOptions.push(`-map 0:a:${stream.index}`))
+        if (!mainStreams.length && extraAudios.length === 0) outputOptions.push('-an')
+      } else if (carriesMainAudio) {
+        outputOptions.push('-map 0:a?')
+      } else if (extraAudios.length === 0) {
+        outputOptions.push('-an')
+      }
+    }
 
     // A SEQUENCED set of tracks is ONE output stream, built by the graph below and mapped as `[aout]`;
     // stacked tracks are one stream each, mapped here. The two are the same list of inputs either way.
     const tracksStitched = tracksConcatenate(task) && extraAudios.length > 0
     if (!pictured && !tracksStitched) extraAudios.forEach((track, idx) => {
       const inputIdx = idx + 1
-      outputOptions.push(`-map ${inputIdx}:a:0`)
+      // An EXTRACTED track names the stream it was pulled from; a plain added track is the file's own first.
+      const stream = track.streamIndex != null ? `:a:${track.streamIndex}` : ':a:0'
+      outputOptions.push(`-map ${inputIdx}${stream}`)
       // Metadata tags for language and title, written against the index the stream has in the OUTPUT
       // rather than its place in this list. The visual's own audio is mapped first when the job carries
       // it and the visual HAS one; a still cover or an image sequence has none, so a job whose only
       // audio is its added tracks numbers them from zero. Naming `s:a:1` where one audio stream exists
       // names nothing at all, which is how a language the job was told to write went missing.
-      const audioStreamOutIdx = (carriesMainAudio && videoHasAudio ? 1 : 0) + idx
+      const audioStreamOutIdx = firstTrackOut + idx
       outputOptions.push(`-metadata:s:a:${audioStreamOutIdx} language=${track.language}`)
       if (track.title) {
         outputOptions.push(`-metadata:s:a:${audioStreamOutIdx} title="${track.title}"`)
@@ -879,15 +953,20 @@ export class FFmpegEngine {
     // The drawing's own graph resamples and lays the audio out, so the chain is not written twice.
     const channels = this.exportChannels(task.preset, 2)
     const audioBase = `aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=${channelLayoutFor(channels)}`
-    const mainChain = [audioBase, ...speedMainAudio, ...mainFades.audio]
-    const firstTrackOut = carriesMainAudio && videoHasAudio ? 1 : 0
+    // One chain per MAIN-lane output stream: the untouched path has its one shared chain, and an explicit
+    // embedded selection has one per enabled stream, each with that stream's own level appended — a single
+    // `-af` would put one stream's level on all of them.
+    const mainChains = mainStreams
+      ? mainStreams.map((stream) => [audioBase, ...speedMainAudio, ...mainFades.audio, ...this.embeddedGainFilters(stream.gainDb)])
+      : (carriesMainAudio && videoHasAudio ? [[audioBase, ...speedMainAudio, ...mainFades.audio]] : [])
     if (!pictured && tracksStitched) {
       // A SEQUENCED set of tracks: each input is retimed, faded and resampled in its own chain, and the
       // chains are CONCATENATED into one stream — the second axis of concatenation a COMBO(a STITCH of
       // tracks) asks for. One stream is mapped, so the tracks play one after another rather than together.
-      const parts = extraAudios.map((_track, idx) => {
+      const parts = extraAudios.map((track, idx) => {
         const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? [])]
-        return `[${idx + 1}:a]${chain.join(',')}[t${idx}]`
+        const source = track.streamIndex != null ? `${idx + 1}:a:${track.streamIndex}` : `${idx + 1}:a`
+        return `[${source}]${chain.join(',')}[t${idx}]`
       })
       const labels = extraAudios.map((_track, idx) => `[t${idx}]`).join('')
       parts.push(`${labels}concat=n=${extraAudios.length}:v=0:a=1[aout]`)
@@ -897,18 +976,18 @@ export class FFmpegEngine {
       const language = extraAudios[0].language
       if (language) outputOptions.push(`-metadata:s:a:${firstTrackOut} language=${language}`)
       if (extraAudios[0].title) outputOptions.push(`-metadata:s:a:${firstTrackOut} title="${extraAudios[0].title}"`)
-      if (carriesMainAudio && videoHasAudio) cmd.outputOptions([`-filter:a:0 ${mainChain.join(',')}`])
+      mainChains.forEach((chain, outIndex) => cmd.outputOptions([`-filter:a:${outIndex} ${chain.join(',')}`]))
     } else if (!pictured) {
-      // THE AUDIO IS FILTERED PER OUTPUT STREAM once any lane needs its own chain — a fade, or a retime —
-      // because a single `-af` would put one lane's on all of them. Each output stream gets the same
-      // resample/layout it always had, with that lane's own filters appended. A job needing neither is
+      // THE AUDIO IS FILTERED PER OUTPUT STREAM once any lane needs its own chain — a fade, a retime, or a
+      // level — because a single `-af` would put one lane's on all of them. Each output stream gets the same
+      // resample/layout it always had, with that lane's own filters appended. A job needing none is
       // handed the one `-af` it has always had, so the common path is untouched.
-      const perStream = mainChain.length > 1 || trackFades.some((fade) => fade.audio.length > 0) || trackSpeedAudio.some((chain) => chain.length > 0)
+      const perStream = mainChains.some((chain) => chain.length > 1) || trackFades.some((fade) => fade.audio.length > 0) || trackSpeedAudio.some((chain) => chain.length > 0)
       cmd.outputOptions([`-ar 48000`, `-ac ${channels}`])
       if (!perStream) {
         cmd.outputOptions([`-af ${audioBase}`])
       } else {
-        if (carriesMainAudio && videoHasAudio) cmd.outputOptions([`-filter:a:0 ${mainChain.join(',')}`])
+        mainChains.forEach((chain, outIndex) => cmd.outputOptions([`-filter:a:${outIndex} ${chain.join(',')}`]))
         extraAudios.forEach((_track, idx) => {
           const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? [])]
           cmd.outputOptions([`-filter:a:${firstTrackOut + idx} ${chain.join(',')}`])

@@ -1371,6 +1371,75 @@ const main = async () => {
   await encode(trackRetime)
   check('a track retimed at 2x contributes half of its run', Number(await probeValue(path.join(root, 'retime-track.mp4'), 'format=duration')), 4)
 
+  // A CLIP'S OWN EMBEDDED SOUND: which streams reach the export, at what level, and what extraction does.
+  // The fixture carries TWO audio streams — a loud 440 Hz tone first and silence second — so "which stream
+  // was written" is answered by measuring the output, not by reading the argument list alone.
+  console.log('\n== embedded audio: per-stream mute, level and extraction ==')
+  const twoAudio = path.join(root, 'two-audio.mp4')
+  await runFfmpeg([
+    '-f', 'lavfi', '-i', 'color=red:size=320x240:rate=25:duration=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2',
+    '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+    '-t', '2', '-map', '0:v', '-map', '1:a', '-map', '2:a', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', twoAudio,
+  ])
+  check('the fixture carries TWO audio streams', await audioStreams(twoAudio), 2)
+  const embedClipId = `${twoAudio}#0`
+  const baseTask = { status: 'pending', progress: 0, sourcePaths: [twoAudio], outputDirectory: root, preset }
+  // The fixture's own loudness, so the readings below are compared with the thing they are about rather than
+  // with a figure guessed at: the tone stream is stream 0, which is the one ffmpeg decodes by default.
+  const tone = await rmsAt(twoAudio, 0.5, 0.3)
+
+  // UNTOUCHED: the clip is handed to ffmpeg's own selection exactly as before, so both streams are mapped.
+  const untouchedCmd = await captureCommand({ id: 'embed-none', type: 'multitrack', outputFilename: 'embed-none.mp4', ...baseTask })
+  check('an untouched clip keeps ffmpeg\u2019s own `-map 0:a?`', / -map 0:a\?/.test(untouchedCmd), true)
+  check('and names no stream', / -map 0:a:/.test(untouchedCmd), false)
+  check('so both streams reach the output', await audioStreams(path.join(root, 'embed-none.mp4')), 2)
+
+  // MUTE the SILENT stream: only the loud one is written, and it is heard.
+  const muteSecond = { id: 'embed-mute1', type: 'multitrack', outputFilename: 'embed-mute1.mp4', ...baseTask, embeddedAudio: { [embedClipId]: [{ index: 1, muted: true }] } }
+  const muteSecondCmd = await captureCommand(muteSecond)
+  check('muting a stream maps exactly the enabled ones', / -map 0:a:0/.test(muteSecondCmd), true)
+  check('and does not fall back to `0:a?`', / -map 0:a\?/.test(muteSecondCmd), false)
+  const muteSecondOut = path.join(root, 'embed-mute1.mp4')
+  check('so the muted stream is not written', await audioStreams(muteSecondOut), 1)
+  check(`and the sound left is the loud one (${(await rmsAt(muteSecondOut, 0.5, 0.3)).toFixed(3)} vs ${tone.toFixed(3)})`, (await rmsAt(muteSecondOut, 0.5, 0.3)) > tone * 0.5, true)
+
+  // MUTE the LOUD stream: only the silent one is written, so the file is quiet — the other half of the same
+  // reading, which a `0:a` or "first stream" mapping could not have told apart.
+  const muteFirst = { ...muteSecond, id: 'embed-mute0', outputFilename: 'embed-mute0.mp4', embeddedAudio: { [embedClipId]: [{ index: 0, muted: true }] } }
+  await captureCommand(muteFirst)
+  const muteFirstOut = path.join(root, 'embed-mute0.mp4')
+  check('muting the FIRST stream leaves the other one', await audioStreams(muteFirstOut), 1)
+  check(`and it is the silent one, so the file is quiet (${(await rmsAt(muteFirstOut, 0.5, 0.3)).toFixed(3)})`, (await rmsAt(muteFirstOut, 0.5, 0.3)) < tone * 0.1, true)
+
+  // A LEVEL: -20 dB on the loud stream is written as `volume=` on that stream's own chain and is measurably
+  // quieter than the same stream at unity.
+  const levelled = { ...muteSecond, id: 'embed-level', outputFilename: 'embed-level.mp4', embeddedAudio: { [embedClipId]: [{ index: 0, gainDb: -20 }] } }
+  const levelledCmd = await captureCommand(levelled)
+  check('a level is written as `volume=` on that stream\u2019s own chain', /volume=0\.1/.test(levelledCmd), true)
+  const full = await rmsAt(muteSecondOut, 1, 0.4)
+  const quiet = await rmsAt(path.join(root, 'embed-level.mp4'), 1, 0.4)
+  check(`and -20 dB really is about a tenth as loud (${quiet.toFixed(4)} vs ${full.toFixed(4)})`, quiet < full * 0.25 && quiet > full * 0.03, true)
+
+  // EXTRACT: the stream leaves the picture for a track that NAMES it, so the picture stops carrying it and
+  // the track carries it instead — never both.
+  const extracted = {
+    id: 'embed-extract', type: 'multitrack', outputFilename: 'embed-extract.mp4', ...baseTask,
+    additionalAudioTracks: [{ id: 'x1', path: twoAudio, language: 'und', streamIndex: 1, sourceClipId: embedClipId }],
+  }
+  const extractCmd = await captureCommand(extracted)
+  check('an extracted stream is mapped from the track\u2019s own input, by its index', / -map 1:a:1/.test(extractCmd), true)
+  check('and the picture no longer carries it', / -map 0:a:0/.test(extractCmd) && !/ -map 0:a:1/.test(extractCmd) && !/ -map 0:a\?/.test(extractCmd), true)
+  check('so the output carries both, the picture\u2019s own and the track\u2019s', await audioStreams(path.join(root, 'embed-extract.mp4')), 2)
+
+  // The CONVERT path names each stream too, and must name the PICTURE beside them: any `-map` turns off
+  // ffmpeg's automatic selection for every kind, so a stream-named transcode that forgot the picture would
+  // write a sound file in a video container.
+  const convertLevel = { ...baseTask, id: 'embed-convert', type: 'transcode', outputFilename: 'embed-convert.mp4', embeddedAudio: { [embedClipId]: [{ index: 0, gainDb: -20 }, { index: 1, muted: true }] } }
+  const convertLevelCmd = await captureCommand(convertLevel)
+  check('a CONVERT names the picture beside the streams it names', / -map 0:v:0/.test(convertLevelCmd), true)
+  check('and maps only the enabled stream', / -map 0:a:0/.test(convertLevelCmd) && !/ -map 0:a:1/.test(convertLevelCmd), true)
+
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')
   process.exit(failures.length ? 1 : 0)

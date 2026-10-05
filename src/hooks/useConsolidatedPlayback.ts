@@ -102,7 +102,7 @@ export interface ConsolidatedPlayback {
 export const useConsolidatedPlayback = (
   model: TimelineModel,
   audioElements: React.RefObject<Record<string, HTMLAudioElement | null>>,
-  options: { playable: boolean; fps: number },
+  options: { playable: boolean; fps: number; levelFor?: (segment: TimelineSegment) => { gain: number; muted: boolean } },
 ): ConsolidatedPlayback => {
   const { playable, fps } = options
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -182,6 +182,15 @@ export const useConsolidatedPlayback = (
   speedRef.current = speed
   const fpsRef = useRef(fps)
   fpsRef.current = Math.max(1, fps)
+  /**
+   * The clip's own level for the monitor, read fresh every render.
+   *
+   * A preview cannot isolate one stream of a multi-stream file, so this is the level of the stream the
+   * element will actually play; the editor resolves it and this only applies it. It is a ref so the
+   * apply function can be stable while still reading the latest answer.
+   */
+  const levelForRef = useRef(options.levelFor)
+  levelForRef.current = options.levelFor
   /**
    * Whether the main lane has no picture at all, which is what a CONVERT of a sound file is.
    *
@@ -275,6 +284,21 @@ export const useConsolidatedPlayback = (
    * one while the indicator still read 2x, 4x or 8x. Reverse was unaffected because
    * it seeks rather than plays.
    */
+  /**
+   * Applies the clip's own level and mute to the monitor element, so what is heard matches what is written.
+   *
+   * The volume is the clip's embedded gain for the stream the element plays, and the mute is the lane's
+   * mute OR that stream having been dropped — by a per-stream mute, or by being extracted to a track.
+   */
+  const applyLevel = useCallback(() => {
+    const video = videoRef.current
+    if (!video) return
+    const current = stateRef.current.segment
+    const level = current && levelForRef.current ? levelForRef.current(current) : undefined
+    video.volume = level ? Math.max(0, Math.min(1, level.gain)) : 1
+    video.muted = level ? level.muted : false
+  }, [])
+
   const applyRate = useCallback(() => {
     const video = videoRef.current
     if (!video) return
@@ -288,7 +312,8 @@ export const useConsolidatedPlayback = (
     // Pitch-corrected for a steady speed, raised for a fast-forward — see `preservesPitchFor` — and
     // raised again for a clip that asked for its pitch to ride the speed.
     video.preservesPitch = preservesPitchFor(shuttleRef.current) && (!current || current.maintainPitch !== false)
-  }, [])
+    applyLevel()
+  }, [applyLevel])
 
   const onLoaded = useCallback(() => {
     const video = videoRef.current
@@ -361,6 +386,14 @@ export const useConsolidatedPlayback = (
   }, [onLoaded, onMediaError, applyRate, unbindVideo])
 
   useEffect(() => () => { unbindVideo() }, [unbindVideo])
+
+  // The clip's own level can change without the segment changing — a mute or a level written in the
+  // inspector — so it is applied on its own signature as well as on every segment change.
+  const levelSignature = (() => {
+    const level = segment && levelForRef.current ? levelForRef.current(segment) : undefined
+    return level ? `${Math.round(level.gain * 1000)}:${level.muted}` : ''
+  })()
+  useEffect(() => { applyLevel() }, [applyLevel, levelSignature, segment?.key])
 
   /** The clock that owns the playhead whenever no element is entitled to. */
   const readPosition = useCallback(() => {

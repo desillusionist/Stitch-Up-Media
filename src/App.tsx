@@ -101,6 +101,9 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     // empty map is a decision about the job rather than a field left out of the patch.
     trimPoints: patch.trimPoints,
     mutedLanes: patch.mutedLanes,
+    // A clip's own embedded-sound controls, whole like the trims: the window owns which streams and
+    // levels the export carries, so an emptied map is a decision about the job rather than a field left out.
+    embeddedAudio: patch.embeddedAudio,
     // The ids come with the list when the window reordered it, because only they can say which of two
     // copies of one file moved where. The numbers come with them, so `CLIP n` stays on its clip too. A list
     // that is not the length of the sources is REJECTED rather than stored: a short array is worse than none,
@@ -130,6 +133,7 @@ const editJobSignature = (task: QueueTask) => JSON.stringify([
   task.trimPoints, task.sourceMetadata, task.sourceInfo, task.sequenceInput, task.sequenceInputs,
   task.imageSequencePreviews, task.quickLookSourceIndex, task.stillImageDuration, task.transitions,
   task.sourceFit, task.sourceCrop, task.sourceSpeed, task.sourceFps, task.clipIds, task.clipNumbers, task.mutedLanes,
+  task.embeddedAudio,
 ])
 
 export const App: React.FC = () => {

@@ -30,7 +30,7 @@ export const inferredMode = (sourcePaths: string[], tracks: Array<{ path: string
  * job-wide fallbacks (a record filed against the path alone) are carried too, because those are decisions
  * about the FILE rather than about the clip and went with it before ids existed.
  */
-export const clipRecordsFor = (item: QueueTask, key: string, path: string): Pick<QueueTask, 'trimPoints' | 'transitions' | 'sourceFit' | 'sourceCrop' | 'sourceSpeed' | 'sourceFps'> => {
+export const clipRecordsFor = (item: QueueTask, key: string, path: string): Pick<QueueTask, 'trimPoints' | 'transitions' | 'sourceFit' | 'sourceCrop' | 'sourceSpeed' | 'sourceFps' | 'embeddedAudio'> => {
   const pick = <T,>(map: Record<string, T> | undefined): Record<string, T> | undefined => {
     if (!map) return undefined
     const kept: Record<string, T> = {}
@@ -45,6 +45,7 @@ export const clipRecordsFor = (item: QueueTask, key: string, path: string): Pick
     sourceCrop: pick(item.sourceCrop),
     sourceSpeed: pick(item.sourceSpeed),
     sourceFps: pick(item.sourceFps),
+    embeddedAudio: pick(item.embeddedAudio),
   }
 }
 
@@ -117,6 +118,7 @@ export const removeSourceFromTask = (item: QueueTask, sourcePath: string, source
     sourceCrop: prune(item.sourceCrop),
     sourceSpeed: prune(item.sourceSpeed),
     sourceFps: prune(item.sourceFps),
+    embeddedAudio: prune(item.embeddedAudio),
     imageSequencePreviews: removedSequence ? undefined : remainingPreviews,
     sequenceInput: removedSequence ? undefined : item.sequenceInput,
     sequenceInputs,

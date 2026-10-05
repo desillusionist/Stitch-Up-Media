@@ -59,8 +59,13 @@ const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stitch-up-mount-'))
 const clipFixture = path.join(fixtureDir, 'clip.mp4')
 runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=1920x1080:rate=25:duration=12', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-an', clipFixture])
 
+// A second fixture that CARRIES a soundtrack, for the embedded-audio controls: those are offered only where
+// a source really has an audio stream, so a silent fixture could not drive them at all.
+const clipAudioFixture = path.join(fixtureDir, 'clip-audio.mp4')
+runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=25:duration=12', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=12', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', clipAudioFixture])
+
 const htmlPath = path.join(__dirname, '.editor-mount.html')
-fs.writeFileSync(htmlPath, `<!doctype html><html><head><meta charset="utf-8">${style}</head><body><script>window.__clipFixture = ${JSON.stringify(clipFixture)}</script><script>${fs.readFileSync(bundle, 'utf8')}</script></body></html>`, 'utf8')
+fs.writeFileSync(htmlPath, `<!doctype html><html><head><meta charset="utf-8">${style}</head><body><script>window.__clipFixture = ${JSON.stringify(clipFixture)}</script><script>window.__clipAudioFixture = ${JSON.stringify(clipAudioFixture)}</script><script>${fs.readFileSync(bundle, 'utf8')}</script></body></html>`, 'utf8')
 
 app.disableHardwareAcceleration()
 app.whenReady().then(async () => {
@@ -681,6 +686,9 @@ app.whenReady().then(async () => {
       if (!gestures.trimReadout) problems.push('dragging an edge showed no readout')
       if (!(gestures.trimShades > 0)) problems.push('dragging an edge showed no shading of what it would take off')
       if (!(gestures.growBands > 0)) problems.push('growing a clip by dragging an edge showed no drawer for the run it is adding')
+      else if (!(gestures.growWidth > 1)) problems.push(`the expansion drawer is in the DOM but drawn with no width (${JSON.stringify(gestures.growWidth)}px)`)
+      else if (!String(gestures.growHit || '').includes('clip-trim-grow')) problems.push(`the expansion drawer is drawn but not visible: the point at its centre hits ${JSON.stringify(gestures.growHit)} instead`)
+      if (!(gestures.growEdges > 0)) problems.push('growing a clip showed no marker on the edge it is pulling, which the outside drawer cannot give at the timeline\u2019s own edge')
       if (!gestures.playheadMoved) problems.push('the monitor did not follow the edge while a trim was dragged')
       const entries = (gestures.trimEntries || [])
       // The job already trims BOTH copies (five and four seconds of the twelve-second source), so the reading
@@ -777,6 +785,8 @@ app.whenReady().then(async () => {
     else {
       if (audioLane.laneCount !== 2) problems.push(`the multitrack job drew ${audioLane.laneCount} lanes rather than a video lane and one audio track`)
       if (audioLane.audioHandles !== 2) problems.push(`the added audio track's clip drew ${audioLane.audioHandles} trim handles rather than two`)
+      if (audioLane.audioSplitPanes !== 0) problems.push(`dragging a SOUND lane's handle drew ${audioLane.audioSplitPanes} split-view panes; there is no frame to judge a cut against on a sound lane`)
+      if (!audioLane.audioPlayheadMoved) problems.push('dragging a sound lane\u2019s handle did not move the playhead, which is where an audio cut lands')
       if (!audioLane.hasBoundary) problems.push('the added audio track\'s clip drew no [+]')
       if (String(audioLane.audioPanelTitle ?? '') !== 'FADE IN') problems.push(`the added track's [+] panel is headed ${JSON.stringify(audioLane.audioPanelTitle)} rather than FADE IN`)
       // A fade on an added track IS written now, so the control is offered, not gated — and choosing it files
@@ -862,6 +872,17 @@ app.whenReady().then(async () => {
       if (comboMode.comboStitchLanes !== 2) problems.push(`a sequenced COMBO drew ${comboMode.comboStitchLanes} lanes rather than the video and one sequenced audio lane`)
       if (comboMode.comboMultiTitle !== 'STITCH UP MEDIA // EDIT JOB // COMBO (MULTI-TRACK)') problems.push(`a stacked COMBO's title reads ${JSON.stringify(comboMode.comboMultiTitle)}`)
       if (comboMode.comboMultiLanes !== 3) problems.push(`a stacked COMBO drew ${comboMode.comboMultiLanes} lanes rather than the video and one lane per track`)
+    }
+    // A CLIP'S OWN EMBEDDED SOUND, IN PROPERTIES.
+    const embedded = result.embeddedAudio
+    if (!embedded) problems.push('the embedded-audio drive reported nothing')
+    else {
+      if (!(embedded.streamRows >= 1)) problems.push(`a video that carries a soundtrack offered ${JSON.stringify(embedded.streamRows)} embedded-stream rows in PROPERTIES`)
+      if (embedded.dotDimmedBefore) problems.push('the clip\u2019s own audio indicator started dimmed')
+      if (!embedded.dotDimmedAfter) problems.push('muting the only embedded stream did not dim the clip\u2019s audio indicator')
+      if (!(embedded.embedKeys || []).length) problems.push('a mute on an embedded stream did not reach the queue as embeddedAudio')
+      const extractTrack = embedded.extractTrack
+      if (!extractTrack || extractTrack.streamIndex !== 0 || !extractTrack.sourceClipId) problems.push(`EXTRACT AUDIO TO TRACK did not land a track naming the stream it came from: ${JSON.stringify(extractTrack)}`)
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

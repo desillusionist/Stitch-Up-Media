@@ -3,7 +3,7 @@ import { CropFractions } from './outputFrame'
 import { mediaKind } from './mediaKind'
 import { outputCarriesPicture } from './outputKind'
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedFor } from './clipSpeed'
-import { clipKey } from './clipIds'
+import { clipKey, trackKey } from './clipIds'
 import { FrameRate, RateInput, frameCount, makeRate, rateOf, rateValue } from './frameRate'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
@@ -220,8 +220,8 @@ export const sequenceFor = (task: QueueTask, sourcePath: string | undefined): Se
   return task.sequenceInputs?.[sourcePath] || (task.sequenceInput?.firstFrame === sourcePath ? task.sequenceInput : undefined)
 }
 
-export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: number) =>
-  task.trimPoints?.[clipKey(task, sourcePath, index)] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
+export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: number, key?: string) =>
+  task.trimPoints?.[key ?? clipKey(task, sourcePath, index)] || (sourcePath ? task.trimPoints?.[sourcePath] : undefined)
 
 /** The lane the clips themselves are on, whose audio is whatever they have embedded. */
 export const MAIN_LANE_ID = 'main'
@@ -424,8 +424,8 @@ export const nativeRateFor = (
  * it does not. Keyed like its trim and its speed, so it follows the clip through a reorder, and an absent
  * record is not a rate of 1 — it is the source's own, which is what leaves the clip untouched.
  */
-export const clipRateFor = (task: QueueTask, sourcePath: string | undefined, index: number, native: FrameRate): FrameRate => {
-  const record = task.sourceFps?.[clipKey(task, sourcePath, index)] ?? (sourcePath ? task.sourceFps?.[sourcePath] : undefined)
+export const clipRateFor = (task: QueueTask, sourcePath: string | undefined, index: number, native: FrameRate, key?: string): FrameRate => {
+  const record = task.sourceFps?.[key ?? clipKey(task, sourcePath, index)] ?? (sourcePath ? task.sourceFps?.[sourcePath] : undefined)
   return record && record.num > 0 && record.den > 0 ? makeRate(record.num, record.den) : native
 }
 
@@ -483,10 +483,10 @@ export const segmentTiming = (fullDuration: number, trim?: { in: number; out: nu
   return { duration: fullDuration > 0 ? Math.max(0, fullDuration - sourceIn) : 0, sourceIn, trimmed: true }
 }
 
-const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: number, options: BuildTimelineOptions): TimelineSegment => {
+const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: number, options: BuildTimelineOptions, keyOverride?: string): TimelineSegment => {
   const sequence = sequenceFor(task, sourcePath)
   const full = sourceDuration(task, sourcePath, sequence, options.resolveTiming)
-  const timing = segmentTiming(full, trimFor(task, sourcePath, index))
+  const timing = segmentTiming(full, trimFor(task, sourcePath, index, keyOverride))
   const isStill = !sequence && mediaKind(sourcePath) === 'image'
   // The trim is measured in SOURCE seconds — that is what the encoder asks ffmpeg for — and the
   // timeline length is that divided by the RETIME, which is the clip's speed with its interpreted rate
@@ -498,8 +498,8 @@ const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: n
   // reinterpreted while the file is written at the source's own rate would be worse than one that could not
   // be reinterpreted at all.
   const carried = canApplyClipSpeed(task, sourcePath)
-  const rate = carried ? clipRateFor(task, sourcePath, index, nativeRate) : nativeRate
-  const speed = carried ? speedFor(task, sourcePath, index) : DEFAULT_CLIP_SPEED
+  const rate = carried ? clipRateFor(task, sourcePath, index, nativeRate, keyOverride) : nativeRate
+  const speed = carried ? speedFor(task, sourcePath, index, keyOverride) : DEFAULT_CLIP_SPEED
   // Held to the same bounds the SPEED is, so the length the timeline draws and the seek the monitor makes
   // are the one figure `clipDurationFor` also clamps: an extreme composition cannot draw a length the
   // encoder would write at a different one.
@@ -508,7 +508,7 @@ const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: n
     // The clip's IDENTITY, which is what every per-clip record is filed under and what the window keys its
     // element by: a clip given an id keeps it through a reorder, so its trims, its fit and its place in the
     // React tree all follow it rather than being rewritten onto the place it moved to.
-    key: clipKey(task, sourcePath, index),
+    key: keyOverride ?? clipKey(task, sourcePath, index),
     index,
     sourcePath,
     start,
@@ -803,7 +803,9 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   // SEQUENCED instead (COMBO/MULTI-TRACK 'stitch' tracks) carries them on ONE lane, end to end.
   const tracks = task.additionalAudioTracks || []
   const trackSegment = (track: NonNullable<QueueTask['additionalAudioTracks']>[number], start: number) => {
-    const segment = segmentFor(task, track.path, 0, start, options)
+    // Keyed by the TRACK's own key rather than by its path's place: an EXTRACTED track's path is the very
+    // visual it came out of, whose place zero resolves to the clip's id — see `trackKey`.
+    const segment = segmentFor(task, track.path, 0, start, options, trackKey(task, track))
     // A track's own head and tail fades, resolved by the same clamp the main lane's are, so the drawn
     // ramp is what the encoder will write.
     const fade = resolveFades([segment.duration], [], {

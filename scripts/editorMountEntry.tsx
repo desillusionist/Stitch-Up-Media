@@ -95,6 +95,8 @@ const bridge = {
  * reload; a stub element that never loads cannot tell that from a picture of unknown size.
  */
 const CLIP_FIXTURE = (window as unknown as { __clipFixture?: string }).__clipFixture || '/tmp/clip.mp4'
+/** A clip that CARRIES a soundtrack, for the embedded-audio controls, which a silent fixture cannot drive. */
+const CLIP_AUDIO = (window as unknown as { __clipAudioFixture?: string }).__clipAudioFixture || '/tmp/clip-audio.mp4'
 
 /** A job of the plainest kind, so the render has a timeline, a monitor and settings to draw. */
 const task = {
@@ -198,7 +200,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; comboMode?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; comboMode?: unknown; embeddedAudio?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1314,6 +1316,10 @@ const drive = async () => {
   let trimReadout: string | null = null
   let trimShades = 0
   let growBands = 0
+  let growEdges = 0
+  let growWidth = 0
+  let growHeight = 0
+  let growHit: string | null = null
   let playheadMoved = false
   if (outHandle && handleBox) {
     const x = handleBox.left + handleBox.width / 2
@@ -1335,6 +1341,25 @@ const drive = async () => {
     window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x + 90, clientY: y }))
     await wait(60)
     growBands = document.querySelectorAll('.clip-trim-grow').length
+    growEdges = document.querySelectorAll('.clip-trim-grow-edge').length
+    // The drawer has to be not merely in the DOM but VISIBLE: it is drawn OUTSIDE the clip's box (the box
+    // does not move until release), so it can be clipped by an ancestor or painted under a neighbour. Its
+    // own box and what the pointer at its centre actually hits are the two readings that tell those apart.
+    const growEl = document.querySelector('.clip-trim-grow') as HTMLElement | null
+    if (growEl) {
+      const growRect = growEl.getBoundingClientRect()
+      growWidth = Math.round(growRect.width)
+      growHeight = Math.round(growRect.height)
+      // The drawer is `pointer-events: none`, so `elementFromPoint` would skip straight past it and report
+      // whatever is behind — which says nothing about whether it is PAINTED. Turning that off for the
+      // instant of the probe makes the hit test answer the question it is asked: what is the topmost thing
+      // drawn at the drawer's centre. A clipped ancestor or a neighbour over it answers with itself.
+      const prior = growEl.style.pointerEvents
+      growEl.style.pointerEvents = 'auto'
+      const hit = document.elementFromPoint(growRect.left + growRect.width / 2, growRect.top + growRect.height / 2)
+      growEl.style.pointerEvents = prior
+      growHit = hit ? `${hit.tagName}.${String((hit as HTMLElement).className)}` : null
+    }
     window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x - 40, clientY: y }))
     await wait(40)
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x - 40, clientY: y }))
@@ -1366,6 +1391,10 @@ const drive = async () => {
     trimReadout,
     trimShades,
     growBands,
+    growEdges,
+    growWidth,
+    growHeight,
+    growHit,
     playheadMoved,
     afterTrim,
     trimEntries,
@@ -1535,6 +1564,25 @@ const drive = async () => {
   const audioLaneBody = laneBodies[1]
   const audioClip = audioLaneBody?.querySelector('.timeline-clip') as HTMLElement | null
   const audioHandles = audioClip ? audioClip.querySelectorAll('.clip-trim-handle').length : 0
+  // A SOUND lane gets NO two-up view: there is no frame at the end of a track to judge a cut against, so a
+  // handle dragged there must leave the monitor as it was and move the playhead instead.
+  let audioSplitPanes = -1
+  let audioPlayheadMoved = false
+  const audioOut = audioClip?.querySelector('.clip-trim-handle.is-out') as HTMLElement | null
+  if (audioOut) {
+    const audioBox = audioOut.getBoundingClientRect()
+    const audioAt = { clientX: audioBox.left + audioBox.width / 2, clientY: audioBox.top + audioBox.height / 2 }
+    const playheadLeft = () => (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
+    const beforeAudioPlayhead = playheadLeft()
+    audioOut.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, ...audioAt }))
+    await wait(60)
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: audioAt.clientX - 30, clientY: audioAt.clientY }))
+    await wait(80)
+    audioSplitPanes = document.querySelectorAll('.editor-trim-pane').length
+    audioPlayheadMoved = playheadLeft() !== beforeAudioPlayhead
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: audioAt.clientX - 30, clientY: audioAt.clientY }))
+    await wait(120)
+  }
   const audioBoundary = audioClip?.querySelector('.boundary-add') as HTMLElement | null
   audioBoundary?.click()
   await wait(200)
@@ -1552,7 +1600,7 @@ const drive = async () => {
   await wait(250)
   const fadePatch = applied[applied.length - 1] as { transitions?: Record<string, unknown> } | undefined
   const fadeKeys = fadePatch?.transitions ? Object.keys(fadePatch.transitions) : []
-  result.audioLane = { laneCount: laneBodies.length, audioHandles, hasBoundary: Boolean(audioBoundary), audioPanelTitle, fadeDisabled, blockedNote, audioAddSource, fadeKeys }
+  result.audioLane = { laneCount: laneBodies.length, audioHandles, audioSplitPanes, audioPlayheadMoved, hasBoundary: Boolean(audioBoundary), audioPanelTitle, fadeDisabled, blockedNote, audioAddSource, fadeKeys }
 
   // A TRIM THE QUEUE MADE, LANDING ON A WINDOW THAT IS DIRTY. The QUICK LOOK helper's in/out points come back
   // through the queue, and the window is usually dirty when they do — the timeline was probably just trimmed.
@@ -1717,6 +1765,48 @@ const drive = async () => {
   const comboMultiLanes = document.querySelectorAll('.timeline-lane').length
   const comboMultiLabels = [...document.querySelectorAll('.timeline-lane-head span')].map((node) => node.textContent ?? '')
   result.comboMode = { comboStitchTitle, comboStitchLanes, comboMultiTitle, comboMultiLanes, comboMultiLabels }
+
+  // A CLIP'S OWN EMBEDDED SOUND, in PROPERTIES. A video that carries a soundtrack offers one row per stream,
+  // each with a mute and a level and a way to EXTRACT it to a track; a mute has to reach the queue as
+  // `embeddedAudio`, the clip's own green line has to DIM while it does, and extraction has to land a track
+  // that NAMES the stream it came from rather than copying the file.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-check-embed', type: 'transcode', sourcePaths: [CLIP_AUDIO] }, 'embedded-audio')
+  await wait(1400)
+  const embedClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const dotDimmedBefore = Boolean(embedClips()[0]?.querySelector('.clip-audio')?.classList.contains('is-muted'))
+  embedClips()[0]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const propsItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'PROPERTIES') as HTMLButtonElement | undefined
+  propsItem?.click()
+  await wait(300)
+  const streamRows = document.querySelectorAll('.embedded-stream').length
+  const streamLabels = [...document.querySelectorAll('.embedded-stream .editor-toggle span')].map((node) => node.textContent ?? '')
+  const muteBox = document.querySelector('.embedded-stream .editor-toggle input[type=checkbox]') as HTMLInputElement | null
+  muteBox?.click()
+  await wait(200)
+  const dotDimmedAfter = Boolean(embedClips()[0]?.querySelector('.clip-audio')?.classList.contains('is-muted'))
+  const applyEmbed = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyEmbed?.click()
+  await wait(250)
+  const embedPatch = applied[applied.length - 1] as { embeddedAudio?: Record<string, unknown> } | undefined
+  const embedKeys = embedPatch?.embeddedAudio ? Object.keys(embedPatch.embeddedAudio) : []
+  // EXTRACT AUDIO TO TRACK, from the same clip menu: with one stream it acts at once and the new track names
+  // the stream (`streamIndex`) and its clip (`sourceClipId`).
+  embedClips()[0]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const extractItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => (button.textContent ?? '').startsWith('EXTRACT AUDIO TO TRACK')) as HTMLButtonElement | undefined
+  extractItem?.click()
+  await wait(300)
+  const applyExtract = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyExtract?.click()
+  await wait(250)
+  const extractPatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ streamIndex?: number; sourceClipId?: string }> } | undefined
+  result.embeddedAudio = {
+    streamRows, streamLabels, dotDimmedBefore, dotDimmedAfter, embedKeys,
+    extractTrack: (extractPatch?.additionalAudioTracks || []).find((track) => track.sourceClipId) ?? null,
+  }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, Lock, RotateCcw, Unlink, Unlock, ZoomIn, ZoomOut } from 'lucide-react'
-import { AppSettings, ClipSpeed, EditJobPatch, EncodingPreset, Insets, MediaProbeInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
+import { AppSettings, ClipSpeed, EditJobPatch, EncodingPreset, EmbeddedAudioStream, Insets, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
-import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId, nextClipNumber } from '../lib/clipIds'
+import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId, nextClipNumber, trackKey } from '../lib/clipIds'
 import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
@@ -18,8 +18,9 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
+import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
 import { presetSummary } from '../lib/presetSummary'
 import { pixelDepthLabel, proresDepthLabel } from '../lib/pixelDepth'
 import { sequenceLabel } from '../lib/sequenceLabel'
@@ -121,6 +122,10 @@ const editableSlice = (task: QueueTask) => ({
   sourceSpeed: task.sourceSpeed,
   sourceFps: task.sourceFps,
   mutedLanes: task.mutedLanes,
+  // A clip's own embedded-sound controls are this window's too: which streams the export carries and at
+  // what level is a change like any other, so leaving them out made the window call itself clean the
+  // moment one was the first thing touched.
+  embeddedAudio: task.embeddedAudio,
   // Per-source timing is editable from PROPERTIES, so the window owns it too.
   sourceMetadata: task.sourceMetadata,
   sequenceInput: task.sequenceInput,
@@ -194,7 +199,7 @@ const windowDirty = (draft: QueueTask, baseline: QueueTask) => isDirty(draft, ba
  * of the lane rather than of any one clip in it.
  */
 type TimelineMenu =
-  | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean; duplicating?: boolean }
+  | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean; duplicating?: boolean; extracting?: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
   /** The TIMELINE kicker's own menu: which unit the window shows lengths in. */
   | { kind: 'stamp'; x: number; y: number }
@@ -215,6 +220,19 @@ type CopiedClip = {
 }
 
 const sourceName = (filePath?: string) => filePath?.split('/').pop() || 'UNTITLED'
+
+/**
+ * What one embedded stream is CALLED: its place among the sound streams, and its own name where it has one.
+ *
+ * The language is only worth printing where it says something (`und` is ffmpeg's "unnamed"), and the title
+ * wins where the container carries one, because that is the name a reader gave the track.
+ */
+const embeddedStreamLabel = (stream: MediaStreamInfo, index: number): string => {
+  const title = (stream.title || '').trim()
+  const language = (stream.language || '').toLowerCase()
+  const named = title || (language && language !== 'und' ? language.toUpperCase() : '')
+  return `STREAM ${index + 1}${named ? ` // ${named}` : ''}`
+}
 
 /**
  * The timeline's scale.
@@ -803,7 +821,7 @@ export const EditJobApp: React.FC = () => {
       : {
           ...incoming,
           ...(clipsMoved && !mine
-            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, trimPoints: incoming.trimPoints, clipIds: incoming.clipIds, clipNumbers: incoming.clipNumbers }
+            ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, trimPoints: incoming.trimPoints, clipIds: incoming.clipIds, clipNumbers: incoming.clipNumbers, embeddedAudio: incoming.embeddedAudio }
             // The window keeps its own edits, but the TRIMS are merged rather than taken whole: a QUICK LOOK
             // edit made in this window comes back from the queue and has to land on the clip even though
             // the window is dirty — see `mergeTrims`.
@@ -856,7 +874,7 @@ export const EditJobApp: React.FC = () => {
   const timelineSignature = draft ? JSON.stringify([
     draft.type, draft.comboMode, draft.sourcePaths, draft.additionalAudioTracks, draft.trimPoints,
     draft.sourceMetadata, draft.sequenceInput, draft.sequenceInputs, draft.sourceInfo,
-    draft.preset.fps, draft.preset.fpsRate, draft.stillImageDuration, draft.transitions, draft.sourceSpeed, draft.sourceFps, draft.clipIds, draft.clipNumbers,
+    draft.preset.fps, draft.preset.fpsRate, draft.stillImageDuration, draft.transitions, draft.sourceSpeed, draft.sourceFps, draft.clipIds, draft.clipNumbers, draft.mutedLanes, draft.embeddedAudio,
   ]) : ''
 
   // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source without intrinsic
@@ -971,10 +989,33 @@ export const EditJobApp: React.FC = () => {
   // the displayed rate because the hook is created before a segment is known.
   const primaryFps = draft ? sourceFps(draft, draft.sourcePaths[0], undefined, resolveTiming) : 25
 
+  /**
+   * The level the monitor's element plays a clip's embedded sound at, by the same rules the export writes.
+   *
+   * A preview cannot demux one stream of a multi-stream file — Chromium exposes no `audioTracks` — so the
+   * element plays the file's DEFAULT stream and no other. This answers for that one, which is also the one
+   * a reader hears: it is muted when the lane is muted or that default stream has been dropped (by a mute
+   * or by being EXTRACTED to a track), and levelled by that stream's own gain. A segment that is a track's
+   * own clip is not answered for here: its file plays through that lane's own element, not this one.
+   */
+  const monitorLevelFor = (segment: TimelineSegment): { gain: number; muted: boolean } => {
+    const task = draftRef.current
+    if (!task || !embeddedAudioEditable(task)) return { gain: 1, muted: false }
+    const at = materializeClipIds(task).indexOf(segment.key)
+    if (at < 0) return { gain: 1, muted: false }
+    const path = segment.sourcePath
+    const count = sourceProbes[path]?.audioStreams?.length ?? 0
+    if (count === 0) return { gain: 1, muted: false }
+    const clipId = materializeClipIds(task)[at]
+    const laneMuted = Boolean(task.mutedLanes?.[MAIN_LANE_ID])
+    const defaultEnabled = embeddedStreamEnabled(task, clipId, path, 0)
+    return { gain: defaultEnabled ? gainForDb(embeddedGainDb(task, clipId, 0)) : 1, muted: laneMuted || !defaultEnabled }
+  }
+
   const playback = useConsolidatedPlayback(
     model ?? { lanes: [], duration: 0, unusedVideoSources: [] },
     audioElementsRef,
-    { playable: Boolean(model && model.duration > 0), fps: primaryFps },
+    { playable: Boolean(model && model.duration > 0), fps: primaryFps, levelFor: monitorLevelFor },
   )
 
   const focusedSourceIndex = playback.segmentIndex
@@ -2013,6 +2054,9 @@ export const EditJobApp: React.FC = () => {
   // rate is a choice rather than a fact about the file, can have it changed here.
   const inspectedSegment = selected ? model?.lanes.find((lane) => lane.id === selected.laneId)?.segments.find((segment) => segment.key === selected.clipKey) : undefined
   const inspectedSource = inspectedSegment?.sourcePath
+  // Whether the inspector is describing a clip on the SOURCE list (the main lane) rather than an added
+  // track: an embedded-audio control belongs to the video it is part of, not to a track of its own.
+  const inspectedOnMainLane = Boolean(selected && mainLane && selected.laneId === mainLane.id)
   const inspectedSequence = inspectedSource ? sequenceFor(draft, inspectedSource) : undefined
   const inspectedFps = inspectedSource ? sourceFps(draft, inspectedSource, undefined, resolveTiming) : 0
   const inspectedProbe = inspectedSource ? probedTiming[inspectedSource] : undefined
@@ -2079,6 +2123,59 @@ export const EditJobApp: React.FC = () => {
     if (next) map[laneId] = true
     else delete map[laneId]
     updateDraft({ mutedLanes: Object.keys(map).length ? map : undefined })
+  }
+
+  /**
+   * Writes one clip's embedded-stream record: a mute, a level, both, or neither.
+   *
+   * A stream put back to enabled-at-unity leaves no entry, and a clip with none of its own leaves no
+   * record at all, so an untouched clip stays byte-identical to one saved before this existed. Keyed by
+   * the clip's own id, so the record travels with the clip through a move, a split or a duplicate.
+   */
+  const writeEmbeddedStream = (clipId: string, index: number, next: Partial<EmbeddedAudioStream>) => {
+    const current = latest()
+    const streams = embeddedStreamsFor(current, clipId)
+    const merged = { ...(streams.find((entry) => entry.index === index) ?? { index }), ...next }
+    const record: EmbeddedAudioStream = { index }
+    if (merged.muted) record.muted = true
+    if (merged.gainDb !== undefined && Math.abs(merged.gainDb) > 1e-6) record.gainDb = merged.gainDb
+    const kept = streams.filter((entry) => entry.index !== index)
+    const nextStreams = [...kept, ...(Object.keys(record).length > 1 ? [record] : [])].sort((earlier, later) => earlier.index - later.index)
+    const map = { ...(current.embeddedAudio ?? {}) }
+    if (nextStreams.length) map[clipId] = nextStreams
+    else delete map[clipId]
+    updateDraft({ embeddedAudio: Object.keys(map).length ? map : undefined })
+  }
+
+  /**
+   * Takes one or more of a clip's embedded streams OUT of the picture and onto lanes of their own.
+   *
+   * The new track NAMES the stream it came from (`streamIndex`) and its clip (`sourceClipId`) rather than
+   * copying the file, so the source is never altered and nothing double-plays: the export maps that stream
+   * from the track's own input, while the picture's own mapping — read through `enabledEmbeddedStreams` —
+   * drops it. The track starts where the picture's window does, so it is in sync by default and only then
+   * trims and moves on its own, which is what a J/L cut needs. Deleting the track is the way back: the
+   * clip's mapping re-enables itself, because the extraction was never a flag stored on the clip.
+   */
+  const extractAudioToTrack = (clipId: string, path: string, indices: number[]) => {
+    const current = latest()
+    const at = materializeClipIds(current).indexOf(clipId)
+    if (at < 0 || current.sourcePaths[at] !== path || !indices.length || !embeddedAudioEditable(current)) return
+    const clipTrim = current.trimPoints?.[clipId]
+    const tracks = [...(current.additionalAudioTracks ?? [])]
+    const trimPoints = { ...(current.trimPoints ?? {}) }
+    indices.forEach((streamIndex) => {
+      if (extractedBy(current, clipId, path, streamIndex)) return
+      const track = { id: newTrackId(), path, language: 'und', streamIndex, sourceClipId: clipId }
+      tracks.push(track)
+      // The extracted run begins where the picture's own window does, so the two are in sync until the
+      // track is trimmed on its own — which is exactly the J/L cut it is for.
+      if (clipTrim && (clipTrim.in > 0 || clipTrim.out > clipTrim.in)) trimPoints[trackKey(current, track)] = { in: clipTrim.in, out: clipTrim.out }
+    })
+    updateDraft({
+      ...withListType(current, current.sourcePaths, tracks),
+      trimPoints: Object.keys(trimPoints).length ? trimPoints : undefined,
+    })
   }
   /**
    * Sets one clip's scale, or takes it away, keeping whatever position it carries.
@@ -2483,8 +2580,14 @@ export const EditJobApp: React.FC = () => {
     // The clip this one is joined to on the side being dragged, and the edge of it the cut meets: the
     // neighbour's LAST frame for an IN handle (its out point), its FIRST for an OUT handle (its in point).
     // Shown beside the cut while the handle is down, so the frame the join lands between is on screen.
+    //
+    // A SOUND lane gets none of this: the two-up view is about judging a CUT in the picture, and there is no
+    // frame at the end of a track to judge one against — the live seek still moves the playhead, so where the
+    // audio cut lands is still shown, just not as a picture.
     const laneIndex = lane.segments.findIndex((candidate) => candidate.key === key)
-    const neighbour = edge === 'in' ? lane.segments[laneIndex - 1] : lane.segments[laneIndex + 1]
+    const neighbour = lane.kind === 'video'
+      ? (edge === 'in' ? lane.segments[laneIndex - 1] : lane.segments[laneIndex + 1])
+      : undefined
     setTrimNeighbour(neighbour ? {
       side: edge === 'in' ? 'left' : 'right',
       segment: neighbour,
@@ -2996,6 +3099,9 @@ export const EditJobApp: React.FC = () => {
       sourceSpeed: latest().sourceSpeed,
       sourceFps: latest().sourceFps,
       mutedLanes: latest().mutedLanes,
+      // The clip's own embedded-sound controls, whole like the trims: which streams reach the export, and
+      // at what level, is a decision this window owns, so an emptied map is a decision about the job.
+      embeddedAudio: latest().embeddedAudio,
       sourceTiming: sourceTimingOverrides(latest()),
       // The tracks' own mode, sent so the ask that decides it in this window reaches the queue; the queue's
       // own switcher writes the same field and pushes it back, so the two never disagree about it.
@@ -4116,6 +4222,51 @@ export const EditJobApp: React.FC = () => {
                       />
                   }</EditorField>
                 })()}
+                {/* A picture clip's OWN sound, which is part of the clip and travels with it: one row per
+                    embedded stream, each droppable or levelled on its own. Offered only where the encoder can
+                    honour it — a CONVERT or a MULTI-TRACK maps the clip straight through — and only for a clip
+                    on the SOURCE list, since an added track's records are its own. The export writes exactly
+                    the streams left enabled; a stream taken out to a track is not carried here as well. */}
+                {inspectedOnMainLane && inspectedHasPicture && embeddedAudioEditable(draft) && (() => {
+                  const streams = sourceProbes[inspectedSource]?.audioStreams ?? []
+                  if (!streams.length) return null
+                  const clipId = clipKey(draft, inspectedSource, inspectedClipIndex)
+                  return <EditorGroup
+                    id="embedded-audio"
+                    label="EMBEDDED AUDIO"
+                    hint={`${streams.length} STREAM${streams.length === 1 ? '' : 'S'}`}
+                    reason="The sound this clip carries as part of itself. Each stream can be dropped from the export and the monitor, or given a level in dB. The export maps exactly the streams left enabled, one at a time, rather than ffmpeg's own choice of one or all."
+                    collapsed={collapsedSections.includes('embedded-audio')}
+                    onToggle={toggleSection}
+                  >
+                    {streams.map((stream, sourceIndex) => {
+                      const streamIndex = stream.index ?? sourceIndex
+                      const extracted = Boolean(extractedBy(draft, clipId, inspectedSource, streamIndex))
+                      const muted = Boolean(embeddedStreamsFor(draft, clipId).find((entry) => entry.index === streamIndex)?.muted)
+                      // An EXTRACTED stream is no longer the clip's to control: the picture does not carry it and
+                      // a mute or a level set here would be inert. So it reads as a fact rather than a control,
+                      // and the way back is stated. Its own track's lane carries the mute.
+                      if (extracted) return <div className="embedded-stream is-extracted" key={streamIndex}>
+                        <EditorRow label={embeddedStreamLabel(stream, streamIndex)} value="EXTRACTED" reason="This stream is on a track of its own, so the picture no longer carries it. Delete that track to put it back on the clip." />
+                      </div>
+                      return <div className="embedded-stream" key={streamIndex}>
+                        <EditorToggle
+                          label={embeddedStreamLabel(stream, streamIndex)}
+                          checked={!muted}
+                          onChange={(checked) => writeEmbeddedStream(clipId, streamIndex, { muted: !checked })}
+                          reason={muted
+                            ? 'Dropped from the export and the monitor. It is not mapped at all rather than written silent.'
+                            : 'Carry this stream in the export and the monitor. Off, it is dropped from the mapping.'}
+                        />
+                        <EditorField label="LEVEL" hint="dB" reason="A level for this stream: 0 dB is unity. It is written as a `volume` filter on this stream's own export chain, so several streams of one clip can carry different levels.">
+                          <NumberField className="editor-input" min={-60} max={24} step={0.5} value={embeddedGainDb(draft, clipId, streamIndex)} onValue={(value) => writeEmbeddedStream(clipId, streamIndex, { gainDb: value })} ariaLabel="The level of this embedded stream in dB" />
+                        </EditorField>
+                        <button className="embedded-extract" onClick={() => extractAudioToTrack(clipId, inspectedSource, [streamIndex])} title="Move this stream to a track of its own, so it can be trimmed and moved independently — a J/L cut.">EXTRACT TO TRACK</button>
+                      </div>
+                    })}
+                    {streams.length > 1 && <div className="editor-note">&gt; THE MONITOR PLAYS THE FILE'S DEFAULT STREAM ONLY; EVERY STREAM ABOVE IS WRITTEN AS YOU SET IT. EXTRACT A STREAM TO A TRACK TO HEAR IT ON ITS OWN.</div>}
+                  </EditorGroup>
+                })()}
               </div>
             </div>
           )}
@@ -4265,7 +4416,7 @@ export const EditJobApp: React.FC = () => {
                         {/* A visual clip that carries audio says so, and says whether the export still
                             carries it: green while it does, grey while the lane is muted. */}
                         {lane.kind === 'video' && sourceAudio[segment.sourcePath]
-                          ? <span className={`clip-audio${muted[lane.id] ? ' is-muted' : ''}`} aria-hidden="true" />
+                          ? <span className={`clip-audio${muted[lane.id] || clipAudioDropped(draft, clipKey(draft, segment.sourcePath, clipIndexOf(segment)), segment.sourcePath, sourceProbes[segment.sourcePath]?.audioStreams?.length ?? 0) ? ' is-muted' : ''}`} aria-hidden="true" />
                           : null}
                         {/* The lane's own boundaries. The main lane's are the cuts of the join: a [+] on a cut
                             fades both sides, and a [+] at either end fades from or to black. An added audio
@@ -4315,6 +4466,12 @@ export const EditJobApp: React.FC = () => {
                             {tailPx > 0.5 && <span className="clip-trim-shade is-tail" style={{ width: `${Math.min(clipWidth, tailPx)}px` }} aria-hidden="true" />}
                             {growHeadPx > 0.5 && <span className="clip-trim-grow is-head" style={{ width: `${growHeadPx}px` }} aria-hidden="true" />}
                             {growTailPx > 0.5 && <span className="clip-trim-grow is-tail" style={{ width: `${growTailPx}px` }} aria-hidden="true" />}
+                            {/* And the pulled edge is marked INSIDE the clip, so growth is visible even where the
+                                outside drawer has no room — the FIRST clip's head grows off the left edge of the
+                                scroll area, which clips the drawer and left the drag with nothing to read but the
+                                readout. The marker cannot be clipped: it is inside the box. */}
+                            {growHeadPx > 0.5 && <span className="clip-trim-grow-edge is-head" aria-hidden="true" />}
+                            {growTailPx > 0.5 && <span className="clip-trim-grow-edge is-tail" aria-hidden="true" />}
                           </>
                         })()}
                         {trimmable && (
@@ -5138,6 +5295,28 @@ export const EditJobApp: React.FC = () => {
           <button role="menuitem" className="is-sub" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); if (index != null) duplicateClipTo(index, 'end') }}>AT THE END</button>
           <button role="menuitem" className="is-sub" onClick={() => setTimelineMenu({ ...timelineMenu, duplicating: false })}>CANCEL</button>
         </> : <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, duplicating: true })}>DUPLICATE...</button>}
+        {/* The clip's OWN sound can leave the picture and become a track of its own. Offered only where the
+            encoder can honour it — a clip on the source list of a CONVERT or a MULTI-TRACK that actually has
+            an audio stream — and only through the probe, so it never appears for a silent file. One stream
+            extracts straight away; several ask which, defaulting to all of them. */}
+        {timelineMenu.visual && timelineMenu.sourceIndex != null && embeddedAudioEditable(draft) && (sourceProbes[timelineMenu.sourcePath]?.audioStreams?.length ?? 0) > 0 && (() => {
+          const clipId = timelineMenu.fitKey
+          const path = timelineMenu.sourcePath
+          const streams = sourceProbes[path]?.audioStreams ?? []
+          const couldExtract = streams.filter((stream, sourceIndex) => !extractedBy(draft, clipId, path, stream.index ?? sourceIndex))
+          if (!couldExtract.length) return null
+          if (timelineMenu.extracting && streams.length > 1) return <>
+            <span className="timeline-menu-head">EXTRACT AUDIO</span>
+            <button role="menuitem" className="is-sub" disabled={!couldExtract.length} onClick={() => { setTimelineMenu(null); extractAudioToTrack(clipId, path, couldExtract.map((stream, sourceIndex) => stream.index ?? sourceIndex)) }}>ALL STREAMS</button>
+            {streams.map((stream, sourceIndex) => {
+              const streamIndex = stream.index ?? sourceIndex
+              const taken = Boolean(extractedBy(draft, clipId, path, streamIndex))
+              return <button key={streamIndex} role="menuitem" className="is-sub" disabled={taken} onClick={() => { setTimelineMenu(null); extractAudioToTrack(clipId, path, [streamIndex]) }}>{embeddedStreamLabel(stream, streamIndex)}{taken ? ' (EXTRACTED)' : ''}</button>
+            })}
+            <button role="menuitem" className="is-sub" onClick={() => setTimelineMenu({ ...timelineMenu, extracting: false })}>CANCEL</button>
+          </>
+          return <button role="menuitem" onClick={() => { if (streams.length > 1) setTimelineMenu({ ...timelineMenu, extracting: true }); else { setTimelineMenu(null); extractAudioToTrack(clipId, path, [streams[0].index ?? 0]) } }}>EXTRACT AUDIO TO TRACK...</button>
+        })()}
         <span className="timeline-menu-divider" aria-hidden="true" />
         <button role="menuitem" className="is-danger" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: true })}>REMOVE SOURCE</button>
       </>) : <>

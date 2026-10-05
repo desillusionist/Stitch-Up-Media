@@ -52,8 +52,8 @@ export const clampClipSpeed = (value: unknown): number => {
  * nothing is how "nothing chosen" is carried everywhere the speed is read, which is what keeps the
  * export of an untouched clip exactly what it was.
  */
-export const speedFor = (task: { sourceSpeed?: QueueTask['sourceSpeed']; sourcePaths?: string[]; clipIds?: string[] }, sourcePath: string | undefined, index: number): ClipSpeed => {
-  const record = task.sourceSpeed?.[clipKey(task, sourcePath, index)] ?? (sourcePath ? task.sourceSpeed?.[sourcePath] : undefined)
+export const speedFor = (task: { sourceSpeed?: QueueTask['sourceSpeed']; sourcePaths?: string[]; clipIds?: string[] }, sourcePath: string | undefined, index: number, key?: string): ClipSpeed => {
+  const record = task.sourceSpeed?.[key ?? clipKey(task, sourcePath, index)] ?? (sourcePath ? task.sourceSpeed?.[sourcePath] : undefined)
   if (!record) return DEFAULT_CLIP_SPEED
   return {
     speed: clampClipSpeed(record.speed),

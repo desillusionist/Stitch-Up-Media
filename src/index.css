@@ -561,6 +561,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .clip-trim-grow { position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none; border: 1px dashed var(--crt-amber); background-image: repeating-linear-gradient(45deg, rgba(197, 184, 121, .22) 0 3px, rgba(197, 184, 121, .06) 3px 7px); }
 .clip-trim-grow.is-head { right: 100%; border-right: 0; }
 .clip-trim-grow.is-tail { left: 100%; border-left: 0; }
+/* The pulled edge itself, marked INSIDE the clip: growth at the FIRST clip's head has no room outside the
+   scroll area, so the drawer there is clipped and this is what stays visible. It sits over the frames and
+   under nothing, and takes no pointer, so the [+] beside it is still reachable. */
+.clip-trim-grow-edge { position: absolute; top: 0; bottom: 0; width: 5px; z-index: 5; pointer-events: none; background: var(--crt-amber); box-shadow: 0 0 7px rgba(197, 184, 121, .9); }
+.clip-trim-grow-edge.is-head { left: 0; }
+.clip-trim-grow-edge.is-tail { right: 0; }
 .clip-trim-readout { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 5; padding: 2px 6px; color: var(--crt-black); background: var(--crt-amber); font-size: 9px; letter-spacing: .04em; white-space: nowrap; pointer-events: none; }
 /* A clip's own marking, over its own frames: the strip is drawn by its own rule below, and the selected one
    keeps the amber box in that view too. */
@@ -575,6 +581,17 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    Only in the video row, where the audio is embedded and would otherwise be invisible. */
 .clip-audio { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--crt-green); opacity: .85; pointer-events: none; }
 .clip-audio.is-muted { background: var(--ui-muted); opacity: .5; }
+/* A clip's own embedded-audio controls: one row per stream, each with its mute, its level and the way to
+   pull it out onto a track of its own. The row is a grid so the three read as one stream's line rather
+   than as three unrelated controls. */
+.embedded-stream { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; align-items: end; padding: 6px 0; border-bottom: 1px dotted var(--ui-border-dim); }
+.embedded-stream:last-of-type { border-bottom: 0; }
+.embedded-stream.is-extracted { display: block; }
+.embedded-stream .editor-field { margin: 0; }
+.embedded-stream .editor-toggle { margin: 0; }
+.embedded-extract { grid-column: 1 / -1; padding: 5px 8px; color: var(--ui-accent); background: transparent; border: 1px dashed var(--ui-border); font-family: inherit; font-size: 9px; letter-spacing: .05em; text-align: center; cursor: pointer; }
+.embedded-extract:hover:not(:disabled) { color: var(--crt-amber); border-color: var(--crt-amber); }
+.embedded-extract:disabled { color: var(--ui-muted); border-style: solid; cursor: default; }
 /* The PROPERTIES drawer's own head: the drawer is otherwise all readouts, so its title and its close
    are the two things that are not one. Both are IN FLOW, above the scroller, which is what keeps the ×
    out of the rows' way and off the scroller's own bar — pinned to the corner, as it was, it sat over

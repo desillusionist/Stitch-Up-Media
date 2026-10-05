@@ -22,9 +22,10 @@ import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFac
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
-import { addedClipNumbers, clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId } from '../src/lib/clipIds'
+import { addedClipNumbers, clipIdAt, clipKey, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, trackKey } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
+import { clipAudioDropped, embeddedAudioCustomised, embeddedGainDb, enabledEmbeddedStreams, extractedBy, gainForDb } from '../src/lib/embeddedAudio'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
 import { inferredMode, removeSourceFromTask, withSourceList } from '../src/lib/sourceRemoval'
 import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceValue, FRAME_CONTAINERS, imageOutputChoiceValue, imageOutputChoicesFor } from '../src/lib/containerSwitch'
@@ -2856,6 +2857,50 @@ void (async () => {
     check('the 422 family is ten bits', [proresDepth('proxy'), proresDepth('lt'), proresDepth('standard'), proresDepth('hq')], [10, 10, 10, 10])
     check('and the 4444 family is twelve', [proresDepth('4444'), proresDepth('4444xq')], [12, 12])
     check('which is what its label says, alpha and all', [proresDepthLabel('hq'), proresDepthLabel('4444xq')], ['10-BIT', '12-BIT + ALPHA'])
+  }
+
+  console.log('\n== a clip\u2019s own embedded sound, and taking a stream out to a track ==')
+  {
+    const task = {
+      id: 'e', type: 'multitrack', status: 'pending', progress: 0,
+      sourcePaths: ['/v.mp4'], outputDirectory: '/out', outputFilename: 'o.mkv',
+      preset: { id: 'p', name: 'P', container: 'mkv', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+      additionalAudioTracks: [{ id: 'trk', path: '/music.wav', language: 'und' }],
+    } as unknown as QueueTask
+    const clipId = clipKey(task, '/v.mp4', 0)
+    // UNTOUCHED: every stream is enabled at unity, and nothing is customised, so the encoder keeps its own path.
+    check('an untouched clip carries every stream', enabledEmbeddedStreams(task, clipId, '/v.mp4', 3).map((stream) => stream.index), [0, 1, 2])
+    check('and is not customised at all', embeddedAudioCustomised(task, clipId, '/v.mp4'), false)
+    check('so none of its sound is dropped', clipAudioDropped(task, clipId, '/v.mp4', 3), false)
+    // A MUTE drops one stream and leaves the others.
+    const muted = { ...task, embeddedAudio: { [clipId]: [{ index: 1, muted: true }] } } as unknown as QueueTask
+    check('muting one stream drops just it', enabledEmbeddedStreams(muted, clipId, '/v.mp4', 3).map((stream) => stream.index), [0, 2])
+    check('and the clip is now customised', embeddedAudioCustomised(muted, clipId, '/v.mp4'), true)
+    // A LEVEL is read back in dB, and becomes a linear gain the encoder can write.
+    const levelled = { ...task, embeddedAudio: { [clipId]: [{ index: 2, gainDb: -6 }] } } as unknown as QueueTask
+    check('a level is read back in dB', embeddedGainDb(levelled, clipId, 2), -6)
+    check('and -6 dB is about half the amplitude', Math.round(gainForDb(-6) * 100) / 100, 0.5)
+    const allMuted = { ...task, embeddedAudio: { [clipId]: [{ index: 0, muted: true }, { index: 1, muted: true }, { index: 2, muted: true }] } } as unknown as QueueTask
+    check('muting every stream drops the clip\u2019s whole sound', clipAudioDropped(allMuted, clipId, '/v.mp4', 3), true)
+
+    // EXTRACTION is a TRACK claiming a stream, keyed by the track\u2019s OWN id rather than the clip\u2019s.
+    const extracted = {
+      ...task,
+      additionalAudioTracks: [...(task.additionalAudioTracks || []), { id: 'x1', path: '/v.mp4', language: 'und', streamIndex: 1, sourceClipId: clipId }],
+    } as unknown as QueueTask
+    const claim = (extracted.additionalAudioTracks || []).find((track) => track.sourceClipId) as { id: string; path: string; sourceClipId?: string }
+    check('the extraction is found as a claim on the stream', extractedBy(extracted, clipId, '/v.mp4', 1)?.id, 'x1')
+    check('so the picture stops carrying it', enabledEmbeddedStreams(extracted, clipId, '/v.mp4', 3).map((stream) => stream.index), [0, 2])
+    check('and the claim makes the clip customised', embeddedAudioCustomised(extracted, clipId, '/v.mp4'), true)
+    check('the extracted track keys on its own id, not the clip\u2019s', trackKey(extracted, claim), '/v.mp4#x1')
+    check('while a plain track keeps the legacy key it always had', trackKey(task, { id: 'trk', path: '/music.wav' }), '/music.wav#0')
+    // The timeline gives them their OWN segments — same file, two keys — so a trim of one cannot bleed into the other.
+    const timeline = buildTimeline(extracted, { resolveTiming: () => ({ duration: 8 }) })
+    const trackLane = timeline.lanes.find((lane) => lane.segments.some((segment) => segment.key === '/v.mp4#x1'))
+    check('the picture and the extracted track are separate segments', [timeline.lanes[0].segments[0].key, Boolean(trackLane)], [clipId, true])
+    // The claim alone is the whole record: deleting the track puts the stream straight back, with nothing to undo.
+    const restored = { ...extracted, additionalAudioTracks: task.additionalAudioTracks } as unknown as QueueTask
+    check('deleting the track puts the stream back', enabledEmbeddedStreams(restored, clipId, '/v.mp4', 3).map((stream) => stream.index), [0, 1, 2])
   }
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)

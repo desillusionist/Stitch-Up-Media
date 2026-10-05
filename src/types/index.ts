@@ -11,6 +11,16 @@ export interface MediaStreamInfo {
   sampleRate?: number
   language?: string
   /**
+   * The stream's place among the source's streams OF ITS OWN KIND, which is how ffmpeg names it.
+   *
+   * For a sound stream this is the `N` in `-map 0:a:N`, so it is the one figure that addresses that
+   * exact stream rather than "the first" or "all of them". Absent on a stream read before this was
+   * recorded, which is why a reader falls back to the stream's position in its own list.
+   */
+  index?: number
+  /** The stream's own title, where its container carries one (`title` tag). */
+  title?: string
+  /**
    * How many bits one sample is, where the container records it.
    *
    * A PCM or FLAC file carries it; a lossy codec has no such thing, which is why this is absent rather than
@@ -293,6 +303,36 @@ export interface AudioTrackItem {
   path: string
   language: string // e.g. 'eng', 'spa', 'fra'
   title?: string
+  /**
+   * The EMBEDDED audio stream this track was EXTRACTED from, as ffmpeg names it (`input:a:streamIndex`).
+   *
+   * An extracted track's `path` is the VIDEO it came out of, so the export has to be told which of that
+   * file's streams to read — without this it would take the file's first stream, which may be the one the
+   * picture is already carrying.
+   */
+  streamIndex?: number
+  /**
+   * The clip id the extraction came FROM. This is what makes extraction reversible: a clip's embedded
+   * stream is EXTRACTED iff a track claims it, so deleting the track re-enables the clip's own mapping
+   * with nothing to undo — see `extractedBy`.
+   */
+  sourceClipId?: string
+}
+
+/**
+ * One of a clip's EMBEDDED audio streams, and the in-place controls for it.
+ *
+ * A clip's own sound is carried by the clip. These are the two things a reader can say about one of its
+ * streams without taking it out: drop it, and set its level. An absent record means every stream enabled
+ * at unity gain, which is exactly today's behaviour and what an untouched clip keeps.
+ */
+export interface EmbeddedAudioStream {
+  /** The stream's place among the source's AUDIO streams, as the export names it (`0:a:index`). */
+  index: number
+  /** Dropped from the export's mapping and silenced in the monitor. */
+  muted?: boolean
+  /** Gain in dB. Unity (0) by default; positive is louder. */
+  gainDb?: number
 }
 
 /** Clip-boundary transitions. Only meaningful where clips are concatenated. */
@@ -482,6 +522,13 @@ export interface QueueTask {
   quickLookSourceIndex?: number
   stillImageDuration?: number
   /**
+   * Per-clip EMBEDDED-audio controls, keyed by the clip's own id like every other per-clip record.
+   *
+   * Absent means every embedded stream is enabled at unity gain. A stream that a track has EXTRACTED is
+   * dropped by that fact rather than by a flag here, so extraction is reversible by deleting the track.
+   */
+  embeddedAudio?: Record<string, EmbeddedAudioStream[]>
+  /**
    * Transitions at clip boundaries, keyed by the clip that PRECEDES the boundary
    * (`"path#index"`), mirroring how trimPoints are keyed. A boundary fades the
    * preceding clip out and the following clip in, through black. Only STITCH
@@ -550,6 +597,13 @@ export interface EditJobPatch {
   trimPoints?: Record<string, { in: number; out: number }>
   /** Lanes whose audio the export does not carry, carried whole like the fit. */
   mutedLanes?: Record<string, boolean>
+  /**
+   * Per-clip embedded-sound controls, keyed by the clip's own id like the trims, carried whole.
+   *
+   * An emptied map is a decision about the job — that every clip carries every stream at unity — rather
+   * than a field left out, so a clip returned to its defaults loses the record it no longer needs.
+   */
+  embeddedAudio?: QueueTask['embeddedAudio']
   /**
    * Per-source timing the window owns: the rate a still or sequence is rendered at, and
    * the length of a still's clip. Keyed by source path.
