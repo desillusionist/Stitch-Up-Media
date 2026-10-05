@@ -195,6 +195,17 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-frame-window.is-open .editor-still { width: auto; height: auto; max-width: 100%; max-height: 100%; }
 .editor-frame-window .editor-screen-message { position: absolute; inset: 0; display: grid; place-items: center; }
 .editor-frame b { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
+/* The neighbour's edge frame, shown beside the clip being trimmed while a handle is down: half the frame's
+   window, on the side the handle is on, so the two frames the cut will join are read together. Above the
+   black tail so a cut at the end of the picture still shows it. */
+.editor-trim-neighbour { position: absolute; top: 0; bottom: 0; width: 50%; display: flex; align-items: center; justify-content: center; background: rgba(3, 9, 16, .94); z-index: 4; pointer-events: none; }
+.editor-trim-neighbour.is-left { left: 0; border-right: 1px solid var(--ui-accent); }
+.editor-trim-neighbour.is-right { right: 0; border-left: 1px solid var(--ui-accent); }
+.editor-trim-neighbour-media { width: 100%; height: 100%; object-fit: contain; background: #030910; }
+.editor-trim-neighbour-label { position: absolute; top: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
+.editor-trim-neighbour.is-left .editor-trim-neighbour-label { left: 0; }
+.editor-trim-neighbour.is-right .editor-trim-neighbour-label { right: 0; }
+.editor-trim-neighbour-none { color: var(--ui-muted); font-size: 10px; }
 /* The crop box, drawn on the picture rather than on the output frame. What it removes is
    dimmed by four explicit bands (see cropBands) rather than one spread shadow, which used
    to shade the output frame outline and the whole stage along with it. */
@@ -591,8 +602,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-lane .timeline-clip.is-film::after { content: ''; position: absolute; inset: 0; z-index: 2; border: 1px dotted var(--ui-accent); pointer-events: none; }
 .timeline-lane .timeline-clip.is-film.is-active::after { border-style: solid; border-color: var(--crt-amber); }
 
-/* The timeline's right-click menu. Fixed, so the scroll area cannot clip it. */
-.timeline-menu { position: fixed; z-index: 80; min-width: 176px; display: flex; flex-direction: column; padding: 4px; background: var(--ui-panel-inset); border: 1px solid var(--ui-accent); box-shadow: 0 10px 28px rgba(3, 9, 16, .72); }
+/* The timeline's right-click menu. Fixed, so the scroll area cannot clip it. Bounded in width so a long
+   filename in a heading (`COPY 2 // something_very_long.mp4`, or `REMOVE <name>?`) ellipsises rather than
+   stretching the menu across the window; the head already clips with an ellipsis. */
+.timeline-menu { position: fixed; z-index: 80; min-width: 176px; max-width: 260px; display: flex; flex-direction: column; padding: 4px; background: var(--ui-panel-inset); border: 1px solid var(--ui-accent); box-shadow: 0 10px 28px rgba(3, 9, 16, .72); }
 .timeline-menu-head { padding: 5px 8px 7px; color: var(--ui-muted); font-size: 8px; letter-spacing: .08em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px dashed var(--ui-border-dim); }
 .timeline-menu button { padding: 7px 8px; text-align: left; color: var(--ui-muted); background: transparent; border: 0; font-size: 9px; letter-spacing: .06em; }
 .timeline-menu button:hover { color: var(--ui-accent); background: rgba(159, 191, 154, .08); }

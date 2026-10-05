@@ -14,7 +14,7 @@ import { deriveOutputFilename } from './lib/outputNaming'
 import { mediaKind } from './lib/mediaKind'
 import { removeSourceFromTask, clipRecordsFor, withSourceList } from './lib/sourceRemoval'
 import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
-import { clipKey, legacyClipId, matchClipIdsToPaths, matchClipNumbersToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, nextClipNumber } from './lib/clipIds'
+import { clipKey, legacyClipId, matchClipIdsToPaths, matchClipNumbersToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, nextClipNumber } from './lib/clipIds'
 
 /**
  * The rate a still image is given when it is exported as video.
@@ -427,7 +427,7 @@ export const App: React.FC = () => {
       id: Math.random().toString(36).substring(7), type: effectiveType, sourcePaths: detectedSequence && sequenceFps ? [detectedSequence.firstFrame] : effectiveType === 'stitch' && videoCount === 0 ? filePaths : effectiveType === 'stitch' || effectiveType === 'combo' || jobType === 'multitrack' ? filePaths.filter((path) => mediaKind(path) !== 'audio') : [first],
       outputDirectory: settings.defaultOutputDir || dir, outputFilename: `${baseName}${effectiveType === 'stitch' ? '_stitched' : effectiveType === 'combo' ? '_combo' : suffix}.${preset.container}`,
       preset, status: 'pending', progress: 0, sourceBaseName: baseName, stillImageDuration: mediaKind(first) === 'image' ? Math.max(0.1, settings.defaultImageDuration || 10) : undefined,
-      additionalAudioTracks: (effectiveType === 'multitrack' || effectiveType === 'combo') ? filePaths.filter((path) => mediaKind(path) === 'audio').map((path, index) => ({ id: `${Date.now()}-${index}`, path, language: 'und' })) : undefined,
+      additionalAudioTracks: (effectiveType === 'multitrack' || effectiveType === 'combo') ? filePaths.filter((path) => mediaKind(path) === 'audio').map((path) => ({ id: newTrackId(), path, language: 'und' })) : undefined,
       imageSequencePreviews: imageSequencePreview && detectedSequence && sequenceFps
         // Filed under the key the editor will look it up by, which carries the rate and the frame
         // count the clip was built at. Written under the bare path instead, it was never found, and
@@ -732,7 +732,7 @@ export const App: React.FC = () => {
           clipIds: matchClipIdsToPaths(chosen.flatMap((item) => item.sourcePaths), chosen.flatMap((item) => materializeClipIds(item)), mergedPaths),
           clipNumbers: matchClipNumbersToPaths(chosen.flatMap((item) => item.sourcePaths), chosen.flatMap((item) => materializeClipNumbers(item)), mergedPaths),
           additionalAudioTracks: wantsTracks
-            ? [...allTracks, ...audioSources.map((source, index) => ({ id: `${base.id}-audio-source-${index}-${Date.now()}`, path: source, language: 'und' }))]
+            ? [...allTracks, ...audioSources.map((source) => ({ id: newTrackId(), path: source, language: 'und' }))]
             : undefined,
           // Clips are reshuffled here, so index-scoped fades and fits can no longer be trusted.
           transitions: undefined,
@@ -752,7 +752,7 @@ export const App: React.FC = () => {
           const visualSources = item.sourcePaths.filter((source) => mediaKind(source) !== 'audio')
           const audioSources = item.sourcePaths.filter((source) => mediaKind(source) === 'audio')
           const existingTracks = item.additionalAudioTracks || []
-          const addedTracks = audioSources.map((source, index) => ({ id: `${item.id}-audio-source-${index}-${Date.now()}`, path: source, language: 'und' }))
+          const addedTracks = audioSources.map((source) => ({ id: newTrackId(), path: source, language: 'und' }))
           return { ...item, type, comboMode: type === 'combo' ? 'multitrack' as const : undefined, sourcePaths: visualSources, clipIds: matchClipIdsToPaths(item.sourcePaths, itemIds, visualSources), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, itemNumbers, visualSources), additionalAudioTracks: [...existingTracks, ...addedTracks], trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, status: 'pending' as const, progress: 0 }
         }
         if (type === 'stitch') {
@@ -809,7 +809,7 @@ export const App: React.FC = () => {
       const existingVideos = item.sourcePaths.filter((source) => mediaKind(source) !== 'audio')
       const existingAudioPaths = item.sourcePaths.filter((source) => mediaKind(source) === 'audio')
       const videoSources = [...existingVideos, ...incomingVideos]
-      const tracks = [...existingAudioPaths.map((path, index) => ({ id: `${item.id}-source-audio-${index}`, path, language: 'und' })), ...(item.additionalAudioTracks || []).filter((track) => !existingAudioPaths.includes(track.path)), ...incomingAudios.map((path, index) => ({ id: `${Date.now()}-${index}`, path, language: 'und' }))]
+      const tracks = [...existingAudioPaths.map((path) => ({ id: newTrackId(), path, language: 'und' })), ...(item.additionalAudioTracks || []).filter((track) => !existingAudioPaths.includes(track.path)), ...incomingAudios.map((path) => ({ id: newTrackId(), path, language: 'und' }))]
       const allAudioSources = [...existingAudioPaths, ...incomingAudios]
       const nextType: QueueTask['type'] = videoSources.length === 0 ? (allAudioSources.length > 1 ? 'stitch' : 'transcode') : tracks.length ? (videoSources.length > 1 ? 'combo' : 'multitrack') : (videoSources.length > 1 ? 'stitch' : 'transcode')
       const stableNextType = item.type === 'multitrack' && videoSources.length === 1 && tracks.length > 0 ? 'multitrack' as const : nextType

@@ -195,7 +195,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: boolean; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1477,6 +1477,56 @@ const drive = async () => {
   await wait(500)
   const pairLabelsAfterPush = [...document.querySelectorAll('.timeline-clip-name')].map((node) => node.textContent ?? null)
   result.copyNumbers = { pairLabelsAfterAdd, pairLabelsAfterPush }
+
+  // THE SPLIT VIEW WHILE A HANDLE IS DOWN. On a two-clip join, dragging the SECOND clip's IN handle has a
+  // clip before it: the monitor has to show that neighbour's LAST frame beside the clip being trimmed, in a
+  // pane on the LEFT (the side the handle is on), labelled PREV LAST — and it has to go when the handle is up.
+  flushEdits()
+  await wait(200)
+  arrive(duplicateTask, 'split-view')
+  await wait(900)
+  const splitClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const inHandle = splitClips()[1]?.querySelector('.clip-trim-handle.is-in') as HTMLElement | null
+  let splitSide: string | null = null
+  let splitLabel: string | null = null
+  let splitPanes = 0
+  if (inHandle) {
+    const box = inHandle.getBoundingClientRect()
+    const at = { clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }
+    inHandle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, ...at }))
+    await wait(60)
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: at.clientX + 20, clientY: at.clientY }))
+    await wait(80)
+    const pane = document.querySelector('.editor-trim-neighbour') as HTMLElement | null
+    splitPanes = document.querySelectorAll('.editor-trim-neighbour').length
+    splitSide = pane?.classList.contains('is-left') ? 'left' : pane?.classList.contains('is-right') ? 'right' : null
+    splitLabel = pane?.querySelector('.editor-trim-neighbour-label')?.textContent ?? null
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: at.clientX + 20, clientY: at.clientY }))
+    await wait(120)
+  }
+  const splitGone = document.querySelector('.editor-trim-neighbour') === null
+  result.splitView = { splitSide, splitLabel, splitPanes, splitGone }
+
+  // THE AUDIO LANE'S OWN CONTROLS. A multitrack job's added track is a lane of its own: its clip has to offer
+  // the same trim handles the video lane's do, and a [+] whose panel offers ADD SOURCE — but a fade on an
+  // added track is NOT written by the encoder, so the fade items are disabled and say so.
+  flushEdits()
+  await wait(200)
+  arrive(coverTask, 'audio-lane')
+  await wait(900)
+  const laneBodies = [...document.querySelectorAll('.timeline-lane')] as HTMLElement[]
+  const audioLaneBody = laneBodies[1]
+  const audioClip = audioLaneBody?.querySelector('.timeline-clip') as HTMLElement | null
+  const audioHandles = audioClip ? audioClip.querySelectorAll('.clip-trim-handle').length : 0
+  const audioBoundary = audioClip?.querySelector('.boundary-add') as HTMLElement | null
+  audioBoundary?.click()
+  await wait(200)
+  const audioPanelTitle = (document.querySelector('.boundary-editor .boundary-title') as HTMLElement | null)?.textContent ?? null
+  const fadeButtons = [...document.querySelectorAll('.boundary-editor .boundary-options button')] as HTMLButtonElement[]
+  const fadeDisabled = fadeButtons.filter((button) => button.textContent?.trim() === 'FADE').every((button) => button.disabled)
+  const blockedNote = (document.querySelector('.boundary-editor .boundary-clamped') as HTMLElement | null)?.textContent ?? null
+  const audioAddSource = [...document.querySelectorAll('.boundary-editor .boundary-source')].some((button) => button.textContent?.trim() === 'ADD SOURCE')
+  result.audioLane = { laneCount: laneBodies.length, audioHandles, hasBoundary: Boolean(audioBoundary), audioPanelTitle, fadeDisabled, blockedNote, audioAddSource }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

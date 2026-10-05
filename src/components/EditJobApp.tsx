@@ -7,7 +7,7 @@ import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
-import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds } from '../lib/clipIds'
+import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId } from '../lib/clipIds'
 import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
@@ -243,6 +243,41 @@ const TimelineRuler: React.FC<{
 
 const EditorRow: React.FC<{ label: string; value: React.ReactNode; reason?: string }> = ({ label, value, reason }) => (
   <div className="editor-row" title={reason}><span>{label}</span><strong>{value}</strong></div>
+)
+
+/**
+ * The neighbour's edge frame, drawn beside the clip being trimmed while a handle is down.
+ *
+ * A SECOND element, mounted only for the drag: a `<video>` seeked to the edge second for footage, the
+ * picture itself for a still, and the generated clip for a sequence — the same target the filmstrip and
+ * the monitor already resolve. It is a preview AID rather than the export's own frame, so it is shown at
+ * the pane's proportions with the media's own shape kept; the clip being trimmed stays in the main pane,
+ * framed exactly as the export will frame it.
+ */
+const TrimEdgePreview: React.FC<{
+  side: 'left' | 'right'
+  label: string
+  sourcePath: string
+  still: boolean
+  videoUrl: string | null
+  seekTo: number
+}> = ({ side, label, sourcePath, still, videoUrl, seekTo }) => (
+  <div className={`editor-trim-neighbour is-${side}`} aria-hidden="true">
+    <span className="editor-trim-neighbour-label">{label}</span>
+    {still
+      ? <img className="editor-trim-neighbour-media" src={mediaUrl(sourcePath)} alt="" draggable={false} />
+      : videoUrl
+        ? <video
+          className="editor-trim-neighbour-media"
+          src={videoUrl}
+          preload="auto"
+          muted
+          playsInline
+          ref={(element) => { if (element) { try { element.currentTime = seekTo } catch { /* the seek lands on metadata */ } } }}
+          onLoadedMetadata={(event) => { try { event.currentTarget.currentTime = seekTo } catch { /* nothing to seek yet */ } }}
+        />
+        : <span className="editor-trim-neighbour-none">NO FRAME</span>}
+  </div>
 )
 
 /**
@@ -585,10 +620,20 @@ export const EditJobApp: React.FC = () => {
    */
   const gestureRef = useRef<QueueTask | null>(null)
   const undoRedoRef = useRef<{ undo: () => void; redo: () => void }>({ undo: () => undefined, redo: () => undefined })
-  /** Boundary whose transition editor is open, by index of the clip it follows, or a timeline edge. */
-  const [openBoundary, setOpenBoundary] = useState<number | 'head' | 'tail' | null>(null)
+  /** Boundary whose transition editor is open: the LANE it sits on and the clip it follows, or a lane edge. */
+  const [openBoundary, setOpenBoundary] = useState<{ laneId: string; at: number | 'head' | 'tail' } | null>(null)
   /** The clip whose edge is being dragged on the timeline, and the window that drag is proposing. */
   const [trimDragKey, setTrimDragKey] = useState<string | null>(null)
+  /**
+   * The neighbour shown beside the clip being trimmed, and the edge of it the cut meets.
+   *
+   * While a handle is down the monitor becomes a SPLIT view: the clip being trimmed keeps the main pane
+   * (its landing frame, moved by the drag itself) and this is the clip it is being cut against — the
+   * PREVIOUS clip's LAST frame for an IN handle, the NEXT clip's FIRST for an OUT — drawn in a second
+   * pane on the side the handle is on. Only the `at` second of that neighbour changes with the drag; the
+   * neighbour does not.
+   */
+  const [trimNeighbour, setTrimNeighbour] = useState<{ side: 'left' | 'right'; segment: TimelineSegment; at: number } | null>(null)
   const [trimPreview, setTrimPreview] = useState<TrimWindow | null>(null)
   const trimPreviewRef = useRef<TrimWindow | null>(null)
   /** The main-lane clip being dragged to another place, so a drop can name where it came from. */
@@ -2119,6 +2164,24 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * Adds one or more sources to the TRACK list, at a place, from an added audio lane's [+] panel.
+   *
+   * An added track is not in `sourcePaths`, so its place in the join is a place in `additionalAudioTracks`
+   * and the insert goes there — with an opaque id of its own each, exactly as the queue gives a track, so
+   * nothing collides with the tracks already there. The paths are left alone, so the visual lane and every
+   * clip's records stay exactly where they were.
+   */
+  const insertTrackSources = async (position: number) => {
+    const files = await window.electronAPI?.selectFiles()
+    if (!files?.length) return
+    const current = latest()
+    const tracks = [...(current.additionalAudioTracks || [])]
+    const at = Math.max(0, Math.min(position, tracks.length))
+    tracks.splice(at, 0, ...files.map((path) => ({ id: newTrackId(), path, language: 'und' })))
+    updateDraft({ additionalAudioTracks: tracks })
+  }
+
+  /**
    * The clip at a place, as the thing that would be placed again: its source and its own resolved records.
    *
    * Resolved HERE, at the moment of copying, so an edit made after the copy does not follow it into the paste.
@@ -2261,7 +2324,7 @@ export const EditJobApp: React.FC = () => {
    * turned back into a timeline second by that same retime and the playhead is put there, so the frame the cut
    * lands on is what is on screen while the handle is down.
    */
-  const beginTrimDrag = (event: React.PointerEvent, segment: TimelineSegment, edge: 'in' | 'out') => {
+  const beginTrimDrag = (event: React.PointerEvent, segment: TimelineSegment, edge: 'in' | 'out', lane: TimelineLane) => {
     event.preventDefault()
     event.stopPropagation()
     const full = sourceDuration(latest(), segment.sourcePath, undefined, resolveTiming)
@@ -2271,6 +2334,16 @@ export const EditJobApp: React.FC = () => {
     const startX = event.clientX
     const from = trimWindowOf(segment.sourceIn, segment.sourceUsedSeconds)
     const key = segment.key
+    // The clip this one is joined to on the side being dragged, and the edge of it the cut meets: the
+    // neighbour's LAST frame for an IN handle (its out point), its FIRST for an OUT handle (its in point).
+    // Shown beside the cut while the handle is down, so the frame the join lands between is on screen.
+    const laneIndex = lane.segments.findIndex((candidate) => candidate.key === key)
+    const neighbour = edge === 'in' ? lane.segments[laneIndex - 1] : lane.segments[laneIndex + 1]
+    setTrimNeighbour(neighbour ? {
+      side: edge === 'in' ? 'left' : 'right',
+      segment: neighbour,
+      at: edge === 'in' ? neighbour.sourceIn + neighbour.sourceUsedSeconds : neighbour.sourceIn,
+    } : null)
     /** Where on the TIMELINE the dragged edge's source second sits, within the clip as it stands now. */
     const edgePosition = (window: TrimWindow) => {
       const source = edge === 'in' ? window.in : window.out
@@ -2293,6 +2366,7 @@ export const EditJobApp: React.FC = () => {
       trimPreviewRef.current = null
       setTrimDragKey(null)
       setTrimPreview(null)
+      setTrimNeighbour(null)
       if (proposed) writeTrim(key, proposed, full)
     }
     window.addEventListener('pointermove', move)
@@ -2538,29 +2612,51 @@ export const EditJobApp: React.FC = () => {
   // frame written is the one under the playhead, so the timeline has to stay for the playhead to mean
   // anything. Only a lone still, which has no other frame to choose, gets no timeline.
   const nothingToTimeJob = nothingToTime(draft)
+  // The lane the open [+] belongs to, and whether that lane is the job's own source lane. An added audio
+  // track is a lane of its own whose single clip is not in `sourcePaths`; its [+] offers ADD SOURCE, but
+  // a fade on it is drawn and NOT written by the encoder yet, so the fade items are offered disabled.
+  const boundaryLane = openBoundary ? model.lanes.find((lane) => lane.id === openBoundary.laneId) : undefined
+  const boundaryIsMainLane = Boolean(boundaryLane && boundaryLane.id === mainLane?.id)
+  /**
+   * Why a fade cannot be offered at the open boundary, if it cannot — a question about the COMMAND.
+   *
+   * An added audio track's fade is not written by the encoder at all. The main lane's fades are written
+   * only where the encoder normalizes each visual through its own chain — a stitch, or a combo that joins
+   * its visuals — so a lone CONVERT or a MULTI-TRACK, whose single visual is mapped straight through, would
+   * otherwise show a FADE that the file never contains. Same treatment as an added track: offered, out of
+   * reach, and saying why, rather than drawing a ramp that is not in the export.
+   */
+  const boundaryFadeBlocked = (() => {
+    if (!boundaryLane) return undefined
+    if (!boundaryIsMainLane) return 'A FADE ON AN ADDED TRACK IS NOT WRITTEN YET, SO IT IS NOT OFFERED HERE.'
+    if (!clipsConcatenate(draft)) return 'THE ENCODER DOES NOT JOIN THIS JOB\'S CLIPS, SO IT WRITES NO FADE HERE YET.'
+    return undefined
+  })()
   const selectedBoundary = (() => {
-    if (openBoundary == null) return null
-    const segments = mainLane?.segments ?? []
+    if (openBoundary == null || !boundaryLane) return null
+    const segments = boundaryLane.segments
     // An edge belongs to the timeline rather than to a clip, so it is cut from or to black with
     // only the one clip to fit into: the whole clip, less whatever a boundary at the other end
     // of the same clip is already using.
-    if (openBoundary === 'head' || openBoundary === 'tail') {
-      const clip = openBoundary === 'head' ? segments[0] : segments[segments.length - 1]
+    if (openBoundary.at === 'head' || openBoundary.at === 'tail') {
+      const clip = openBoundary.at === 'head' ? segments[0] : segments[segments.length - 1]
       if (!clip) return null
-      const requested = edgeFade(draft, openBoundary)
-      const neighbour = (openBoundary === 'head' ? clip.fadeOut : clip.fadeIn) || 0
+      const requested = boundaryFadeBlocked ? 0 : edgeFade(draft, openBoundary.at)
+      const neighbour = (openBoundary.at === 'head' ? clip.fadeOut : clip.fadeIn) || 0
       const maxFade = maxEdgeFade(clip.duration, neighbour)
-      return { kind: 'edge' as const, edge: openBoundary, requested, fade: Math.min(requested, maxFade), maxFade }
+      return { kind: 'edge' as const, edge: openBoundary.at, requested, fade: Math.min(requested, maxFade), maxFade }
     }
-    const cut = cuts.find((candidate) => candidate.index === openBoundary)
-    if (!cut || !segments[openBoundary] || !segments[openBoundary + 1]) return null
-    const transition = draft.transitions?.[segments[openBoundary].key]
+    const index = openBoundary.at
+    const first = segments[index]
+    const second = segments[index + 1]
+    if (!first || !second) return null
+    const transition = boundaryFadeBlocked ? undefined : draft.transitions?.[first.key]
     const requested = transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
-    const maxFade = maxFadeAtBoundary(segments[openBoundary].duration, segments[openBoundary + 1].duration)
+    const maxFade = maxFadeAtBoundary(first.duration, second.duration)
     // The request and what will actually render are reported separately. A fade that
     // a neighbour's length currently clamps away still reads as set, instead of
     // looking like the editor had forgotten it.
-    return { kind: 'cut' as const, index: openBoundary, source: cut.sourcePath, requested, fade: Math.min(requested, maxFade), maxFade }
+    return { kind: 'cut' as const, index, source: first.sourcePath, requested, fade: Math.min(requested, maxFade), maxFade }
   })()
 
   /**
@@ -3586,6 +3682,24 @@ export const EditJobApp: React.FC = () => {
                               onClick={toggleFromClick}
                             />
                             : <span className="editor-screen-message">{screenMessage}</span>}
+                  {/* The SPLIT view: while a trim handle is down, the clip being trimmed keeps the main
+                      pane and the clip it is being cut against is drawn in a second pane on the side the
+                      handle is on — the previous clip's last frame on the LEFT for an IN handle, the next
+                      clip's first frame on the RIGHT for an OUT. The monitor's own live view of where the
+                      cut lands stays behind the other half, so both sides of the join are on screen. */}
+                  {trimNeighbour && (() => {
+                    const neighbourSegment = trimNeighbour.segment
+                    const neighbourTarget = pictureSourceFor(neighbourSegment)
+                    const neighbourHasPicture = sourceVideo[neighbourSegment.sourcePath] !== false
+                    return <TrimEdgePreview
+                      side={trimNeighbour.side}
+                      label={trimNeighbour.side === 'left' ? 'PREV LAST' : 'NEXT FIRST'}
+                      sourcePath={neighbourSegment.sourcePath}
+                      still={Boolean(neighbourSegment.still)}
+                      videoUrl={neighbourHasPicture && neighbourTarget ? mediaUrl(neighbourTarget) : null}
+                      seekTo={trimNeighbour.at}
+                    />
+                  })()}
                 </div>
                 {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}x{outputFrame?.height}</b></div>}
                 {/* The box the clip's own margins leave inside the frame. The background the export
@@ -3911,7 +4025,10 @@ export const EditJobApp: React.FC = () => {
                       // window trimmed. Both need the clip's place and its whole length, read once here.
                       const sourceFull = draft ? sourceDuration(draft, segment.sourcePath, undefined, resolveTiming) : 0
                       const reorderable = lane.id === mainLane?.id && lane.segments.length > 1
-                      const trimmable = lane.id === mainLane?.id && sourceFull > 0
+                      // Every lane's clips can be trimmed: an ADDED AUDIO TRACK is one clip with a whole
+                      // source of its own, and the encoder applies that trim (`applyTrimInput` for a
+                      // track input). Only a source with no length at all has nothing to trim.
+                      const trimmable = sourceFull > 0
                       const trimming = trimDragKey === segment.key ? trimPreview : null
                       const clipWidth = laneWidthFor(segment.duration, zoom)
                       return (
@@ -3985,32 +4102,33 @@ export const EditJobApp: React.FC = () => {
                         {lane.kind === 'video' && sourceAudio[segment.sourcePath]
                           ? <span className={`clip-audio${muted[lane.id] ? ' is-muted' : ''}`} aria-hidden="true" />
                           : null}
-                        {/* Anchored to this clip's own trailing edge, so the marker is on
-                            the cut by construction. No arithmetic on the timeline's
-                            length is involved, which is what put every marker far down
-                            the lane in a combo whose audio outlasted the video. */}
-                        {lane.id === mainLane?.id && index === 0 && (
+                        {/* The lane's own boundaries. The main lane's are the cuts of the join: a [+] on a cut
+                            fades both sides, and a [+] at either end fades from or to black. An added audio
+                            track is a single clip, so it has the two edges only; its panel offers ADD SOURCE
+                            and, because the encoder does not write a fade on an added track yet, says so
+                            rather than drawing a ramp the file would not contain. */}
+                        {index === 0 && (
                           <button
-                            className={`boundary-add is-head${edgeFade(draft, 'head') > 0 ? ' is-active' : ''}${openBoundary === 'head' ? ' is-open' : ''}`}
-                            onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === 'head' ? null : 'head') }}
-                            aria-label="Add a fade in from black"
-                            title="Fade in from black"
+                            className={`boundary-add is-head${lane.id === mainLane?.id && edgeFade(draft, 'head') > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === 'head' ? ' is-open' : ''}`}
+                            onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id && openBoundary.at === 'head' ? null : { laneId: lane.id, at: 'head' }) }}
+                            aria-label={`Add a fade in on ${lane.label}`}
+                            title={lane.id === mainLane?.id ? 'Fade in from black' : `Fade in on ${lane.label}`}
                           />
                         )}
                         {lane.id === mainLane?.id && index < lane.segments.length - 1 && (
                           <button
-                            className={`boundary-add${(draft.transitions?.[segment.key]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary === index ? ' is-open' : ''}`}
-                            onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === index ? null : index) }}
+                            className={`boundary-add${(draft.transitions?.[segment.key]?.duration ?? 0) > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === index ? ' is-open' : ''}`}
+                            onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id && openBoundary.at === index ? null : { laneId: lane.id, at: index }) }}
                             aria-label={`Add a transition after ${sourceName(segment.sourcePath)}`}
                             title={`Transition after ${sourceName(segment.sourcePath)}`}
                           />
                         )}
-                        {lane.id === mainLane?.id && index === lane.segments.length - 1 && (
+                        {index === lane.segments.length - 1 && (
                           <button
-                            className={`boundary-add is-tail${edgeFade(draft, 'tail') > 0 ? ' is-active' : ''}${openBoundary === 'tail' ? ' is-open' : ''}`}
-                            onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary === 'tail' ? null : 'tail') }}
-                            aria-label="Add a fade out to black"
-                            title="Fade out to black"
+                            className={`boundary-add is-tail${lane.id === mainLane?.id && edgeFade(draft, 'tail') > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === 'tail' ? ' is-open' : ''}`}
+                            onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id && openBoundary.at === 'tail' ? null : { laneId: lane.id, at: 'tail' }) }}
+                            aria-label={`Add a fade out on ${lane.label}`}
+                            title={lane.id === mainLane?.id ? 'Fade out to black' : `Fade out on ${lane.label}`}
                           />
                         )}
                         {/* What the drag is about to take off either end. The window is committed on release, so
@@ -4028,8 +4146,8 @@ export const EditJobApp: React.FC = () => {
                         })()}
                         {trimmable && (
                           <>
-                            <span className="clip-trim-handle is-in" onPointerDown={(event) => beginTrimDrag(event, segment, 'in')} role="presentation" title="Drag to trim this clip's head" />
-                            <span className="clip-trim-handle is-out" onPointerDown={(event) => beginTrimDrag(event, segment, 'out')} role="presentation" title="Drag to trim this clip's tail" />
+                            <span className="clip-trim-handle is-in" onPointerDown={(event) => beginTrimDrag(event, segment, 'in', lane)} role="presentation" title="Drag to trim this clip's head" />
+                            <span className="clip-trim-handle is-out" onPointerDown={(event) => beginTrimDrag(event, segment, 'out', lane)} role="presentation" title="Drag to trim this clip's tail" />
                             {trimming && <span className="clip-trim-readout">{stamp(Math.max(0, trimming.out - trimming.in))}</span>}
                           </>
                         )}
@@ -4045,19 +4163,24 @@ export const EditJobApp: React.FC = () => {
             </div>
           </div>
           {selectedBoundary && (() => {
-            const set = (type: TransitionType, duration?: number) => selectedBoundary.kind === 'edge'
-              ? setEdgeTransition(selectedBoundary.edge, type, duration)
-              : setBoundaryTransition(selectedBoundary.index, type, duration)
+            const set = (type: TransitionType, duration?: number) => {
+              if (boundaryFadeBlocked) return
+              if (selectedBoundary.kind === 'edge') setEdgeTransition(selectedBoundary.edge, type, duration)
+              else setBoundaryTransition(selectedBoundary.index, type, duration)
+            }
             const heading = selectedBoundary.kind === 'edge'
-              ? (selectedBoundary.edge === 'head' ? 'FADE IN FROM BLACK' : 'FADE OUT TO BLACK')
+              ? (selectedBoundary.edge === 'head'
+                ? (boundaryIsMainLane ? 'FADE IN FROM BLACK' : 'FADE IN')
+                : (boundaryIsMainLane ? 'FADE OUT TO BLACK' : 'FADE OUT'))
               : `CUT ${selectedBoundary.index + 1}|${selectedBoundary.index + 2}`
             return <div className="boundary-editor">
               <span className="boundary-title">{heading}</span>
               <div className="boundary-options">
-                <button className={selectedBoundary.requested > 0 ? '' : 'is-selected'} onClick={() => set('none')}>OFF</button>
-                <button className={selectedBoundary.requested > 0 ? 'is-selected' : ''} onClick={() => set('fade', selectedBoundary.requested || Math.min(0.5, selectedBoundary.maxFade) || 0.25)}>FADE</button>
+                <button className={selectedBoundary.requested > 0 ? '' : 'is-selected'} disabled={Boolean(boundaryFadeBlocked)} onClick={() => set('none')}>OFF</button>
+                <button className={selectedBoundary.requested > 0 ? 'is-selected' : ''} disabled={Boolean(boundaryFadeBlocked)} onClick={() => set('fade', selectedBoundary.requested || Math.min(0.5, selectedBoundary.maxFade) || 0.25)}>FADE</button>
                 <button disabled title="Crossfade overlaps the clips and needs the encoder rework planned next.">X-FADE</button>
               </div>
+              {boundaryFadeBlocked && <small className="boundary-clamped">{boundaryFadeBlocked}</small>}
               {selectedBoundary.requested > 0 && (
                 <div className="boundary-duration" title={`Longest fade that fits here: ${selectedBoundary.maxFade.toFixed(2)}s`}>
                   <button onClick={() => set('fade', Math.max(0.25, selectedBoundary.requested - 0.25))} disabled={selectedBoundary.requested <= 0.25} aria-label="Shorter fade">-</button>
@@ -4067,16 +4190,25 @@ export const EditJobApp: React.FC = () => {
                 </div>
               )}
               {/* The panel's SECOND decision, after a rule: what is placed AT this cut. The place is the one
-                  the [+] stood for — before the first clip, between two, or after the last. */}
+                  the [+] stood for — before the first clip, between two, or after the last. On an added
+                  audio lane it is a place in the TRACK list, so the source lands beside that track. */}
               <span className="boundary-divider" aria-hidden="true" />
               <button
                 className="boundary-source"
                 onClick={() => {
-                  const at = selectedBoundary.kind === 'edge'
-                    ? (selectedBoundary.edge === 'head' ? 0 : latest().sourcePaths.length)
-                    : selectedBoundary.index + 1
-                  setOpenBoundary(null)
-                  void insertSources(at)
+                  if (!boundaryLane) return
+                  if (boundaryIsMainLane) {
+                    const at = selectedBoundary.kind === 'edge'
+                      ? (selectedBoundary.edge === 'head' ? 0 : latest().sourcePaths.length)
+                      : selectedBoundary.index + 1
+                    setOpenBoundary(null)
+                    void insertSources(at)
+                  } else {
+                    const trackIndex = model.lanes.findIndex((lane) => lane.id === boundaryLane.id) - 1
+                    const at = selectedBoundary.kind === 'edge' && selectedBoundary.edge === 'tail' ? trackIndex + 1 : trackIndex
+                    setOpenBoundary(null)
+                    void insertTrackSources(at)
+                  }
                 }}
                 title="Add a source at this place in the join"
               >ADD SOURCE</button>

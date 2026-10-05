@@ -81,7 +81,7 @@ app.whenReady().then(async () => {
   await win.loadFile(htmlPath)
   // The mounts are on timers of their own, so this waits for the page to say it is finished rather
   // than for a fixed figure that would have to be raised whenever the render does more work.
-  const deadline = Date.now() + 60000
+  const deadline = Date.now() + 75000
   let done = false
   while (!done && Date.now() < deadline) {
     done = await win.webContents.executeJavaScript('Boolean(window.__MOUNT_DONE)')
@@ -755,6 +755,30 @@ app.whenReady().then(async () => {
     else {
       checkCopyNumbers(numbersDrive.pairLabelsAfterAdd, 'the copies after ADD SOURCE')
       checkCopyNumbers(numbersDrive.pairLabelsAfterPush, 'the copies after the queue pushed a shorter list back')
+    }
+    // THE SPLIT VIEW DURING A TRIM. The monitor has to show the neighbour's edge frame beside the clip being
+    // trimmed, on the side the handle is on, labelled for which edge it is — and take it away on release.
+    const splitView = result.splitView
+    if (!splitView) problems.push('the split-view drive reported nothing')
+    else {
+      if (splitView.splitPanes !== 1) problems.push(`dragging a handle drew ${splitView.splitPanes} neighbour panes rather than one`)
+      if (splitView.splitSide !== 'left') problems.push(`the IN handle's neighbour pane is on the ${JSON.stringify(splitView.splitSide)} rather than the left`)
+      if (String(splitView.splitLabel ?? '') !== 'PREV LAST') problems.push(`the IN handle's neighbour pane is labelled ${JSON.stringify(splitView.splitLabel)} rather than PREV LAST`)
+      if (!splitView.splitGone) problems.push('the neighbour pane outlived the handle it belongs to')
+    }
+    // THE AUDIO LANE'S OWN CONTROLS. An added track is a lane of its own and gets the same trim handles the
+    // video lane's clips do, and a [+] whose panel offers ADD SOURCE; a fade on it is not written by the
+    // encoder, so the fade items are disabled and say so rather than drawing a ramp the file would not hold.
+    const audioLane = result.audioLane
+    if (!audioLane) problems.push('the audio-lane drive reported nothing')
+    else {
+      if (audioLane.laneCount !== 2) problems.push(`the multitrack job drew ${audioLane.laneCount} lanes rather than a video lane and one audio track`)
+      if (audioLane.audioHandles !== 2) problems.push(`the added audio track's clip drew ${audioLane.audioHandles} trim handles rather than two`)
+      if (!audioLane.hasBoundary) problems.push('the added audio track\'s clip drew no [+]')
+      if (String(audioLane.audioPanelTitle ?? '') !== 'FADE IN') problems.push(`the added track's [+] panel is headed ${JSON.stringify(audioLane.audioPanelTitle)} rather than FADE IN`)
+      if (!audioLane.fadeDisabled) problems.push('the added track\'s [+] panel offers a fade the encoder does not write')
+      if (!String(audioLane.blockedNote ?? '').includes('NOT WRITTEN')) problems.push(`the added track's [+] panel does not say why the fade is unavailable: ${JSON.stringify(audioLane.blockedNote)}`)
+      if (!audioLane.audioAddSource) problems.push('the added track\'s [+] panel offers no ADD SOURCE')
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

@@ -22,7 +22,7 @@ import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFac
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
-import { addedClipNumbers, clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId } from '../src/lib/clipIds'
+import { addedClipNumbers, clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
@@ -169,10 +169,10 @@ console.log('\n== tail seeking on a multi-track lane ==')
 
 console.log('\n== what a lone sound file is named ==')
 {
-  // One sound file, asked for as video, is a video job: the export carries a picture of its own — the
-  // encoder supplies a black one, the file having no frames to give — so the lane the export writes is
-  // named for that picture. Asked for as sound it keeps its own name. What the lane HOLDS does not
-  // follow the name, because the file is a sound file either way and is drawn as its waveform.
+  // One sound file is a SOUND lane, whatever the export does with it. The lane's name follows what it
+  // HOLDS; naming it VIDEO described the container rather than the clips and read as the sound having
+  // landed on the wrong row. The export still supplies a black picture when the preset writes video, and
+  // the job still answers `jobExportsPicture` truly, so the encoder and the model agree about the FILE.
   const job = (over: Partial<QueueTask> = {}) => ({
     id: 's', type: 'transcode', status: 'pending', progress: 0,
     sourcePaths: ['/track.wav'], outputDirectory: '/out', outputFilename: 'o.mp4',
@@ -183,20 +183,20 @@ console.log('\n== what a lone sound file is named ==')
 
   const asVideo = job()
   const videoLane = buildTimeline(asVideo, timing).lanes[0]
-  check('a sound file asked for video is named VIDEO', videoLane.label, 'VIDEO')
-  check('and its export carries a picture', jobExportsPicture(asVideo), true)
-  check('while the lane still holds a sound', videoLane.kind, 'audio')
+  check('a sound file is named AUDIO 1 even asked for video', videoLane.label, 'AUDIO 1')
+  check('while its export still carries a picture', jobExportsPicture(asVideo), true)
+  check('and the lane still holds a sound', videoLane.kind, 'audio')
 
   const asSound = job({ preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source', outputMode: 'audio' } })
-  check('asked for sound it is named AUDIO 1', buildTimeline(asSound, timing).lanes[0].label, 'AUDIO 1')
+  check('asked for sound it is named AUDIO 1 too', buildTimeline(asSound, timing).lanes[0].label, 'AUDIO 1')
   check('and its export carries no picture', jobExportsPicture(asSound), false)
 
   const stitchOfSounds = job({ type: 'stitch', sourcePaths: ['/a.wav', '/b.wav'] })
-  check('a stitch of sound files asked for video is named VIDEO', buildTimeline(stitchOfSounds, { resolveTiming: () => ({ duration: 5 }) }).lanes[0].label, 'VIDEO')
+  check('a stitch of sound files is named AUDIO 1', buildTimeline(stitchOfSounds, { resolveTiming: () => ({ duration: 5 }) }).lanes[0].label, 'AUDIO 1')
   // A container that cannot hold a picture at all is not a video job however the preset is set, so the
   // lane keeps its own name and nothing is supplied for it to hold.
   const intoWav = job({ preset: { id: 'p', name: 'P', container: 'wav', videoCodec: 'h264', audioCodec: 'pcm', resolution: 'source' } })
-  check('a wav asked for video is still named for its sound', buildTimeline(intoWav, timing).lanes[0].label, 'AUDIO 1')
+  check('a wav asked for video is named for its sound too', buildTimeline(intoWav, timing).lanes[0].label, 'AUDIO 1')
   check('and its export carries no picture', jobExportsPicture(intoWav), false)
   const pictureJob = job({ sourcePaths: ['/clip.mp4'] })
   check('and a picture job is named VIDEO as it always was', buildTimeline(pictureJob, { resolveTiming: () => ({ duration: 10 }) }).lanes[0].label, 'VIDEO')
@@ -367,6 +367,26 @@ console.log('\n== what a copy of one file is called ==')
   // The guard: an index has to name that path in the JOB's own list, or an audio track's lane index would
   // count the copies of whatever file happens to sit at that place in `sourcePaths`.
   check('an index that names another file is no label', copyLabelFor(pair, 0, 'b.mp4'), undefined)
+}
+
+console.log('\n== two tracks of one file are two tracks ==')
+{
+  // An added track has no id to travel in the source list: its own record IS its identity, and the lane row,
+  // the mute and the trim are all keyed by it. Two adds of one file must therefore be two DISTINCT ids — the
+  // clock-and-place a generator can hand out (the same millisecond, the same place) gave both the same one,
+  // and two lanes wearing one key is how a second copy of one file went missing from the timeline.
+  check('two generated track ids differ', newTrackId() === newTrackId(), false)
+  const job = {
+    id: 'm', type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: ['/clip.mp4'], outputDirectory: '/out', outputFilename: 'o.mkv',
+    preset: { id: 'p', name: 'P', container: 'mkv', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    additionalAudioTracks: [{ id: newTrackId(), path: '/t.wav', language: 'und' }, { id: newTrackId(), path: '/t.wav', language: 'und' }],
+  } as unknown as QueueTask
+  const lanes = buildTimeline(job, { resolveTiming: () => ({ duration: 10 }) }).lanes
+  // The visual plus the two tracks, and the two tracks carry DIFFERENT ids so nothing keys them together.
+  check('two copies of one track are two lanes', lanes.length, 3)
+  check('and they are keyed apart', new Set(lanes.map((lane) => lane.id)).size, 3)
+  check('with the numbers counting the tracks', [lanes[1].label, lanes[2].label], ['AUDIO 1', 'AUDIO 2'])
 }
 
 console.log('\n== trimming a clip ==')

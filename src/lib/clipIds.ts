@@ -55,6 +55,17 @@ export const newClipId = (): string =>
 export const newClipIds = (count: number): string[] => Array.from({ length: Math.max(0, count) }, () => newClipId())
 
 /**
+ * An id for an added AUDIO TRACK, opaque and unique like a clip's own.
+ *
+ * A track is not in the source list, so it has no `clipIds` entry to travel in: its own record IS its
+ * identity, and every surface keys a track by it — its lane row, its mute, its trim. An id derived from
+ * the clock and a place could hand two tracks the same one (`Date.now() + '-0'` for two adds in the same
+ * millisecond), and two rows wearing one key is how a second copy of one file came to take the first
+ * one's lane. Opaque and unique, exactly as a clip's id is.
+ */
+export const newTrackId = (): string => `track-${newClipId()}`
+
+/**
  * The key one clip's records are filed under.
  *
  * The id at that place in the SOURCE LIST, when the place really is the source list's — the main lane's

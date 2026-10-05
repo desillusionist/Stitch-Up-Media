@@ -24,6 +24,14 @@ Transitions apply only to STITCH, because only that path concatenates. They are 
 
 The `[+]` affordance sits on each cut in the timeline. Fades are placed by `fade`/`afade` inside the same filter chains the scaling already uses — a second `-vf` would silently replace the first, so they compose rather than append. **CROSSFADE is deliberately absent**: it overlaps clips, which the concat demuxer cannot express, and it shortens the total duration, so it needs the encoder rework and a timeline that accounts for the overlap.
 
+### Audio lanes and the split view
+
+A lane is **named for what it holds**, not for what the export writes: an all-sound job's main lane reads `AUDIO 1` whether the preset supplies a black picture beside the track or not, and an added track reads `AUDIO n`. Its KIND still follows the file, so a sound lane is drawn as a waveform either way.
+
+An added audio track is a lane of its own and gets the same in-timeline controls the video lane's clips do — the trim handles (the encoder already applies a track's trim through `applyTrimInput`) and a `[+]`. Its `[+]` offers **ADD SOURCE**, which inserts into `additionalAudioTracks` at that lane's own place. A FADE on an added track is **not written by the encoder yet**, so the fade items are offered disabled with that reason rather than drawing a ramp the file would not contain.
+
+While a trim handle is down the monitor becomes a **split view**: the clip being trimmed keeps the main pane (its landing frame, moved by the drag) and the clip it is being cut against is drawn in a second pane on the side the handle is on — the previous clip's last frame on the LEFT for an IN handle, the next clip's first on the RIGHT for an OUT. The neighbour pane is a preview aid drawn at its own proportions; the main pane keeps the export's exact framing.
+
 ### Setting trim
 
 **OPEN FRAME-ACCURATE PREVIEW** opens the same native Swift helper the queue uses through the `quick-look` channel, which already provides frame-accurate seeking, in/out handles, frame stepping, undo/redo, screenshot capture, and timestamp or framestamp burn-in readout. Reusing it avoids reimplementing trimming.
