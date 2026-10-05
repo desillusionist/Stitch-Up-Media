@@ -81,7 +81,7 @@ app.whenReady().then(async () => {
   await win.loadFile(htmlPath)
   // The mounts are on timers of their own, so this waits for the page to say it is finished rather
   // than for a fixed figure that would have to be raised whenever the render does more work.
-  const deadline = Date.now() + 75000
+  const deadline = Date.now() + 90000
   let done = false
   while (!done && Date.now() < deadline) {
     done = await win.webContents.executeJavaScript('Boolean(window.__MOUNT_DONE)')
@@ -761,10 +761,11 @@ app.whenReady().then(async () => {
     const splitView = result.splitView
     if (!splitView) problems.push('the split-view drive reported nothing')
     else {
-      if (splitView.splitPanes !== 1) problems.push(`dragging a handle drew ${splitView.splitPanes} neighbour panes rather than one`)
+      if (splitView.splitPanes !== 2) problems.push(`dragging a handle drew ${splitView.splitPanes} panes rather than the two the cut joins`)
       if (splitView.splitSide !== 'left') problems.push(`the IN handle's neighbour pane is on the ${JSON.stringify(splitView.splitSide)} rather than the left`)
-      if (String(splitView.splitLabel ?? '') !== 'PREV LAST') problems.push(`the IN handle's neighbour pane is labelled ${JSON.stringify(splitView.splitLabel)} rather than PREV LAST`)
-      if (!splitView.splitGone) problems.push('the neighbour pane outlived the handle it belongs to')
+      const splitLabels = (splitView.splitLabels || []).map((value) => String(value ?? ''))
+      if (splitLabels[0] !== 'PREV LAST' || splitLabels[1] !== 'THIS CLIP') problems.push(`the IN handle's two panes are labelled ${JSON.stringify(splitLabels)} rather than PREV LAST and THIS CLIP`)
+      if (!splitView.splitGone) problems.push('the two-up view outlived the handle it belongs to')
     }
     // THE AUDIO LANE'S OWN CONTROLS. An added track is a lane of its own and gets the same trim handles the
     // video lane's clips do, and a [+] whose panel offers ADD SOURCE; a fade on it is not written by the
@@ -796,6 +797,30 @@ app.whenReady().then(async () => {
         if (!labels[1].includes('00:00:02')) problems.push(`the queue's QUICK LOOK trim did not reach the second clip: ${JSON.stringify(labels[1])}`)
         if (qlMerge.windowTrim == null || labels[0] !== qlMerge.windowTrim) problems.push(`the queue's push dropped the window's own trim of the first clip: ${JSON.stringify([qlMerge.windowTrim, labels[0]])}`)
       }
+    }
+    // RESET TRIM AND REPLACE SOURCE from the clip's menu.
+    const repairs = result.clipRepairs
+    if (!repairs) problems.push('the clip-repairs drive reported nothing')
+    else {
+      if (repairs.resetDisabled) problems.push('RESET TRIM is out of reach on a clip that HAS a trim')
+      if (!String(repairs.afterReset ?? '').includes('00:00:12')) problems.push(`RESET TRIM left the clip at ${JSON.stringify(repairs.afterReset)} rather than the whole 12s source`)
+      if (String(repairs.afterReset ?? '').includes('TRIMMED')) problems.push(`RESET TRIM left the clip marked TRIMMED: ${JSON.stringify(repairs.afterReset)}`)
+      const ids = (repairs.repairIds || []).map((value) => String(value ?? ''))
+      if (ids.length !== 2) problems.push(`REPLACE SOURCE sent ${ids.length} clip ids rather than two`)
+      else {
+        if (ids[0] !== 'pair-0') problems.push(`REPLACE SOURCE re-id'd the clip it did not replace: ${JSON.stringify(ids)}`)
+        if (ids[1] === 'pair-1') problems.push('REPLACE SOURCE gave the replaced clip no id of its own, so the old clip’s records would follow it')
+      }
+      if (repairs.repairTrims && Object.prototype.hasOwnProperty.call(repairs.repairTrims, 'pair-0')) problems.push(`RESET TRIM left the record behind: ${JSON.stringify(repairs.repairTrims)}`)
+    }
+    // THE TIMELINE KICKER'S UNIT MENU.
+    const stampMenu = result.stampMenu
+    if (!stampMenu) problems.push('the stamp-menu drive reported nothing')
+    else {
+      const items = (stampMenu.stampItems || []).map((value) => String(value ?? ''))
+      if (!(items.includes('TIMESTAMP') && items.includes('FRAMESTAMP'))) problems.push(`the kicker's menu does not offer both units: ${JSON.stringify(items)}`)
+      if (stampMenu.afterStamp === stampMenu.beforeStamp) problems.push(`choosing FRAMESTAMP left the clip's line unchanged: ${JSON.stringify(stampMenu.afterStamp)}`)
+      if (stampMenu.savedMode !== 'framestamp') problems.push(`the chosen unit was not written back as a setting: ${JSON.stringify(stampMenu.savedMode)}`)
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

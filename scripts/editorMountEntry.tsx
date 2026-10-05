@@ -41,6 +41,7 @@ const stillRequests: unknown[] = []
 const noop = async () => undefined
 /** Every patch the window has sent, so the harness can read what a choice turned into. */
 const applied: unknown[] = []
+const savedSettings: unknown[] = []
 const bridge = {
   getSettings: async () => ({
     maxConcurrentTasks: 1, useHardwareAcceleration: false, notifyOnCompletion: false,
@@ -65,7 +66,7 @@ const bridge = {
   createImageSequencePreview: async () => null,
   framesAt: async () => [],
   waveformFor: async () => [],
-  applySourceTiming: noop, syncEditJobTask: noop, cancelEditJob: noop, saveSettings: noop,
+  applySourceTiming: noop, syncEditJobTask: noop, cancelEditJob: noop, saveSettings: async (settings: unknown) => { savedSettings.push(settings) },
   rememberPreview: noop, openEditJob: noop, quickLook: noop, diagnosticLog: noop,
   applyEditJob: async (patch: unknown) => { applied.push(patch) },
   // The picker the [+] panel's ADD SOURCE opens. It answers with the same real clip, so an insert is a second
@@ -195,7 +196,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1489,6 +1490,7 @@ const drive = async () => {
   const inHandle = splitClips()[1]?.querySelector('.clip-trim-handle.is-in') as HTMLElement | null
   let splitSide: string | null = null
   let splitLabel: string | null = null
+  let splitLabels: string[] = []
   let splitPanes = 0
   if (inHandle) {
     const box = inHandle.getBoundingClientRect()
@@ -1497,15 +1499,16 @@ const drive = async () => {
     await wait(60)
     window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: at.clientX + 20, clientY: at.clientY }))
     await wait(80)
-    const pane = document.querySelector('.editor-trim-neighbour') as HTMLElement | null
-    splitPanes = document.querySelectorAll('.editor-trim-neighbour').length
-    splitSide = pane?.classList.contains('is-left') ? 'left' : pane?.classList.contains('is-right') ? 'right' : null
-    splitLabel = pane?.querySelector('.editor-trim-neighbour-label')?.textContent ?? null
+    splitPanes = document.querySelectorAll('.editor-trim-pane').length
+    const paneLabels = [...document.querySelectorAll('.editor-trim-pane-label')].map((node) => node.textContent ?? '')
+    splitSide = paneLabels[0] === 'PREV LAST' ? 'left' : paneLabels[0] === 'NEXT FIRST' ? 'right' : null
+    splitLabel = paneLabels[0] || null
+    splitLabels = paneLabels
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: at.clientX + 20, clientY: at.clientY }))
     await wait(120)
   }
-  const splitGone = document.querySelector('.editor-trim-neighbour') === null
-  result.splitView = { splitSide, splitLabel, splitPanes, splitGone }
+  const splitGone = document.querySelector('.editor-trim-pair') === null
+  result.splitView = { splitSide, splitLabel, splitPanes, splitGone, splitLabels }
 
   // THE AUDIO LANE'S OWN CONTROLS. A multitrack job's added track is a lane of its own: its clip has to offer
   // the same trim handles the video lane's do, and a [+] whose panel offers ADD SOURCE — but a fade on an
@@ -1564,6 +1567,54 @@ const drive = async () => {
   await wait(500)
   const afterPushLabels = mergeClips().map((clip) => clip.querySelector('small')?.textContent ?? null)
   result.quickLookMerge = { windowTrim, afterPushLabels }
+
+  // THE CLIP'S OWN TWO REPAIRS, from its context menu. RESET TRIM takes a clip back to the whole of its
+  // source — the record IS the decision, so it goes rather than being set to a value — and REPLACE SOURCE
+  // puts a different FILE in the clip's place, which is a new clip with an id of its own so none of the old
+  // clip's records follow a file they were never about.
+  flushEdits()
+  await wait(200)
+  arrive(pairTask, 'clip-repairs')
+  await wait(900)
+  const repairClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const beforeRepairs = repairClips().map((clip) => clip.querySelector('small')?.textContent ?? null)
+  repairClips()[0]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const resetItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'RESET TRIM') as HTMLButtonElement | undefined
+  const resetDisabled = Boolean(resetItem?.disabled)
+  resetItem?.click()
+  await wait(200)
+  const afterReset = repairClips()[0]?.querySelector('small')?.textContent ?? null
+  repairClips()[1]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const replaceItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REPLACE SOURCE...') as HTMLButtonElement | undefined
+  replaceItem?.click()
+  await wait(400)
+  const applyRepairs = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyRepairs?.click()
+  await wait(250)
+  const repairPatch = applied[applied.length - 1] as { trimPoints?: Record<string, unknown>; clipIds?: string[] } | undefined
+  result.clipRepairs = { beforeRepairs, resetDisabled, afterReset, repairIds: repairPatch?.clipIds ?? null, repairTrims: repairPatch?.trimPoints ?? null }
+
+  // THE TIMELINE KICKER'S OWN MENU. Which unit the window shows lengths in is a setting rather than a job
+  // field, so this asks the whole chain: the menu offers both, choosing FRAMESTAMP re-stamps the clips, and
+  // the setting is written back through saveSettings rather than only held in the window.
+  flushEdits()
+  await wait(200)
+  arrive(duplicateTask, 'stamp-menu')
+  await wait(900)
+  const clipStamp = () => document.querySelector('.timeline-clip small')?.textContent ?? null
+  const beforeStamp = clipStamp()
+  const kicker = [...document.querySelectorAll('.panel-kicker')].find((node) => (node.textContent || '').startsWith('TIMELINE //')) as HTMLElement | undefined
+  kicker?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 120 }))
+  await wait(150)
+  const stampItems = [...document.querySelectorAll('.timeline-menu button')].map((button) => button.textContent?.trim() ?? '')
+  const frameStampItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'FRAMESTAMP') as HTMLButtonElement | undefined
+  frameStampItem?.click()
+  await wait(250)
+  const afterStamp = clipStamp()
+  const lastSettings = savedSettings[savedSettings.length - 1] as { timestampDisplayMode?: string } | undefined
+  result.stampMenu = { beforeStamp, stampItems, afterStamp, savedMode: lastSettings?.timestampDisplayMode ?? null }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

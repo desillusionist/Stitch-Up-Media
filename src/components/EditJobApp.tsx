@@ -7,7 +7,7 @@ import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
-import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId } from '../lib/clipIds'
+import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId, nextClipNumber } from '../lib/clipIds'
 import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
@@ -196,6 +196,8 @@ const windowDirty = (draft: QueueTask, baseline: QueueTask) => isDirty(draft, ba
 type TimelineMenu =
   | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean; duplicating?: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
+  /** The TIMELINE kicker's own menu: which unit the window shows lengths in. */
+  | { kind: 'stamp'; x: number; y: number }
 
 /**
  * A clip the window has copied: its source and the records that describe it, ready to be placed again.
@@ -276,29 +278,29 @@ const EditorRow: React.FC<{ label: string; value: React.ReactNode; reason?: stri
 )
 
 /**
- * The neighbour's edge frame, drawn beside the clip being trimmed while a handle is down.
+ * One side of the trim's two-up view: the frame a clip shows at a given SOURCE second.
  *
  * A SECOND element, mounted only for the drag: a `<video>` seeked to the edge second for footage, the
  * picture itself for a still, and the generated clip for a sequence — the same target the filmstrip and
- * the monitor already resolve. It is a preview AID rather than the export's own frame, so it is shown at
- * the pane's proportions with the media's own shape kept; the clip being trimmed stays in the main pane,
- * framed exactly as the export will frame it.
+ * the monitor already resolve. Its box is the OUTPUT's own aspect ratio, so each pane is shaped like the
+ * export and the two read side by side; the media is contained in it, so a clip of another shape is
+ * letterboxed rather than stretched.
  */
-const TrimEdgePreview: React.FC<{
-  side: 'left' | 'right'
+const TrimPairPane: React.FC<{
   label: string
   sourcePath: string
   still: boolean
   videoUrl: string | null
   seekTo: number
-}> = ({ side, label, sourcePath, still, videoUrl, seekTo }) => (
-  <div className={`editor-trim-neighbour is-${side}`} aria-hidden="true">
-    <span className="editor-trim-neighbour-label">{label}</span>
+  aspect: string
+}> = ({ label, sourcePath, still, videoUrl, seekTo, aspect }) => (
+  <div className="editor-trim-pane" style={{ aspectRatio: aspect }} aria-hidden="true">
+    <span className="editor-trim-pane-label">{label}</span>
     {still
-      ? <img className="editor-trim-neighbour-media" src={mediaUrl(sourcePath)} alt="" draggable={false} />
+      ? <img className="editor-trim-pane-media" src={mediaUrl(sourcePath)} alt="" draggable={false} />
       : videoUrl
         ? <video
-          className="editor-trim-neighbour-media"
+          className="editor-trim-pane-media"
           src={videoUrl}
           preload="auto"
           muted
@@ -306,7 +308,7 @@ const TrimEdgePreview: React.FC<{
           ref={(element) => { if (element) { try { element.currentTime = seekTo } catch { /* the seek lands on metadata */ } } }}
           onLoadedMetadata={(event) => { try { event.currentTarget.currentTime = seekTo } catch { /* nothing to seek yet */ } }}
         />
-        : <span className="editor-trim-neighbour-none">NO FRAME</span>}
+        : <span className="editor-trim-pane-none">NO FRAME</span>}
   </div>
 )
 
@@ -739,6 +741,20 @@ export const EditJobApp: React.FC = () => {
   useEffect(() => {
     void window.electronAPI?.getSettings().then((loaded) => { if (loaded) setSettings(loaded) })
   }, [])
+
+  /**
+   * The unit the whole window shows lengths in, from the TIMELINE kicker's own menu.
+   *
+   * A setting of the APP rather than of this job — the queue's own Quick Look reads the same figure — so it
+   * is written back through `saveSettings` as well as held here, and every surface that stamps a time (this
+   * window's ruler, its clips, its monitor and its transport) follows at once because they all read it.
+   */
+  const setTimestampMode = (mode: 'timestamp' | 'framestamp') => {
+    if (!settings) return
+    const next = { ...settings, timestampDisplayMode: mode }
+    setSettings(next)
+    void window.electronAPI?.saveSettings(next)
+  }
 
   /**
    * Adopts a job into the window.
@@ -2268,6 +2284,44 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * Takes a clip's trim away, leaving it the whole of its source again.
+   *
+   * The record IS the decision, so there is nothing to reset to but the absence of one: the key is deleted
+   * and the map is left undefined when it becomes empty, exactly as an untouched clip is. Every list, strip
+   * and monitor reads that one record, so the clip is back to its full length everywhere at once.
+   */
+  const resetClipTrim = (key: string) => {
+    const next = { ...(latest().trimPoints || {}) }
+    if (next[key] === undefined) return
+    delete next[key]
+    updateDraft({ trimPoints: Object.keys(next).length ? next : undefined })
+  }
+
+  /**
+   * Puts a DIFFERENT file in a clip's place, which is a new clip rather than a re-trim of the old one.
+   *
+   * The place is kept and the file is replaced, so the join reads the same; the clip is given a NEW id and
+   * the next copy number for the file that arrived, so none of the old clip's trims, fits, crops, speeds or
+   * rates follow a file they were never about. The job-wide fallbacks (records filed against the old PATH)
+   * are left where they are, because those are decisions about a source that may still be elsewhere in the
+   * job — dropping them here would reach into a different clip.
+   */
+  const replaceClipAt = async (index: number | null) => {
+    if (index == null) return
+    const files = await window.electronAPI?.selectFiles()
+    if (!files?.length) return
+    const current = latest()
+    if (index < 0 || index >= current.sourcePaths.length) return
+    const sourcePaths = [...current.sourcePaths]
+    const ids = materializeClipIds(current)
+    const numbers = materializeClipNumbers(current)
+    sourcePaths[index] = files[0]
+    ids[index] = newClipId()
+    numbers[index] = nextClipNumber(current, files[0])
+    updateDraft({ sourcePaths, clipIds: ids, clipNumbers: numbers })
+  }
+
+  /**
    * Opens the clip's REMOVE question for the SELECTED clip, which is what the Delete key asks.
    *
    * The same question the clip's own right-click menu shows, at the clip's own box — one confirmation for
@@ -3701,23 +3755,41 @@ export const EditJobApp: React.FC = () => {
                               onClick={toggleFromClick}
                             />
                             : <span className="editor-screen-message">{screenMessage}</span>}
-                  {/* The SPLIT view: while a trim handle is down, the clip being trimmed keeps the main
-                      pane and the clip it is being cut against is drawn in a second pane on the side the
-                      handle is on — the previous clip's last frame on the LEFT for an IN handle, the next
-                      clip's first frame on the RIGHT for an OUT. The monitor's own live view of where the
-                      cut lands stays behind the other half, so both sides of the join are on screen. */}
+                  {/* The TRIM'S TWO-UP VIEW: while a handle is down the monitor shows the two frames the cut
+                      will join, side by side, each in the OUTPUT's own aspect ratio so both read as the export
+                      will frame them. The clip being trimmed is on the side the handle is NOT, so an IN handle
+                      (cutting the head) has its neighbour — the previous clip's LAST frame — on the left, and an
+                      OUT handle (cutting the tail) has the next clip's FIRST on the right. The main element runs
+                      on behind, moved to the landing frame by the drag itself. */}
                   {trimNeighbour && (() => {
-                    const neighbourSegment = trimNeighbour.segment
-                    const neighbourTarget = pictureSourceFor(neighbourSegment)
-                    const neighbourHasPicture = sourceVideo[neighbourSegment.sourcePath] !== false
-                    return <TrimEdgePreview
-                      side={trimNeighbour.side}
+                    const current = playback.segment
+                    const currentTarget = current ? pictureSourceFor(current) : null
+                    const currentHasPicture = Boolean(current) && sourceVideo[current!.sourcePath] !== false
+                    const neighbour = trimNeighbour.segment
+                    const neighbourTarget = pictureSourceFor(neighbour)
+                    const neighbourHasPicture = sourceVideo[neighbour.sourcePath] !== false
+                    const aspect = outputFrame ? `${outputFrame.width} / ${outputFrame.height}` : '16 / 9'
+                    const neighbourPane = <TrimPairPane
+                      key="neighbour"
                       label={trimNeighbour.side === 'left' ? 'PREV LAST' : 'NEXT FIRST'}
-                      sourcePath={neighbourSegment.sourcePath}
-                      still={Boolean(neighbourSegment.still)}
+                      sourcePath={neighbour.sourcePath}
+                      still={Boolean(neighbour.still)}
                       videoUrl={neighbourHasPicture && neighbourTarget ? mediaUrl(neighbourTarget) : null}
                       seekTo={trimNeighbour.at}
+                      aspect={aspect}
                     />
+                    const currentPane = <TrimPairPane
+                      key="current"
+                      label="THIS CLIP"
+                      sourcePath={current?.sourcePath ?? ''}
+                      still={Boolean(current?.still)}
+                      videoUrl={currentHasPicture && currentTarget ? mediaUrl(currentTarget) : null}
+                      seekTo={current ? sourceTimeAt(playback.position, current) : 0}
+                      aspect={aspect}
+                    />
+                    return <div className="editor-trim-pair">
+                      {trimNeighbour.side === 'left' ? <>{neighbourPane}{currentPane}</> : <>{currentPane}{neighbourPane}</>}
+                    </div>
                   })()}
                 </div>
                 {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}x{outputFrame?.height}</b></div>}
@@ -3991,7 +4063,7 @@ export const EditJobApp: React.FC = () => {
             <div className="editor-note">&gt; THIS JOB MAPS ONE FRAME TO ONE FRAME, SO THERE IS NOTHING TO TIME. CHANGE THE FORMAT IN EXPORT SETTINGS TO TREAT THE IMAGE AS A {Math.round(draft.stillImageDuration || 10)}s CLIP.</div>
           </> : <>
           <div className="timeline-head">
-            <div className="panel-kicker">TIMELINE // {draft.type.toUpperCase()}</div>
+            <div className="panel-kicker" onContextMenu={(event) => { event.preventDefault(); const point = menuPoint(event); setTimelineMenu({ kind: 'stamp', x: point.x, y: point.y }) }} title="Right-click to choose the unit lengths are shown in">TIMELINE // {draft.type.toUpperCase()}</div>
             <div className="timeline-zoom">
               <button onClick={() => setZoom((current) => clampZoom(current / 2))} disabled={zoom <= ZOOM_MIN} aria-label="Make the timeline shorter" title="Magnify out"><ZoomOut size={11} /></button>
               <span className="timeline-zoom-value">{Math.round(zoom * 100) / 100}x</span>
@@ -4882,8 +4954,14 @@ export const EditJobApp: React.FC = () => {
     {/* Fixed rather than positioned inside the timeline, so it is never clipped by the scroll
         area it was opened from. */}
     {timelineMenu && <div className="timeline-menu" ref={menuRef} style={{ left: menuAt.x, top: menuAt.y }} role="menu">
-      <span className="timeline-menu-head">{timelineMenu.label}</span>
-      {timelineMenu.kind === 'clip' ? (timelineMenu.confirming ? <>
+      <span className="timeline-menu-head">{timelineMenu.kind === 'stamp' ? 'TIMELINE UNITS' : timelineMenu.label}</span>
+      {timelineMenu.kind === 'stamp' ? <>
+        {/* The unit the window shows lengths in, which is the app's setting rather than this job's: the
+            ruler, the clip boxes, the monitor's line and the transport all read it, and so does the
+            Quick Look helper. A radio rather than a checkbox, because exactly one of the two is on. */}
+        <button role="menuitemradio" aria-checked={timestampMode === 'timestamp'} className={timestampMode === 'timestamp' ? 'is-on' : ''} onClick={() => { setTimelineMenu(null); setTimestampMode('timestamp') }}>TIMESTAMP</button>
+        <button role="menuitemradio" aria-checked={timestampMode === 'framestamp'} className={timestampMode === 'framestamp' ? 'is-on' : ''} onClick={() => { setTimelineMenu(null); setTimestampMode('framestamp') }}>FRAMESTAMP</button>
+      </> : timelineMenu.kind === 'clip' ? (timelineMenu.confirming ? <>
         {/* The removal is the one thing in here that cannot be taken back by the window, so it asks
             first. A source that is the job's last takes the job with it, and says so outright. */}
         <span className="timeline-menu-head">REMOVE {sourceName(timelineMenu.sourcePath)}?</span>
@@ -4905,6 +4983,13 @@ export const EditJobApp: React.FC = () => {
       </> : <>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); void openNativePreview({ sourcePath: target.sourcePath, sourceIndex: target.mainIndex ?? 0 }) }}>QUICK LOOK...</button>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); selectClip(target.laneId, target.fitKey); setInspectorOpen(true) }}>PROPERTIES</button>
+        {/* The clip's own two repairs. RESET TRIM is offered only where there is a trim to take away — a
+            control that is always there and usually does nothing is a control nobody trusts. REPLACE
+            SOURCE swaps the FILE at this place, and needs a place: an added audio track is not in
+            `sourcePaths`, so it names none and the item is out of reach there. */}
+        <span className="timeline-menu-divider" aria-hidden="true" />
+        <button role="menuitem" disabled={draft.trimPoints?.[timelineMenu.fitKey] === undefined} onClick={() => { const key = timelineMenu.fitKey; setTimelineMenu(null); resetClipTrim(key) }}>RESET TRIM</button>
+        <button role="menuitem" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void replaceClipAt(index) }}>REPLACE SOURCE...</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
           const blocked = timelineMenu.fitReason

@@ -195,17 +195,14 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-frame-window.is-open .editor-still { width: auto; height: auto; max-width: 100%; max-height: 100%; }
 .editor-frame-window .editor-screen-message { position: absolute; inset: 0; display: grid; place-items: center; }
 .editor-frame b { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
-/* The neighbour's edge frame, shown beside the clip being trimmed while a handle is down: half the frame's
-   window, on the side the handle is on, so the two frames the cut will join are read together. Above the
-   black tail so a cut at the end of the picture still shows it. */
-.editor-trim-neighbour { position: absolute; top: 0; bottom: 0; width: 50%; display: flex; align-items: center; justify-content: center; background: rgba(3, 9, 16, .94); z-index: 4; pointer-events: none; }
-.editor-trim-neighbour.is-left { left: 0; border-right: 1px solid var(--ui-accent); }
-.editor-trim-neighbour.is-right { right: 0; border-left: 1px solid var(--ui-accent); }
-.editor-trim-neighbour-media { width: 100%; height: 100%; object-fit: contain; background: #030910; }
-.editor-trim-neighbour-label { position: absolute; top: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
-.editor-trim-neighbour.is-left .editor-trim-neighbour-label { left: 0; }
-.editor-trim-neighbour.is-right .editor-trim-neighbour-label { right: 0; }
-.editor-trim-neighbour-none { color: var(--ui-muted); font-size: 10px; }
+/* The trim's two-up view: the two frames the cut will join, side by side, each paned to the OUTPUT's own
+   aspect ratio so both read as the export will frame it. Above the black tail so a cut at the end of the
+   picture still shows it. */
+.editor-trim-pair { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px; background: rgba(3, 9, 16, .94); pointer-events: none; }
+.editor-trim-pane { position: relative; flex: 0 1 auto; min-width: 0; max-width: 50%; max-height: 100%; display: flex; align-items: center; justify-content: center; background: #030910; border: 1px solid var(--ui-accent); }
+.editor-trim-pane-media { width: 100%; height: 100%; object-fit: contain; }
+.editor-trim-pane-label { position: absolute; top: 0; left: 0; padding: 2px 5px; color: var(--ui-accent); background: rgba(3, 9, 16, .72); font-size: 8px; letter-spacing: .08em; white-space: nowrap; }
+.editor-trim-pane-none { padding: 12px; color: var(--ui-muted); font-size: 10px; }
 /* The crop box, drawn on the picture rather than on the output frame. What it removes is
    dimmed by four explicit bands (see cropBands) rather than one spread shadow, which used
    to shade the output frame outline and the whole stage along with it. */
