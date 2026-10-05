@@ -680,6 +680,7 @@ app.whenReady().then(async () => {
       // writes is the second copy's, shortened from its out edge with its in point held.
       if (!gestures.trimReadout) problems.push('dragging an edge showed no readout')
       if (!(gestures.trimShades > 0)) problems.push('dragging an edge showed no shading of what it would take off')
+      if (!gestures.playheadMoved) problems.push('the monitor did not follow the edge while a trim was dragged')
       const entries = (gestures.trimEntries || [])
       // The job already trims BOTH copies (five and four seconds of the twelve-second source), so the reading
       // is not "one entry" but "the second copy's window changed and the first copy's did not".
@@ -741,6 +742,9 @@ app.whenReady().then(async () => {
       if (duplicateDrive.dupBefore !== 2) problems.push(`the duplicate drive started with ${duplicateDrive.dupBefore} clips rather than two`)
       if (duplicateDrive.dupAfterPaste !== 3) problems.push(`paste left ${duplicateDrive.dupAfterPaste} clips rather than three`)
       if (!duplicateDrive.hasEndOption) problems.push('the DUPLICATE question offers no AT THE END')
+      if (duplicateDrive.duplicateHead !== 'DUPLICATE') problems.push(`the DUPLICATE heading names more than the command: ${JSON.stringify(duplicateDrive.duplicateHead)}`)
+      const subAnswers = (duplicateDrive.subAnswers || []).map((value) => String(value ?? ''))
+      if (!(subAnswers.includes('PLACE AFTER') && subAnswers.includes('AT THE END') && subAnswers.includes('CANCEL'))) problems.push(`the DUPLICATE answers are not the indented set: ${JSON.stringify(subAnswers)}`)
       if (duplicateDrive.dupAfterMenu !== 4) problems.push(`DUPLICATE PLACE AFTER left ${duplicateDrive.dupAfterMenu} clips rather than four`)
       checkCopyNumbers(duplicateDrive.dupLabels, 'the duplicated copies')
     }

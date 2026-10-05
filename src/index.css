@@ -148,7 +148,6 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .edit-job-shell { height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: var(--ui-canvas); color: var(--ui-foreground); font-family: var(--ui-font-mono); }
 .editor-header { height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid var(--ui-border); background: var(--ui-panel-inset); }
 .editor-header h1 { margin: 5px 0 0; font-size: 15px; overflow-wrap: anywhere; }
-.job-mark { color: var(--ui-accent); border: 1px solid var(--ui-accent); padding: 8px 10px; font-size: 10px; }
 .editor-body { display: grid; grid-template-columns: minmax(0, 1fr) 330px; flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .editor-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 14px; gap: 14px; overflow: hidden; }
 .editor-preview, .timeline-panel, .export-sidebar { border: 1px solid var(--ui-border); background: var(--ui-panel); }
@@ -600,6 +599,9 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-menu button.is-on { color: var(--ui-accent); }
 .timeline-menu button:disabled { opacity: .45; cursor: not-allowed; }
 .timeline-menu button:disabled:hover { color: var(--ui-muted); background: transparent; }
+/* The answers under a sub-question of the menu (DUPLICATE's own two places), indented so they read as belonging
+   to the heading above them rather than as further top-level commands. */
+.timeline-menu button.is-sub { padding-left: 22px; }
 /* The removal's own question, asked inside the menu it was opened from. */
 .timeline-menu-note { margin: 0; padding: 4px 8px 8px; color: var(--ui-muted); font-size: 9px; line-height: 1.5; }
 .timeline-menu-actions { display: flex; gap: 4px; }

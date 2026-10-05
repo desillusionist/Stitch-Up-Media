@@ -2255,8 +2255,11 @@ export const EditJobApp: React.FC = () => {
    *
    * The pointer's travel on the TIMELINE is a run of source once it is multiplied by the clip's retime, and
    * the window is worked out from where the drag STARTED rather than step by step, so it cannot drift as the
-   * clip reflows under it. Nothing is written until the release: the timeline is a gapless concatenation, so
-   * a live write would move the very clip the pointer is trimming, and the drag is one step back either way.
+   * clip reflows under it. The WINDOW is not written until the release — the timeline is a gapless
+   * concatenation, so a live write would move the very clip the pointer is trimming, and the drag is one step
+   * back either way — but the MONITOR follows the edge being dragged: the source second the cut will land on is
+   * turned back into a timeline second by that same retime and the playhead is put there, so the frame the cut
+   * lands on is what is on screen while the handle is down.
    */
   const beginTrimDrag = (event: React.PointerEvent, segment: TimelineSegment, edge: 'in' | 'out') => {
     event.preventDefault()
@@ -2268,6 +2271,12 @@ export const EditJobApp: React.FC = () => {
     const startX = event.clientX
     const from = trimWindowOf(segment.sourceIn, segment.sourceUsedSeconds)
     const key = segment.key
+    /** Where on the TIMELINE the dragged edge's source second sits, within the clip as it stands now. */
+    const edgePosition = (window: TrimWindow) => {
+      const source = edge === 'in' ? window.in : window.out
+      const raw = segment.start + (source - segment.sourceIn) / Math.max(1e-6, retime)
+      return Math.max(segment.start, Math.min(segment.start + segment.duration - 1e-3, raw))
+    }
     trimPreviewRef.current = from
     setTrimDragKey(key)
     setTrimPreview(from)
@@ -2275,6 +2284,7 @@ export const EditJobApp: React.FC = () => {
       const proposed = dragTrimWindow(from, edge, ((moveEvent.clientX - startX) / pxPerSecond) * retime, full, min)
       trimPreviewRef.current = proposed
       setTrimPreview(proposed)
+      playback.seek(edgePosition(proposed))
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
@@ -3487,8 +3497,9 @@ export const EditJobApp: React.FC = () => {
 
   return <div className="edit-job-shell">
     <header className="editor-header">
-      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB</span><h1>{sourceName(focusedSource)}</h1></div>
-      <span className="job-mark">{draft.type === 'stitch' ? 'STITCH UP' : draft.type === 'multitrack' ? 'MULTI-TRACK' : draft.type === 'combo' ? 'COMBO' : 'CONVERT'}</span>
+      {/* The job's own mode is part of the title now, after a second ` // `, rather than a boxed tag at the far
+          end of the bar: the heading already names the window, and the mode belongs with it. */}
+      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB // {draft.type === 'stitch' ? 'STITCH UP' : draft.type === 'multitrack' ? 'MULTI-TRACK' : draft.type === 'combo' ? 'COMBO' : 'CONVERT'}</span><h1>{sourceName(focusedSource)}</h1></div>
     </header>
 
     {incomingConflict && <div className="editor-conflict" role="alert">
@@ -4766,11 +4777,13 @@ export const EditJobApp: React.FC = () => {
         <span className="timeline-menu-divider" aria-hidden="true" />
         {timelineMenu.duplicating ? <>
           {/* The copy's own two places, asked as a sub-question of DUPLICATE rather than as two top-level
-              commands: right after the clip, or at the end of the join. */}
-          <span className="timeline-menu-head">DUPLICATE {sourceName(timelineMenu.sourcePath)}</span>
-          <button role="menuitem" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); if (index != null) duplicateClipTo(index, 'after') }}>PLACE AFTER</button>
-          <button role="menuitem" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); if (index != null) duplicateClipTo(index, 'end') }}>AT THE END</button>
-          <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, duplicating: false })}>CANCEL</button>
+              commands: right after the clip, or at the end of the join. The heading names the command only —
+              the menu was opened on the clip, so repeating its filename says what is already known — and the
+              answers are INDENTED under it, so the group reads as one question with its own answers. */}
+          <span className="timeline-menu-head">DUPLICATE</span>
+          <button role="menuitem" className="is-sub" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); if (index != null) duplicateClipTo(index, 'after') }}>PLACE AFTER</button>
+          <button role="menuitem" className="is-sub" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); if (index != null) duplicateClipTo(index, 'end') }}>AT THE END</button>
+          <button role="menuitem" className="is-sub" onClick={() => setTimelineMenu({ ...timelineMenu, duplicating: false })}>CANCEL</button>
         </> : <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, duplicating: true })}>DUPLICATE...</button>}
         <span className="timeline-menu-divider" aria-hidden="true" />
         <button role="menuitem" className="is-danger" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: true })}>REMOVE SOURCE</button>

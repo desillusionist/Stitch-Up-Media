@@ -1310,15 +1310,21 @@ const drive = async () => {
   const handleBox = outHandle?.getBoundingClientRect()
   let trimReadout: string | null = null
   let trimShades = 0
+  let playheadMoved = false
   if (outHandle && handleBox) {
     const x = handleBox.left + handleBox.width / 2
     const y = handleBox.top + handleBox.height / 2
+    const playheadLeft = () => (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
+    const beforePlayhead = playheadLeft()
     outHandle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
     await wait(60)
     window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x - 40, clientY: y }))
     await wait(60)
     trimReadout = (document.querySelector('.clip-trim-readout') as HTMLElement | null)?.textContent ?? null
     trimShades = document.querySelectorAll('.clip-trim-shade').length
+    // The MONITOR follows the dragged edge: the playhead is put where the cut will land, which is what the
+    // monitor draws, so the skimmer's own position is the reading that says the live view is on.
+    playheadMoved = playheadLeft() !== beforePlayhead
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x - 40, clientY: y }))
     await wait(150)
   }
@@ -1347,6 +1353,7 @@ const drive = async () => {
     beforeOrder,
     trimReadout,
     trimShades,
+    playheadMoved,
     afterTrim,
     trimEntries,
     afterOrder,
@@ -1442,12 +1449,15 @@ const drive = async () => {
   await wait(150)
   const menuButtons = [...document.querySelectorAll('.timeline-menu button')].map((button) => button.textContent?.trim() ?? '')
   const hasEndOption = menuButtons.includes('AT THE END')
+  const duplicateHead = [...document.querySelectorAll('.timeline-menu-head')].map((node) => node.textContent ?? '').find((text) => text.startsWith('DUPLICATE')) ?? null
+  // The sub-question's own answers are the INDENTED ones, and the heading names the command only.
+  const subAnswers = [...document.querySelectorAll('.timeline-menu button.is-sub')].map((button) => button.textContent?.trim() ?? '')
   const placeAfter = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'PLACE AFTER') as HTMLButtonElement | undefined
   placeAfter?.click()
   await wait(300)
   const dupAfterMenu = dupClips().length
   const dupLabels = dupClips().map((clip) => clip.querySelector('.timeline-clip-name')?.textContent ?? null)
-  result.timelineDuplicate = { dupBefore, dupAfterPaste, dupAfterMenu, hasEndOption, dupLabels }
+  result.timelineDuplicate = { dupBefore, dupAfterPaste, dupAfterMenu, hasEndOption, duplicateHead, subAnswers, dupLabels }
 
   // THE COPY NUMBERS WHEN THE QUEUE PUSHES A SHORTER LIST BACK. A third copy is added in the window, then the
   // two-source task is pushed to it again — the case that dropped the window's numbers and left the third copy
