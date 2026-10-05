@@ -196,7 +196,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1615,6 +1615,22 @@ const drive = async () => {
   const afterStamp = clipStamp()
   const lastSettings = savedSettings[savedSettings.length - 1] as { timestampDisplayMode?: string } | undefined
   result.stampMenu = { beforeStamp, stampItems, afterStamp, savedMode: lastSettings?.timestampDisplayMode ?? null }
+
+  // THE EMPTY AUDIO LANE. A CONVERT of one video has no sound to carry and still shows a lane to add it on,
+  // with a [+] in its first frame that offers ADD SOURCE and nothing else — there is no clip to fade.
+  flushEdits()
+  await wait(200)
+  arrive(task, 'empty-lane')
+  await wait(900)
+  const emptyLanes = [...document.querySelectorAll('.timeline-lane')] as HTMLElement[]
+  const emptyLaneBody = emptyLanes[1]
+  const emptyMark = emptyLaneBody?.querySelector('.boundary-add.is-lane-empty') as HTMLElement | null
+  const emptyHasClip = Boolean(emptyLaneBody?.querySelector('.timeline-clip'))
+  emptyMark?.click()
+  await wait(200)
+  const emptyPanelTitle = (document.querySelector('.boundary-editor .boundary-title') as HTMLElement | null)?.textContent ?? null
+  const emptyButtons = [...document.querySelectorAll('.boundary-editor button')].map((button) => button.textContent?.trim() ?? '')
+  result.emptyLane = { laneCount: emptyLanes.length, hasClip: emptyHasClip, hasMark: Boolean(emptyMark), panelTitle: emptyPanelTitle, buttons: emptyButtons }
 
   // THE MODE FOLLOWS THE LIST. A CONVERT is one source; duplicating that source makes the job a STITCH, and
   // the window has to say so BEFORE APPLY rather than leaving a stale heading over a list that changed. The

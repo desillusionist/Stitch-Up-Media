@@ -227,6 +227,17 @@ export const trimFor = (task: QueueTask, sourcePath: string | undefined, index: 
 export const MAIN_LANE_ID = 'main'
 
 /**
+ * The empty AUDIO lane every job carries, so there is somewhere to add a source in any mode.
+ *
+ * A job with no audio — a CONVERT of one video, a STITCH of two — still gets a lane to drop sound on,
+ * because the alternative was that the only way to add a track was to reopen the job from the queue. It
+ * holds no clip, so it lengthens nothing and the export ignores it; it is the [+] at its head that matters.
+ * A job whose MAIN lane is already a sound lane needs no second one, and a job with real tracks has their
+ * own lanes instead.
+ */
+export const EMPTY_AUDIO_LANE_ID = '__audio__'
+
+/**
  * Whether the export carries a lane's audio.
  *
  * The M toggle in the editor and the encoder's own mapping both ask this, so a lane cannot be muted
@@ -736,6 +747,8 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
     // export may still supply a black picture beside the track (see `jobExportsPicture`), and the lane's
     // KIND still follows the file, so what is drawn stays the waveform it is.
     lanes.push({ id: MAIN_LANE_ID, label: audioOnly ? 'AUDIO 1' : 'VIDEO', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: cursor })
+    // A job whose clips are pictures still gets a lane to add sound to — see `EMPTY_AUDIO_LANE_ID`.
+    if (!audioOnly) lanes.push({ id: EMPTY_AUDIO_LANE_ID, label: 'AUDIO 1', kind: 'audio', embedded: false, segments: [], duration: 0 })
     return { lanes, duration: cursor, unusedVideoSources: [] }
   }
 
@@ -789,6 +802,13 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
       duration: segment.duration,
     })
   })
+
+  // A lane with nothing to land yet, so there is somewhere to add sound in every mode — see
+  // `EMPTY_AUDIO_LANE_ID`. A job whose main lane is ALREADY a sound lane reads AUDIO 1 there, so a second
+  // empty one would be the same lane said twice; a job with real tracks has their lanes already.
+  if (!tracks.length && !mainIsAudio) {
+    lanes.push({ id: EMPTY_AUDIO_LANE_ID, label: 'AUDIO 1', kind: 'audio', embedded: false, segments: [], duration: 0 })
+  }
 
   const duration = lanes.reduce((longest, lane) => Math.max(longest, lane.duration), 0)
   return { lanes, duration, unusedVideoSources: concatenatesVisuals ? [] : task.sourcePaths.slice(1) }

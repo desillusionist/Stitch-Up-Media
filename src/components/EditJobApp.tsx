@@ -18,7 +18,7 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { pixelDepthLabel, proresDepthLabel } from '../lib/pixelDepth'
@@ -2743,6 +2743,9 @@ export const EditJobApp: React.FC = () => {
   const selectedBoundary = (() => {
     if (openBoundary == null || !boundaryLane) return null
     const segments = boundaryLane.segments
+    // A lane with nothing on it yet: the [+] offers only ADD SOURCE, which is the whole of what there is
+    // to decide about an empty lane.
+    if (!segments.length) return { kind: 'empty' as const }
     // An edge belongs to the lane rather than to a clip, so it is cut from or to black with
     // only the one clip to fit into: the whole clip, less whatever a boundary at the other end
     // of the same clip is already using. The MAIN lane's edges are the timeline's own; an added
@@ -4283,6 +4286,17 @@ export const EditJobApp: React.FC = () => {
                       </div>
                       )
                     })}
+                    {lane.id === EMPTY_AUDIO_LANE_ID && (
+                      // An empty lane's own [+], in its very first frame: the only way to put sound on a job
+                      // that has none, without reopening it from the queue. It offers ADD SOURCE and nothing
+                      // else — there is no clip to fade and no cut to join.
+                      <button
+                        className={`boundary-add is-lane-empty${openBoundary?.laneId === lane.id ? ' is-open' : ''}`}
+                        onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id ? null : { laneId: lane.id, at: 'head' }) }}
+                        aria-label={`Add a source to ${lane.label}`}
+                        title={`Add a source to ${lane.label}`}
+                      />
+                    )}
                     {laneGap(lane) > 0 && <div className="timeline-fill" style={{ width: `${laneWidthFor(laneGap(lane), zoom)}px` }} title="No media on this lane" />}
                   </div>
                 </div>
@@ -4291,7 +4305,17 @@ export const EditJobApp: React.FC = () => {
               </div>
             </div>
           </div>
-          {selectedBoundary && (() => {
+          {selectedBoundary && selectedBoundary.kind === 'empty' && boundaryLane && (
+            // An EMPTY lane's panel: one decision, and it is where the source goes rather than what the lane
+            // is. A source added here becomes a TRACK, which is what an audio lane holds.
+            <div className="boundary-editor">
+              <span className="boundary-title">{boundaryLane.label} // EMPTY</span>
+              <span className="boundary-divider" aria-hidden="true" />
+              <button className="boundary-source" onClick={() => { setOpenBoundary(null); void insertTrackSources(0) }} title="Add a source to this lane">ADD SOURCE</button>
+              <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close the add-source panel">x</button>
+            </div>
+          )}
+          {selectedBoundary && selectedBoundary.kind !== 'empty' && (() => {
             const set = (type: TransitionType, duration?: number) => {
               if (selectedBoundary.kind === 'cut') { setBoundaryTransition(selectedBoundary.index, type, duration); return }
               // An edge on the MAIN lane is the timeline's own; on an added track it is that clip's, keyed so

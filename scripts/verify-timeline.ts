@@ -21,7 +21,7 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, trimFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
@@ -279,6 +279,29 @@ console.log('\n== a fade on an added track ==')
   // reduced rather than written past its end.
   const tooLong = { ...task, transitions: { [trackEdgeFadeKey(trackKey, 'head')]: { type: 'fade', duration: 40 } } } as unknown as QueueTask
   near('and a fade longer than the track is clamped to it', buildTimeline(tooLong, { resolveTiming: () => ({ duration: 6 }) }).lanes.find((lane) => lane.id === 'trk')?.segments[0].fadeIn ?? -1, 6)
+}
+
+console.log('\n== the empty audio lane ==')
+{
+  // Every job mode carries a lane with nothing to land yet, so a source can be added from the timeline
+  // rather than only by reopening the job. It lengthens nothing and holds no clip; it is the [+] at its head
+  // that matters. A job whose main lane is ALREADY a sound lane needs no second one, and a job with real
+  // tracks has their own lanes instead.
+  const preset = { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' }
+  const videoJob = {
+    id: 'e', type: 'transcode', status: 'pending', progress: 0,
+    sourcePaths: ['/v.mp4'], outputDirectory: '/o', outputFilename: 'o.mp4', preset,
+  } as unknown as QueueTask
+  const videoLanes = buildTimeline(videoJob, { resolveTiming: () => ({ duration: 10 }) }).lanes
+  check('a job with no audio still carries a lane to add some on', videoLanes.map((lane) => lane.id), ['main', EMPTY_AUDIO_LANE_ID])
+  check('and that lane is empty, silent and named', [videoLanes[1].segments.length, videoLanes[1].duration, videoLanes[1].label], [0, 0, 'AUDIO 1'])
+  check('so it does not lengthen the timeline', buildTimeline(videoJob, { resolveTiming: () => ({ duration: 10 }) }).duration, 10)
+  const soundJob = { ...videoJob, sourcePaths: ['/t.wav'] } as unknown as QueueTask
+  check('while a sound job needs no second sound lane', buildTimeline(soundJob, { resolveTiming: () => ({ duration: 5 }) }).lanes.map((lane) => lane.id), ['main'])
+  const trackJob = { ...videoJob, type: 'multitrack', additionalAudioTracks: [{ id: 't', path: '/a.wav', language: 'und' }] } as unknown as QueueTask
+  check('and a job with a real track has its own lanes instead', buildTimeline(trackJob, { resolveTiming: () => ({ duration: 5 }) }).lanes.map((lane) => lane.id), ['main', 't'])
+  const stitchOfVideo = { ...videoJob, type: 'stitch', sourcePaths: ['/a.mp4', '/b.mp4'] } as unknown as QueueTask
+  check('a stitch of pictures gets one too', buildTimeline(stitchOfVideo, { resolveTiming: () => ({ duration: 4 }) }).lanes.map((lane) => lane.id), ['main', EMPTY_AUDIO_LANE_ID])
 }
 
 console.log('\n== a combo exposes cuts too ==')

@@ -830,6 +830,18 @@ app.whenReady().then(async () => {
       if (modeChange.clips !== 2) problems.push(`duplicating the source left ${modeChange.clips} clips rather than two`)
       if (modeChange.afterMode !== 'STITCH') problems.push(`duplicating a CONVERT's source did not make the window a STITCH: ${JSON.stringify(modeChange.afterMode)}`)
     }
+    // THE EMPTY AUDIO LANE: somewhere to add sound in any mode, with a [+] offering ADD SOURCE alone.
+    const emptyLane = result.emptyLane
+    if (!emptyLane) problems.push('the empty-lane drive reported nothing')
+    else {
+      if (emptyLane.laneCount !== 2) problems.push(`a CONVERT with no audio drew ${emptyLane.laneCount} lanes rather than a video lane and an empty AUDIO lane`)
+      if (emptyLane.hasClip) problems.push('the empty AUDIO lane drew a clip')
+      if (!emptyLane.hasMark) problems.push('the empty AUDIO lane drew no [+]')
+      if (!String(emptyLane.panelTitle ?? '').includes('EMPTY')) problems.push(`the empty lane's [+] panel is headed ${JSON.stringify(emptyLane.panelTitle)} rather than naming the empty lane`)
+      const emptyButtons = (emptyLane.buttons || []).map((value) => String(value ?? ''))
+      if (!emptyButtons.includes('ADD SOURCE')) problems.push(`the empty lane's [+] panel offers no ADD SOURCE: ${JSON.stringify(emptyButtons)}`)
+      if (emptyButtons.includes('FADE')) problems.push(`the empty lane's [+] panel offers a FADE with no clip to fade: ${JSON.stringify(emptyButtons)}`)
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))
