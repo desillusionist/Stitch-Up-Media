@@ -195,7 +195,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1527,6 +1527,34 @@ const drive = async () => {
   const blockedNote = (document.querySelector('.boundary-editor .boundary-clamped') as HTMLElement | null)?.textContent ?? null
   const audioAddSource = [...document.querySelectorAll('.boundary-editor .boundary-source')].some((button) => button.textContent?.trim() === 'ADD SOURCE')
   result.audioLane = { laneCount: laneBodies.length, audioHandles, hasBoundary: Boolean(audioBoundary), audioPanelTitle, fadeDisabled, blockedNote, audioAddSource }
+
+  // A TRIM THE QUEUE MADE, LANDING ON A WINDOW THAT IS DIRTY. The QUICK LOOK helper's in/out points come back
+  // through the queue, and the window is usually dirty when they do — the timeline was probably just trimmed.
+  // The trims are merged three ways, so the helper's edit reaches its clip AND the window's own trim of
+  // another clip survives, rather than either side being dropped.
+  flushEdits()
+  await wait(200)
+  arrive(duplicateTask, 'quicklook-merge')
+  await wait(900)
+  const mergeClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const mergeOut = mergeClips()[0]?.querySelector('.clip-trim-handle.is-out') as HTMLElement | null
+  if (mergeOut) {
+    const box = mergeOut.getBoundingClientRect()
+    const at = { clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }
+    mergeOut.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, ...at }))
+    await wait(60)
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: at.clientX - 40, clientY: at.clientY }))
+    await wait(60)
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: at.clientX - 40, clientY: at.clientY }))
+    await wait(150)
+  }
+  const windowTrim = mergeClips()[0]?.querySelector('small')?.textContent ?? null
+  // The queue files the helper's points against the SECOND clip and pushes the job back.
+  const pushedTrim = { ...duplicateTask, trimPoints: { [`${CLIP_FIXTURE}#0`]: { in: 0, out: 5 }, [`${CLIP_FIXTURE}#1`]: { in: 6, out: 8 } } }
+  arrive(pushedTrim, 'quicklook-merge-push')
+  await wait(500)
+  const afterPushLabels = mergeClips().map((clip) => clip.querySelector('small')?.textContent ?? null)
+  result.quickLookMerge = { windowTrim, afterPushLabels }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

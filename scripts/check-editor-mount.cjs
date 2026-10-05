@@ -780,6 +780,18 @@ app.whenReady().then(async () => {
       if (!String(audioLane.blockedNote ?? '').includes('NOT WRITTEN')) problems.push(`the added track's [+] panel does not say why the fade is unavailable: ${JSON.stringify(audioLane.blockedNote)}`)
       if (!audioLane.audioAddSource) problems.push('the added track\'s [+] panel offers no ADD SOURCE')
     }
+    // A QUICK LOOK TRIM FROM THE QUEUE LANDS ON A DIRTY WINDOW. The helper's points reach their clip and the
+    // window's own trim of another clip survives — the case the trims-in-`editableSlice` change broke.
+    const qlMerge = result.quickLookMerge
+    if (!qlMerge) problems.push('the quick-look merge drive reported nothing')
+    else {
+      const labels = (qlMerge.afterPushLabels || []).map((value) => String(value ?? ''))
+      if (labels.length !== 2) problems.push(`the merge drive drew ${labels.length} clips rather than two`)
+      else {
+        if (!labels[1].includes('00:00:02')) problems.push(`the queue's QUICK LOOK trim did not reach the second clip: ${JSON.stringify(labels[1])}`)
+        if (qlMerge.windowTrim == null || labels[0] !== qlMerge.windowTrim) problems.push(`the queue's push dropped the window's own trim of the first clip: ${JSON.stringify([qlMerge.windowTrim, labels[0]])}`)
+      }
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))

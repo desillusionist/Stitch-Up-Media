@@ -21,8 +21,12 @@
 /** The rate a lane is drawn at, in pixels per second of output, at 1x. */
 export const BASE_PX_PER_SECOND = 24
 
-/** The range the zoom may take. Below 1 because a long job has to be reachable, however long. */
-export const ZOOM_MIN = 0.05
+/**
+ * The range the manual zoom may take. Below 1 because a long job has to be reachable, however long —
+ * a quarter of an hour of output is still a timeline a reader scrolls, and the FIT below is not held
+ * to this floor at all, so the floor is only how far the BUTTONS go.
+ */
+export const ZOOM_MIN = 0.01
 export const ZOOM_MAX = 32
 
 /** Pixels of lane per second of output. The zoom decides it, and nothing else does. */
@@ -57,12 +61,17 @@ export const FIT_TRAILING_MARKER = 9
  *
  * Taken from the viewport only when it is asked for — pressing FIT — which is what keeps a fit
  * decision from being remade by every resize.
+ *
+ * The fit is capped at ZOOM_MAX and NOT floored at ZOOM_MIN. A fit held up to ZOOM_MIN could not fit a
+ * job longer than the floor allows — sixteen minutes needed 0.039x in a 900-pixel panel and stopped at
+ * 0.05, so the whole output was permanently out of reach, which is the opposite of what a fit is for.
+ * This is the same rule the QUICK LOOK strip's fit follows in `electron/quicklook-scale.swift`.
  */
 export const fitZoom = (seconds: number, availableWidth: number): number => {
   const span = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
   const available = Number.isFinite(availableWidth) ? availableWidth - FIT_TRAILING_MARKER : 0
   if (span <= 0 || available <= 0) return 1
-  return clampZoom(available / (span * BASE_PX_PER_SECOND))
+  return Math.min(ZOOM_MAX, available / (span * BASE_PX_PER_SECOND))
 }
 
 /**

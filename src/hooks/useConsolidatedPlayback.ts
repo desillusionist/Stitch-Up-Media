@@ -3,7 +3,7 @@ import { TimelineModel, TimelineSegment } from '../lib/timelineModel'
 import { nextShuttleRate, nextForwardRung } from '../lib/shuttleRates'
 import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
 import { DEFAULT_PREVIEW_SPEED, MAX_PLAYBACK_RATE, PreviewSpeed, clampPreviewSpeed, playbackRateFor, preservesPitchFor } from '../lib/previewSpeed'
-import { sourceTimeAt, timelineTimeAt } from '../lib/clipSpeed'
+import { slavedAudioAt, sourceTimeAt, timelineTimeAt } from '../lib/clipSpeed'
 import { scrubRateFor } from '../lib/scrubAudio'
 
 /** How far a slaved element may drift before it is corrected, in seconds. */
@@ -213,7 +213,15 @@ export const useConsolidatedPlayback = (
       // The track's own speed maps the timeline offset onto the source: a clip retimed to 2x is two
       // source seconds in for every one the playhead has crossed, which is the same mapping the
       // picture element is given and the same one the encoder writes — see `sourceTimeAt`.
-      const desired = sourceTimeAt(seconds, laneSegment)
+      const { at: desired, past } = slavedAudioAt(seconds, laneSegment)
+      // PAST THE LANE'S OWN END there is nothing left to play. Assigning `currentTime` at the clip's out
+      // point every frame is what re-seeks a finished element to its own last instant sixty times a
+      // second — heard as the final syllable cycling while the picture runs on — so the track is parked
+      // and paused instead, and `force` (a seek or a scrub) does not override that.
+      if (past) {
+        if (!element.paused) element.pause()
+        return
+      }
       if (force || Math.abs(element.currentTime - desired) > DRIFT_TOLERANCE) element.currentTime = desired
     })
   }, [audioElements])

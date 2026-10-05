@@ -131,6 +131,36 @@ const sliceSignature = (task: QueueTask) => JSON.stringify(editableSlice(task))
 const isDirty = (draft: QueueTask, baseline: QueueTask) => sliceSignature(draft) !== sliceSignature(baseline)
 
 /**
+ * A three-way merge of the clip trims, so a trim the QUEUE made lands even on a window with unsaved edits.
+ *
+ * The trims sit in `editableSlice` — a lane trim is a change like any other — which also made the window's
+ * own trims win over any incoming list. That is how a QUICK LOOK edit made IN this window stopped reaching
+ * the timeline: the helper reported its in/out points, the queue filed them, and the push arrived while the
+ * window was dirty (it usually is, if the timeline was just trimmed) where the window's own trims were kept
+ * and the helper's were dropped. The baseline is the common ancestor, so each key can be told apart: one the
+ * queue touched takes the queue's value, one only the window touched keeps the window's, and one BOTH
+ * touched takes the queue's, the helper being the newer gesture. The window's own trims for other clips
+ * survive, which is why this is a merge rather than a replacement in either direction.
+ */
+const mergeTrims = (
+  baseline: QueueTask['trimPoints'],
+  windowTrims: QueueTask['trimPoints'],
+  incoming: QueueTask['trimPoints'],
+): QueueTask['trimPoints'] => {
+  const base = baseline ?? {}
+  const draft = windowTrims ?? {}
+  const theirs = incoming ?? {}
+  const merged: NonNullable<QueueTask['trimPoints']> = {}
+  const keys = new Set([...Object.keys(base), ...Object.keys(draft), ...Object.keys(theirs)])
+  keys.forEach((key) => {
+    const changedByQueue = JSON.stringify(theirs[key] ?? null) !== JSON.stringify(base[key] ?? null)
+    const chosen = changedByQueue ? theirs[key] : draft[key]
+    if (chosen !== undefined) merged[key] = chosen
+  })
+  return Object.keys(merged).length ? merged : undefined
+}
+
+/**
  * Whether the window itself has taken a source out of the job, or a track with it.
  *
  * The source list is the queue's, and the window adopts the queue's version of it — with every clip's
@@ -751,7 +781,10 @@ export const EditJobApp: React.FC = () => {
           ...incoming,
           ...(clipsMoved && !mine
             ? { ...kept, transitions: incoming.transitions, sourceFit: incoming.sourceFit, sourceCrop: incoming.sourceCrop, sourceSpeed: incoming.sourceSpeed, sourceFps: incoming.sourceFps, trimPoints: incoming.trimPoints, clipIds: incoming.clipIds, clipNumbers: incoming.clipNumbers }
-            : kept),
+            // The window keeps its own edits, but the TRIMS are merged rather than taken whole: a QUICK LOOK
+            // edit made in this window comes back from the queue and has to land on the clip even though
+            // the window is dirty — see `mergeTrims`.
+            : { ...kept, trimPoints: mergeTrims(currentBaseline.trimPoints, currentDraft.trimPoints, incoming.trimPoints) }),
           ...(mine
             ? { sourcePaths: currentDraft.sourcePaths, additionalAudioTracks: currentDraft.additionalAudioTracks, trimPoints: currentDraft.trimPoints, clipIds: currentDraft.clipIds, clipNumbers: currentDraft.clipNumbers, type: currentDraft.type }
             : {}),
@@ -3984,7 +4017,9 @@ export const EditJobApp: React.FC = () => {
                   // re-deciding what the zoom should be.
                   const scroller = timelineScrollRef.current
                   if (!scroller) return
-                  setZoom(clampZoom(fitZoom(duration, scroller.clientWidth)))
+                  // NOT clamped: the fit is allowed below the buttons' own floor, so a job longer than the
+                  // floor can still be taken in at a glance.
+                  setZoom(fitZoom(duration, scroller.clientWidth))
                 }}
                 disabled={duration <= 0}
                 title="Fit the whole timeline into the panel"

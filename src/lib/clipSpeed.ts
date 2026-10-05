@@ -196,3 +196,19 @@ export const timelineTimeAt = (sourceSeconds: number, clip: ClipSpan): number =>
   const rate = clip.speed > 0 ? clip.speed : 1
   return clip.start + Math.max(0, sourceSeconds - clip.sourceIn) / rate
 }
+
+/**
+ * Where a SLAVED track is parked at a consolidated timeline second, and whether the playhead has left it.
+ *
+ * An added audio lane plays alongside a picture that may be longer or shorter than it. Past the end of
+ * the lane's own clip there is nothing left to play, and a driver that keeps assigning `currentTime`
+ * there is a driver re-seeking a finished element to its own last instant on every frame — which is
+ * heard as the final syllable stuttering in a cycle while the picture runs on. So the caller is told
+ * when the playhead is past the clip and pauses the element instead, rather than parking it again.
+ *
+ * `at` is `sourceTimeAt` and is therefore already clamped to the clip's own out point.
+ */
+export const slavedAudioAt = (timelineSeconds: number, clip: ClipSpan): { at: number; past: boolean } => ({
+  at: sourceTimeAt(timelineSeconds, clip),
+  past: timelineSeconds >= clip.start + Math.max(0, clip.duration),
+})

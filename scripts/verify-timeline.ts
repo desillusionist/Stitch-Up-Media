@@ -16,7 +16,7 @@ import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/out
 import { presetSummary } from '../src/lib/presetSummary'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, scopeTint, scopeTintFilter, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
-import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurationFor, clipRetime, clipSpeedLabel, sourceTimeAt, speedAudioFilters, speedFor, speedVideoFilters, timelineTimeAt, trimmedForDuration } from '../src/lib/clipSpeed'
+import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurationFor, clipRetime, clipSpeedLabel, slavedAudioAt, sourceTimeAt, speedAudioFilters, speedFor, speedVideoFilters, timelineTimeAt, trimmedForDuration } from '../src/lib/clipSpeed'
 import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue, secondsForFrames } from '../src/lib/frameRate'
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
@@ -1204,7 +1204,12 @@ console.log('\n== the timeline metric ==')
   // the trailing [+] hung outside it, clipped, with a scrollbar to reach it.
   near('fit fills the lane area less the room the last cut\u2019s marker needs', laneWidthFor(30, fitZoom(30, 900)), 900 - FIT_TRAILING_MARKER)
   check('a longer output fits the same area at a smaller zoom', fitZoom(60, 900) < fitZoom(30, 900), true)
-  check('a fit is held inside the zoom range', [clampZoom(fitZoom(1, 100000)), clampZoom(fitZoom(100000, 100))], [ZOOM_MAX, ZOOM_MIN])
+  // A FIT IS CAPPED, NEVER FLOORED. A fit held up to ZOOM_MIN could not fit a long job at all — the whole
+  // output stayed out of reach, which is the opposite of what a fit is for — so the manual zoom's floor is
+  // the buttons' business and not the fit's. The sixteen-minute case the report named is the reading here.
+  check('a fit is capped at the deepest zoom', fitZoom(1, 100000), ZOOM_MAX)
+  check('but a long job is not floored at the manual zoom\u2019s own floor', fitZoom(100000, 100) < ZOOM_MIN, true)
+  near('sixteen minutes fits a 900-pixel panel', laneWidthFor(960, fitZoom(960, 900)), 900 - FIT_TRAILING_MARKER)
   check('and a fit of nothing is 1x', [fitZoom(0, 900), fitZoom(30, 0), clampZoom(Number.NaN)], [1, 1, 1])
 }
 
@@ -2483,6 +2488,15 @@ void (async () => {
     check('reading the clock back gives the timeline instant again', timelineTimeAt(sourceTimeAt(7.5, span), span), 7.5)
     check('and at a clip\u2019s own speed both are the plain offset', [sourceTimeAt(6, { ...span, speed: 1 }), timelineTimeAt(6, { ...span, speed: 1 })], [3, 9])
     check('a timeline instant before the clip clamps to its in point', sourceTimeAt(1, span), 2)
+
+    // A SLAVED TRACK PAST ITS OWN END. The playhead can outlast an added track — the picture runs on — and a
+    // driver that kept parking the element at its out point every frame is what made the last syllable
+    // cycle. The reading says WHEN to stop touching the element, not only where its last instant is.
+    check('a slaved track is driven inside its own clip', slavedAudioAt(7.5, span), { at: 2 + 2.5 * 2, past: false })
+    check('and parked at its out point, but told to stand down, past it', slavedAudioAt(12, span), { at: 12, past: true })
+    const track = { start: 0, duration: 8, sourceIn: 0, speed: 1 }
+    check('a track whose clip has run out is past at the clip\u2019s own end', [slavedAudioAt(7.9, track).past, slavedAudioAt(8, track).past], [false, true])
+    check('while the instant it is parked at never runs past the source it keeps', slavedAudioAt(99, track).at, 8)
 
     // Where the encoder can carry a speed and where it cannot. The drawn timeline reads the record only
     // where the export does, so a speed that cannot be written is not drawn either.
