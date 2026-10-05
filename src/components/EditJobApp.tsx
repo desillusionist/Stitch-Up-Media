@@ -18,7 +18,7 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, usesAllSource } from '../lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { pixelDepthLabel, proresDepthLabel } from '../lib/pixelDepth'
@@ -2650,40 +2650,26 @@ export const EditJobApp: React.FC = () => {
   // a fade on it is drawn and NOT written by the encoder yet, so the fade items are offered disabled.
   const boundaryLane = openBoundary ? model.lanes.find((lane) => lane.id === openBoundary.laneId) : undefined
   const boundaryIsMainLane = Boolean(boundaryLane && boundaryLane.id === mainLane?.id)
-  /**
-   * Why a fade cannot be offered at the open boundary, if it cannot — a question about the COMMAND.
-   *
-   * An added audio track's fade is not written by the encoder at all. The main lane's fades are written
-   * only where the encoder normalizes each visual through its own chain — a stitch, or a combo that joins
-   * its visuals — so a lone CONVERT or a MULTI-TRACK, whose single visual is mapped straight through, would
-   * otherwise show a FADE that the file never contains. Same treatment as an added track: offered, out of
-   * reach, and saying why, rather than drawing a ramp that is not in the export.
-   */
-  const boundaryFadeBlocked = (() => {
-    if (!boundaryLane) return undefined
-    if (!boundaryIsMainLane) return 'A FADE ON AN ADDED TRACK IS NOT WRITTEN YET, SO IT IS NOT OFFERED HERE.'
-    if (!clipsConcatenate(draft)) return 'THE ENCODER DOES NOT JOIN THIS JOB\'S CLIPS, SO IT WRITES NO FADE HERE YET.'
-    return undefined
-  })()
   const selectedBoundary = (() => {
     if (openBoundary == null || !boundaryLane) return null
     const segments = boundaryLane.segments
-    // An edge belongs to the timeline rather than to a clip, so it is cut from or to black with
+    // An edge belongs to the lane rather than to a clip, so it is cut from or to black with
     // only the one clip to fit into: the whole clip, less whatever a boundary at the other end
-    // of the same clip is already using.
+    // of the same clip is already using. The MAIN lane's edges are the timeline's own; an added
+    // track's are its clip's, keyed by that clip so one track's fade is not another's.
     if (openBoundary.at === 'head' || openBoundary.at === 'tail') {
       const clip = openBoundary.at === 'head' ? segments[0] : segments[segments.length - 1]
       if (!clip) return null
-      const requested = boundaryFadeBlocked ? 0 : edgeFade(draft, openBoundary.at)
+      const requested = boundaryIsMainLane ? edgeFade(draft, openBoundary.at) : trackEdgeFade(draft, clip.key, openBoundary.at)
       const neighbour = (openBoundary.at === 'head' ? clip.fadeOut : clip.fadeIn) || 0
       const maxFade = maxEdgeFade(clip.duration, neighbour)
-      return { kind: 'edge' as const, edge: openBoundary.at, requested, fade: Math.min(requested, maxFade), maxFade }
+      return { kind: 'edge' as const, edge: openBoundary.at, clipKey: clip.key, requested, fade: Math.min(requested, maxFade), maxFade }
     }
     const index = openBoundary.at
     const first = segments[index]
     const second = segments[index + 1]
     if (!first || !second) return null
-    const transition = boundaryFadeBlocked ? undefined : draft.transitions?.[first.key]
+    const transition = draft.transitions?.[first.key]
     const requested = transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
     const maxFade = maxFadeAtBoundary(first.duration, second.duration)
     // The request and what will actually render are reported separately. A fade that
@@ -4144,7 +4130,7 @@ export const EditJobApp: React.FC = () => {
                             rather than drawing a ramp the file would not contain. */}
                         {index === 0 && (
                           <button
-                            className={`boundary-add is-head${lane.id === mainLane?.id && edgeFade(draft, 'head') > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === 'head' ? ' is-open' : ''}`}
+                            className={`boundary-add is-head${(lane.id === mainLane?.id ? edgeFade(draft, 'head') : trackEdgeFade(draft, segment.key, 'head')) > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === 'head' ? ' is-open' : ''}`}
                             onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id && openBoundary.at === 'head' ? null : { laneId: lane.id, at: 'head' }) }}
                             aria-label={`Add a fade in on ${lane.label}`}
                             title={lane.id === mainLane?.id ? 'Fade in from black' : `Fade in on ${lane.label}`}
@@ -4160,7 +4146,7 @@ export const EditJobApp: React.FC = () => {
                         )}
                         {index === lane.segments.length - 1 && (
                           <button
-                            className={`boundary-add is-tail${lane.id === mainLane?.id && edgeFade(draft, 'tail') > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === 'tail' ? ' is-open' : ''}`}
+                            className={`boundary-add is-tail${(lane.id === mainLane?.id ? edgeFade(draft, 'tail') : trackEdgeFade(draft, segment.key, 'tail')) > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === 'tail' ? ' is-open' : ''}`}
                             onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id && openBoundary.at === 'tail' ? null : { laneId: lane.id, at: 'tail' }) }}
                             aria-label={`Add a fade out on ${lane.label}`}
                             title={lane.id === mainLane?.id ? 'Fade out to black' : `Fade out on ${lane.label}`}
@@ -4199,9 +4185,11 @@ export const EditJobApp: React.FC = () => {
           </div>
           {selectedBoundary && (() => {
             const set = (type: TransitionType, duration?: number) => {
-              if (boundaryFadeBlocked) return
-              if (selectedBoundary.kind === 'edge') setEdgeTransition(selectedBoundary.edge, type, duration)
-              else setBoundaryTransition(selectedBoundary.index, type, duration)
+              if (selectedBoundary.kind === 'cut') { setBoundaryTransition(selectedBoundary.index, type, duration); return }
+              // An edge on the MAIN lane is the timeline's own; on an added track it is that clip's, keyed so
+              // the two lanes never share a fade.
+              if (boundaryIsMainLane) setEdgeTransition(selectedBoundary.edge, type, duration)
+              else applyTransition(trackEdgeFadeKey(selectedBoundary.clipKey, selectedBoundary.edge), type, duration)
             }
             const heading = selectedBoundary.kind === 'edge'
               ? (selectedBoundary.edge === 'head'
@@ -4211,11 +4199,10 @@ export const EditJobApp: React.FC = () => {
             return <div className="boundary-editor">
               <span className="boundary-title">{heading}</span>
               <div className="boundary-options">
-                <button className={selectedBoundary.requested > 0 ? '' : 'is-selected'} disabled={Boolean(boundaryFadeBlocked)} onClick={() => set('none')}>OFF</button>
-                <button className={selectedBoundary.requested > 0 ? 'is-selected' : ''} disabled={Boolean(boundaryFadeBlocked)} onClick={() => set('fade', selectedBoundary.requested || Math.min(0.5, selectedBoundary.maxFade) || 0.25)}>FADE</button>
+                <button className={selectedBoundary.requested > 0 ? '' : 'is-selected'} onClick={() => set('none')}>OFF</button>
+                <button className={selectedBoundary.requested > 0 ? 'is-selected' : ''} onClick={() => set('fade', selectedBoundary.requested || Math.min(0.5, selectedBoundary.maxFade) || 0.25)}>FADE</button>
                 <button disabled title="Crossfade overlaps the clips and needs the encoder rework planned next.">X-FADE</button>
               </div>
-              {boundaryFadeBlocked && <small className="boundary-clamped">{boundaryFadeBlocked}</small>}
               {selectedBoundary.requested > 0 && (
                 <div className="boundary-duration" title={`Longest fade that fits here: ${selectedBoundary.maxFade.toFixed(2)}s`}>
                   <button onClick={() => set('fade', Math.max(0.25, selectedBoundary.requested - 0.25))} disabled={selectedBoundary.requested <= 0.25} aria-label="Shorter fade">-</button>

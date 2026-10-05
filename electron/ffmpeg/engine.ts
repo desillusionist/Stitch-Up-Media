@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, nativeRateFor, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
+import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, nativeRateFor, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, trackEdgeFade, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
 import { clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
@@ -373,15 +373,24 @@ export class FFmpegEngine {
     // whose visual is a sound file has no picture to fill between frames, so blending is not asked of it.
     const speedVideo = speedVideoFilters(retime, soundOnly ? 'sampling' : clipSpeed.interpolation, outputFpsOf(task.preset))
     const speedAudio = speedAudioFilters(retime, clipSpeed.maintainPitch !== false, task.preset.audioSampleRate || 48000)
-    this.applyPresetToCommand(cmd, task.preset, [...pictureFilters, ...speedVideo], {
+    // This clip's own two edges, which are the only boundaries a single-source job has. They fade the picture
+    // and the sound through the same clamp the timeline draws with, so a CONVERT can fade in and out exactly as
+    // a stitch can — the picture through the video chain and the sound through the audio one. A job whose
+    // picture is a DRAWING is skipped: its graph owns both streams, and a fade there belongs in the graph.
+    const fades = draws ? { video: [] as string[], audio: [] as string[] } : this.fadeFilters(
+      resolveFades([expectedSeconds], [], { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })[0],
+      expectedSeconds,
+    )
+    this.applyPresetToCommand(cmd, task.preset, [...pictureFilters, ...speedVideo, ...fades.video], {
       ...(clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) }),
       ...(draws ? { graphOwnsPicture: true } : {}),
     })
     // The sound is retimed beside the picture, in the same terms: `atempo` keeps the pitch, or
     // `asetrate` shifts it with the speed. A stream-copied sound cannot be filtered at all and a
     // source with no sound has nothing to retime, so the chain is only written where it applies.
-    if (speedAudio.length && sourceHasAudio && !draws && task.preset.audioCodec !== 'copy' && task.preset.audioEnabled !== false) {
-      cmd.outputOptions([`-af ${speedAudio.join(',')}`])
+    const audioChain = [...speedAudio, ...fades.audio]
+    if (audioChain.length && sourceHasAudio && !draws && task.preset.audioCodec !== 'copy' && task.preset.audioEnabled !== false) {
+      cmd.outputOptions([`-af ${audioChain.join(',')}`])
     }
     // A muted lane is one the export does not carry, so its audio is dropped outright rather than
     // encoded and left silent: a file with no audio stream says so without being listened to.
@@ -684,6 +693,8 @@ export class FFmpegEngine {
     const isStillCover = !videoOverride && !isSequenceVideo && /\.(png|jpe?g|gif|tiff?|bmp|webp)$/i.test(videoSource)
     const videoTrim = videoOverride ? undefined : this.trimPoint(task, videoSource, 0)
     let longestAudioDuration = 0
+    // Each track's own played length, so a fade on it is placed against the length it actually runs for.
+    const trackDurations: number[] = []
     // The visual's own pixel size, from the probe this path already makes, for the same reason the
     // transcode path reads it: a fit is worked out from the clip's shape and the frame.
     let videoSize: { width: number; height: number } | null = null
@@ -707,7 +718,9 @@ export class FFmpegEngine {
       longestAudioDuration = audioProbes.reduce((max, probe, index) => {
         const point = this.trimPoint(task, extraAudios[index].path, 0)
         const full = Number(probe.duration || 0)
-        return Math.max(max, point && point.out > point.in ? Math.min(full - point.in, point.out - point.in) : full)
+        const played = point && point.out > point.in ? Math.min(full - point.in, point.out - point.in) : full
+        trackDurations[index] = played
+        return Math.max(max, played)
       }, 0)
     } catch (error) {
       logEvent('ffmpeg', 'duration reconciliation probe failed; using container durations', { taskId: task.id, error: String(error) })
@@ -730,6 +743,23 @@ export class FFmpegEngine {
     // scaling rather than replacing it. The padding such a visual gets is BLACK — which is what the tail
     // of a run-out picture should be, and what an added track plays under.
     const tailDuration = isStillCover ? 0 : Math.max(0, longestAudioDuration - videoDuration)
+    // The fades the encoder will WRITE, on the same clamp the timeline draws with. The main visual's two
+    // edges fade the picture and its own sound; each added track's edges fade THAT track and nothing else,
+    // which is why the audio is filtered per output stream below. A combo's visual was already normalized
+    // clip by clip — fades and all — so there is nothing left for its main lane here.
+    const mainFades = videoOverride
+      ? { video: [] as string[], audio: [] as string[] }
+      : this.fadeFilters(
+        resolveFades([videoDuration], [], { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })[0],
+        videoDuration,
+      )
+    const trackFades = extraAudios.map((track, index) => this.fadeFilters(
+      resolveFades([trackDurations[index] || 0], [], {
+        head: trackEdgeFade(task, clipKey(task, track.path, 0), 'head'),
+        tail: trackEdgeFade(task, clipKey(task, track.path, 0), 'tail'),
+      })[0],
+      trackDurations[index] || 0,
+    ))
     let cmd = videoOverride ? ffmpeg(videoOverride) : (videoSequence ? this.sequenceCommand(videoSequence, videoTrim) : ffmpeg(videoSource))
     if (isStillCover && extraAudios.length > 0) {
       cmd.inputOptions(['-loop 1', '-framerate 2'])
@@ -817,7 +847,7 @@ export class FFmpegEngine {
     const tailFilter = tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
       ? [`tpad=stop_mode=add:color=black:stop_duration=${tailDuration.toFixed(3)}`]
       : []
-    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : [...tailFilter, ...pictureFilters], {
+    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : [...tailFilter, ...pictureFilters, ...mainFades.video], {
       ...(clipChain ? { clipChain } : {}),
       ...(pictured ? { graphOwnsPicture: true } : {}),
       ...(attachCover ? { keepsArtwork: true } : {}),
@@ -828,7 +858,26 @@ export class FFmpegEngine {
     if (task.preset.audioCodec === 'copy') cmd.audioCodec('aac')
     // The drawing's own graph resamples and lays the audio out, so the chain is not written twice.
     const channels = this.exportChannels(task.preset, 2)
-    if (!pictured) cmd.outputOptions([`-ar 48000`, `-ac ${channels}`, `-af aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=${channelLayoutFor(channels)}`])
+    // THE AUDIO IS FILTERED PER OUTPUT STREAM, not with one `-af` across all of them, once ANY lane asks
+    // for a fade: a single chain would put the main lane's fade on every added track and every track's
+    // fade on the main lane. Each output stream gets the same resample/layout it always had, with that
+    // lane's own `afade`s appended. A job with no fade is handed the one `-af` it has always had, so the
+    // common path is untouched.
+    const audioBase = `aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=${channelLayoutFor(channels)}`
+    const fadeSomewhere = mainFades.audio.length > 0 || trackFades.some((fade) => fade.audio.length > 0)
+    if (!pictured && !fadeSomewhere) {
+      cmd.outputOptions([`-ar 48000`, `-ac ${channels}`, `-af ${audioBase}`])
+    } else if (!pictured) {
+      cmd.outputOptions([`-ar 48000`, `-ac ${channels}`])
+      // The main lane's own sound is the FIRST audio output where it is carried and the visual has one;
+      // otherwise the tracks begin at zero. The same figure the metadata tags are written against.
+      const firstTrackOut = carriesMainAudio && videoHasAudio ? 1 : 0
+      if (carriesMainAudio && videoHasAudio) cmd.outputOptions([`-filter:a:0 ${[audioBase, ...mainFades.audio].join(',')}`])
+      extraAudios.forEach((_track, idx) => {
+        const chain = [audioBase, ...(trackFades[idx]?.audio ?? [])]
+        cmd.outputOptions([`-filter:a:${firstTrackOut + idx} ${chain.join(',')}`])
+      })
+    }
     cmd.outputOptions(outputOptions)
 
     cmd

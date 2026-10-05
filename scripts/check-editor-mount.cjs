@@ -776,9 +776,14 @@ app.whenReady().then(async () => {
       if (audioLane.audioHandles !== 2) problems.push(`the added audio track's clip drew ${audioLane.audioHandles} trim handles rather than two`)
       if (!audioLane.hasBoundary) problems.push('the added audio track\'s clip drew no [+]')
       if (String(audioLane.audioPanelTitle ?? '') !== 'FADE IN') problems.push(`the added track's [+] panel is headed ${JSON.stringify(audioLane.audioPanelTitle)} rather than FADE IN`)
-      if (!audioLane.fadeDisabled) problems.push('the added track\'s [+] panel offers a fade the encoder does not write')
-      if (!String(audioLane.blockedNote ?? '').includes('NOT WRITTEN')) problems.push(`the added track's [+] panel does not say why the fade is unavailable: ${JSON.stringify(audioLane.blockedNote)}`)
+      // A fade on an added track IS written now, so the control is offered, not gated — and choosing it files
+      // a record under THAT track's own clip key, not under the timeline's shared head key.
+      if (audioLane.fadeDisabled) problems.push('the added track\'s [+] panel still disables the fade')
+      if (String(audioLane.blockedNote ?? '') !== '') problems.push(`the added track's [+] panel still says the fade is unavailable: ${JSON.stringify(audioLane.blockedNote)}`)
       if (!audioLane.audioAddSource) problems.push('the added track\'s [+] panel offers no ADD SOURCE')
+      const fadeKeys = (audioLane.fadeKeys || []).map((key) => String(key))
+      if (!fadeKeys.some((key) => key.endsWith('::head'))) problems.push(`choosing FADE on the added track wrote no head fade for it: ${JSON.stringify(fadeKeys)}`)
+      if (fadeKeys.some((key) => key === '#head' || key === '#tail')) problems.push(`the added track's fade was filed under the timeline's own edge key, which the main lane shares: ${JSON.stringify(fadeKeys)}`)
     }
     // A QUICK LOOK TRIM FROM THE QUEUE LANDS ON A DIRTY WINDOW. The helper's points reach their clip and the
     // window's own trim of another clip survives — the case the trims-in-`editableSlice` change broke.

@@ -132,6 +132,21 @@ const contrast = async (file, time) => {
 const frameCount = async (file) => Number(await run('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v', '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1:nokey=1', file]))
 
 /**
+ * The loudness of a stretch of a file's sound, as a root mean square of its samples.
+ *
+ * A fade is a question about LEVEL over time, so it cannot be read off the picture or off a probe's summary:
+ * the file is decoded to raw samples and the stretch is measured. One channel at 8kHz, because what is asked
+ * is whether this stretch is quieter than that one, and neither the layout nor the rate is the subject.
+ */
+const rmsAt = async (file, start, duration) => {
+  const raw = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', file, '-ss', String(start), '-t', String(duration), '-f', 's16le', '-ac', '1', '-ar', '8000', '-'], { encoding: 'buffer' })
+  const count = Math.floor(raw.length / 2)
+  let sum = 0
+  for (let index = 0; index < count; index += 1) { const value = raw.readInt16LE(index * 2) / 32768; sum += value * value }
+  return Math.sqrt(sum / Math.max(1, count))
+}
+
+/**
  * The average colour of where a drawing IS: a centre strip for a line, a centre column for bars and bands.
  *
  * The whole frame will not do. A waveform is a two-pixel line through a 1080-row picture, so the frame's own
@@ -1248,6 +1263,66 @@ const main = async () => {
     if (item.cover) check('and a still cover is still showing under its track', isPicture(tail), true)
     else check('and the picture past its end is black', isBlack(tail), true)
   }
+
+  // A FADE, WHICH IS NOW WRITTEN FOR EVERY KIND OF JOB. The transcode path had no fade at all, and the
+  // multi-track path had ONE shared `-af` for every audio stream — so a fade set on one added track would have
+  // landed on every other lane as well. What is measured here is the SOUND: the file is decoded and the level
+  // at its ends is compared with its middle, with an unfaded control beside it so the reading can tell a fade
+  // from a quiet fixture. The command line is read too, because "which stream was filtered" is not something a
+  // decoded mix can show.
+  console.log('\n== fades ==')
+  const captureCommand = async (task) => {
+    const captured = []
+    const original = console.log
+    console.log = (...args) => { captured.push(args) }
+    try { await encode(task) } finally { console.log = original }
+    return captured.map((args) => (args[1] && args[1].commandLine) || '').filter(Boolean).join('\n')
+  }
+  const fadeConvert = {
+    id: 'fade-convert', type: 'transcode', status: 'pending', progress: 0,
+    sourcePaths: [audio], outputDirectory: root, outputFilename: 'fade-convert.mp4', preset,
+    transitions: { '#head': { type: 'fade', duration: 1 }, '#tail': { type: 'fade', duration: 1 } },
+  }
+  const convertCmd = await captureCommand(fadeConvert)
+  check('a CONVERT writes the fade as a video filter', /(?<![a-z])fade=t=in:st=0:d=1\.000/.test(convertCmd), true)
+  check('and as an audio filter', /afade=t=in:st=0:d=1\.000/.test(convertCmd), true)
+  check('and the fade out too', /afade=t=out:st=4\.000:d=1\.000/.test(convertCmd), true)
+  const convertOut = path.join(root, 'fade-convert.mp4')
+  const head = await rmsAt(convertOut, 0, 0.2)
+  const mid = await rmsAt(convertOut, 2.4, 0.2)
+  const tail = await rmsAt(convertOut, 4.8, 0.15)
+  check(`the sound really fades in (head ${head.toFixed(3)} vs middle ${mid.toFixed(3)})`, head < mid * 0.4, true)
+  check(`and really fades out (tail ${tail.toFixed(3)})`, tail < mid * 0.4, true)
+  // The CONTROL: the same job with no fade, so "the ends are quieter" is a reading and not the fixture.
+  const plainConvert = { ...fadeConvert, id: 'fade-none', outputFilename: 'fade-none.mp4' }
+  delete plainConvert.transitions
+  await captureCommand(plainConvert)
+  const plainOut = path.join(root, 'fade-none.mp4')
+  const plainHead = await rmsAt(plainOut, 0, 0.2)
+  const plainMid = await rmsAt(plainOut, 2.4, 0.2)
+  check(`and without a fade the same stretch is NOT quieter (head ${plainHead.toFixed(3)} vs middle ${plainMid.toFixed(3)})`, plainHead > plainMid * 0.5, true)
+
+  // A FADE ON ONE ADDED TRACK IS THAT TRACK'S ALONE. The visual here carries its own sound, so the track is the
+  // output's SECOND audio stream; the command has to filter the two separately, with `afade` on the track and
+  // none on the picture's own sound. One shared `-af` — what the path used before — could not have said that.
+  const videoTone = path.join(root, 'visual-tone.mp4')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:size=320x240:rate=25:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', videoTone])
+  const trackFade = {
+    id: 'fade-track', type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: [videoTone], additionalAudioTracks: [{ id: 't1', path: audio, language: 'und' }],
+    outputDirectory: root, outputFilename: 'fade-track.mp4', preset,
+    transitions: { [`${audio}#0::head`]: { type: 'fade', duration: 1 } },
+  }
+  const trackCmd = await captureCommand(trackFade)
+  const mainChain = (/ -filter:a:0 ([^ ]+)/.exec(trackCmd) || [])[1] || ''
+  const trackChain = (/ -filter:a:1 ([^ ]+)/.exec(trackCmd) || [])[1] || ''
+  check('the lane with a fade is filtered as its OWN stream', /afade=t=in:st=0:d=1\.000/.test(trackChain), true)
+  check('and the lane without one carries no fade', /afade/.test(mainChain), false)
+  check('and the shared single-filter path is not used once a lane is faded', /(^| )-af /.test(trackCmd), false)
+  const plainTrack = { ...trackFade, id: 'fade-track-none', outputFilename: 'fade-track-none.mp4', transitions: undefined }
+  const plainTrackCmd = await captureCommand(plainTrack)
+  check('while a job with no fade keeps the one shared audio filter it always had', /(^| )-af aresample=48000/.test(plainTrackCmd), true)
+  check('and writes no per-stream filters at all', / -filter:a:/.test(plainTrackCmd), false)
 
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')

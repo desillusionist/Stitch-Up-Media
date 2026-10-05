@@ -1523,10 +1523,19 @@ const drive = async () => {
   await wait(200)
   const audioPanelTitle = (document.querySelector('.boundary-editor .boundary-title') as HTMLElement | null)?.textContent ?? null
   const fadeButtons = [...document.querySelectorAll('.boundary-editor .boundary-options button')] as HTMLButtonElement[]
-  const fadeDisabled = fadeButtons.filter((button) => button.textContent?.trim() === 'FADE').every((button) => button.disabled)
+  const fadeButton = fadeButtons.find((button) => button.textContent?.trim() === 'FADE')
+  const fadeDisabled = Boolean(fadeButton?.disabled)
   const blockedNote = (document.querySelector('.boundary-editor .boundary-clamped') as HTMLElement | null)?.textContent ?? null
   const audioAddSource = [...document.querySelectorAll('.boundary-editor .boundary-source')].some((button) => button.textContent?.trim() === 'ADD SOURCE')
-  result.audioLane = { laneCount: laneBodies.length, audioHandles, hasBoundary: Boolean(audioBoundary), audioPanelTitle, fadeDisabled, blockedNote, audioAddSource }
+  // Choosing FADE has to WRITE a record for THIS track, and APPLY has to carry it to the queue.
+  fadeButton?.click()
+  await wait(150)
+  const applyFade = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyFade?.click()
+  await wait(250)
+  const fadePatch = applied[applied.length - 1] as { transitions?: Record<string, unknown> } | undefined
+  const fadeKeys = fadePatch?.transitions ? Object.keys(fadePatch.transitions) : []
+  result.audioLane = { laneCount: laneBodies.length, audioHandles, hasBoundary: Boolean(audioBoundary), audioPanelTitle, fadeDisabled, blockedNote, audioAddSource, fadeKeys }
 
   // A TRIM THE QUEUE MADE, LANDING ON A WINDOW THAT IS DIRTY. The QUICK LOOK helper's in/out points come back
   // through the queue, and the window is usually dirty when they do — the timeline was probably just trimmed.

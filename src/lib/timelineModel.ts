@@ -119,6 +119,22 @@ export const edgeFade = (task: QueueTask, edge: 'head' | 'tail'): number => {
 }
 
 /**
+ * The two edges of an ADDED TRACK's single clip, where a fade is cut from or to silence.
+ *
+ * An added track is one clip on a lane of its own, so its head and tail are the only boundaries it
+ * has, and they cannot be keyed by the timeline's own edges — those belong to the main lane and are
+ * shared by every job. The track's own clip key carries them instead, with the edge appended, so a
+ * fade set on one track is a fade on THAT track and survives the tracks being reordered around it.
+ */
+export const trackEdgeFadeKey = (clipKeyValue: string, edge: 'head' | 'tail'): string => `${clipKeyValue}::${edge}`
+
+/** The fade asked for at the head or tail of an added track's clip, in seconds. */
+export const trackEdgeFade = (task: QueueTask, clipKeyValue: string, edge: 'head' | 'tail'): number => {
+  const transition: ClipTransition | undefined = task.transitions?.[trackEdgeFadeKey(clipKeyValue, edge)]
+  return transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
+}
+
+/**
  * A boundary fade cannot exceed half of either neighbour, or the two sides would
  * overlap inside a clip. The encoder and the timeline both clamp through this, so
  * the picture and the drawn ramp cannot disagree.
@@ -755,6 +771,14 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   const tracks = task.additionalAudioTracks || []
   tracks.forEach((track, index) => {
     const segment = segmentFor(task, track.path, 0, 0, options)
+    // A track's own head and tail fades, resolved by the same clamp the main lane's are, so the drawn
+    // ramp is what the encoder will write — see `applyTrackFades`.
+    const fade = resolveFades([segment.duration], [], {
+      head: trackEdgeFade(task, segment.key, 'head'),
+      tail: trackEdgeFade(task, segment.key, 'tail'),
+    })[0]
+    segment.fadeIn = fade.fadeIn
+    segment.fadeOut = fade.fadeOut
     const language = (track.language || '').toLowerCase()
     lanes.push({
       id: track.id,

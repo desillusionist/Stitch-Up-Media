@@ -21,7 +21,7 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trimFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
@@ -248,6 +248,37 @@ console.log('\n== fades on a concatenated lane ==')
   near('the tail edge reads its own', edgeFade(edgeTask, 'tail'), 2)
   near('and neither is confused with a clip boundary', edgeFade({ ...edgeTask, transitions: { '/a.mp4#0': { type: 'fade', duration: 3 } } } as unknown as QueueTask, 'tail'), 0)
   check('a trim shortens the clip before fades are placed', segmentTiming(20, { in: 5, out: 9 }), { duration: 4, sourceIn: 5, trimmed: true })
+}
+
+console.log('\n== a fade on an added track ==')
+{
+  // An added track is one clip on a lane of its own, so its head and tail fade IT and nothing else. The
+  // record cannot be the timeline's own `#head`/`#tail` — those belong to the main lane and are shared by
+  // every job — so the track's own clip key carries the two, and the drawn ramp reads back off that key.
+  const trackKey = '/t.wav#0'
+  const task = {
+    id: 'tf', type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: ['/v.mp4'],
+    additionalAudioTracks: [{ id: 'trk', path: '/t.wav', language: 'und' }],
+    outputDirectory: '/o', outputFilename: 'o.mkv',
+    preset: { id: 'p', name: 'P', container: 'mkv', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    transitions: {
+      [trackEdgeFadeKey(trackKey, 'head')]: { type: 'fade', duration: 0.5 },
+      [trackEdgeFadeKey(trackKey, 'tail')]: { type: 'fade', duration: 0.75 },
+    },
+  } as unknown as QueueTask
+  check('a track fade reads back off that track\u2019s own clip key', [trackEdgeFade(task, trackKey, 'head'), trackEdgeFade(task, trackKey, 'tail')], [0.5, 0.75])
+  check('and the timeline\u2019s own edge key is not the same record', edgeFade(task, 'head'), 0)
+  const lanes = buildTimeline(task, { resolveTiming: () => ({ duration: 10 }) }).lanes
+  const trackLane = lanes.find((lane) => lane.id === 'trk')
+  near('the track\u2019s clip draws its fade in', trackLane?.segments[0].fadeIn ?? -1, 0.5)
+  near('and its fade out', trackLane?.segments[0].fadeOut ?? -1, 0.75)
+  // A fade on one lane is not a fade on the other: the main lane\u2019s clip is left untouched.
+  check('while the main lane\u2019s clip keeps no edge fade of its own', lanes[0].segments[0].fadeIn ?? 0, 0)
+  // The same clamp the timeline draws with is the one the engine places, so a fade longer than the clip is
+  // reduced rather than written past its end.
+  const tooLong = { ...task, transitions: { [trackEdgeFadeKey(trackKey, 'head')]: { type: 'fade', duration: 40 } } } as unknown as QueueTask
+  near('and a fade longer than the track is clamped to it', buildTimeline(tooLong, { resolveTiming: () => ({ duration: 6 }) }).lanes.find((lane) => lane.id === 'trk')?.segments[0].fadeIn ?? -1, 6)
 }
 
 console.log('\n== a combo exposes cuts too ==')
