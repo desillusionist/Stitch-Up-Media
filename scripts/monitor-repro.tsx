@@ -43,7 +43,10 @@ const logMediaElement = (element: HTMLVideoElement | null, kind: string) => {
 
 const model = {
   lanes: [
-    { id: 'main', label: 'VIDEO', kind: 'video' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'main#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceUsedSeconds: globals.__duration, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false }] },
+    // The PICTURE's one clip is TRIMMED to leave a tail: its segment stops a second short of the job, which
+    // the added track below runs through. That is the padding a longer track draws, and the stretch where a
+    // trimmed visual's own sound used to run on.
+    { id: 'main', label: 'VIDEO', kind: 'video' as const, embedded: false, duration: globals.__duration - 1, segments: [{ key: 'main#0', sourcePath: globals.__file, start: 0, duration: globals.__duration - 1, sourceUsedSeconds: globals.__duration - 1, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: true }] },
     // An ADDED track, which is the lane whose sound the scrub is measured on: over a still or the black tail
     // there is no video element, so this element is the only thing that can be audible, and it is the one the
     // per-tick seek used to jog.

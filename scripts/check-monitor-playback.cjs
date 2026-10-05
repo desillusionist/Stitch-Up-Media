@@ -249,6 +249,39 @@ const joinedMeasure = `(async () => {
   }
 })()`
 
+/**
+ * THE PICTURE PAST A TRIMMED CLIP, which is the phantom tail of the visual itself.
+ *
+ * The model's picture clip stops a second short of the job and the added track runs through the tail. What
+ * must hold: inside the clip the picture plays, and PAST its out point the element is parked — otherwise it
+ * keeps playing its file beyond the cut, under the freeze frame the padding draws, and the sound the trim
+ * took away is heard.
+ */
+const tailMeasure = `(async () => {
+  const v = document.querySelector('video')
+  const p = window.__playback
+  if (!v || !p) return { HARNESS_ERROR: 'no video element or playback hook' }
+  const live = () => window.__playback
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  try {
+    await new Promise((resolve, reject) => {
+      if (v.readyState >= 2) return resolve()
+      v.addEventListener('loadeddata', () => resolve(), { once: true })
+      v.addEventListener('error', () => reject(new Error('media error ' + (v.error && v.error.code))), { once: true })
+      setTimeout(() => reject(new Error('no data after 20s')), 20000)
+    })
+  } catch (error) { return { HARNESS_ERROR: String(error && error.message) } }
+  live().seek(1)
+  live().toggle()
+  await sleep(250)
+  const playingInside = !v.paused
+  live().seek(window.__duration - 0.35)
+  await sleep(250)
+  const parkedInTail = v.paused
+  live().pause()
+  return { playingInside, parkedInTail, tailAt: +(window.__duration - 0.35).toFixed(3) }
+})()`
+
 const runFfmpeg = (args) => new Promise((resolve, reject) => {
   execFile('ffmpeg', args, { maxBuffer: 8 * 1024 * 1024 }, (error, _stdout, stderr) => {
     if (error) reject(new Error(String(stderr || error.message)))
@@ -326,6 +359,7 @@ app.whenReady().then(async () => {
       results.scrub = await run(scrubMeasure)
       results.keys = await run(keysMeasure)
       results.joined = await run(joinedMeasure)
+      results.tail = await run(tailMeasure)
     }
   }
 
@@ -379,6 +413,14 @@ app.whenReady().then(async () => {
     if (!joined.firstParkedPastEnd || !joined.secondParkedPastEnd) problems.push('a finished joined lane kept sounding past its own end')
   } else if (results.joined) {
     problems.push(`the joined lane could not be measured: ${results.joined.HARNESS_ERROR}`)
+  }
+  // THE PICTURE PAST A TRIMMED CLIP: it plays inside the clip and is parked past its out point.
+  if (results.tail && !results.tail.HARNESS_ERROR) {
+    const tail = results.tail
+    if (!tail.playingInside) problems.push('the picture did not play while the playhead was inside its clip')
+    if (!tail.parkedInTail) problems.push('the picture element kept playing past a trimmed clip, so the trimmed-away sound ran on under the tail')
+  } else if (results.tail) {
+    problems.push(`the tail could not be measured: ${results.tail.HARNESS_ERROR}`)
   }
   if (!problems.length) {
     // The element is handed a real, seekable video through the app's own URL: it must play it at the

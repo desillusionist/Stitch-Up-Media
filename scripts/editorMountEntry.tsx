@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1744,6 +1744,29 @@ const drive = async () => {
   await wait(250)
   const askPatch = applied[applied.length - 1] as { comboMode?: string; additionalAudioTracks?: unknown[] } | undefined
   result.audioAsk = { askButtons, lanesAfterAsk, comboMode: askPatch?.comboMode ?? null, trackCount: askPatch?.additionalAudioTracks?.length ?? 0 }
+
+  // A STITCH UP OF SOUND HAS NO SECOND LANE TO ADD SOUND TO. Its sources ARE the sequence, so a [+] adds the
+  // chosen file to that sequence rather than to a track list: a job whose sources are all sound is a STITCH,
+  // which draws no track lane and whose encoder path writes none, so an add routed to a track was neither seen
+  // nor exported — the [+] that did nothing at all.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-sound-stitch', type: 'stitch', sourcePaths: [SOUND_FIXTURE, SOUND_FIXTURE], additionalAudioTracks: undefined }, 'sound-stitch-add')
+  await wait(900)
+  nextSelection = [SOUND_FIXTURE]
+  const soundClipsBefore = document.querySelectorAll('.timeline-clip').length
+  ;(document.querySelector('.timeline-clip .boundary-add.is-head') as HTMLElement | null)?.click()
+  await wait(150)
+  const soundAdd = [...document.querySelectorAll('.boundary-editor .boundary-source')].find((button) => button.textContent?.trim() === 'ADD SOURCE') as HTMLButtonElement | undefined
+  soundAdd?.click()
+  await wait(300)
+  nextSelection = null
+  const soundClipsAfter = document.querySelectorAll('.timeline-clip').length
+  const applySoundStitch = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applySoundStitch?.click()
+  await wait(250)
+  const soundStitchPatch = applied[applied.length - 1] as { sourcePaths?: string[]; additionalAudioTracks?: unknown[] } | undefined
+  result.soundStitchAdd = { before: soundClipsBefore, after: soundClipsAfter, sourceCount: soundStitchPatch?.sourcePaths?.length ?? 0, trackCount: soundStitchPatch?.additionalAudioTracks?.length ?? 0 }
 
   // THE TITLE AND THE LANES FOR A COMBO'S OWN MODE. A combo's heading names which of its two arrangements it
   // is, and its tracks land on ONE lane when they are sequenced rather than one each.

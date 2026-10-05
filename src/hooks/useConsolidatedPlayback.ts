@@ -225,6 +225,28 @@ export const useConsolidatedPlayback = (
     })
   }, [audioElements])
 
+  /**
+   * Starts or parks the monitor's PICTURE element by where the playhead is within its own clip.
+   *
+   * The mirror of `syncAddedAudio` for the one element the picture rides on, and the fix for the phantom tail
+   * of a trimmed clip: when the job runs on past a trimmed VISUAL — an added track outlasting it, or a COMBO's
+   * remaining tracks — the element would keep playing its file beyond the clip's out point under the freeze
+   * frame the padding draws, which is heard as the sound the trim took away. The element owns the playhead only
+   * inside the clip, so it is paused outside it and resumed when the playhead re-enters. Reverse pauses and
+   * steps the element itself, so it is left alone here.
+   */
+  const syncMainAudio = useCallback((seconds: number) => {
+    const video = videoRef.current
+    const current = stateRef.current.segment
+    if (!video || !current || current.still || shuttleRef.current < 0) return
+    const inside = seconds >= current.start && seconds <= current.start + current.duration
+    if (!inside) {
+      if (!video.paused) video.pause()
+      return
+    }
+    if (stateRef.current.playing && video.paused) void video.play().catch(() => { /* element may still be loading */ })
+  }, [])
+
   const startPlayback = useCallback(() => {
     const video = videoRef.current
     if (!video) return
@@ -488,7 +510,10 @@ export const useConsolidatedPlayback = (
     // START, STOP AND SEEK each element onto its OWN segment in one place, so a lane of several joined tracks
     // resumes the one under the playhead and parks the rest rather than starting them all together.
     syncAddedAudio(stateRef.current.position, false)
-  }, [playing, shuttleRate, speed, segment?.key, slaveSignature, audioElements, applyPendingSeek, applyRate, startPlayback, syncAddedAudio])
+    // And the picture element on the same terms: parked past its own clip so a trimmed visual cannot sound under
+    // the tail a longer track draws.
+    syncMainAudio(stateRef.current.position)
+  }, [playing, shuttleRate, speed, segment?.key, slaveSignature, audioElements, applyPendingSeek, applyRate, startPlayback, syncAddedAudio, syncMainAudio])
 
   // Frame loop: advance the playhead, cross junctions, correct drift.
   useEffect(() => {
@@ -503,6 +528,7 @@ export const useConsolidatedPlayback = (
       const reverse = shuttleRef.current < 0
       const next = readPosition()
       syncAddedAudio(next, false)
+      syncMainAudio(next)
       // While a crossing or seek is in flight, the position and the segment index
       // are already decided. Letting the element's stale clock re-derive them here
       // is what would bounce the playhead back to the clip it just left.
@@ -547,7 +573,8 @@ export const useConsolidatedPlayback = (
     anchorRef.current = null
     applyPendingSeek(false)
     syncAddedAudio(bounded, true)
-  }, [indexForTime, syncAddedAudio, applyPendingSeek])
+    syncMainAudio(bounded)
+  }, [indexForTime, syncAddedAudio, syncMainAudio, applyPendingSeek])
 
   /**
    * Ends a scrub: the tracks are put onto the settled playhead and given back their ordinary rate, ONCE.
@@ -571,6 +598,7 @@ export const useConsolidatedPlayback = (
     // ONE settle: the tracks were driven by rate through the gesture and are now brought onto the settled
     // playhead and handed back the rate they would have had without the scrub.
     syncAddedAudio(settled, true)
+    syncMainAudio(settled)
     const rate = playbackRateFor(shuttleRef.current, speedRef.current)
     slavesRef.current.forEach(({ key, segment: slaveSegment }) => {
       const element = audioElements.current?.[key]
@@ -584,7 +612,7 @@ export const useConsolidatedPlayback = (
       if (active) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
-  }, [syncAddedAudio, applyPendingSeek, startPlayback, audioElements])
+  }, [syncAddedAudio, syncMainAudio, applyPendingSeek, startPlayback, audioElements])
 
   /**
    * Drives the slaved tracks to follow a scrub by RATE, correcting with a seek only once one has drifted.

@@ -2473,9 +2473,19 @@ export const EditJobApp: React.FC = () => {
   const insertSources = async (position: number) => {
     const files = await window.electronAPI?.selectFiles()
     if (!files?.length) return
+    const current = latest()
     const visuals = files.filter((file) => mediaKind(file) !== 'audio')
     const audios = files.filter((file) => mediaKind(file) === 'audio')
-    if (audios.length && !(latest().additionalAudioTracks || []).length) {
+    // AN ALL-SOUND JOB HAS NO SECOND LANE TO PUT SOUND ON. Its sources ARE the sequence, so an added source —
+    // sound or picture — joins that sequence where the [+] stands. It was routed to the TRACK list instead, and
+    // a job whose sources are ALL sound is a STITCH: the drawn timeline draws no track lane for one, and the
+    // encoder's stitch path writes none either, so the source was added and then neither seen nor exported —
+    // which is why the [+] on a STITCH UP of sound appeared to do nothing at all.
+    if (current.sourcePaths.length > 0 && current.sourcePaths.every((path) => mediaKind(path) === 'audio')) {
+      applyInsert(position, files, [])
+      return
+    }
+    if (audios.length && !(current.additionalAudioTracks || []).length) {
       setAudioChoice({ position, visuals, audios })
       return
     }

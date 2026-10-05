@@ -868,6 +868,15 @@ app.whenReady().then(async () => {
       if (audioAsk.trackCount !== 1) problems.push(`the answered add left ${audioAsk.trackCount} tracks rather than one`)
       if (audioAsk.lanesAfterAsk !== 2) problems.push(`a sequenced track did not land on one lane beside the video: ${audioAsk.lanesAfterAsk} lanes`)
     }
+    // AN ALL-SOUND STITCH HAS NO TRACK LANE: a [+] on it adds the source to the SEQUENCE, so a clip appears
+    // rather than a track that no lane would draw and the encoder's stitch path would not write.
+    const soundStitchAdd = result.soundStitchAdd
+    if (!soundStitchAdd) problems.push('the stitch-of-sounds [+] drive reported nothing')
+    else {
+      if (soundStitchAdd.after !== soundStitchAdd.before + 1) problems.push(`the [+] on a stitch of sounds added ${soundStitchAdd.after - soundStitchAdd.before} clips rather than one`)
+      if (soundStitchAdd.sourceCount !== 3) problems.push(`the added sound did not land in the sequence: ${soundStitchAdd.sourceCount} sources`)
+      if (soundStitchAdd.trackCount !== 0) problems.push(`the added sound was routed to ${soundStitchAdd.trackCount} track(s) on a job with no track lane`)
+    }
     // A COMBO'S OWN MODE, IN THE TITLE AND ON THE LANES.
     const comboMode = result.comboMode
     if (!comboMode) problems.push('the combo-mode drive reported nothing')
