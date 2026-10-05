@@ -822,6 +822,14 @@ app.whenReady().then(async () => {
       if (stampMenu.afterStamp === stampMenu.beforeStamp) problems.push(`choosing FRAMESTAMP left the clip's line unchanged: ${JSON.stringify(stampMenu.afterStamp)}`)
       if (stampMenu.savedMode !== 'framestamp') problems.push(`the chosen unit was not written back as a setting: ${JSON.stringify(stampMenu.savedMode)}`)
     }
+    // THE MODE FOLLOWS THE LIST: duplicating a CONVERT's only source makes the job a STITCH, on screen too.
+    const modeChange = result.modeChange
+    if (!modeChange) problems.push('the mode-change drive reported nothing')
+    else {
+      if (modeChange.beforeMode !== 'TRANSCODE') problems.push(`the CONVERT job's timeline did not open reading TRANSCODE: ${JSON.stringify(modeChange.beforeMode)}`)
+      if (modeChange.clips !== 2) problems.push(`duplicating the source left ${modeChange.clips} clips rather than two`)
+      if (modeChange.afterMode !== 'STITCH') problems.push(`duplicating a CONVERT's source did not make the window a STITCH: ${JSON.stringify(modeChange.afterMode)}`)
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))

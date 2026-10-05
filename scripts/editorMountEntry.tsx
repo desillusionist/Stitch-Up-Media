@@ -196,7 +196,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1615,6 +1615,29 @@ const drive = async () => {
   const afterStamp = clipStamp()
   const lastSettings = savedSettings[savedSettings.length - 1] as { timestampDisplayMode?: string } | undefined
   result.stampMenu = { beforeStamp, stampItems, afterStamp, savedMode: lastSettings?.timestampDisplayMode ?? null }
+
+  // THE MODE FOLLOWS THE LIST. A CONVERT is one source; duplicating that source makes the job a STITCH, and
+  // the window has to say so BEFORE APPLY rather than leaving a stale heading over a list that changed. The
+  // same rule the queue re-reads when the patch lands, so the two cannot disagree.
+  flushEdits()
+  await wait(200)
+  arrive(task, 'mode-change')
+  await wait(900)
+  const modeKicker = () => {
+    const node = [...document.querySelectorAll('.panel-kicker')].find((candidate) => (candidate.textContent || '').startsWith('TIMELINE //'))
+    return (node?.textContent || '').replace('TIMELINE // ', '').trim()
+  }
+  const beforeMode = modeKicker()
+  const modeClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  modeClips()[0]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const modeDuplicate = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'DUPLICATE...') as HTMLButtonElement | undefined
+  modeDuplicate?.click()
+  await wait(150)
+  const modePlaceAfter = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'PLACE AFTER') as HTMLButtonElement | undefined
+  modePlaceAfter?.click()
+  await wait(300)
+  result.modeChange = { beforeMode, afterMode: modeKicker(), clips: modeClips().length }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }

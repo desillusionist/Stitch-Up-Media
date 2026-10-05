@@ -19,7 +19,7 @@ import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
-import { removeSourceFromTask } from '../lib/sourceRemoval'
+import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
 import { presetSummary } from '../lib/presetSummary'
 import { pixelDepthLabel, proresDepthLabel } from '../lib/pixelDepth'
 import { sequenceLabel } from '../lib/sequenceLabel'
@@ -2189,27 +2189,53 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * The mode a list makes a job, with the list itself — so the window's title and timeline follow at once.
+   *
+   * A job's TYPE is a reading of its lists rather than a field with a life of its own: adding a second
+   * visual to a CONVERT is a STITCH, adding a track to it is a MULTI-TRACK, and the window has to say so
+   * before APPLY rather than leaving a stale heading over a list that no longer matches. The queue re-reads
+   * the same rule when the patch lands, so the two cannot disagree — see `inferredMode`.
+   */
+  const withListType = (item: QueueTask, sourcePaths: string[], tracks: QueueTask['additionalAudioTracks']): Partial<QueueTask> => {
+    const list = tracks && tracks.length ? tracks : undefined
+    const type = inferredMode(sourcePaths, list ?? [])
+    return {
+      sourcePaths,
+      additionalAudioTracks: list,
+      type,
+      comboMode: type === 'combo' ? (item.comboMode || 'multitrack') : undefined,
+    }
+  }
+
+  /**
    * Adds one or more sources AT a place in the join, from the [+] panel's ADD SOURCE.
    *
    * The files land at the position the [+] button stood for — before the first clip, between two, or after
    * the last — so the panel's own place decides where the insert goes. Each new source gets an OPAQUE id
    * like any other import and the next copy number for its file, and the ids and numbers are spliced at the
    * same place as the paths so every clip already in the job keeps its own records exactly where they were.
+   *
+   * A source lands on the lane it BELONGS to rather than the one the [+] stood on: an added track is not in
+   * `sourcePaths` at all, so an AUDIO file goes to the track list and everything else splices into the join.
+   * Without that, an audio file added from the video lane's [+] landed in `sourcePaths`, where the
+   * multi-track encoder never reads it — a source that was added and then silently not used.
    */
   const insertSources = async (position: number) => {
     const files = await window.electronAPI?.selectFiles()
     if (!files?.length) return
     const current = latest()
+    const visuals = files.filter((file) => mediaKind(file) !== 'audio')
+    const audios = files.filter((file) => mediaKind(file) === 'audio')
     const at = Math.max(0, Math.min(position, current.sourcePaths.length))
     const ids = materializeClipIds(current)
     const numbers = materializeClipNumbers(current)
-    const addedIds = newClipIds(files.length)
-    const addedNumbers = addedClipNumbers(current, files)
-    updateDraft({
-      sourcePaths: [...current.sourcePaths.slice(0, at), ...files, ...current.sourcePaths.slice(at)],
-      clipIds: [...ids.slice(0, at), ...addedIds, ...ids.slice(at)],
-      clipNumbers: [...numbers.slice(0, at), ...addedNumbers, ...numbers.slice(at)],
-    })
+    const addedIds = newClipIds(visuals.length)
+    const addedNumbers = addedClipNumbers(current, visuals)
+    const sourcePaths = [...current.sourcePaths.slice(0, at), ...visuals, ...current.sourcePaths.slice(at)]
+    const clipIds = [...ids.slice(0, at), ...addedIds, ...ids.slice(at)]
+    const clipNumbers = [...numbers.slice(0, at), ...addedNumbers, ...numbers.slice(at)]
+    const tracks = [...(current.additionalAudioTracks || []), ...audios.map((path) => ({ id: newTrackId(), path, language: 'und' }))]
+    updateDraft({ ...withListType(current, sourcePaths, tracks), clipIds, clipNumbers })
   }
 
   /**
@@ -2224,10 +2250,19 @@ export const EditJobApp: React.FC = () => {
     const files = await window.electronAPI?.selectFiles()
     if (!files?.length) return
     const current = latest()
+    const audios = files.filter((file) => mediaKind(file) === 'audio')
+    const visuals = files.filter((file) => mediaKind(file) !== 'audio')
     const tracks = [...(current.additionalAudioTracks || [])]
     const at = Math.max(0, Math.min(position, tracks.length))
-    tracks.splice(at, 0, ...files.map((path) => ({ id: newTrackId(), path, language: 'und' })))
-    updateDraft({ additionalAudioTracks: tracks })
+    tracks.splice(at, 0, ...audios.map((path) => ({ id: newTrackId(), path, language: 'und' })))
+    // A VISUAL added from an audio lane goes to the join rather than the track list: a track is HEARD, and
+    // a picture on one would be mapped for its sound and nothing else.
+    const sourcePaths = [...current.sourcePaths, ...visuals]
+    updateDraft({
+      ...withListType(current, sourcePaths, tracks),
+      clipIds: [...materializeClipIds(current), ...newClipIds(visuals.length)],
+      clipNumbers: [...materializeClipNumbers(current), ...addedClipNumbers(current, visuals)],
+    })
   }
 
   /**
@@ -2264,8 +2299,9 @@ export const EditJobApp: React.FC = () => {
     const number = addedClipNumbers(current, [clip.sourcePath])[0]
     const withCopy = <T,>(value: T | undefined, map?: Record<string, T>): Record<string, T> | undefined =>
       value !== undefined ? { ...(map ?? {}), [newId]: value } : map
+    const sourcePaths = [...current.sourcePaths.slice(0, at), clip.sourcePath, ...current.sourcePaths.slice(at)]
     updateDraft({
-      sourcePaths: [...current.sourcePaths.slice(0, at), clip.sourcePath, ...current.sourcePaths.slice(at)],
+      ...withListType(current, sourcePaths, current.additionalAudioTracks),
       clipIds: [...ids.slice(0, at), newId, ...ids.slice(at)],
       clipNumbers: [...numbers.slice(0, at), number, ...numbers.slice(at)],
       trimPoints: withCopy(clip.trimPoints, current.trimPoints),
@@ -2318,7 +2354,7 @@ export const EditJobApp: React.FC = () => {
     sourcePaths[index] = files[0]
     ids[index] = newClipId()
     numbers[index] = nextClipNumber(current, files[0])
-    updateDraft({ sourcePaths, clipIds: ids, clipNumbers: numbers })
+    updateDraft({ ...withListType(current, sourcePaths, current.additionalAudioTracks), clipIds: ids, clipNumbers: numbers })
   }
 
   /**
