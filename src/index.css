@@ -503,6 +503,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    it to scroll, and its own background is what the lanes end against. */
 .timeline-lane-head { display: flex; align-items: center; gap: 6px; height: calc(var(--filmstrip-tile, 32px) + 11px); padding: 12px 8px 0 6px; color: var(--ui-muted); background: var(--ui-panel); border-bottom: 1px dotted var(--ui-border); font-size: 9px; overflow: hidden; }
 .timeline-lane-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* An added track's head is a handle: the lane IS the track, so dragging the head re-orders the track list. */
+.timeline-lane-head.is-draggable { cursor: grab; }
+.timeline-lane-head.is-draggable:active { cursor: grabbing; }
+.timeline-lane-head.is-dragging { opacity: .45; }
 .lane-mute { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 9px; line-height: 1; }
 .lane-mute:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .lane-mute.is-muted { color: var(--ui-error); border-color: var(--ui-error); background: rgba(201, 133, 133, .12); }

@@ -239,17 +239,25 @@ export const useConsolidatedPlayback = (
     const video = videoRef.current
     const current = stateRef.current.segment
     if (!video || !current || current.still || shuttleRef.current < 0) return
-    const inside = seconds >= current.start && seconds <= current.start + current.duration
+    const inside = stateRef.current.playing && seconds >= current.start && seconds <= current.start + current.duration
     if (!inside) {
       if (!video.paused) video.pause()
       return
     }
-    if (stateRef.current.playing && video.paused) void video.play().catch(() => { /* element may still be loading */ })
+    // NEVER RESTART AN ENDED ELEMENT. `play()` on one seeks it back to the beginning, so a clip whose file ends
+    // a hair before its slot — an UNTRIMMED last clip, whose probe length and element length disagree by a
+    // frame — would replay its own picture and sound from the head, and `readPosition` would then follow the
+    // element back to the clip's start: the loop heard when a longer track keeps the job going. The transport's
+    // own clock runs that tail instead, so the ended element is left where it stopped.
+    if (video.ended) return
+    if (video.paused) void video.play().catch(() => { /* element may still be loading */ })
   }, [])
 
   const startPlayback = useCallback(() => {
     const video = videoRef.current
-    if (!video) return
+    // An ENDED element is left ended: `play()` on one seeks it to the beginning rather than continuing, which
+    // is the replay this guards against. See `syncMainAudio` for the tail it belongs to.
+    if (!video || video.ended) return
     void video.play().catch((playError: unknown) => {
       if (playError instanceof DOMException && playError.name === 'AbortError') return
       setPlaying(false)

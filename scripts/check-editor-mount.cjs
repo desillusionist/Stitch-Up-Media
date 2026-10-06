@@ -877,6 +877,20 @@ app.whenReady().then(async () => {
       if (soundStitchAdd.sourceCount !== 3) problems.push(`the added sound did not land in the sequence: ${soundStitchAdd.sourceCount} sources`)
       if (soundStitchAdd.trackCount !== 0) problems.push(`the added sound was routed to ${soundStitchAdd.trackCount} track(s) on a job with no track lane`)
     }
+    // THE DELETE KEY REACHES AN ADDED AUDIO TRACK, and KEEP IT dismisses the question.
+    const trackDelete = result.trackDelete
+    if (!trackDelete) problems.push('the track-delete drive reported nothing')
+    else {
+      if (!String(trackDelete.head ?? '').startsWith('REMOVE ')) problems.push(`the Delete key did not ask about an added audio track: ${JSON.stringify(trackDelete.head)}`)
+      if (trackDelete.lanesAfter !== trackDelete.lanesBefore - 1) problems.push(`removing an audio track left ${trackDelete.lanesAfter} lanes rather than ${trackDelete.lanesBefore - 1}`)
+      if (trackDelete.tracksAfter !== 1) problems.push(`the patch carried ${trackDelete.tracksAfter} tracks rather than one`)
+    }
+    const keepIt = result.keepIt
+    if (!keepIt) problems.push('the KEEP IT drive reported nothing')
+    else {
+      if (keepIt.menuOpen) problems.push('KEEP IT re-opened the clip menu rather than dismissing the question')
+      if (keepIt.clips !== 1) problems.push(`KEEP IT left ${keepIt.clips} clips rather than the one it started with`)
+    }
     // A COMBO'S OWN MODE, IN THE TITLE AND ON THE LANES.
     const comboMode = result.comboMode
     if (!comboMode) problems.push('the combo-mode drive reported nothing')

@@ -711,6 +711,8 @@ export const EditJobApp: React.FC = () => {
   const [draggingClipIndex, setDraggingClipIndex] = useState<number | null>(null)
   /** The SEQUENCED audio track being dragged to another place, so a drop can re-order the track list. */
   const [draggingTrackIndex, setDraggingTrackIndex] = useState<number | null>(null)
+  /** The STACKED track LANE being dragged by its head, so a drop can re-order the track list. */
+  const [draggingTrackLaneId, setDraggingTrackLaneId] = useState<string | null>(null)
   /**
    * Which lanes are muted, by lane id. It belongs to the task rather than to this window: a muted
    * lane is one the export does not carry, so it is written into the draft with the rest of the
@@ -2737,8 +2739,9 @@ export const EditJobApp: React.FC = () => {
    * Opens the clip's REMOVE question for the SELECTED clip, which is what the Delete key asks.
    *
    * The same question the clip's own right-click menu shows, at the clip's own box — one confirmation for
-   * both ways of asking, rather than two that say different things. It answers whether it got that far, so a
-   * Delete with nothing selected falls through to whatever else the key does.
+   * both ways of asking, rather than two that say different things. An added audio track is answered the same
+   * way, by its own key. It answers whether it got that far, so a Delete with nothing selected falls through
+   * to whatever else the key does.
    */
   const openRemoveConfirm = (): boolean => {
     const sel = selectedRef.current
@@ -2759,11 +2762,26 @@ export const EditJobApp: React.FC = () => {
       })
       return true
     }
-    if (!sel || sel.laneId !== mainLaneIdRef.current) return false
-    const index = materializeClipIds(task).indexOf(sel.clipKey)
-    if (index < 0 || index >= task.sourcePaths.length) return false
+    if (!sel || !task) return false
     const row = [...document.querySelectorAll<HTMLElement>('.timeline-clip')].find((node) => node.dataset.clipKey === sel.clipKey)
     const rect = row?.getBoundingClientRect()
+    // AN ADDED AUDIO TRACK is taken out by its own key, and asks the SAME question the main lane's clips do —
+    // so the Delete key and the track's own REMOVE SOURCE reach one confirmation, not one each.
+    if (sel.laneId !== mainLaneIdRef.current) {
+      const track = (task.additionalAudioTracks || []).find((candidate) => trackKey(task, candidate) === sel.clipKey)
+      if (!track) return false
+      setTimelineMenu({
+        kind: 'clip',
+        x: rect ? Math.max(8, Math.min(window.innerWidth - 220, rect.left)) : 40,
+        y: rect ? Math.min(window.innerHeight - 170, rect.bottom + 6) : 120,
+        sourcePath: track.path, sourceIndex: null, mainIndex: null,
+        laneId: sel.laneId, segmentIndex: 0, label: sourceName(track.path),
+        fitKey: sel.clipKey, visual: false, confirming: true,
+      })
+      return true
+    }
+    const index = materializeClipIds(task).indexOf(sel.clipKey)
+    if (index < 0 || index >= task.sourcePaths.length) return false
     setTimelineMenu({
       kind: 'clip',
       x: rect ? Math.max(8, Math.min(window.innerWidth - 220, rect.left)) : 40,
@@ -4640,8 +4658,32 @@ export const EditJobApp: React.FC = () => {
                 onContextMenu={(event) => { event.preventDefault(); const point = menuPoint(event); setTimelineMenu({ kind: 'stamp', x: point.x, y: point.y }) }}
                 title="Right-click to choose whether lengths read as a timestamp or a framestamp"
               >{stamp(playback.position)}</div>
-              {model.lanes.map((lane) => (
-                <div className="timeline-lane-head" key={lane.id} onContextMenu={(event) => openLaneMenu(event, lane.id, lane.label)} title="Right-click to choose how this lane's clips are drawn">
+              {model.lanes.map((lane) => {
+                // An ADDED, STACKED track is dragged by its own HEAD to re-order the track list: the lane IS the
+                // track, so moving the head moves the track, and the drawn lanes and the export follow the one
+                // list. A SEQUENCED lane holds several tracks on one lane and is re-ordered by dragging its
+                // CLIPS instead, so its head is not a handle.
+                const tracks = draft.additionalAudioTracks || []
+                const laneTrackIndex = tracks.findIndex((candidate) => candidate.id === lane.id)
+                const laneDragReorderable = laneTrackIndex >= 0 && tracks.length > 1
+                const laneTrack = laneTrackIndex >= 0 ? tracks[laneTrackIndex] : undefined
+                return (
+                <div
+                  className={`timeline-lane-head${laneDragReorderable ? ' is-draggable' : ''}${draggingTrackLaneId === lane.id ? ' is-dragging' : ''}`}
+                  key={lane.id}
+                  onContextMenu={(event) => openLaneMenu(event, lane.id, lane.label)}
+                  title={laneDragReorderable ? 'Drag to re-order this track. Right-click to choose how its clips are drawn.' : "Right-click to choose how this lane's clips are drawn"}
+                  draggable={laneDragReorderable}
+                  onDragStart={laneDragReorderable ? (event) => { event.stopPropagation(); setDraggingTrackLaneId(lane.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-stitch-lane', lane.id) } : undefined}
+                  onDragOver={laneDragReorderable ? (event) => { event.preventDefault(); event.stopPropagation() } : undefined}
+                  onDrop={laneDragReorderable ? (event) => {
+                    event.preventDefault(); event.stopPropagation()
+                    const from = tracks.findIndex((candidate) => candidate.id === draggingTrackLaneId)
+                    if (from >= 0 && laneTrackIndex >= 0 && from !== laneTrackIndex) reorderTrack(from, laneTrackIndex)
+                    setDraggingTrackLaneId(null)
+                  } : undefined}
+                  onDragEnd={laneDragReorderable ? () => setDraggingTrackLaneId(null) : undefined}
+                >
                   <button
                     className={`lane-mute${muted[lane.id] ? ' is-muted' : ''}`}
                     onClick={() => setLaneMuted(lane.id, !muted[lane.id])}
@@ -4652,14 +4694,11 @@ export const EditJobApp: React.FC = () => {
                       per stream by the export and applied to this lane's element by the monitor. A track
                       that is SEQUENCED with others is one of several on the lane, so its level is not set
                       here — the lane holds no single track to set it on. */}
-                  {(() => {
-                    const track = (draft.additionalAudioTracks || []).find((candidate) => candidate.id === lane.id)
-                    if (!track) return null
-                    return <label className="lane-gain"><NumberField className="lane-gain-input" min={-60} max={24} step={0.5} value={track.gainDb ?? 0} onValue={(value) => setTrackGain(track.id, value)} ariaLabel={`${lane.label} level in dB`} title="This track's level in dB. 0 dB is unity; the export writes it on this track's own stream and the monitor follows." /><span>dB</span></label>
-                  })()}
+                  {laneTrack && <label className="lane-gain"><NumberField className="lane-gain-input" min={-60} max={24} step={0.5} value={laneTrack.gainDb ?? 0} onValue={(value) => setTrackGain(laneTrack.id, value)} ariaLabel={`${lane.label} level in dB`} title="This track's level in dB. 0 dB is unity; the export writes it on this track's own stream and the monitor follows." /><span>dB</span></label>}
                   <span>{lane.label}</span>
                 </div>
-              ))}
+                )
+              })}
             </div>
             <div className="timeline-scroll" ref={attachLanes}>
               {/* The lane area's own width, with nothing in it but lane: the label column is not a
@@ -5612,7 +5651,7 @@ export const EditJobApp: React.FC = () => {
             ? 'THIS IS THE JOB\'S LAST SOURCE, SO REMOVING IT REMOVES THE JOB.'
             : 'THE CLIP GOES FROM THE TIMELINE AND FROM THE JOB\'S SOURCE LIST.'}</p>
         <div className="timeline-menu-actions">
-          <button role="menuitem" onClick={() => setTimelineMenu({ ...timelineMenu, confirming: undefined })}>KEEP IT</button>
+          <button role="menuitem" onClick={() => setTimelineMenu(null)}>KEEP IT</button>
           <button role="menuitem" className="is-danger" onClick={() => {
             setTimelineMenu(null)
             if (timelineMenu.multi) removeSelectedClips()

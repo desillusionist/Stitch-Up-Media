@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1767,6 +1767,46 @@ const drive = async () => {
   await wait(250)
   const soundStitchPatch = applied[applied.length - 1] as { sourcePaths?: string[]; additionalAudioTracks?: unknown[] } | undefined
   result.soundStitchAdd = { before: soundClipsBefore, after: soundClipsAfter, sourceCount: soundStitchPatch?.sourcePaths?.length ?? 0, trackCount: soundStitchPatch?.additionalAudioTracks?.length ?? 0 }
+
+  // THE DELETE KEY REACHES AN ADDED AUDIO TRACK. A selection on an audio lane was left out of the Delete
+  // question, so a track could only be taken out through its own menu. It asks the SAME question now.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-track-delete', type: 'multitrack', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 'tA', path: SOUND_FIXTURE, language: 'und' }, { id: 'tB', path: '/tmp/track-b.wav', language: 'und' }] }, 'track-delete')
+  await wait(1200)
+  const everyClip = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const lanesBeforeDelete = document.querySelectorAll('.timeline-lane-head').length
+  // Clips are in lane order: the video's first, then the tracks'.
+  everyClip()[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+  await wait(200)
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Delete', key: 'Delete', bubbles: true }))
+  await wait(200)
+  const trackDeleteHead = ([...document.querySelectorAll('.timeline-menu-head')].map((node) => node.textContent ?? '')).find((text) => text.startsWith('REMOVE ')) ?? null
+  const trackRemove = [...document.querySelectorAll('.timeline-menu-actions button')].find((button) => button.textContent?.trim() === 'REMOVE') as HTMLButtonElement | undefined
+  trackRemove?.click()
+  await wait(300)
+  const lanesAfterDelete = document.querySelectorAll('.timeline-lane-head').length
+  const applyTrackDelete = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyTrackDelete?.click()
+  await wait(250)
+  const trackDeletePatch = applied[applied.length - 1] as { additionalAudioTracks?: unknown[] } | undefined
+  result.trackDelete = { head: trackDeleteHead, lanesBefore: lanesBeforeDelete, lanesAfter: lanesAfterDelete, tracksAfter: trackDeletePatch?.additionalAudioTracks?.length ?? 0 }
+
+  // KEEP IT DISMISSES the removal question rather than re-opening the menu behind it.
+  flushEdits()
+  await wait(200)
+  arrive(task, 'keep-it')
+  await wait(900)
+  const keepClip = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  keepClip()[0]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const keepRemoveSource = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REMOVE SOURCE') as HTMLButtonElement | undefined
+  keepRemoveSource?.click()
+  await wait(150)
+  const keepItButton = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'KEEP IT') as HTMLButtonElement | undefined
+  keepItButton?.click()
+  await wait(200)
+  result.keepIt = { menuOpen: Boolean(document.querySelector('.timeline-menu')), clips: keepClip().length }
 
   // THE TITLE AND THE LANES FOR A COMBO'S OWN MODE. A combo's heading names which of its two arrangements it
   // is, and its tracks land on ONE lane when they are sequenced rather than one each.
