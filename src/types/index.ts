@@ -110,6 +110,15 @@ export interface EncodingPreset {
    */
   audioChannels?: 1 | 2
   /**
+   * How the export lays several audio lanes out: one stream each, or one stream with them summed.
+   *
+   * Absent means what this path has always done — a stream per lane, kept wherever the container can hold
+   * them — so a job written before this existed is byte-identical. Where the container CANNOT hold a second
+   * stream (wav, flac, mp3) the lanes are summed whatever this says, because the alternative is an export
+   * the muxer refuses outright. See `src/lib/audioLayout.ts`.
+   */
+  audioLayout?: 'separate' | 'mixdown'
+  /**
    * How many bits one sample of the export's sound is, for the codecs that store samples at all.
    *
    * A lossless codec writes the samples it is given, so this is the only thing that decides what they are:

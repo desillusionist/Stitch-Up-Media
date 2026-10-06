@@ -980,7 +980,27 @@ app.whenReady().then(async () => {
       if (comboMode.comboMultiTitle !== 'STITCH UP MEDIA // EDIT JOB // COMBO (MULTI-TRACK)') problems.push(`a stacked COMBO's title reads ${JSON.stringify(comboMode.comboMultiTitle)}`)
       if (comboMode.comboMultiLanes !== 3) problems.push(`a stacked COMBO drew ${comboMode.comboMultiLanes} lanes rather than the video and one lane per track`)
     }
-    // A CLIP'S OWN EMBEDDED SOUND, IN PROPERTIES.
+    // HOW SEVERAL AUDIO LANES GO INTO THE FILE: the TRACK OUTPUT setting, offered where the file can carry
+    // either answer and refused (with its reason) where it cannot.
+    const trackOutput = result.trackOutput
+    if (!trackOutput) problems.push('the track-output drive reported nothing')
+    else {
+      if (!trackOutput.laneDrawn) problems.push('a multi-track with lanes drew no TRACK OUTPUT control in the AUDIO pane')
+      if (trackOutput.laneValue !== 'separate') problems.push(`a job that says nothing laid its lanes out as ${JSON.stringify(trackOutput.laneValue)} rather than a stream each`)
+      if (trackOutput.laneDisabled) problems.push('TRACK OUTPUT was disabled on a job whose container can carry either layout')
+      if (String(trackOutput.laneOptions) !== 'separate:on,mixdown:on') problems.push(`TRACK OUTPUT offered ${JSON.stringify(trackOutput.laneOptions)} rather than both entries choosable`)
+      if (trackOutput.laneChose !== 'mixdown') problems.push(`choosing MIXDOWN did not reach the queue as the preset: ${JSON.stringify(trackOutput.laneChose)}`)
+      if (!trackOutput.sequencedDisabled) problems.push('TRACK OUTPUT was offered on a SEQUENCED set of tracks, which is one stream already')
+      if (trackOutput.sequencedValue !== 'mixdown') problems.push(`a sequenced set read as ${JSON.stringify(trackOutput.sequencedValue)} rather than the one stream it already is`)
+      if (!String(trackOutput.sequencedNote || '').includes('SEQUENCED')) problems.push(`a sequenced set gave no reason on the setting: ${JSON.stringify(trackOutput.sequencedNote)}`)
+      if (trackOutput.wavDisabled) problems.push('TRACK OUTPUT was disabled on a one-track container rather than refusing only SEPARATE')
+      if (String(trackOutput.wavOptions) !== 'separate:off,mixdown:on') problems.push(`a wav export offered ${JSON.stringify(trackOutput.wavOptions)} rather than MIXDOWN alone`)
+      if (trackOutput.wavValue !== 'mixdown') problems.push(`a one-track container read as ${JSON.stringify(trackOutput.wavValue)} rather than the sum it will write`)
+      if (!String(trackOutput.wavNote || '').includes('CARRIES ONE AUDIO TRACK')) problems.push(`a one-track container named no reason: ${JSON.stringify(trackOutput.wavNote)}`)
+      if (!trackOutput.drawingDisabled) problems.push('TRACK OUTPUT was offered on a DRAWING, which builds its own mix')
+      if (trackOutput.drawingValue !== 'mixdown') problems.push(`a drawing read as ${JSON.stringify(trackOutput.drawingValue)} rather than the mix it draws`)
+      if (!String(trackOutput.drawingNote || '').includes('SUMM')) problems.push(`a drawing gave no reason on the setting: ${JSON.stringify(trackOutput.drawingNote)}`)
+    }
     const embedded = result.embeddedAudio
     if (!embedded) problems.push('the embedded-audio drive reported nothing')
     else {

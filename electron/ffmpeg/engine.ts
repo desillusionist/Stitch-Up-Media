@@ -8,6 +8,7 @@ import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, crossfadeAt, edg
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
+import { resolvedAudioLayout } from '../../src/lib/audioLayout'
 import { placeholderFill, placeholderKind } from '../../src/lib/placeholder'
 import { blankSource, silenceSource } from './placeholder'
 import { progressPercent } from '../../src/lib/progress'
@@ -1081,11 +1082,33 @@ export class FFmpegEngine {
       && embeddedAudioCustomised(task, embeddedClipId as string, videoSource)
       && task.preset.audioEnabled !== false
     const mainStreams = embeddedCustom ? enabledEmbeddedStreams(task, embeddedClipId as string, videoSource, videoAudioCount) : null
+    // HOW THE SOUND IS LAID OUT. SEPARATE is one output stream per lane — what this path has always written,
+    // and what a container with several tracks is for. MIXDOWN sums them into one. The choice is the preset's,
+    // but the CONTAINER can overrule it: wav, flac and mp3 take one audio stream and refuse a second (measured
+    // — the muxer writes nothing at all), so SEPARATE there is summed instead, which is what turns a
+    // multi-track export to those formats from a failure into a file. See `src/lib/audioLayout.ts`.
+    const audioLayout = resolvedAudioLayout(task.preset)
+    // A SEQUENCED set of tracks is ONE output stream built by the graph below; a set of STACKED ones is
+    // either one stream each or one summed stream, and both are built from this same list of sources.
+    const tracksStitched = tracksConcatenate(task) && extraAudios.length > 0
+    // Each lane as the mix would take it, with its own chain — its retime, its fades and its level. The
+    // LABEL is qualified down to the stream (`0:a:0`, not `0:a`) because a filter link of `0:a` stands for
+    // every audio stream of the input, which is wrong the moment a clip carries more than one.
+    const carriesMain = carriesMainAudio && videoHasAudio
+    const mixSources: Array<{ label: string; filters: string[] }> = []
+    if (!tracksStitched) {
+      if (mainStreams) mainStreams.forEach((stream) => mixSources.push({ label: `0:a:${stream.index}`, filters: [...speedMainAudio, ...mainFades.audio, ...this.gainFilters(stream.gainDb)] }))
+      else if (carriesMain) mixSources.push({ label: '0:a:0', filters: [...speedMainAudio, ...mainFades.audio] })
+      extraAudios.forEach((track, idx) => mixSources.push({ label: `${idx + 1}:a:${track.streamIndex ?? 0}`, filters: [...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...this.gainFilters(track.gainDb)] }))
+    }
+    const mixing = !pictured && !tracksStitched && audioLayout === 'mixdown' && mixSources.length > 0
     // The output stream each track's audio lands on: after the main lane's own streams, however many
     // there are — one per enabled embedded stream where the clip was told which to carry, or every stream
     // of the input where it is left to `-map 0:a?`, which maps ALL of them.
-    const firstTrackOut = mainStreams ? mainStreams.length : (carriesMainAudio && videoHasAudio ? Math.max(1, videoAudioCount) : 0)
-    if (!pictured) {
+    const firstTrackOut = mainStreams ? mainStreams.length : (carriesMain ? Math.max(1, videoAudioCount) : 0)
+    // A SUMMED layout maps ONE stream, built by the graph below, so nothing here may be mapped stream by
+    // stream: doing both would write the lanes twice, once mixed and once raw.
+    if (!pictured && !mixing) {
       if (mainStreams) {
         mainStreams.forEach((stream) => outputOptions.push(`-map 0:a:${stream.index}`))
         if (!mainStreams.length && extraAudios.length === 0) outputOptions.push('-an')
@@ -1096,10 +1119,7 @@ export class FFmpegEngine {
       }
     }
 
-    // A SEQUENCED set of tracks is ONE output stream, built by the graph below and mapped as `[aout]`;
-    // stacked tracks are one stream each, mapped here. The two are the same list of inputs either way.
-    const tracksStitched = tracksConcatenate(task) && extraAudios.length > 0
-    if (!pictured && !tracksStitched) extraAudios.forEach((track, idx) => {
+    if (!pictured && !tracksStitched && !mixing) extraAudios.forEach((track, idx) => {
       const inputIdx = idx + 1
       // An EXTRACTED track names the stream it was pulled from; a plain added track is the file's own first.
       const stream = track.streamIndex != null ? `:a:${track.streamIndex}` : ':a:0'
@@ -1166,6 +1186,25 @@ export class FFmpegEngine {
       if (language) outputOptions.push(`-metadata:s:a:${firstTrackOut} language=${language}`)
       if (extraAudios[0].title) outputOptions.push(`-metadata:s:a:${firstTrackOut} title="${extraAudios[0].title}"`)
       mainChains.forEach((chain, outIndex) => cmd.outputOptions([`-filter:a:${outIndex} ${chain.join(',')}`]))
+    } else if (!pictured && mixing) {
+      // THE LANES SUMMED INTO ONE. Each is resampled, retimed, faded and levelled on its OWN chain first — a
+      // gain applied after the sum would move every lane together — and `normalize=0` then SUMS them as they
+      // stand, which is the same mixer the drawing's own graph uses rather than a second convention for the
+      // same job. `duration=longest` is `amix`'s own default (measured) and is what a mix of unequal lanes
+      // wants, so it is named rather than left to be discovered. The sum can reach above full scale and clip:
+      // the reader's per-lane levels are the only defence, exactly as they are for a drawing.
+      const parts: string[] = []
+      const labels = mixSources.map((source, idx) => {
+        parts.push(`[${source.label}]${[audioBase, ...source.filters].join(',')}[mx${idx}]`)
+        return `[mx${idx}]`
+      })
+      // ONE lane has nothing to be summed with, so it is written as it stands rather than through a mixer of
+      // one — which is a fair graph but a needless one, and names a stream nothing mixed.
+      if (labels.length === 1) parts[parts.length - 1] = parts[parts.length - 1].replace('[mx0]', '[aout]')
+      else parts.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest[aout]`)
+      cmd.complexFilter(parts.join(';'))
+      cmd.outputOptions([`-ar 48000`, `-ac ${channels}`])
+      outputOptions.push('-map [aout]')
     } else if (!pictured) {
       // THE AUDIO IS FILTERED PER OUTPUT STREAM once any lane needs its own chain — a fade, a retime, or a
       // level — because a single `-af` would put one lane's on all of them. Each output stream gets the same

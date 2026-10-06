@@ -20,6 +20,7 @@ import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurati
 import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue, secondsForFrames } from '../src/lib/frameRate'
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
+import { AUDIO_LAYOUTS, audioLayoutState, containerHoldsStreams, resolvedAudioLayout } from '../src/lib/audioLayout'
 import { videoCodecFacts } from '../src/lib/videoFacts'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, crossfadeAtTime, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, runsOnAnchoredClock, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -2265,6 +2266,33 @@ console.log('\n== what a sound is, and what the export will make of it ==')
   check('a figure that is not on the list falls back to SOURCE rather than to two', clampAudioChannels(6), 0)
   check('as does nonsense', clampAudioChannels('nonsense'), 0)
   check('and the two that are on it are kept', [clampAudioChannels(1), clampAudioChannels(2)], [1, 2])
+}
+
+console.log('\n== how several audio lanes are laid out ==')
+{
+  // MEASURED, by muxing two `-map`ped audio streams into each container and reading the count back: these
+  // five hold both, and wav, flac and mp3 refuse a second outright — "Nothing was written into output file,
+  // because at least one of its streams received no packets".
+  check('a container with room holds the lanes apart', ['mp4', 'mov', 'mkv', 'webm', 'm4a'].map((container) => containerHoldsStreams(container as EncodingPreset['container'])), [true, true, true, true, true])
+  check('and one that holds a single track does not', ['wav', 'flac', 'mp3'].map((container) => containerHoldsStreams(container as EncodingPreset['container'])), [false, false, false])
+  check('nor do the picture and frame containers', (['png', 'jpg', 'gif'] as const).some((container) => containerHoldsStreams(container)), false)
+
+  const mkv = { container: 'mkv' as const }
+  check('a job that says nothing keeps the lanes apart', resolvedAudioLayout(mkv), 'separate')
+  check('an explicit MIXDOWN is honoured', resolvedAudioLayout({ ...mkv, audioLayout: 'mixdown' as const }), 'mixdown')
+  check('and an explicit SEPARATE where the container can hold it', resolvedAudioLayout({ ...mkv, audioLayout: 'separate' as const }), 'separate')
+  // THE FIX: a container that holds ONE track sums the lanes rather than being handed a second stream it
+  // refuses — which is what turned a multi-track export to a wav into a failed job.
+  check('a wav sums even when the job said nothing', resolvedAudioLayout({ container: 'wav' }), 'mixdown')
+  check('and sums even when the job asked for SEPARATE', resolvedAudioLayout({ container: 'wav', audioLayout: 'separate' }), 'mixdown')
+  // A MIXDOWN is honoured in a container that could hold the lanes apart: the container is a limit, not an override.
+  check('while a MIXDOWN in a roomy container is still a mixdown', resolvedAudioLayout({ container: 'mkv', audioLayout: 'mixdown' }), 'mixdown')
+
+  check('both layouts are offered', AUDIO_LAYOUTS.map((entry) => entry.value), ['separate', 'mixdown'])
+  check('a job with nothing to refuse shows what it will write', audioLayoutState(mkv, { sequenced: false, drawing: false }), { value: 'separate', locked: false, separateBlocked: null })
+  check('a SEQUENCED set is locked, because it is one stream already', audioLayoutState(mkv, { sequenced: true, drawing: false }), { value: 'mixdown', locked: true, separateBlocked: 'THE TRACKS ARE SEQUENCED, SO THEY ALREADY FORM ONE STREAM.' })
+  check('a DRAWING is locked too, because it builds its own mix', audioLayoutState(mkv, { sequenced: false, drawing: true }), { value: 'mixdown', locked: true, separateBlocked: 'A DRAWING SUMMS THE LANES ITSELF.' })
+  check('and a one-track container offers no SEPARATE, naming the format', audioLayoutState({ container: 'mp3' }, { sequenced: false, drawing: false }), { value: 'mixdown', locked: false, separateBlocked: 'THIS FORMAT CARRIES ONE AUDIO TRACK.' })
 }
 
 console.log('\n== whether an export draws its own sound ==')

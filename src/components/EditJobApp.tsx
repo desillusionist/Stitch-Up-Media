@@ -12,6 +12,7 @@ import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, cli
 import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId, nextClipNumber, trackKey } from '../lib/clipIds'
 import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
+import { AUDIO_LAYOUTS, audioLayoutState } from '../lib/audioLayout'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
 import { FrameRate, RATE_PRESETS, frameCount, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue } from '../lib/frameRate'
@@ -20,7 +21,7 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, CROSSFADE, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
+import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, CROSSFADE, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
 import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamCount, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
 import { presetSummary } from '../lib/presetSummary'
@@ -4203,6 +4204,15 @@ export const EditJobApp: React.FC = () => {
   const hasStill = visuals.includes('image')
   const jobSound = visuals.includes('audio') || Boolean(draft.additionalAudioTracks?.length)
   /**
+   * The TRACK OUTPUT control, drawn only where the export really has several audio LANES to lay out.
+   *
+   * A job with tracks that plays them at once is the only case the setting can change: a SEQUENCED set is one
+   * concatenated stream already, and a DRAWING builds its own mix from the lanes — so both are reported to the
+   * control as reasons it cannot be chosen rather than as choices that would not move the file.
+   */
+  const trackLanes = Boolean(draft.additionalAudioTracks?.length) && (draft.type === 'combo' || draft.type === 'multitrack')
+  const layoutState = trackLanes ? audioLayoutState(draft.preset, { sequenced: tracksConcatenate(draft), drawing: drawingPicture.draws }) : null
+  /**
    * Whether the EXPORT writes a sound, which is a different question from whether the source IS sound.
    *
    * A video carries an audio stream of its own, so a job extracting it — an MP4 or a MOV into an MP3, which
@@ -4272,6 +4282,13 @@ export const EditJobApp: React.FC = () => {
   const chooseAudioChannels = (value: string) => {
     const channels = clampAudioChannels(value)
     updatePreset({ audioChannels: channels === 1 || channels === 2 ? channels : undefined })
+  }
+  /**
+   * The layout of several audio lanes. SEPARATE is the long-standing behaviour and is stored EXPLICITLY once
+   * chosen, so a job that was set back to it reads back as it rather than as "whatever the container allows".
+   */
+  const chooseAudioLayout = (value: string) => {
+    updatePreset({ audioLayout: value === 'mixdown' ? 'mixdown' : value === 'separate' ? 'separate' : undefined })
   }
   /** Picks the image a drawing sits on, and stores it on the preset the export reads. */
   const chooseBackgroundImage = async () => {
@@ -5693,6 +5710,30 @@ export const EditJobApp: React.FC = () => {
               <EditorSelect value={String(clampAudioChannels(draft.preset.audioChannels))} options={AUDIO_CHANNELS.map((option) => ({ value: String(option.value), label: option.name }))} disabled={audioDisabled} onChange={chooseAudioChannels} ariaLabel="How many channels the export writes" />
             </EditorField>}
             <EditorRow label="TRACKS" value={draft.additionalAudioTracks?.length ? `${draft.additionalAudioTracks.length + 1} (EMBEDDED + ${draft.additionalAudioTracks.length})` : '1 EMBEDDED'} />
+            {/* HOW SEVERAL LANES ARE LAID OUT. SEPARATE TRACKS is a stream per lane, each with its own
+                language — what a container with several tracks is for — and MIXDOWN sums them into one, using
+                each lane's own level exactly as a drawing's own mix does. The value shown is the layout the
+                export will ACTUALLY write, so a job pointed at a container that holds one track reads
+                MIXDOWN; the reason it cannot be SEPARATE is said rather than left to be discovered. */}
+            {layoutState && <EditorField
+              label="TRACK OUTPUT"
+              hint={layoutState.locked ? 'ONE STREAM' : layoutState.separateBlocked ? 'SUMMED' : undefined}
+              reason={`How the export lays several audio lanes out. SEPARATE TRACKS writes one stream per lane, each with its own language, which is what a container with several tracks is for; MIXDOWN sums them into one consolidated stream. The sum is taken at each lane's own level, exactly as a drawing's own mix is. ${layoutState.separateBlocked ?? ''} A mixdown SUMS the lanes, so two loud ones can reach above full scale — the lanes' own levels are what keep it inside.`}
+            >
+              <EditorSelect
+                value={layoutState.value}
+                options={AUDIO_LAYOUTS.map((option) => ({
+                  value: option.value,
+                  label: option.name,
+                  disabled: option.value === 'separate' && Boolean(layoutState.separateBlocked),
+                  title: option.value === 'separate' ? layoutState.separateBlocked ?? undefined : undefined,
+                }))}
+                disabled={layoutState.locked || audioDisabled}
+                onChange={chooseAudioLayout}
+                ariaLabel="How the export lays several audio lanes out"
+              />
+            </EditorField>}
+            {layoutState?.separateBlocked && <div className="editor-note">&gt; {layoutState.separateBlocked}{layoutState.locked ? '' : ' THE LANES ARE SUMMED INSTEAD.'}</div>}
             <div className="editor-note">&gt; ADDING AND REORDERING TRACKS ARRIVES WITH THE TRACK EDITOR.</div>
             {/* What a sound-only job is given to show. Every setting below it only exists while the
                 picture is being drawn, so the section reads as one decision and its consequences. */}

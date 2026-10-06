@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -2009,6 +2009,62 @@ const drive = async () => {
   const comboMultiLanes = document.querySelectorAll('.timeline-lane').length
   const comboMultiLabels = [...document.querySelectorAll('.timeline-lane-head span')].map((node) => node.textContent ?? '')
   result.comboMode = { comboStitchTitle, comboStitchLanes, comboMultiTitle, comboMultiLanes, comboMultiLabels }
+
+  // HOW SEVERAL AUDIO LANES GO INTO THE FILE. A multi-track that plays its lanes at once is the ONE job the
+  // TRACK OUTPUT setting can change — a stream per lane, or the lanes summed — and the setting is REFUSED
+  // where the file cannot tell the two apart (a sequenced set is one stream already, a drawing builds its own
+  // mix) or where the container cannot hold a second stream. Read from the window's AUDIO pane, chosen on a
+  // real click, and the choice has to reach the queue as the preset.
+  flushEdits()
+  await wait(120)
+  arrive({ ...comboTask, id: 'mount-track-output', comboMode: 'multitrack' }, 'track-output')
+  await wait(500)
+  clickTab('AUDIO')
+  await wait(120)
+  const layoutSelect = () => selectIn('TRACK OUTPUT')
+  const layoutNote = () => [...document.querySelectorAll('.editor-note')].map((node) => node.textContent ?? '').find((text) => /SUMM|SEQUENCED|CARRIES ONE/.test(text)) ?? null
+  // What each entry of the dropdown says it is, and whether it can be taken: `separate:off` is the answer a
+  // one-track container cannot give. Read off the options themselves, which are in the DOM even while closed.
+  const layoutOptions = () => layoutSelect() ? [...(layoutSelect() as HTMLElement).querySelectorAll('.editor-select-option')].map((option) => `${option.getAttribute('data-value')}:${option.hasAttribute('disabled') ? 'off' : 'on'}`) : null
+  const laneDrawn = Boolean(fieldFor('TRACK OUTPUT'))
+  const laneValue = valueOf(layoutSelect())
+  const laneDisabled = fieldDisabled('TRACK OUTPUT')
+  const laneOptions = layoutOptions()
+  chooseOption(layoutSelect(), 'mixdown')
+  await wait(120)
+  const applyLayout = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyLayout?.click()
+  await wait(180)
+  const laneChose = (applied[applied.length - 1] as { preset?: { audioLayout?: string } } | undefined)?.preset?.audioLayout ?? null
+  result.trackOutput = { laneDrawn, laneValue, laneDisabled, laneOptions, laneChose }
+
+  // A SEQUENCED set of tracks is one concatenated stream already, so the whole setting is refused with its reason.
+  flushEdits()
+  await wait(120)
+  arrive({ ...comboTask, id: 'mount-track-output-seq' }, 'track-output-sequenced')
+  await wait(500)
+  clickTab('AUDIO')
+  await wait(120)
+  result.trackOutput = { ...(result.trackOutput as object), sequencedValue: valueOf(layoutSelect()), sequencedDisabled: fieldDisabled('TRACK OUTPUT'), sequencedNote: layoutNote() }
+
+  // A container that carries ONE stream has no second answer to offer, so SEPARATE is refused and MIXDOWN is
+  // what it will write — the reason names the format rather than leaving it to be found out by a failed job.
+  flushEdits()
+  await wait(120)
+  arrive({ ...comboTask, id: 'mount-track-output-wav', comboMode: 'multitrack', outputFilename: 'combo.wav', preset: { ...comboTask.preset, container: 'wav', audioCodec: 'pcm' } }, 'track-output-wav')
+  await wait(500)
+  clickTab('AUDIO')
+  await wait(120)
+  result.trackOutput = { ...(result.trackOutput as object), wavValue: valueOf(layoutSelect()), wavDisabled: fieldDisabled('TRACK OUTPUT'), wavOptions: layoutOptions(), wavNote: layoutNote() }
+
+  // A DRAWING builds its own mix out of the lanes, so there is nothing left for this setting to decide.
+  flushEdits()
+  await wait(120)
+  arrive({ ...comboTask, id: 'mount-track-output-drawing', comboMode: 'multitrack', sourcePaths: [SOUND_FIXTURE], preset: { ...comboTask.preset, audioPicture: 'visualization' } }, 'track-output-drawing')
+  await wait(500)
+  clickTab('AUDIO')
+  await wait(120)
+  result.trackOutput = { ...(result.trackOutput as object), drawingValue: valueOf(layoutSelect()), drawingDisabled: fieldDisabled('TRACK OUTPUT'), drawingNote: layoutNote() }
 
   // A CLIP'S OWN EMBEDDED SOUND, in PROPERTIES. A video that carries a soundtrack offers one row per stream,
   // each with a mute and a level and a way to EXTRACT it to a track; a mute has to reach the queue as

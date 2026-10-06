@@ -1624,6 +1624,51 @@ const main = async () => {
   const blankXfadeSeconds = Number(await probeValue(path.join(root, 'blank-xfade.mp4'), 'format=duration'))
   check(`and the join runs one overlap shorter (${blankXfadeSeconds.toFixed(2)}s against 9.00)`, Math.abs(blankXfadeSeconds - 9) < 0.4, true)
 
+  // HOW SEVERAL AUDIO LANES ARE LAID OUT. A MULTI-TRACK plays its lanes at once, and the export either writes
+  // one stream per lane — carrying each lane's own language, which is what a container with several tracks is
+  // for — or SUMS them into one. The container can also refuse the separate answer, which is what used to make
+  // a multi-track export to a wav, a flac or an mp3 a FAILED job rather than a file.
+  console.log('\n== how several audio lanes are laid out ==')
+  const lanesVisual = path.join(root, 'lanes-visual.mp4')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=25:duration=3', '-an', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', lanesVisual])
+  const laneA = path.join(root, 'lane-a.wav')
+  const laneB = path.join(root, 'lane-b.wav')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', laneA])
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', laneB])
+  // A SILENT visual, so the two lanes are the only audio and the stream count is the lanes themselves.
+  const laneTask = (container, audioLayout, outputFilename) => ({
+    id: `lanes-${container}`, type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: [lanesVisual], outputDirectory: root, outputFilename,
+    additionalAudioTracks: [{ id: 'la', path: laneA, language: 'eng' }, { id: 'lb', path: laneB, language: 'fra' }],
+    preset: { ...preset, container, ...(audioLayout ? { audioLayout } : {}) },
+  })
+
+  const separateCmd = await captureCommand(laneTask('mkv', undefined, 'lanes-separate.mkv'))
+  check('a roomy container maps a stream per lane', (separateCmd.match(/-map \d+:a:0/g) || []).length, 2)
+  const separateProbe = await probeFile(path.join(root, 'lanes-separate.mkv'))
+  check('and the file really holds them apart', separateProbe.audioStreams.length, 2)
+  check('each naming its own language', separateProbe.audioStreams.map((stream) => stream.language).join(','), 'eng,fra')
+
+  const mixCmd = await captureCommand(laneTask('mkv', 'mixdown', 'lanes-mix.mkv'))
+  check('a mixture sums the lanes with amix', /amix=inputs=2:normalize=0:duration=longest/.test(mixCmd), true)
+  const mixProbe = await probeFile(path.join(root, 'lanes-mix.mkv'))
+  check('and the file holds ONE stream', mixProbe.audioStreams.length, 1)
+  // ONE lane's level as the ENCODER wrote it — its own stream of the separate file — rather than the raw wav.
+  // The reading has to be taken the same way on both sides: `rmsAt` decodes to s16le and MIXES DOWN to mono,
+  // and this ffmpeg's downmix weights differ between s16 and f32 output (measured: the same stereo mix reads
+  // 0.088 the s16 way and 0.125 the f32 way), so a mono wav against a stereo mix compares two weights.
+  const oneLaneRms = await rmsStream(path.join(root, 'lanes-separate.mkv'), 0, 0.5, 1)
+  const mixRms = await rmsAt(path.join(root, 'lanes-mix.mkv'), 0.5, 1)
+  check(`and BOTH lanes are in it (${mixRms.toFixed(3)} against one lane's ${oneLaneRms.toFixed(3)})`, mixRms > oneLaneRms * 1.2, true)
+
+  // THE FIX: wav, flac and mp3 take ONE audio stream and refuse a second (measured), so the lanes are SUMMED
+  // there even though the job said nothing about how to lay them out.
+  const wavCmd = await captureCommand(laneTask('wav', undefined, 'lanes-fixed.wav'))
+  check('a one-track container never maps a second stream', /-map [12]:a/.test(wavCmd), false)
+  check('and maps the summed one instead', /-map \[aout\]/.test(wavCmd), true)
+  const wavProbe = await probeFile(path.join(root, 'lanes-fixed.wav'))
+  check('so the file is written rather than refused', wavProbe.audioStreams.length, 1)
+
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')
   process.exit(failures.length ? 1 : 0)
