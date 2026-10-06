@@ -4751,10 +4751,14 @@ export const EditJobApp: React.FC = () => {
                       const trimmable = sourceFull > 0
                       const trimming = trimDragKey === segment.key ? trimPreview : (trimGroup[segment.key] ?? null)
                       const clipWidth = laneWidthFor(segment.duration, zoom)
+                      // The clip's own sound DROPPED — muted at the clip, or extracted away — read from the one
+                      // answer the export and the monitor both ask, so the shade on the box, the green mark and
+                      // what is heard cannot disagree.
+                      const soundMuted = Boolean(muted[lane.id]) || clipAudioDropped(draft, segment.key, segment.sourcePath, embeddedStreamCount(draft, segment.key, segment.sourcePath, sourceProbes[segment.sourcePath]?.audioStreams?.length ?? 0))
                       return (
                       <div
                         key={segment.key}
-                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${multiSelected.includes(segment.key) ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index || draggingTrackIndex === index ? ' is-dragging' : ''}`}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${multiSelected.includes(segment.key) ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index || draggingTrackIndex === index ? ' is-dragging' : ''}${soundMuted ? ' is-muted' : ''}`}
                         style={{ width: `${clipWidth}px` }}
                         title={clipTitle(segment)}
                         data-clip-key={segment.key}
@@ -4834,7 +4838,7 @@ export const EditJobApp: React.FC = () => {
                         {/* A visual clip that carries audio says so, and says whether the export still
                             carries it: green while it does, grey while the lane is muted. */}
                         {lane.kind === 'video' && sourceAudio[segment.sourcePath]
-                          ? <span className={`clip-audio${muted[lane.id] || clipAudioDropped(draft, clipKey(draft, segment.sourcePath, clipIndexOf(segment)), segment.sourcePath, embeddedStreamCount(draft, clipKey(draft, segment.sourcePath, clipIndexOf(segment)), segment.sourcePath, sourceProbes[segment.sourcePath]?.audioStreams?.length ?? 0)) ? ' is-muted' : ''}`} aria-hidden="true" />
+                          ? <span className={`clip-audio${soundMuted ? ' is-muted' : ''}`} aria-hidden="true" />
                           : null}
                         {/* The lane's own boundaries. The main lane's are the cuts of the join: a [+] on a cut
                             fades both sides, and a [+] at either end fades from or to black — or to silence on a
@@ -5690,6 +5694,19 @@ export const EditJobApp: React.FC = () => {
       </> : <>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); void openNativePreview({ sourcePath: target.sourcePath, sourceIndex: target.mainIndex ?? 0 }) }}>QUICK LOOK...</button>
         <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); selectClip(target.laneId, target.fitKey); setInspectorOpen(true) }}>PROPERTIES</button>
+        {/* THE CLIP'S OWN SOUND ON ONE SWITCH, the lane's M taken one clip finer. A main-lane clip silences
+            its own streams, each kept at its LEVEL so switching back does not throw the levels away; an added
+            track is silenced through its lane, which is what the M beside its head writes. Both reach the
+            export and the monitor. */}
+        {(() => {
+          const track = (draft.additionalAudioTracks || []).find((candidate) => trackKey(draft, candidate) === timelineMenu.fitKey)
+          const path = timelineMenu.sourcePath
+          if (!track && !sourceAudio[path]) return null
+          const key = timelineMenu.fitKey
+          const count = embeddedStreamCount(draft, key, path, sourceProbes[path]?.audioStreams?.length ?? 0)
+          const mutedNow = track ? Boolean(muted[track.id]) : clipAudioDropped(draft, key, path, count)
+          return <button role="menuitemcheckbox" aria-checked={mutedNow} className={mutedNow ? 'is-on' : ''} title="Silence this clip's own sound in the export and the monitor. The lane's M is the whole lane; this is one clip." onClick={() => { setTimelineMenu(null); if (track) setLaneMuted(track.id, !mutedNow); else setClipMuted(key, count, !mutedNow) }}>{mutedNow ? 'UNMUTE CLIP' : 'MUTE CLIP'}</button>
+        })()}
         {/* The clip's own two repairs. RESET TRIM is offered only where there is a trim to take away — a
             control that is always there and usually does nothing is a control nobody trusts. REPLACE
             SOURCE swaps the FILE at this place, and needs a place: an added audio track is not in

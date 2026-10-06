@@ -1545,6 +1545,22 @@ const main = async () => {
   const cutSeconds = Number(await probeValue(path.join(root, 'plain-cut.mp4'), 'format=duration'))
   check(`and runs the full length (${cutSeconds.toFixed(2)}s against 8.00)`, Math.abs(cutSeconds - 8) < 0.35, true)
 
+  // A PER-CLIP MUTE SILENCES THAT CLIP. Muting a clip is not dropping its stream — the join wants the same
+  // streams on every clip — so the clip's own chain is given `volume=0` and the sound is taken while the
+  // stream stays. Measured on the two clips above: the muted one's stretch is silent and the other still sounds.
+  console.log('\n== a per-clip MUTE silences that clip in a stitch ==')
+  const mutedClipTask = {
+    id: 'stitch-mute', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: [xfadeA, xfadeB], outputDirectory: root, outputFilename: 'stitch-mute.mp4', preset,
+    embeddedAudio: { [`${xfadeA}#0`]: [{ index: 0, muted: true }] },
+  }
+  const muteCmd = await captureCommand(mutedClipTask)
+  check('the muted clip is silenced in its own chain', /volume=0/.test(muteCmd), true)
+  const muteOut = path.join(root, 'stitch-mute.mp4')
+  const mutedStretch = await rmsAt(muteOut, 1.0, 0.2)
+  const soundingStretch = await rmsAt(muteOut, 5.0, 0.2)
+  check(`the muted clip's stretch is silent (${mutedStretch.toFixed(4)}) while the other still sounds (${soundingStretch.toFixed(4)})`, mutedStretch < 0.002 && soundingStretch > 0.02, true)
+
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')
   process.exit(failures.length ? 1 : 0)

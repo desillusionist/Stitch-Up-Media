@@ -12,7 +12,7 @@ import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { codecTakesRate } from '../../src/lib/outputSize'
 import { clipKey, trackKey } from '../../src/lib/clipIds'
-import { embeddedAudioCustomised, embeddedGainDb, enabledEmbeddedStreams, gainForDb } from '../../src/lib/embeddedAudio'
+import { clipAudioDropped, embeddedAudioCustomised, embeddedGainDb, enabledEmbeddedStreams, gainForDb } from '../../src/lib/embeddedAudio'
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
@@ -236,8 +236,12 @@ export class FFmpegEngine {
       // files is levelled clip by clip. Nothing is written for a clip at unity, which leaves the chain — and
       // the command — exactly what it was.
       const clipGain = mediaKind(source) === 'audio' ? this.gainFilters(embeddedGainDb(task, clipKey(task, source, clipIndex), 0)) : []
+      // A MUTED clip is silenced, not dropped: the normalized clips are joined by a demuxer that wants the SAME
+      // streams on each, so a clip with its sound removed would break the join. `volume=0` keeps the stream and
+      // takes the sound, which is what the monitor shows and what the editor's per-clip MUTE asks for.
+      const soundDropped = clipAudioDropped(task, clipKey(task, source, clipIndex), source, 1)
       command.audioCodec('aac').audioFrequency(48000).audioChannels(2)
-        .outputOptions([`-af ${['aresample=48000:async=1', ...speedAudio, 'aformat=sample_fmts=fltp:channel_layouts=stereo', ...fades.audio, ...clipGain].join(',')}`, '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
+        .outputOptions([`-af ${['aresample=48000:async=1', ...speedAudio, 'aformat=sample_fmts=fltp:channel_layouts=stereo', ...fades.audio, ...(soundDropped ? ['volume=0'] : []), ...clipGain].join(',')}`, '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
         .on('start', (commandLine: string) => logEvent('ffmpeg', 'process started', { taskId: task.id, commandLine }))
         .on('end', () => resolve()).on('error', reject).save(output)
     })

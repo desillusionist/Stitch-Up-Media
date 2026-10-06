@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1824,6 +1824,27 @@ const drive = async () => {
   await wait(1200)
   const plainAudioVolume = (document.querySelector('audio') as HTMLAudioElement | null)?.volume ?? null
   result.audioFadePreview = { faded: fadedAudioVolume, plain: plainAudioVolume }
+
+  // A CLIP'S OWN SOUND ON ONE SWITCH, from its context menu. MUTE silences THIS clip — the lane's M silences the
+  // whole lane — the box is shaded, and the mute reaches the queue as the clip's embedded record.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-clip-mute', type: 'transcode', sourcePaths: [CLIP_AUDIO] }, 'clip-mute')
+  await wait(1200)
+  const clipMuteBox = () => document.querySelector('.timeline-clip') as HTMLElement | null
+  const clipMuteShadedBefore = Boolean(clipMuteBox()?.classList.contains('is-muted'))
+  clipMuteBox()?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const clipMuteItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'MUTE CLIP') as HTMLButtonElement | undefined
+  clipMuteItem?.click()
+  await wait(300)
+  const clipMuteShadedAfter = Boolean(clipMuteBox()?.classList.contains('is-muted'))
+  const applyClipMute = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyClipMute?.click()
+  await wait(250)
+  const clipMutePatch = applied[applied.length - 1] as { embeddedAudio?: Record<string, Array<{ index?: number; muted?: boolean }>> } | undefined
+  const clipMuteRecord = clipMutePatch?.embeddedAudio?.[`${CLIP_AUDIO}#0`] ?? []
+  result.clipMute = { hadItem: Boolean(clipMuteItem), shadedBefore: clipMuteShadedBefore, shadedAfter: clipMuteShadedAfter, mutedIndexes: clipMuteRecord.filter((entry) => entry.muted).map((entry) => entry.index) }
 
   // THE TITLE AND THE LANES FOR A COMBO'S OWN MODE. A combo's heading names which of its two arrangements it
   // is, and its tracks land on ONE lane when they are sequenced rather than one each.

@@ -900,6 +900,16 @@ app.whenReady().then(async () => {
       if (!(audioFadePreview.faded !== null && audioFadePreview.faded < 0.05)) problems.push(`a 1s head fade left the track's element at ${audioFadePreview.faded} rather than near zero`)
       if (!(audioFadePreview.plain !== null && audioFadePreview.plain > 0.9)) problems.push(`a track with no fade was not at full level: ${audioFadePreview.plain}`)
     }
+    // A CLIP'S OWN MUTE, from its context menu: the item is offered, the box is shaded, and the mute reaches
+    // the queue as the clip's embedded record.
+    const clipMute = result.clipMute
+    if (!clipMute) problems.push('the clip-mute drive reported nothing')
+    else {
+      if (!clipMute.hadItem) problems.push('a clip with sound offered no MUTE CLIP in its context menu')
+      if (clipMute.shadedBefore) problems.push('a clip was drawn muted before it was muted')
+      if (!clipMute.shadedAfter) problems.push('muting a clip did not shade its box on the timeline')
+      if (!(clipMute.mutedIndexes || []).length) problems.push(`muting a clip wrote no muted stream to the queue: ${JSON.stringify(clipMute.mutedIndexes)}`)
+    }
     // A COMBO'S OWN MODE, IN THE TITLE AND ON THE LANES.
     const comboMode = result.comboMode
     if (!comboMode) problems.push('the combo-mode drive reported nothing')
