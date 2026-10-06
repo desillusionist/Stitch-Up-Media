@@ -865,6 +865,19 @@ app.whenReady().then(() => {
       const destination = appStatePath()
       const temporary = `${destination}.tmp`
       fs.mkdirSync(path.dirname(destination), { recursive: true })
+      // A SAVE IS NOT SUPPOSED TO EMPTY THE QUEUE. If the list arriving is empty while the file on disk still
+      // holds jobs, the write is SKIPPED and said so: whatever emptied the window's list — a failed read, a
+      // race, a bug — must not take the jobs on disk with it. The trade is that clearing the queue ENTIRELY
+      // does not persist while the file holds jobs; losing every job to a transient is the worse of the two.
+      try {
+        if (Array.isArray(state?.tasks) && state.tasks.length === 0 && fs.existsSync(destination)) {
+          const existing = JSON.parse(fs.readFileSync(destination, 'utf8'))
+          if (Array.isArray(existing?.tasks) && existing.tasks.length > 0) {
+            logEvent('main', 'refusing to save an empty queue over a populated one', { existing: existing.tasks.length })
+            return
+          }
+        }
+      } catch { /* an unreadable existing file is not a reason to refuse the save */ }
       // The file being replaced is kept as a backup first. A save is not supposed to lose the queue, but if one
       // ever does — a bad payload, an empty list written over a full one — the jobs are still on disk to be
       // recovered rather than being gone for good.
