@@ -187,7 +187,14 @@ export const App: React.FC = () => {
         if (saved.settings) setSettings((current) => ({ ...current, ...saved.settings }))
       }
       hydratedRef.current = true
-    }).catch(() => { hydratedRef.current = true })
+    }).catch(() => {
+      // A LOAD THAT FAILED IS NOT A QUEUE THAT IS EMPTY. Marking this window hydrated on a FAILURE let the save
+      // effect below write its still-empty list straight over the file — one failed read (a half-written file, a
+      // reload while the file was being renamed, a momentary permissions wobble) and every job was gone, with
+      // nothing on disk left to undo it. Saving is held back until a load has actually ANSWERED, so the file is
+      // left as it is and the jobs are read again next launch.
+      void window.electronAPI?.diagnosticLog?.('[queue] app state load failed; saving is held back so the file is not overwritten', {})
+    })
     return () => { cancelled = true }
   }, [])
   useEffect(() => {

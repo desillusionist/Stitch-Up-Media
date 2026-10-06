@@ -1018,7 +1018,7 @@ export const EditJobApp: React.FC = () => {
    */
   const monitorLevelFor = (segment: TimelineSegment): { gain: number; muted: boolean } => {
     const task = draftRef.current
-    if (!task || !embeddedAudioEditable(task)) return { gain: 1, muted: false }
+    if (!task) return { gain: 1, muted: false }
     const at = materializeClipIds(task).indexOf(segment.key)
     if (at < 0) return { gain: 1, muted: false }
     const path = segment.sourcePath
@@ -1028,8 +1028,13 @@ export const EditJobApp: React.FC = () => {
     // must be silenced rather than going on sounding under the track that now carries it, and a clip with no
     // stream at all answers enabled-by-default — which is silent anyway, because the file carries no sound.
     const laneMuted = Boolean(task.mutedLanes?.[MAIN_LANE_ID])
+    // A clip's own sound can be DROPPED on EVERY path: the encoder writes the mute as a silence wherever the
+    // clips are joined, a STITCH and a COMBO included. So the monitor follows the mute everywhere — a clip
+    // muted in a COMBO goes quiet as it does in a MULTI-TRACK, which is what it did NOT do. A LEVEL is written
+    // only on the paths that carry the clip's own stream, so the gain is applied on those alone.
     const defaultEnabled = embeddedStreamEnabled(task, clipId, path, 0)
-    return { gain: defaultEnabled ? gainForDb(embeddedGainDb(task, clipId, 0)) : 1, muted: laneMuted || !defaultEnabled }
+    const gain = defaultEnabled && embeddedAudioEditable(task) ? gainForDb(embeddedGainDb(task, clipId, 0)) : 1
+    return { gain, muted: laneMuted || !defaultEnabled }
   }
 
   /**

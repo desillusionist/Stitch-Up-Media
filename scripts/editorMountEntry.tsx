@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1845,6 +1845,37 @@ const drive = async () => {
   const clipMutePatch = applied[applied.length - 1] as { embeddedAudio?: Record<string, Array<{ index?: number; muted?: boolean }>> } | undefined
   const clipMuteRecord = clipMutePatch?.embeddedAudio?.[`${CLIP_AUDIO}#0`] ?? []
   result.clipMute = { hadItem: Boolean(clipMuteItem), shadedBefore: clipMuteShadedBefore, shadedAfter: clipMuteShadedAfter, mutedIndexes: clipMuteRecord.filter((entry) => entry.muted).map((entry) => entry.index) }
+
+  // A CLIP MUTED IN A COMBO GOES QUIET. The monitor applied a clip's own mute only where the in-place controls
+  // were offered (a CONVERT or a MULTI-TRACK), while the encoder silenced the clip on EVERY path — so a COMBO's
+  // muted clip still sounded. The monitor follows the mute everywhere now.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-combo-mute', type: 'combo', comboMode: 'multitrack', sourcePaths: [CLIP_AUDIO, CLIP_AUDIO], embeddedAudio: { [`${CLIP_AUDIO}#0`]: [{ index: 0, muted: true }] } }, 'combo-mute')
+  await wait(1200)
+  const comboMuteVideo = document.querySelector('video') as HTMLVideoElement | null
+  result.comboMute = { videoMuted: comboMuteVideo?.muted ?? null }
+
+  // ADD SOURCE ON A MULTI-TRACK'S VIDEO LANE. A new picture added at the main lane's [+] splices into the join
+  // beside the one already there — the same place a DUPLICATE lands.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-video-add', type: 'multitrack', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 'tA', path: SOUND_FIXTURE, language: 'und' }] }, 'video-add')
+  await wait(1200)
+  const videoAddBefore = document.querySelectorAll('.timeline-clip').length
+  nextSelection = ['/tmp/added-picture.mp4']
+  ;(document.querySelector('.timeline-clip .boundary-add.is-head') as HTMLElement | null)?.click()
+  await wait(150)
+  const videoAddButton = [...document.querySelectorAll('.boundary-editor .boundary-source')].find((button) => button.textContent?.trim() === 'ADD SOURCE') as HTMLButtonElement | undefined
+  videoAddButton?.click()
+  await wait(400)
+  nextSelection = null
+  const videoAddAfter = document.querySelectorAll('.timeline-clip').length
+  const applyVideoAdd = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyVideoAdd?.click()
+  await wait(250)
+  const videoAddPatch = applied[applied.length - 1] as { sourcePaths?: string[] } | undefined
+  result.videoAdd = { before: videoAddBefore, after: videoAddAfter, sourceCount: videoAddPatch?.sourcePaths?.length ?? 0 }
 
   // THE TITLE AND THE LANES FOR A COMBO'S OWN MODE. A combo's heading names which of its two arrangements it
   // is, and its tracks land on ONE lane when they are sequenced rather than one each.

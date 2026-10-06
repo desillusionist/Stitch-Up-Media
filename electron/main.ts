@@ -865,6 +865,10 @@ app.whenReady().then(() => {
       const destination = appStatePath()
       const temporary = `${destination}.tmp`
       fs.mkdirSync(path.dirname(destination), { recursive: true })
+      // The file being replaced is kept as a backup first. A save is not supposed to lose the queue, but if one
+      // ever does — a bad payload, an empty list written over a full one — the jobs are still on disk to be
+      // recovered rather than being gone for good.
+      try { if (fs.existsSync(destination)) fs.copyFileSync(destination, `${destination}.bak`) } catch { /* a first save has nothing to back up */ }
       fs.writeFileSync(temporary, JSON.stringify({ ...state, savedAt: new Date().toISOString() }, null, 2), 'utf8')
       fs.renameSync(temporary, destination)
     } catch (error) {

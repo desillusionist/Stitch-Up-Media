@@ -910,6 +910,18 @@ app.whenReady().then(async () => {
       if (!clipMute.shadedAfter) problems.push('muting a clip did not shade its box on the timeline')
       if (!(clipMute.mutedIndexes || []).length) problems.push(`muting a clip wrote no muted stream to the queue: ${JSON.stringify(clipMute.mutedIndexes)}`)
     }
+    // A mute on a COMBO's clip reaches the MONITOR, which used to apply it only where the in-place controls
+    // were offered.
+    const comboMute = result.comboMute
+    if (!comboMute) problems.push('the combo-mute drive reported nothing')
+    else if (comboMute.videoMuted !== true) problems.push(`a clip muted in a COMBO was still audible in the monitor: video element muted=${JSON.stringify(comboMute.videoMuted)}`)
+    // ADD SOURCE ON A MULTI-TRACK'S VIDEO LANE adds the picture to the join.
+    const videoAdd = result.videoAdd
+    if (!videoAdd) problems.push('the video-lane ADD SOURCE drive reported nothing')
+    else {
+      if (videoAdd.after !== videoAdd.before + 1) problems.push(`ADD SOURCE on a multi-track's video lane added ${videoAdd.after - videoAdd.before} clips rather than one`)
+      if (videoAdd.sourceCount !== 2) problems.push(`the added picture did not land in the join: ${videoAdd.sourceCount} sources`)
+    }
     // A COMBO'S OWN MODE, IN THE TITLE AND ON THE LANES.
     const comboMode = result.comboMode
     if (!comboMode) problems.push('the combo-mode drive reported nothing')
