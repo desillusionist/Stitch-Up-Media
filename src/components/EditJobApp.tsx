@@ -4379,8 +4379,9 @@ export const EditJobApp: React.FC = () => {
                             </svg>
                             : <span className="editor-screen-message">{screenMessage}</span>
                           : blankFill
-                            // A BLANK is the clip's own fill colour and nothing else — no file, no frames.
-                            ? <div className="editor-blank" style={{ ...mediaStyle, background: fillCss(blankFill) }} aria-hidden="true" />
+                            // A BLANK is the clip's own fill colour and nothing else — no file, no frames —
+                            // and it dips through black on a boundary fade exactly as a picture does.
+                            ? <div className="editor-blank" style={{ ...mediaStyle, background: fillCss(blankFill), opacity: previewGain }} aria-hidden="true" />
                             : elementUrl
                             ? <>
                               <video
