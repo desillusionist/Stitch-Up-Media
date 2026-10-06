@@ -4,6 +4,7 @@ import { mediaKind } from './mediaKind'
 import { outputCarriesPicture } from './outputKind'
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedFor } from './clipSpeed'
 import { clipKey, trackKey } from './clipIds'
+import { PLACEHOLDER_SOURCE_SECONDS, DEFAULT_PLACEHOLDER_SECONDS, isPlaceholder } from './placeholder'
 import { FrameRate, RateInput, frameCount, makeRate, rateLabel, rateOf, rateValue } from './frameRate'
 
 /** Default length the encoder gives a still frame that outlives its configured duration. */
@@ -586,6 +587,10 @@ export const sourceDuration = (
   sequence = sequenceFor(task, sourcePath),
   resolve?: TimingResolver,
 ): number => {
+  // A PLACEHOLDER has no file to measure and nothing to run out of, so its source length is the ceiling a
+  // clip may be stretched to and not a fact about any material — see `PLACEHOLDER_SOURCE_SECONDS`. Its
+  // CLIP's length is its trim window, which is what a reader sets by dragging the clip's edges.
+  if (isPlaceholder(sourcePath)) return PLACEHOLDER_SOURCE_SECONDS
   if (sequence && sequence.fps > 0 && sequence.frameCount > 0) return sequence.frameCount / sequence.fps
   if (sourcePath && !sequence && mediaKind(sourcePath) === 'image') return stillSecondsFor(task, sourcePath)
   const metadataDuration = sourcePath ? task.sourceMetadata?.[sourcePath]?.duration : undefined
@@ -615,7 +620,10 @@ export const segmentTiming = (fullDuration: number, trim?: { in: number; out: nu
 const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: number, options: BuildTimelineOptions, keyOverride?: string): TimelineSegment => {
   const sequence = sequenceFor(task, sourcePath)
   const full = sourceDuration(task, sourcePath, sequence, options.resolveTiming)
-  const timing = segmentTiming(full, trimFor(task, sourcePath, index, keyOverride))
+  // A placeholder's source is endless, so its length is its TRIM; with no trim recorded it lands at the
+  // default rather than at the ceiling, which is the one way the ten hours could ever be drawn.
+  const storedTrim = trimFor(task, sourcePath, index, keyOverride)
+  const timing = segmentTiming(full, storedTrim ?? (isPlaceholder(sourcePath) ? { in: 0, out: DEFAULT_PLACEHOLDER_SECONDS } : undefined))
   const isStill = !sequence && mediaKind(sourcePath) === 'image'
   // The trim is measured in SOURCE seconds — that is what the encoder asks ffmpeg for — and the
   // timeline length is that divided by the RETIME, which is the clip's speed with its interpreted rate
@@ -649,7 +657,9 @@ const segmentFor = (task: QueueTask, sourcePath: string, index: number, start: n
     speedInterpolation: speed.interpolation,
     maintainPitch: speed.maintainPitch !== false,
     sourceIn: timing.sourceIn,
-    trimmed: timing.trimmed,
+    // A placeholder is not a piece of anything, so it is never TRIMMED: its length IS the clip, however it
+    // was stretched. The trim still carries that length — see `sourceDuration` — but the mark would lie.
+    trimmed: isPlaceholder(sourcePath) ? false : timing.trimmed,
     sequence: sequence ? { frames: sequence.frameCount, fps: sequence.fps } : undefined,
     still: isStill || undefined,
   }

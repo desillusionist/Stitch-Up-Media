@@ -33,6 +33,8 @@ import { applyContainerChange, applyImageOutputChoice, defaultImageOutputChoiceV
 import { applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, containerTakesAudio, containerTakesCodec, reconcileAudioToContainer, reconcileCodecToContainer } from '../src/lib/codecChoices'
 import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel } from '../src/lib/outputSize'
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
+import { mediaKind } from '../src/lib/mediaKind'
+import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -322,6 +324,48 @@ console.log('\n== X-FADE on the TIMELINE: the clips OVERLAP where the encoder di
   check('and past it the incoming clip is the active one, not a blend', crossfadeAtTime(lane.segments, 10), null)
   // On the plain-cut lane the stream test forced, there is no blend anywhere.
   check('a lane with no overlap has no blend at all', crossfadeAtTime(silent.lanes[0].segments, 9), null)
+}
+
+console.log('\n== ADD BLANK / ADD SILENCE placeholders ==')
+{
+  // A placeholder is a source with NOTHING behind it, so its length is its TRIM against an endless source —
+  // which is what lets a blank be stretched without a file to stretch into — and it is drawn as a clip of the
+  // WHOLE of itself rather than as a piece cut from a file.
+  const blank = makePlaceholderPath('video', 'cc3344')
+  const silence = makePlaceholderPath('audio')
+  check('a blank is a picture', mediaKind(blank), 'video')
+  check('and a silence is sound', mediaKind(silence), 'audio')
+  check('the blank carries the colour it was made with', placeholderFill(blank), 'cc3344')
+  check('a blank with no colour named is black', placeholderFill(makePlaceholderPath('video')), DEFAULT_BLANK_FILL)
+  check('and a silence has no colour to carry', placeholderFill(silence), null)
+  const repainted = withPlaceholderFill(blank, '#00FF99')
+  check('repainting keeps the kind and the id', repainted.split(':').slice(0, 3), blank.split(':').slice(0, 3))
+  check('and carries the new colour', placeholderFill(repainted), '00ff99')
+  check('nonsense is not a colour, and black is', normaliseFill('chartreuse'), DEFAULT_BLANK_FILL)
+
+  const job = (over: Partial<QueueTask> = {}) => ({
+    id: 'p', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: ['/a.mp4', blank, '/b.mp4'], outputDirectory: '/out', outputFilename: 'o.mp4',
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    trimPoints: { [blank]: { in: 0, out: 30 } },
+    ...over,
+  }) as unknown as QueueTask
+  const timing = { resolveTiming: () => ({ duration: 10 }) }
+  near('a placeholder source is endless', sourceDuration(job(), blank), PLACEHOLDER_SOURCE_SECONDS)
+
+  const lane = buildTimeline(job(), timing).lanes[0]
+  const shown = lane.segments[1]
+  near('so its clip is exactly its trim', shown.duration, 30)
+  check('and is not marked TRIMMED \u2014 it is the whole of itself', shown.trimmed, false)
+  near('the clip after it begins after that length', lane.segments[2].start, 40)
+
+  // STRETCHING is another trim against the same endless source, with no file to run out of.
+  const stretched = buildTimeline(job({ trimPoints: { [blank]: { in: 0, out: 2000 } } }), timing).lanes[0].segments[1]
+  near('a blank stretches to any length asked for', stretched.duration, 2000)
+
+  // A placeholder with no trim at all falls back to the default rather than to the ten-hour ceiling.
+  const untrimmed = buildTimeline(job({ trimPoints: undefined }), timing).lanes[0].segments[1]
+  near('and a blank with no trim lands at the default', untrimmed.duration, DEFAULT_PLACEHOLDER_SECONDS)
 }
 
 console.log('\n== a picked image resolves to its OWN sequence, not the folder beside it ==')

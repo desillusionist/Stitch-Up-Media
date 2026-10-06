@@ -1694,7 +1694,18 @@ const drive = async () => {
   await wait(200)
   const emptyPanelTitle = (document.querySelector('.boundary-editor .boundary-title') as HTMLElement | null)?.textContent ?? null
   const emptyButtons = [...document.querySelectorAll('.boundary-editor button')].map((button) => button.textContent?.trim() ?? '')
-  result.emptyLane = { laneCount: emptyLanes.length, hasClip: emptyHasClip, hasMark: Boolean(emptyMark), panelTitle: emptyPanelTitle, buttons: emptyButtons }
+  // ADD SILENCE places a PLACEHOLDER: a source with nothing behind it, named for what it is and drawn with
+  // the same two trim handles every clip has — which is what lets it be stretched to any length.
+  const silenceButton = [...document.querySelectorAll('.boundary-editor button')].find((button) => button.textContent?.trim() === 'ADD SILENCE') as HTMLButtonElement | undefined
+  silenceButton?.click()
+  await wait(300)
+  const clipsAfterSilence = [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const silenceClip = clipsAfterSilence.find((clip) => clip.querySelector('.timeline-clip-name')?.textContent === 'SILENCE 1') ?? null
+  const silenceHandles = silenceClip ? silenceClip.querySelectorAll('.clip-trim-handle').length : 0
+  result.emptyLane = {
+    laneCount: emptyLanes.length, hasClip: emptyHasClip, hasMark: Boolean(emptyMark), panelTitle: emptyPanelTitle, buttons: emptyButtons,
+    silencePlaced: Boolean(silenceClip), silenceHandles, silenceNames: clipsAfterSilence.map((clip) => clip.querySelector('.timeline-clip-name')?.textContent ?? null),
+  }
 
   // THE MODE FOLLOWS THE LIST. A CONVERT is one source; duplicating that source makes the job a STITCH, and
   // the window has to say so BEFORE APPLY rather than leaving a stale heading over a list that changed. The

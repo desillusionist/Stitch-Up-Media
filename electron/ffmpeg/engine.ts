@@ -8,6 +8,8 @@ import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, crossfadeAt, edg
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
+import { placeholderFill, placeholderKind } from '../../src/lib/placeholder'
+import { blankSource, silenceSource } from './placeholder'
 import { progressPercent } from '../../src/lib/progress'
 import { cropFilter, hasCrop, resolutionBox } from '../../src/lib/outputFrame'
 import { codecTakesRate } from '../../src/lib/outputSize'
@@ -182,12 +184,20 @@ export class FFmpegEngine {
       const sequence = this.sequenceFor(task, source)
       const isSequence = Boolean(sequence)
       const isStill = !isSequence && /\.(png|jpe?g|gif|tiff?|bmp|webp|heic|heif|avif)$/i.test(source)
-      const command = sequence ? this.sequenceCommand(sequence, point) : ffmpeg(source)
+      // A PLACEHOLDER has no file at all: the picture is a flat colour and the sound is silence, asked of
+      // ffmpeg's own `lavfi` device at the length the clip was stretched to. It is ONE input carrying one
+      // stream or two — see `placeholder` — so every stream index downstream is where it always was.
+      const placeholder = placeholderKind(source)
       const [W, H] = stitchCanvas || (task.preset.width && task.preset.height ? [task.preset.width, task.preset.height]
         : task.preset.resolution === '4k' ? [3840, 2160] : task.preset.resolution === '720p' ? [1280, 720] : [1920, 1080])
+      const command = sequence ? this.sequenceCommand(sequence, point)
+        : placeholder === 'video' ? ffmpeg().input(blankSource(placeholderFill(source) ?? '000000', W, H, targetFps || 30, clipDuration)).inputOptions(['-f', 'lavfi'])
+        : placeholder === 'audio' ? ffmpeg().input(silenceSource(clipDuration)).inputOptions(['-f', 'lavfi'])
+        : ffmpeg(source)
       const rate = isSequence ? (sequence?.fps || 30) : (targetFps || 30)
       if (isStill) command.inputOptions(['-loop 1', '-framerate', String(this.stillRate(task, source)), '-t', String(stillSecondsFor(task, source))])
-      if (!isSequence) this.applyTrimInput(command, point)
+      // A placeholder carries its own length in the source filter, so there is nothing to seek into.
+      if (!isSequence && !placeholder) this.applyTrimInput(command, point)
       const fades = this.fadeFilters(fade, clipDuration)
       const outputRate = isSequence || isStill ? rate : (targetFps || 30)
       const fit = sourceFitFor(task, source, clipIndex)
@@ -386,21 +396,38 @@ export class FFmpegEngine {
     // The channel counts of the sound are no longer read here: the scope's ring is synthesised whatever the
     // container holds — see `TRUE STEREO` on the preset — so the drawing no longer depends on a probe.
     try {
-      const probe = await probeFile(source)
-      sourceHasAudio = probe.audioStreams.length > 0
-      audioStreamCount = probe.audioStreams.length
-      probedFps = parseFrameRate(probe.videoStreams[0]?.fps)
-      retime = this.retimeFor(task, source, 0, probedFps)
-      expectedSeconds = clipDurationFor(segmentTiming(
-        sourceDuration(task, source, sequence, () => ({ duration: Number(probe.duration || 0) })),
-        trim,
-      ).duration, retime)
-      const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
-      if (!sourceSize && resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
-        sourceSize = { width: resolution[0], height: resolution[1] }
+      const placeholder = placeholderKind(source)
+      if (placeholder) {
+        // A PLACEHOLDER carries its own length and its own streams — a BLANK a picture AND a sound, a SILENCE
+        // a sound alone — so there is nothing to probe and nothing to seek into.
+        sourceHasAudio = true
+        audioStreamCount = 1
+        retime = this.retimeFor(task, source, 0, 0)
+        expectedSeconds = clipDurationFor(segmentTiming(sourceDuration(task, source, sequence), trim).duration, retime)
+      } else {
+        const probe = await probeFile(source)
+        sourceHasAudio = probe.audioStreams.length > 0
+        audioStreamCount = probe.audioStreams.length
+        probedFps = parseFrameRate(probe.videoStreams[0]?.fps)
+        retime = this.retimeFor(task, source, 0, probedFps)
+        expectedSeconds = clipDurationFor(segmentTiming(
+          sourceDuration(task, source, sequence, () => ({ duration: Number(probe.duration || 0) })),
+          trim,
+        ).duration, retime)
+        const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
+        if (!sourceSize && resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
+          sourceSize = { width: resolution[0], height: resolution[1] }
+        }
       }
     } catch { /* the bar falls back to whatever ffmpeg reports */ }
-    let cmd = sequence ? this.sequenceCommand(sequence, trim) : ffmpeg(source)
+    let cmd = sequence ? this.sequenceCommand(sequence, trim)
+      : placeholderKind(source) === 'video' ? (() => {
+        // A flat colour with silence, as ONE input carrying two streams — see `placeholder`.
+        const box = this.frameBoxFor(task.preset)
+        return ffmpeg().input(blankSource(placeholderFill(source) ?? '000000', box.width, box.height, outputFpsOf(task.preset) || 30, expectedSeconds)).inputOptions(['-f', 'lavfi'])
+      })()
+      : placeholderKind(source) === 'audio' ? ffmpeg().input(silenceSource(expectedSeconds)).inputOptions(['-f', 'lavfi'])
+      : ffmpeg(source)
     if (isStillImage && task.preset.outputMode !== 'audio' && !task.preset.imageOutputMode) {
       // The rate is set on the input as well as the output. Without it ffmpeg's image
       // demuxer picks its own 25, and the clip would render at a rate unrelated to the
@@ -414,7 +441,7 @@ export class FFmpegEngine {
     const singleFrameAt = task.preset.imageOutputMode === 'still' ? Math.max(0, Number(task.preset.stillFrameAt) || 0) : null
     if (singleFrameAt !== null) {
       if (singleFrameAt > 0) cmd.inputOptions(['-ss ' + singleFrameAt])
-    } else if (!isSequence) {
+    } else if (!isSequence && !placeholderKind(source)) {
       this.applyTrimInput(cmd, trim)
     }
     // A sound file has no frame to give, so a preset that asks for video would write a container
@@ -538,8 +565,8 @@ export class FFmpegEngine {
     let targetChannels = 2
     let targetBitrate = 0
     try {
-      const probes = await Promise.all(task.sourcePaths.map((source) => probeFile(source)))
-      const audio = probes.flatMap((probe) => probe.audioStreams)
+      const probes = await Promise.all(task.sourcePaths.map((source) => (placeholderKind(source) ? null : probeFile(source))))
+      const audio = probes.flatMap((probe) => probe?.audioStreams ?? [])
       if (audio.length) {
         targetSampleRate = Math.max(44100, ...audio.map((stream) => stream.sampleRate || 0))
         targetChannels = Math.max(2, ...audio.map((stream) => stream.channels || 0))
@@ -566,11 +593,18 @@ export class FFmpegEngine {
     let everySourceHasPicture = true
     let everySourceHasAudio = true
     try {
-      const probes = await Promise.all(task.sourcePaths.map((source) => probeFile(source)))
+      const probes = await Promise.all(task.sourcePaths.map((source) => (placeholderKind(source) ? null : probeFile(source))))
       let maxW = 0, maxH = 0
       for (let probeIndex = 0; probeIndex < probes.length; probeIndex++) {
         const probe = probes[probeIndex]
         const source = task.sourcePaths[probeIndex]
+        // A PLACEHOLDER has no stream to probe. A BLANK carries a picture AND a sound by construction, so it
+        // fails neither of the cross-dissolve's tests; a SILENCE is sound alone and, being sound, brings no
+        // size of its own to the canvas either.
+        if (!probe) {
+          if (placeholderKind(source) === 'audio') everySourceHasPicture = false
+          continue
+        }
         const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
         if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) {
           maxW = Math.max(maxW, resolution[0]); maxH = Math.max(maxH, resolution[1])
@@ -591,7 +625,7 @@ export class FFmpegEngine {
       if (!targetFps) targetFps = maxFps > 0 ? Math.round(maxFps * 1000) / 1000 : (task.sequenceInput?.fps || 30)
       // Clip lengths use the same precedence as the timeline, backed by the probes
       // already fetched here, so the encoder and the drawn ramps agree on timing.
-      const probeDurations = new Map(probes.map((probe, index) => [task.sourcePaths[index], Number(probe.duration || 0)]))
+      const probeDurations = new Map(probes.map((probe, index) => [task.sourcePaths[index], probe ? Number(probe.duration || 0) : 0]))
       // The length each clip OCCUPIES is the trimmed source length divided by its RETIME — the speed with
       // the clip's interpreted rate folded in — which is the figure the fades are placed against and the
       // figure the whole output is summed from. The trim itself stays in SOURCE seconds and reaches ffmpeg
@@ -755,14 +789,19 @@ export class FFmpegEngine {
       let probeDuration = 0
       let probedFps = 0
       let sourceSize: { width: number; height: number } | undefined
-      try {
-        const probe = await probeFile(source)
-        probeDuration = Number(probe.duration || 0)
-        probedFps = parseFrameRate(probe.videoStreams[0]?.fps)
-        if (!probe.audioStreams.length) everySourceHasAudio = false
-        const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
-        if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) sourceSize = { width: resolution[0], height: resolution[1] }
-      } catch { /* fall back to configured timing */ }
+      // A PLACEHOLDER has no file to probe: a BLANK carries a picture AND a sound by construction and a
+      // SILENCE sound alone, so neither changes the cross-dissolve's answer, and the clip's length comes from
+      // its trim rather than from any container — see `sourceDuration`.
+      if (!placeholderKind(source)) {
+        try {
+          const probe = await probeFile(source)
+          probeDuration = Number(probe.duration || 0)
+          probedFps = parseFrameRate(probe.videoStreams[0]?.fps)
+          if (!probe.audioStreams.length) everySourceHasAudio = false
+          const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
+          if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) sourceSize = { width: resolution[0], height: resolution[1] }
+        } catch { /* fall back to configured timing */ }
+      }
       comboRetimes.push(this.retimeFor(task, source, index, probedFps))
       clipDurations.push(clipDurationFor(segmentTiming(
         sourceDuration(task, source, this.sequenceFor(task, source), () => ({ duration: probeDuration })),
@@ -867,21 +906,35 @@ export class FFmpegEngine {
     const trackDurations: number[] = []
     const trackFps: number[] = []
     try {
-      const videoProbe = await probeFile(videoSource)
-      probedDuration = Number(videoProbe.duration || 0)
-      probedFps = parseFrameRate(videoProbe.videoStreams[0]?.fps)
-      videoHasAudio = videoProbe.audioStreams.length > 0
-      videoAudioCount = videoProbe.audioStreams.length
-      const resolution = videoProbe.videoStreams[0]?.resolution?.split('x').map(Number)
-      if (resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
-        videoSize = { width: resolution[0], height: resolution[1] }
-      } else if (videoSequence?.width && videoSequence?.height) {
-        videoSize = { width: videoSequence.width, height: videoSequence.height }
+      // A PLACEHOLDER has no file to probe. A BLANK carries a picture AND a sound by construction, which is
+      // exactly what `videoHasAudio` would have learned from a probe; a SILENCE as a track is sound alone.
+      const placeholderVisual = placeholderKind(videoSource)
+      if (!placeholderVisual) {
+        const videoProbe = await probeFile(videoSource)
+        probedDuration = Number(videoProbe.duration || 0)
+        probedFps = parseFrameRate(videoProbe.videoStreams[0]?.fps)
+        videoHasAudio = videoProbe.audioStreams.length > 0
+        videoAudioCount = videoProbe.audioStreams.length
+        const resolution = videoProbe.videoStreams[0]?.resolution?.split('x').map(Number)
+        if (resolution && resolution.length === 2 && resolution.every((value) => value > 0)) {
+          videoSize = { width: resolution[0], height: resolution[1] }
+        } else if (videoSequence?.width && videoSequence?.height) {
+          videoSize = { width: videoSequence.width, height: videoSequence.height }
+        }
+      } else {
+        videoHasAudio = placeholderVisual === 'video'
+        videoAudioCount = videoHasAudio ? 1 : 0
       }
-      const audioProbes = await Promise.all(extraAudios.map((track) => probeFile(track.path)))
+      const audioProbes = await Promise.all(extraAudios.map((track) => (placeholderKind(track.path) ? null : probeFile(track.path))))
       audioProbes.forEach((probe, index) => {
+        const track = extraAudios[index]
+        const point = this.trimPoint(task, track.path, 0, trackKey(task, track))
+        if (!probe) {
+          // A SILENCE's length is its trim against its endless source, exactly as the timeline reads it.
+          trackDurations[index] = segmentTiming(sourceDuration(task, track.path), point).duration
+          return
+        }
         trackFps[index] = parseFrameRate(probe.videoStreams[0]?.fps)
-        const point = this.trimPoint(task, extraAudios[index].path, 0, trackKey(task, extraAudios[index]))
         const full = Number(probe.duration || 0)
         trackDurations[index] = point && point.out > point.in ? Math.min(full - point.in, point.out - point.in) : full
       })
@@ -939,13 +992,27 @@ export class FFmpegEngine {
     const speedVideo = speedVideoFilters(visualRetime, visualSpeed.interpolation === 'blending' ? 'blending' : 'sampling', outputFpsOf(task.preset))
     const speedMainAudio = speedAudioFilters(visualRetime, visualSpeed.maintainPitch !== false, 48000)
     const trackSpeedAudio = extraAudios.map((track, index) => speedAudioFilters(trackRetimes[index], speedFor(task, track.path, 0, trackKey(task, track)).maintainPitch !== false, 48000))
-    let cmd = videoOverride ? ffmpeg(videoOverride) : (videoSequence ? this.sequenceCommand(videoSequence, videoTrim) : ffmpeg(videoSource))
+    let cmd = videoOverride ? ffmpeg(videoOverride)
+      : videoSequence ? this.sequenceCommand(videoSequence, videoTrim)
+      // A PLACEHOLDER visual is a flat colour (with silence) or a silence, asked of ffmpeg's own `lavfi` device
+      // at the length the clip was stretched to: ONE input carrying one stream or two — see `placeholder`.
+      : placeholderKind(videoSource) === 'video' ? (() => {
+        const box = this.frameBoxFor(task.preset)
+        return ffmpeg().input(blankSource(placeholderFill(videoSource) ?? '000000', box.width, box.height, outputFpsOf(task.preset) || 30, videoDuration)).inputOptions(['-f', 'lavfi'])
+      })()
+      : placeholderKind(videoSource) === 'audio' ? ffmpeg().input(silenceSource(videoDuration)).inputOptions(['-f', 'lavfi'])
+      : ffmpeg(videoSource)
     if (isStillCover && extraAudios.length > 0) {
       cmd.inputOptions(['-loop 1', '-framerate 2'])
     }
-    if (!isSequenceVideo) this.applyTrimInput(cmd, videoTrim)
+    // A placeholder carries its own length in the source filter, so there is nothing to seek into.
+    if (!isSequenceVideo && !placeholderKind(videoSource)) this.applyTrimInput(cmd, videoTrim)
 
-    extraAudios.forEach((track) => {
+    extraAudios.forEach((track, index) => {
+      if (placeholderKind(track.path)) {
+        cmd.input(silenceSource(trackDurations[index] || trackTimelineDurations[index] || 0)).inputOptions(['-f', 'lavfi'])
+        return
+      }
       cmd.input(track.path)
       this.applyTrimInput(cmd, this.trimPoint(task, track.path, 0, trackKey(task, track)))
     })

@@ -26,7 +26,7 @@ const os = require('node:os')
 const { execFile } = require('node:child_process')
 const { FFmpegEngine } = require('./.engine.cjs')
 const { probeFile } = require('./.probe.cjs')
-const { placeholderArgs } = require('./.placeholder.cjs')
+const { blankSource, silenceSource } = require('./.placeholder.cjs')
 const viz = require('./.visualization.cjs')
 
 const run = (command, args, options = {}) => new Promise((resolve, reject) => {
@@ -1562,38 +1562,53 @@ const main = async () => {
   const soundingStretch = await rmsAt(muteOut, 5.0, 0.2)
   check(`the muted clip's stretch is silent (${mutedStretch.toFixed(4)}) while the other still sounds (${soundingStretch.toFixed(4)})`, mutedStretch < 0.002 && soundingStretch > 0.02, true)
 
-  // ADD BLANK / ADD SILENCE ARE REAL CLIPS. The editor's [+] places a placeholder the main process renders
-  // once — black with silence, or silence alone — so the model, the trim handles, the monitor and the encoder
-  // need to know nothing about it. This proves the file the editor is handed really holds what the rest of
-  // the app will assume, and that a BLANK joins an ordinary stitch and lengthens it by exactly its own length.
-  console.log('\n== ADD BLANK / ADD SILENCE are real clips the pipeline already understands ==')
-  const blankFile = path.join(root, 'blank-placeholder.mp4')
-  await runFfmpeg([...placeholderArgs('video', 4), blankFile])
-  const blankProbe = await probeFile(blankFile)
-  check('a BLANK carries a picture', blankProbe.videoStreams.length > 0, true)
-  check('and a sound, so a stitch joins it like any clip', blankProbe.audioStreams.length > 0, true)
-  check('at the length asked for', Math.abs(Number(blankProbe.duration) - 4) < 0.2, true)
-  const blankPixel = await pixelAt(blankFile, 1)
-  check(`and the picture really is black (${blankPixel.join(',')})`, blankPixel.every((channel) => channel <= 20), true)
+  // ADD BLANK / ADD SILENCE ARE PLACEHOLDERS THE ENCODER WRITES ITSELF. The editor places a source with no
+  // file behind it — a flat colour, or silence — and the encoder asks ffmpeg's own `lavfi` device for it. This
+  // proves both halves: that the sources it hands ffmpeg are what the pipeline assumes (a BLANK a picture AND a
+  // sound, a SILENCE a sound alone), and that a blank joins an ordinary stitch, lengthens it by its own trimmed
+  // length, and contributes the frame its own FILL COLOUR asks for.
+  console.log('\n== ADD BLANK / ADD SILENCE are placeholders the encoder writes itself ==')
+  const blankSrc = path.join(root, 'blank-source.mp4')
+  await runFfmpeg(['-f', 'lavfi', '-i', blankSource('cc3344', 320, 240, 25, 3), '-map', '0:v', '-map', '0:a', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-color_range', 'tv', '-c:a', 'aac', '-t', '3', blankSrc])
+  const blankProbe = await probeFile(blankSrc)
+  check('a BLANK source carries a picture', blankProbe.videoStreams.length > 0, true)
+  check('and a sound, so a clip that is JOINED is still joinable', blankProbe.audioStreams.length > 0, true)
 
-  const silenceFile = path.join(root, 'silence-placeholder.m4a')
-  await runFfmpeg([...placeholderArgs('audio', 4), silenceFile])
-  const silenceProbe = await probeFile(silenceFile)
-  check('a SILENCE carries a sound', silenceProbe.audioStreams.length > 0, true)
+  const silenceSrc = path.join(root, 'silence-source.m4a')
+  await runFfmpeg(['-f', 'lavfi', '-i', silenceSource(3), '-map', '0:a', '-c:a', 'aac', '-t', '3', silenceSrc])
+  const silenceProbe = await probeFile(silenceSrc)
+  check('a SILENCE source carries a sound', silenceProbe.audioStreams.length > 0, true)
   check('and no picture at all', silenceProbe.videoStreams.length, 0)
-  check('at the length asked for', Math.abs(Number(silenceProbe.duration) - 4) < 0.2, true)
 
-  // A BLANK between two clips joins through the ordinary demuxer and lengthens the file by its own length:
-  // the whole reason it is a real file rather than a special-cased input the encoder has to be taught.
-  const blankShort = path.join(root, 'blank-join-blank.mp4')
-  await runFfmpeg([...placeholderArgs('video', 3), blankShort])
-  const blankJoinTask = {
-    id: 'blank-join', type: 'stitch', status: 'pending', progress: 0,
-    sourcePaths: [xfadeA, blankShort, xfadeB], outputDirectory: root, outputFilename: 'blank-joined.mp4', preset,
+  // Through the STITCH path: a blank between two clips is joined like any clip and runs its own length, and
+  // the frame it contributes is its own fill colour rather than black.
+  const blankPath = 'placeholder:video:test-blank-1:cc3344'
+  const blankStitch = {
+    id: 'blank-stitch', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: [xfadeA, blankPath, xfadeB], outputDirectory: root, outputFilename: 'blank-stitch.mp4', preset,
+    trimPoints: { [blankPath]: { in: 0, out: 3 } },
   }
-  await captureCommand(blankJoinTask)
-  const blankJoinSeconds = Number(await probeValue(path.join(root, 'blank-joined.mp4'), 'format=duration'))
-  check(`a BLANK joins a stitch and lengthens it by its own length (${blankJoinSeconds.toFixed(2)}s against 11.00)`, Math.abs(blankJoinSeconds - 11) < 0.4, true)
+  const blankCmd = await captureCommand(blankStitch)
+  check('the stitch asks the lavfi device for the blank', /-f lavfi/.test(blankCmd), true)
+  check('and paints it the clip\u2019s own fill colour', /color=c=0xcc3344/.test(blankCmd), true)
+  const blankOut = path.join(root, 'blank-stitch.mp4')
+  const blankSeconds = Number(await probeValue(blankOut, 'format=duration'))
+  check(`and the join runs 3s longer (${blankSeconds.toFixed(2)}s against 11.00)`, Math.abs(blankSeconds - 11) < 0.4, true)
+  const blankPixel = await pixelAt(blankOut, 5.5)
+  check(`and the blank\u2019s stretch really is its fill colour (${blankPixel.join(',')})`, blankPixel[0] > 120 && blankPixel[1] < 110 && blankPixel[2] < 110, true)
+
+  // Through the MULTI-TRACK path: a silence as an added track, written from `anullsrc` at its trimmed length.
+  const silencePath = 'placeholder:audio:test-silence-1'
+  const silenceTrackTask = {
+    id: 'silence-track', type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: [xfadeA], outputDirectory: root, outputFilename: 'silence-track.mp4', preset,
+    additionalAudioTracks: [{ id: 'sil-1', path: silencePath, language: 'und' }],
+    trimPoints: { [`${silencePath}#0`]: { in: 0, out: 4 } },
+  }
+  const silenceCmd = await captureCommand(silenceTrackTask)
+  check('the multi-track writes the silence as anullsrc', /anullsrc/.test(silenceCmd), true)
+  const silenceOutSeconds = Number(await probeValue(path.join(root, 'silence-track.mp4'), 'format=duration'))
+  check(`at the length it was trimmed to (${silenceOutSeconds.toFixed(2)}s against 4.00)`, Math.abs(silenceOutSeconds - 4) < 0.4, true)
 
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')

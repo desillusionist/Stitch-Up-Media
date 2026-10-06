@@ -614,6 +614,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    removed run is and dimmed behind it — read at a glance rather than only by the green mark beside it. */
 .timeline-lane .timeline-clip.is-muted { opacity: .72; }
 .timeline-lane .timeline-clip.is-muted::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(45deg, rgba(3, 9, 16, .55) 0 5px, transparent 5px 10px); }
+/* A BLANK's own fill colour, painted inside its clip box and under the name, so the timeline shows the flat
+   stretch the encoder will write rather than an empty box that looks like a clip that failed to load. */
+.clip-blank { position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: .85; }
+/* The colour picker a BLANK is given in PROPERTIES, sized to sit in the inspector's control row. */
+.clip-fill-input { width: 44px; height: 20px; padding: 0; border: 1px solid var(--ui-border); background: transparent; cursor: pointer; }
 
 /* Filmstrip view: the cells share the lane exactly, each showing the frame the playhead would
    show there. The clip's own label is hidden so the frames are what is read.
@@ -729,6 +734,11 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .boundary-close { margin-left: auto; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 12px; line-height: 1; }
 .boundary-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; object-fit: contain; cursor: pointer; }
+/* A placeholder's own picture: a BLANK is a flat colour (set inline from the clip's own fill) and a SILENCE is
+   a hairline of nothing on the monitor's black. Neither is a media element, because neither has a file. */
+.editor-blank { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; }
+.editor-blank.is-silence { display: grid; place-items: center; }
+.editor-blank.is-silence > i { display: block; width: 60%; height: 1px; background: var(--ui-border); }
 /* The INCOMING clip of a cross-dissolve, laid over the outgoing one: the same box (its `left/top/width/height`
    are set inline), just above it in the stack so the blend is drawn rather than one picture hiding the other. */
 .editor-video.is-incoming { z-index: 1; }

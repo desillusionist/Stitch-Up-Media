@@ -3,6 +3,7 @@ import { Link, Lock, RotateCcw, Unlink, Unlock, ZoomIn, ZoomOut } from 'lucide-r
 import { AppSettings, ClipSpeed, EditJobPatch, EncodingPreset, EmbeddedAudioStream, Insets, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
+import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, fillCss, isPlaceholder, makePlaceholderPath, placeholderFill, placeholderKind, placeholderNamesInOrder, withPlaceholderFill } from '../lib/placeholder'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
@@ -100,13 +101,6 @@ const JPEG_QUALITY_CHOICES = [2, 5, 10, 20, 31] as const
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
 const TAP_THRESHOLD_MS = 250
 const SLOW_MOTION_RATE = 0.5
-/**
- * The length an ADD BLANK / ADD SILENCE placeholder lands at, before it is stretched on the timeline.
- *
- * The generated file is far longer than this (the main process makes ten minutes), so this is a starting
- * point and not a limit: the clip is stretched by dragging its edges, exactly as a still's length is set.
- */
-const PLACEHOLDER_SECONDS = 5
 
 /**
  * The fields this window owns. Everything else on a task belongs to the queue.
@@ -912,7 +906,7 @@ export const EditJobApp: React.FC = () => {
   const candidateSources = draft ? Array.from(new Set([
     ...(clipsConcatenate(draft) ? draft.sourcePaths : draft.sourcePaths.slice(0, 1)),
     ...(draft.additionalAudioTracks || []).map((track) => track.path),
-  ])) : []
+  ])).filter((sourcePath) => !isPlaceholder(sourcePath)) : []
   const probeSignature = candidateSources.join('\u0000')
 
   /**
@@ -989,6 +983,22 @@ export const EditJobApp: React.FC = () => {
     () => (draft ? buildTimeline(draft, { resolveTiming, sourceHasPicture: sourceVideo, sourceHasAudio: sourceAudio }) : null),
     [timelineSignature, probedTiming, sourceVideo, sourceAudio],
   )
+  /**
+   * What each placeholder is CALLED, numbered among its own kind.
+   *
+   * A blank or a silence is not a file and must not read like one — `BLANK 1`, `BLANK 2`, `SILENCE 1` — and
+   * the number is its place among the placeholders of that kind in the job, computed once here rather than
+   * per clip. Keyed by the clip's own key (a track's is `trackKey`), so it follows a reorder.
+   */
+  const placeholderNames = useMemo(() => {
+    const names = new Map<string, string>()
+    if (!draft) return names
+    const tracks = draft.additionalAudioTracks || []
+    const ordered = placeholderNamesInOrder([...draft.sourcePaths, ...tracks.map((track) => track.path)])
+    draft.sourcePaths.forEach((path, index) => { const name = ordered[index]; if (name) names.set(clipKey(draft, path, index), name) })
+    tracks.forEach((track, index) => { const name = ordered[draft.sourcePaths.length + index]; if (name) names.set(trackKey(draft, track), name) })
+    return names
+  }, [timelineSignature])
   // The audio every lane the timeline or the monitor is drawing as a waveform, read once per file. It
   // is the file's audio rather than the clip's, so a trim or a zoom needs no new reading: what is drawn
   // of it changes, what it is does not. It waits until something is actually drawing one — a file that
@@ -1004,7 +1014,7 @@ export const EditJobApp: React.FC = () => {
       // playhead rather than any tile, so it is asked for by source.
       const shown = monitorSource != null && lane.segments.some((segment) => segment.sourcePath === monitorSource)
       if (!filmstripLanes[lane.id] && !shown) return
-      lane.segments.forEach((segment) => { wanted.add(segment.sourcePath) })
+      lane.segments.forEach((segment) => { if (!isPlaceholder(segment.sourcePath)) wanted.add(segment.sourcePath) })
     })
     const missing = [...wanted].filter((sourcePath) => !waveformsAskedRef.current.has(sourcePath))
     if (!missing.length) return
@@ -1176,7 +1186,9 @@ export const EditJobApp: React.FC = () => {
   // A sequence is named after its whole range rather than the one frame that stands in
   // for it, the same way the queue's cards name it.
   const focusedSequence = draft && focusedSource ? sequenceFor(draft, focusedSource) : undefined
-  const focusedLabel = focusedSequence ? sequenceLabel(focusedSequence) : sourceName(focusedSource)
+  // A PLACEHOLDER is named for what it IS, numbered among its own kind, rather than by a scheme.
+  const focusedLabel = (playback.segment ? placeholderNames.get(playback.segment.key) : undefined)
+    ?? (focusedSequence ? sequenceLabel(focusedSequence) : sourceName(focusedSource))
   // What the monitor's own line calls the clip it is showing: `COPY n` when the file appears more than once,
   // so the monitor names the same clip the timeline and the inspector do.
   const focusedCopyLabel = draft ? copyLabelFor(draft, focusedSourceIndex) : undefined
@@ -2211,9 +2223,6 @@ export const EditJobApp: React.FC = () => {
    * way everything else filed per clip does.
    */
   const inspectedClipIndex = inspectedSegment ? clipIndexOf(inspectedSegment) : 0
-  // The clip's copy label, `COPY n`, when its file appears in the job more than once — so PROPERTIES names
-  // the same clip the timeline box and the monitor do rather than naming a file twice over.
-  const inspectedCopyLabel = draft && inspectedSource ? copyLabelFor(draft, inspectedClipIndex, inspectedSource) : undefined
   const inspectedCanSpeed = Boolean(draft && inspectedSource && canApplyClipSpeed(draft, inspectedSource))
   // The SPEED the reader SET, not the segment's own `speed`, which now carries the interpreted rate folded
   // in as a retime. The two fields must show the figures that were chosen; the composition happens where
@@ -2527,27 +2536,44 @@ export const EditJobApp: React.FC = () => {
   /**
    * Places an ADD BLANK / ADD SILENCE placeholder at the open [+]'s place.
    *
-   * The placeholder is a REAL FILE the main process renders once — black with silence, or silence alone — so
-   * everything downstream already knows what to do with it: it trims like footage, plays in the monitor, and
-   * joins like any other source, with no encoder knowledge of it at all. A BLANK goes on the picture lane and
-   * a SILENCE follows the SOUND rule — it joins a job whose sources are all sound, and becomes a track on one
-   * that is not — which is the same routing an added audio FILE takes (see `insertSources`).
+   * The placeholder is a source with NOTHING behind it — a stretch of flat colour, or of silence — named by a
+   * scheme rather than by a path (see `placeholder`). It is inserted like any other source, so it takes a trim,
+   * it is re-keyed and pruned and reordered like a clip, and the encoder is the only thing that has to know it
+   * has no file: it asks ffmpeg for the colour or the silence at the length the clip was stretched to. A BLANK
+   * goes on the picture lane and a SILENCE follows the SOUND rule — it joins a job whose sources are all sound,
+   * and becomes a track on one that is not — which is the routing an added audio FILE takes (see `insertSources`).
    */
-  const insertPlaceholder = async (kind: 'video' | 'audio', joinAt: number, trackAt: number) => {
-    const placeholder = await window.electronAPI?.createPlaceholder(kind)
-    if (!placeholder) return
+  const insertPlaceholder = (kind: 'video' | 'audio', joinAt: number, trackAt: number) => {
+    const sourcePath = makePlaceholderPath(kind)
     const current = latest()
-    const trim = { in: 0, out: PLACEHOLDER_SECONDS }
+    const trim = { in: 0, out: DEFAULT_PLACEHOLDER_SECONDS }
     const soundOnlyJob = current.sourcePaths.length > 0 && current.sourcePaths.every((path) => mediaKind(path) === 'audio')
-    if (kind === 'video' || soundOnlyJob) { applyInsert(joinAt, [placeholder], [], undefined, trim); return }
+    if (kind === 'video' || soundOnlyJob) { applyInsert(joinAt, [sourcePath], [], undefined, trim); return }
     const tracks = [...(current.additionalAudioTracks || [])]
     const at = Math.max(0, Math.min(trackAt, tracks.length))
-    tracks.splice(at, 0, { id: newTrackId(), path: placeholder, language: 'und' })
+    tracks.splice(at, 0, { id: newTrackId(), path: sourcePath, language: 'und' })
     updateDraft({
       ...withListType(current, current.sourcePaths, tracks),
       // A track's records are keyed by the clip that IS the track, which for a plain track is `${path}#0`.
-      trimPoints: { ...(current.trimPoints || {}), [`${placeholder}#0`]: trim },
+      trimPoints: { ...(current.trimPoints || {}), [`${sourcePath}#0`]: trim },
     })
+  }
+
+  /**
+   * Repaints a BLANK clip.
+   *
+   * The fill is part of the placeholder's own SOURCE path — see `placeholder` — so this rewrites that one
+   * entry of the join and leaves every per-clip record where it was: the clip's id, its trim, its place and
+   * its own menu all follow the id, and only the source it draws changes. That is what makes the colour
+   * PER CLIP without a new record to thread through every list the app keeps.
+   */
+  const setClipFill = (segment: TimelineSegment, fill: string) => {
+    const current = latest()
+    const index = segment.index ?? -1
+    if (index < 0 || index >= current.sourcePaths.length || placeholderKind(current.sourcePaths[index]) !== 'video') return
+    const sourcePaths = [...current.sourcePaths]
+    sourcePaths[index] = withPlaceholderFill(sourcePaths[index], fill)
+    updateDraft({ sourcePaths })
   }
 
   /**
@@ -3102,11 +3128,22 @@ export const EditJobApp: React.FC = () => {
   const scaleLabel = (seconds: number) => timestampMode === 'framestamp' ? frameNumber(seconds, sourceRateValue) : timecode(seconds, sourceRateValue)
   /** The unit the window is showing lengths in, which is a setting rather than a fact about any clip. */
   const timestampMode: 'framestamp' | 'timestamp' = settings?.timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp'
+  /**
+   * The SOURCE length a clip is drawn against.
+   *
+   * For everything but a placeholder that is the file's whole length — what the clip is a piece of. A
+   * placeholder has no file and nothing to be a piece of: its length IS its own, so this answers with the
+   * clip's own run rather than the endless ceiling its trim window is bounded by, which would read as ten
+   * hours on the SOURCE line and in the tooltip. The TRIM window itself still uses the ceiling — see
+   * `beginTrimDrag` — which is what lets a placeholder be stretched without a file to stretch into.
+   */
+  const sourceTotalFor = (segment: TimelineSegment) =>
+    isPlaceholder(segment.sourcePath) ? segment.sourceUsedSeconds : sourceDuration(draft, segment.sourcePath, undefined, resolveTiming)
   const segmentDetail = (segment: TimelineSegment) => {
     const parts = [stamp(segment.duration)]
     // TRIMMED only when the trim takes something away: a clip that uses the whole of its source is the
     // source, and the line inside a clip's box has the same rule as its tooltip does.
-    const total = sourceDuration(draft, segment.sourcePath, undefined, resolveTiming)
+    const total = sourceTotalFor(segment)
     if (segment.trimmed && !usesAllSource(segment, total)) parts.push('TRIMMED')
     if (segment.sequence) parts.push(`SEQ ${segment.sequence.frames}F @ ${segment.sequence.fps}FPS`)
     // A still has no rate of its own, so the one it will be rendered at belongs in the
@@ -3139,6 +3176,9 @@ export const EditJobApp: React.FC = () => {
   // track's file is the video it came out of, so it is named for what it IS — `AU // name` — rather than for
   // the picture it no longer carries.
   const segmentName = (segment: TimelineSegment) => {
+    // A PLACEHOLDER is named for what it IS, numbered among its own kind — never for the file it is not.
+    const placeholder = placeholderNames.get(segment.key)
+    if (placeholder) return placeholder
     const copy = draft ? copyLabelFor(draft, clipIndexOf(segment), segment.sourcePath) : undefined
     const name = copy ? `${copy} // ${segmentLabel(segment)}` : segmentLabel(segment)
     const track = (draft?.additionalAudioTracks || []).find((candidate) => trackKey(draft, candidate) === segment.key)
@@ -3147,7 +3187,7 @@ export const EditJobApp: React.FC = () => {
   const clipTitle = (segment: TimelineSegment) => `${segmentName(segment)} - ${clipSummary({
     // The SOURCE's whole length, which is what the clip is a piece of — the sequence's own length for
     // an image sequence, the still's chosen length for a still, and the probe's for anything else.
-    totalSeconds: sourceDuration(draft, segment.sourcePath, undefined, resolveTiming),
+    totalSeconds: sourceTotalFor(segment),
     fps: segment.nativeRate ?? rateOf(sourceFps(draft, segment.sourcePath, undefined, resolveTiming)),
     // What the output takes from the source, which a speed does not change: it is the timeline length
     // that the speed divides, so the range this draws stays the run through the source itself.
@@ -3342,6 +3382,10 @@ export const EditJobApp: React.FC = () => {
    */
   const monitorSourcePath = playback.segment?.sourcePath
   const monitorIsAudio = Boolean(monitorSourcePath && (mediaKind(monitorSourcePath) === 'audio' || sourceVideo[monitorSourcePath] === false))
+  // A PLACEHOLDER has no file behind it: a BLANK is a flat colour and a SILENCE is nothing at all, so
+  // neither is handed to a media element. The colour is the clip's own, carried in its source path.
+  const monitorPlaceholder = placeholderKind(monitorSourcePath)
+  const blankFill = monitorPlaceholder === 'video' ? placeholderFill(monitorSourcePath) : null
   /**
    * The picture a job with only sound was given, where it was given an image of its own.
    *
@@ -4260,7 +4304,7 @@ export const EditJobApp: React.FC = () => {
     <header className="editor-header">
       {/* The job's own mode is part of the title now, after a second ` // `, rather than a boxed tag at the far
           end of the bar: the heading already names the window, and the mode belongs with it. */}
-      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB // {draft.type === 'stitch' ? 'STITCH UP' : draft.type === 'multitrack' ? 'MULTI-TRACK' : draft.type === 'combo' ? ((draft.comboMode ?? 'multitrack') === 'stitch' ? 'COMBO (STITCH TRACKS)' : 'COMBO (MULTI-TRACK)') : 'CONVERT'}</span><h1>{sourceName(focusedSource)}</h1></div>
+      <div><span className="panel-kicker">STITCH UP MEDIA // EDIT JOB // {draft.type === 'stitch' ? 'STITCH UP' : draft.type === 'multitrack' ? 'MULTI-TRACK' : draft.type === 'combo' ? ((draft.comboMode ?? 'multitrack') === 'stitch' ? 'COMBO (STITCH TRACKS)' : 'COMBO (MULTI-TRACK)') : 'CONVERT'}</span><h1>{focusedLabel}</h1></div>
     </header>
 
     {incomingConflict && <div className="editor-conflict" role="alert">
@@ -4314,11 +4358,11 @@ export const EditJobApp: React.FC = () => {
                         // Sound with no picture: a waveform, never a <video>. The element would be
                         // asked for a frame out of a file that has none.
                         : monitorIsAudio
-                          // The picture the job was GIVEN, where it was given an image of its own: the export's
-                          // whole picture, so the monitor shows the image itself rather than anything drawn
-                          // over it. It is laid out by the drawing's own rule — its shape kept, letterboxed —
-                          // because that is what `stillFitFilters` does to it on the way out.
-                          ? photoPicture
+                          // A SILENCE has no waveform to decode and no file to read: it is a stretch of
+                          // nothing, and it says so rather than sitting on "PREPARING" forever.
+                          ? monitorPlaceholder === 'audio'
+                            ? <div className="editor-blank is-silence" style={{ ...mediaStyle }} aria-hidden="true"><i /></div>
+                            : photoPicture
                             ? <img className="editor-still is-drawing" draggable={false} style={{ ...mediaStyle }} src={mediaUrl(photoPicture)} alt="CUSTOM PICTURE" />
                             // The export's own picture, when the job's picture IS a drawing: a still of the
                             // chosen template in the chosen colours, because the app's green line would be a
@@ -4334,7 +4378,10 @@ export const EditJobApp: React.FC = () => {
                                 : null}
                             </svg>
                             : <span className="editor-screen-message">{screenMessage}</span>
-                          : elementUrl
+                          : blankFill
+                            // A BLANK is the clip's own fill colour and nothing else — no file, no frames.
+                            ? <div className="editor-blank" style={{ ...mediaStyle, background: fillCss(blankFill) }} aria-hidden="true" />
+                            : elementUrl
                             ? <>
                               <video
                                 ref={playback.attachVideo}
@@ -4424,7 +4471,7 @@ export const EditJobApp: React.FC = () => {
               })()}
             </div>
             <small>{focusedCopyLabel ? `${focusedCopyLabel} // ` : ''}{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
-            <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.sourceUsedSeconds, sourceIn: activeSegment.sourceIn, totalSeconds: sourceDuration(draft, activeSegment.sourcePath, undefined, resolveTiming), fps: activeSegment.nativeRate ?? rateOf(sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming)), mode: timestampMode })} | ${outputRangeLabel(duration, outputRate, timestampMode)}` : outputRangeLabel(duration, outputRate, timestampMode)}</small>
+            <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.sourceUsedSeconds, sourceIn: activeSegment.sourceIn, totalSeconds: sourceTotalFor(activeSegment), fps: activeSegment.nativeRate ?? rateOf(sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming)), mode: timestampMode })} | ${outputRangeLabel(duration, outputRate, timestampMode)}` : outputRangeLabel(duration, outputRate, timestampMode)}</small>
             {/* What the transport is doing. A single line, and the one place it is said: the pause glyph that
                 used to sit among the buttons said the same thing a second time, next to a PLAY toggle that
                 already carries the state. */}
@@ -4509,8 +4556,9 @@ export const EditJobApp: React.FC = () => {
                 <button className="inspector-close" onClick={() => setInspectorOpen(false)} aria-label="Close the properties inspector" title="Close">x</button>
               </div>
               <div className="inspector-scroll">
-                <EditorRow label="SOURCE" value={inspectedCopyLabel ? `${inspectedCopyLabel} // ${inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)}` : inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
-                <EditorRow label="FORMAT" value={(inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
+                <EditorRow label="SOURCE" value={inspectedSegment ? segmentName(inspectedSegment) : inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
+                {/* A placeholder has no extension to name a format with, so it names ITSELF instead. */}
+                <EditorRow label="FORMAT" value={placeholderKind(inspectedSource) ? (placeholderKind(inspectedSource) === 'video' ? 'BLANK' : 'SILENCE') : (inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
                 {/* What the sound IS, which an inspector of an audio file had nothing to say about: the rate,
                     the sample size and the channels, and then how it is written. A lossy file has no sample
                     size and says so by leaving it out rather than by claiming zero bits. */}
@@ -4525,11 +4573,29 @@ export const EditJobApp: React.FC = () => {
                     are the two points inside the source that part runs between — which is what a reader
                     reaching for an in or an out point is looking for, and what one long line buried. */}
                 {inspectedSegment ? <>
-                  <EditorRow label="SOURCE" value={stamp(sourceDuration(draft, inspectedSegment.sourcePath, undefined, resolveTiming))} reason="The whole of the file this clip is a piece of, in the units the window is showing lengths in." />
+                  <EditorRow label="SOURCE" value={stamp(sourceTotalFor(inspectedSegment))} reason="The whole of the file this clip is a piece of, in the units the window is showing lengths in." />
                   <EditorRow label="USED" value={stamp(inspectedSegment.sourceUsedSeconds)} reason="How much of the source the output takes, which is the source length less whatever the trim cut off." />
                   <EditorRow label="START" value={stamp(inspectedSegment.sourceIn)} reason="Where inside the source that run begins: the clip's IN point." />
                   <EditorRow label="END" value={stamp(inspectedSegment.sourceIn + inspectedSegment.sourceUsedSeconds)} reason="Where inside the source that run ends: the clip's OUT point." />
                 </> : <EditorRow label="SOURCE" value={inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...'} />}
+                {/* A BLANK's own colour, which is the one thing about it to decide: there is no file, no rate
+                    and no depth, only the flat frame the encoder writes and the monitor draws. It belongs to
+                    the CLIP, so two blanks on one job can be two colours — see `setClipFill`. */}
+                {inspectedSegment && placeholderKind(inspectedSource) === 'video' && (
+                  <EditorField
+                    label="FILL COLOR"
+                    hint="BLANK"
+                    reason="The colour this BLANK is painted. The encoder writes it as a flat frame and the monitor draws it, and it belongs to the clip, so two blanks on one job can be two colours."
+                  >
+                    <input
+                      type="color"
+                      className="clip-fill-input"
+                      value={fillCss(placeholderFill(inspectedSource) ?? DEFAULT_BLANK_FILL)}
+                      onChange={(event) => setClipFill(inspectedSegment, event.target.value)}
+                      aria-label="Blank fill colour"
+                    />
+                  </EditorField>
+                )}
                 {/* The rate the clip's frames are READ at, with the source's own beside it as the reference. ONE
                     editable figure: a rate of the clip's own does not replace the native one, it INTERPRETS the
                     clip by the ratio between them, retiming it exactly as a speed does. Offered wherever the
@@ -4927,6 +4993,9 @@ export const EditJobApp: React.FC = () => {
                             </svg>
                           </div>
                         })()}
+                        {/* A BLANK is what it IS rather than what it holds: its own fill colour, drawn under
+                            the name so the clip reads as the flat stretch it will write. */}
+                        {placeholderKind(segment.sourcePath) === 'video' && <span className="clip-blank" style={{ background: fillCss(placeholderFill(segment.sourcePath) ?? undefined) }} aria-hidden="true" />}
                         <span className="timeline-clip-name">{segmentName(segment)}</span>
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
@@ -5035,7 +5104,7 @@ export const EditJobApp: React.FC = () => {
             <div className="boundary-editor">
               <span className="boundary-title">{boundaryLane.label} // EMPTY</span>
               <span className="boundary-divider" aria-hidden="true" />
-              <button className="boundary-source" onClick={() => { setOpenBoundary(null); void insertPlaceholder('audio', latest().sourcePaths.length, 0) }} title="Insert a length of silence, stretched to any length on the timeline">ADD SILENCE</button>
+              <button className="boundary-source" onClick={() => { setOpenBoundary(null); insertPlaceholder('audio', latest().sourcePaths.length, 0) }} title="Insert a length of silence, stretched to any length on the timeline">ADD SILENCE</button>
               <button className="boundary-source" onClick={() => { setOpenBoundary(null); void insertTrackSources(0) }} title="Add a source to this lane">ADD SOURCE</button>
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close the add-source panel">x</button>
             </div>
@@ -5046,7 +5115,7 @@ export const EditJobApp: React.FC = () => {
             <div className="boundary-editor">
               <span className="boundary-title">{boundaryLane.label} // CUT {selectedBoundary.index + 1}|{selectedBoundary.index + 2}</span>
               <span className="boundary-divider" aria-hidden="true" />
-              <button className="boundary-source" onClick={() => { const at = selectedBoundary.index + 1; setOpenBoundary(null); void insertPlaceholder('audio', latest().sourcePaths.length, at) }} title="Insert a length of silence between these tracks">ADD SILENCE</button>
+              <button className="boundary-source" onClick={() => { const at = selectedBoundary.index + 1; setOpenBoundary(null); insertPlaceholder('audio', latest().sourcePaths.length, at) }} title="Insert a length of silence between these tracks">ADD SILENCE</button>
               <button className="boundary-source" onClick={() => { const at = selectedBoundary.index + 1; setOpenBoundary(null); void insertTrackSources(at) }} title="Insert a source between these two tracks">ADD SOURCE</button>
               <span className="boundary-clamped">A FADE ACROSS SEQUENCED TRACKS IS NOT WRITTEN</span>
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close this panel">x</button>
@@ -5120,7 +5189,7 @@ export const EditJobApp: React.FC = () => {
                   const trackAt = selectedBoundary.kind === 'edge' && selectedBoundary.edge === 'tail' ? trackIndex + 1 : Math.max(0, trackIndex)
                   const kind = boundaryLane.kind === 'video' ? 'video' : 'audio'
                   setOpenBoundary(null)
-                  void insertPlaceholder(kind, joinAt, trackAt)
+                  insertPlaceholder(kind, joinAt, trackAt)
                 }}
                 title={boundaryLane?.kind === 'video' ? 'Insert a length of black with silence, stretched to any length on the timeline' : 'Insert a length of silence, stretched to any length on the timeline'}
               >{boundaryLane?.kind === 'video' ? 'ADD BLANK' : 'ADD SILENCE'}</button>

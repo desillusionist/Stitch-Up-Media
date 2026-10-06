@@ -856,7 +856,12 @@ app.whenReady().then(async () => {
       if (!String(emptyLane.panelTitle ?? '').includes('EMPTY')) problems.push(`the empty lane's [+] panel is headed ${JSON.stringify(emptyLane.panelTitle)} rather than naming the empty lane`)
       const emptyButtons = (emptyLane.buttons || []).map((value) => String(value ?? ''))
       if (!emptyButtons.includes('ADD SOURCE')) problems.push(`the empty lane's [+] panel offers no ADD SOURCE: ${JSON.stringify(emptyButtons)}`)
+      if (!emptyButtons.includes('ADD SILENCE')) problems.push(`the empty lane's [+] panel offers no ADD SILENCE: ${JSON.stringify(emptyButtons)}`)
       if (emptyButtons.includes('FADE')) problems.push(`the empty lane's [+] panel offers a FADE with no clip to fade: ${JSON.stringify(emptyButtons)}`)
+      // ADD SILENCE places a placeholder named `SILENCE 1` — not a scheme where a file name would go — and it
+      // is drawn with the same two trim handles every clip has, which is what makes it stretchable.
+      if (!emptyLane.silencePlaced) problems.push(`clicking ADD SILENCE placed no clip named SILENCE 1: ${JSON.stringify(emptyLane.silenceNames)}`)
+      if (emptyLane.silenceHandles !== 2) problems.push(`the SILENCE clip drew ${emptyLane.silenceHandles} trim handles rather than two`)
     }
     // THE FIRST SOUND ASKS HOW THE TRACKS RELATE.
     const audioAsk = result.audioAsk
