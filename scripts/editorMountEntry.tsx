@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1863,19 +1863,40 @@ const drive = async () => {
   arrive({ ...task, id: 'mount-video-add', type: 'multitrack', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 'tA', path: SOUND_FIXTURE, language: 'und' }] }, 'video-add')
   await wait(1200)
   const videoAddBefore = document.querySelectorAll('.timeline-clip').length
-  nextSelection = ['/tmp/added-picture.mp4']
+  nextSelection = [CLIP_AUDIO]
   ;(document.querySelector('.timeline-clip .boundary-add.is-head') as HTMLElement | null)?.click()
   await wait(150)
   const videoAddButton = [...document.querySelectorAll('.boundary-editor .boundary-source')].find((button) => button.textContent?.trim() === 'ADD SOURCE') as HTMLButtonElement | undefined
   videoAddButton?.click()
-  await wait(400)
+  await wait(1200)
   nextSelection = null
-  const videoAddAfter = document.querySelectorAll('.timeline-clip').length
+  const videoAddClips = [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  const videoAddAfter = videoAddClips.length
+  // A clip whose NEW source was not PROBED has no length and draws at zero width, which is how an added
+  // picture "did not land" while a DUPLICATE of an already-probed file showed up.
+  const videoAddMinWidth = videoAddClips.length ? Math.min(...videoAddClips.map((clip) => clip.getBoundingClientRect().width)) : 0
   const applyVideoAdd = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
   applyVideoAdd?.click()
   await wait(250)
   const videoAddPatch = applied[applied.length - 1] as { sourcePaths?: string[] } | undefined
-  result.videoAdd = { before: videoAddBefore, after: videoAddAfter, sourceCount: videoAddPatch?.sourcePaths?.length ?? 0 }
+  result.videoAdd = { before: videoAddBefore, after: videoAddAfter, minWidth: videoAddMinWidth, sourceCount: videoAddPatch?.sourcePaths?.length ?? 0 }
+
+  // A MUTE LANDS ON THE CLIP IT WAS PUT ON. A sound-only main lane and a SEQUENCED track lane each hold several
+  // clips, and the monitor used to ask the lane's FIRST clip for all of them — which is why muting the first
+  // track of a stitch silenced every track on it and muting the rest did nothing.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-stitch-mute-2', type: 'stitch', sourcePaths: [SOUND_FIXTURE, SOUND_FIXTURE], embeddedAudio: { [`${SOUND_FIXTURE}#1`]: [{ index: 0, muted: true }] } }, 'stitch-mute-2')
+  await wait(1200)
+  const stitchMuteAudios = [...document.querySelectorAll('audio')] as HTMLAudioElement[]
+  result.stitchMute = { count: stitchMuteAudios.length, firstMuted: stitchMuteAudios[0]?.muted ?? null, secondMuted: stitchMuteAudios[1]?.muted ?? null }
+
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-seq-mute-2', type: 'combo', comboMode: 'stitch', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 't1', path: SOUND_FIXTURE, language: 'und' }, { id: 't2', path: '/tmp/track-b.wav', language: 'und' }], mutedLanes: { t2: true } }, 'seq-mute-2')
+  await wait(1200)
+  const seqMuteAudios = [...document.querySelectorAll('audio')] as HTMLAudioElement[]
+  result.seqMute = { count: seqMuteAudios.length, firstMuted: seqMuteAudios[0]?.muted ?? null, secondMuted: seqMuteAudios[1]?.muted ?? null }
 
   // THE TITLE AND THE LANES FOR A COMBO'S OWN MODE. A combo's heading names which of its two arrangements it
   // is, and its tracks land on ONE lane when they are sequenced rather than one each.

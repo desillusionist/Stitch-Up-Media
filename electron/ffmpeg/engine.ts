@@ -835,10 +835,13 @@ export class FFmpegEngine {
     videoOverride?: string
   ) {
     const videoSource = videoOverride || task.sourcePaths[0]
-    // A muted track is one the export does not carry, so it is never even an input: its map would
-    // otherwise be written out below and the stream would reach the output. It does not lengthen the
-    // output either, which is the same decision seen from the other side.
-    const extraAudios = (task.additionalAudioTracks || []).filter((track) => !laneIsMuted(task, track.id))
+    // A muted track is one the export does not carry. STACKED, that means it is not an input at all — its lane
+    // is its own stream, and it does not lengthen the output either. SEQUENCED, the tracks are ONE stream end
+    // to end, so dropping one would SHORTEN the lane; a muted track is silenced in place instead, which is what
+    // the concat below writes. Keeping the muted ones here is what lets it.
+    const extraAudios = tracksConcatenate(task)
+      ? (task.additionalAudioTracks || [])
+      : (task.additionalAudioTracks || []).filter((track) => !laneIsMuted(task, track.id))
     // What the visual IS, before anything asks how long it is. A sequence and a lone still image used to
     // be one case here, because a sequence's first frame is a still — and they are not the same case: a
     // still cover plays under its tracks for as long as they run, while a sequence is a piece of footage
@@ -1081,7 +1084,9 @@ export class FFmpegEngine {
       // chains are CONCATENATED into one stream — the second axis of concatenation a COMBO(a STITCH of
       // tracks) asks for. One stream is mapped, so the tracks play one after another rather than together.
       const parts = extraAudios.map((track, idx) => {
-        const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...this.gainFilters(track.gainDb)]
+        // A track this job's reader silenced is written as `volume=0` rather than left out: the concatenation
+        // wants a segment of every track's length, so the lane keeps its shape while the mute is honoured.
+        const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...(laneIsMuted(task, track.id) ? ['volume=0'] : []), ...this.gainFilters(track.gainDb)]
         const source = track.streamIndex != null ? `${idx + 1}:a:${track.streamIndex}` : `${idx + 1}:a`
         return `[${source}]${chain.join(',')}[t${idx}]`
       })

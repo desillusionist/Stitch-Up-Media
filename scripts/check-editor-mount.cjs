@@ -921,6 +921,22 @@ app.whenReady().then(async () => {
     else {
       if (videoAdd.after !== videoAdd.before + 1) problems.push(`ADD SOURCE on a multi-track's video lane added ${videoAdd.after - videoAdd.before} clips rather than one`)
       if (videoAdd.sourceCount !== 2) problems.push(`the added picture did not land in the join: ${videoAdd.sourceCount} sources`)
+      if (!(videoAdd.minWidth > 1)) problems.push(`an added picture drew at ${videoAdd.minWidth}px: its source was never probed, so it had no length`)
+    }
+    // A MUTE LANDS ON THE CLIP IT WAS PUT ON, not on the lane's first clip.
+    const stitchMute = result.stitchMute
+    if (!stitchMute) problems.push('the stitch-mute drive reported nothing')
+    else {
+      if (stitchMute.count !== 2) problems.push(`a stitch of two sounds drew ${stitchMute.count} elements rather than two`)
+      if (stitchMute.firstMuted !== false) problems.push(`muting a stitch's SECOND clip silenced the first: ${JSON.stringify(stitchMute.firstMuted)}`)
+      if (stitchMute.secondMuted !== true) problems.push(`muting a stitch's second clip did not silence it: ${JSON.stringify(stitchMute.secondMuted)}`)
+    }
+    const seqMute = result.seqMute
+    if (!seqMute) problems.push('the sequenced-mute drive reported nothing')
+    else {
+      if (seqMute.count !== 2) problems.push(`a sequenced lane of two tracks drew ${seqMute.count} elements rather than two`)
+      if (seqMute.firstMuted !== false) problems.push(`muting a sequenced lane's second track silenced the first: ${JSON.stringify(seqMute.firstMuted)}`)
+      if (seqMute.secondMuted !== true) problems.push(`muting a sequenced lane's second track did not silence it: ${JSON.stringify(seqMute.secondMuted)}`)
     }
     // A COMBO'S OWN MODE, IN THE TITLE AND ON THE LANES.
     const comboMode = result.comboMode

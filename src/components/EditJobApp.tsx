@@ -898,9 +898,12 @@ export const EditJobApp: React.FC = () => {
   // Nothing in the app ever populates `sourceInfo` or `sourceMetadata`, so a source without intrinsic
   // timing — an audio track especially — has to be probed before it can be drawn or played at its real
   // length. This is the list that gets probed and no more: a multi-track job maps one video stream, so
-  // only the first source is a candidate for it, and every added track is one.
+  // only the first source is a candidate for it — but a job that CONCATENATES its visuals (a STITCH, and a
+  // COMBO with more than one) plays every one of them, so every one has to be probed or the clips past the
+  // first draw with no length at all and look as though they were never added. That is why adding a second
+  // picture to a job used to land invisibly while a DUPLICATE of an already-probed file showed up.
   const candidateSources = draft ? Array.from(new Set([
-    ...(draft.type === 'stitch' ? draft.sourcePaths : draft.sourcePaths.slice(0, 1)),
+    ...(clipsConcatenate(draft) ? draft.sourcePaths : draft.sourcePaths.slice(0, 1)),
     ...(draft.additionalAudioTracks || []).map((track) => track.path),
   ])) : []
   const probeSignature = candidateSources.join('\u0000')
@@ -1038,28 +1041,29 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
-   * The level and mute of a lane's OWN element — an added track, or a sound-only main lane.
+   * The level and mute an audio element plays at, read from the SEGMENT it carries rather than from its lane.
    *
-   * A track's level is the track's (`gainDb`, keyed by its stable id and written per stream by the export);
-   * a sound-only main lane's is its clip's own embedded level. Either way the monitor is applying the very
-   * figure the encoder writes for that stream, so a track sounds in the preview as it will in the file.
+   * A lane can hold several clips — a sound-only main lane of a STITCH, and a lane of SEQUENCED tracks — and
+   * each is its own clip with its own sound. Reading the lane's FIRST clip is what made muting the first track
+   * of a stitch silence every track on it while muting the rest did nothing: the answer was the first clip's,
+   * asked once per lane. Each segment asks for its OWN clip now, so a mute lands on the clip it was put on.
    */
-  const laneLevelFor = (laneId: string): { gain: number; muted: boolean } => {
+  const segmentLevelFor = (segment: TimelineSegment, laneId: string): { gain: number; muted: boolean } => {
     const task = draftRef.current
     if (!task) return { gain: 1, muted: false }
-    const track = (task.additionalAudioTracks || []).find((candidate) => candidate.id === laneId)
+    // A TRACK is a clip of the track list — a lane of its own when STACKED, one segment of a SEQUENCED lane —
+    // so its mute and its level are the track's, keyed by the track's id, and a mute lands in either mode.
+    const track = (task.additionalAudioTracks || []).find((candidate) => trackKey(task, candidate) === segment.key)
     if (track) return { gain: gainForDb(track.gainDb ?? 0), muted: Boolean(task.mutedLanes?.[track.id]) }
-    if (laneId === MAIN_LANE_ID) {
-      const path = task.sourcePaths[0]
-      const laneMuted = Boolean(task.mutedLanes?.[MAIN_LANE_ID])
-      if (!path || mediaKind(path) !== 'audio') return { gain: 1, muted: laneMuted }
-      const clipId = clipKey(task, path, 0)
-      return {
-        gain: gainForDb(embeddedGainDb(task, clipId, 0)),
-        muted: laneMuted || clipAudioDropped(task, clipId, path, embeddedStreamCount(task, clipId, path, sourceProbes[path]?.audioStreams?.length ?? 0)),
-      }
-    }
-    return { gain: 1, muted: Boolean(task.mutedLanes?.[laneId]) }
+    // Otherwise it is a CLIP of the main lane, and its own sound is the clip's, keyed by the clip's id.
+    const laneMuted = Boolean(task.mutedLanes?.[laneId])
+    const enabled = embeddedStreamEnabled(task, segment.key, segment.sourcePath, 0)
+    // A LEVEL is written where the export carries the clip's own sound: everywhere for a sound clip, and on the
+    // paths with in-place controls for a picture's. A mute is written on every path, so it is always applied.
+    const gain = enabled && (mediaKind(segment.sourcePath) === 'audio' || embeddedAudioEditable(task))
+      ? gainForDb(embeddedGainDb(task, segment.key, 0))
+      : 1
+    return { gain, muted: laneMuted || !enabled }
   }
 
   const playback = useConsolidatedPlayback(
@@ -1905,13 +1909,14 @@ export const EditJobApp: React.FC = () => {
       const element = audioElementsRef.current[slaveKey]
       if (!element) return
       const laneId = laneIdBySlaveKey.get(slaveKey) ?? ''
-      const level = laneLevelFor(laneId)
-      // The lane's own clip FADE, the same shape the export bakes — read from THAT clip, so an added track
-      // fades on its own ramp and a sound-only main lane fades its element too. Without it only the picture
-      // element carried a fade, which is why a fade was seen on video clips and heard on neither sound clip.
       const segment = segmentBySlaveKey.get(slaveKey)
+      // The level and mute the element plays at are read from the SEGMENT it carries, not from its lane — a
+      // lane can hold several clips, each with its own sound. See `segmentLevelFor`.
+      const level = segment ? segmentLevelFor(segment, laneId) : { gain: 1, muted: Boolean(muted[laneId]) }
+      // And that segment's own clip FADE, the same shape the export bakes, so a fade is heard on the element
+      // it belongs to — an added track on its own ramp, a sound-only main lane's clip on its own.
       const fadeGain = segment ? fadeGainFor(segment, playback.position) : 1
-      element.muted = Boolean(muted[laneId]) || level.muted
+      element.muted = level.muted
       element.volume = Math.max(0, Math.min(1, level.gain * fadeGain))
     })
   }, [monitorSignature, audioSlaveSignature, playback.videoRef, playback.segment])
