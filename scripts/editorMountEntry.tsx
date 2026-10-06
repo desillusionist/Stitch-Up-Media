@@ -1757,6 +1757,8 @@ const drive = async () => {
   const soundClipsBefore = document.querySelectorAll('.timeline-clip').length
   ;(document.querySelector('.timeline-clip .boundary-add.is-head') as HTMLElement | null)?.click()
   await wait(150)
+  // An all-SOUND lane's edges fade from or to SILENCE, not black: there is no black on a lane that carries none.
+  const soundHeadTitle = (document.querySelector('.boundary-editor .boundary-title') as HTMLElement | null)?.textContent ?? null
   const soundAdd = [...document.querySelectorAll('.boundary-editor .boundary-source')].find((button) => button.textContent?.trim() === 'ADD SOURCE') as HTMLButtonElement | undefined
   soundAdd?.click()
   await wait(300)
@@ -1766,7 +1768,7 @@ const drive = async () => {
   applySoundStitch?.click()
   await wait(250)
   const soundStitchPatch = applied[applied.length - 1] as { sourcePaths?: string[]; additionalAudioTracks?: unknown[] } | undefined
-  result.soundStitchAdd = { before: soundClipsBefore, after: soundClipsAfter, sourceCount: soundStitchPatch?.sourcePaths?.length ?? 0, trackCount: soundStitchPatch?.additionalAudioTracks?.length ?? 0 }
+  result.soundStitchAdd = { headTitle: soundHeadTitle, before: soundClipsBefore, after: soundClipsAfter, sourceCount: soundStitchPatch?.sourcePaths?.length ?? 0, trackCount: soundStitchPatch?.additionalAudioTracks?.length ?? 0 }
 
   // THE DELETE KEY REACHES AN ADDED AUDIO TRACK. A selection on an audio lane was left out of the Delete
   // question, so a track could only be taken out through its own menu. It asks the SAME question now.

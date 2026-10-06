@@ -4811,16 +4811,16 @@ export const EditJobApp: React.FC = () => {
                           ? <span className={`clip-audio${muted[lane.id] || clipAudioDropped(draft, clipKey(draft, segment.sourcePath, clipIndexOf(segment)), segment.sourcePath, embeddedStreamCount(draft, clipKey(draft, segment.sourcePath, clipIndexOf(segment)), segment.sourcePath, sourceProbes[segment.sourcePath]?.audioStreams?.length ?? 0)) ? ' is-muted' : ''}`} aria-hidden="true" />
                           : null}
                         {/* The lane's own boundaries. The main lane's are the cuts of the join: a [+] on a cut
-                            fades both sides, and a [+] at either end fades from or to black. An added audio
-                            track is a single clip, so it has the two edges only; its panel offers ADD SOURCE
-                            and, because the encoder does not write a fade on an added track yet, says so
-                            rather than drawing a ramp the file would not contain. */}
+                            fades both sides, and a [+] at either end fades from or to black — or to silence on a
+                            lane of sound. An added audio track is a single clip, so it has the two edges only; its
+                            panel offers ADD SOURCE and, because the encoder does not write a fade on an added track
+                            yet, says so rather than drawing a ramp the file would not contain. */}
                         {index === 0 && (
                           <button
                             className={`boundary-add is-head${(lane.id === mainLane?.id ? edgeFade(draft, 'head') : trackEdgeFade(draft, segment.key, 'head')) > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === 'head' ? ' is-open' : ''}`}
                             onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id && openBoundary.at === 'head' ? null : { laneId: lane.id, at: 'head' }) }}
                             aria-label={`Add a fade in on ${lane.label}`}
-                            title={lane.id === mainLane?.id ? 'Fade in from black' : `Fade in on ${lane.label}`}
+                            title={lane.id === mainLane?.id ? (lane.kind === 'audio' ? 'Fade in from silence' : 'Fade in from black') : `Fade in on ${lane.label}`}
                           />
                         )}
                         {/* A CUT between SEQUENCED tracks, which is the same [+] the main lane's cuts carry: the
@@ -4839,7 +4839,7 @@ export const EditJobApp: React.FC = () => {
                             className={`boundary-add is-tail${(lane.id === mainLane?.id ? edgeFade(draft, 'tail') : trackEdgeFade(draft, segment.key, 'tail')) > 0 ? ' is-active' : ''}${openBoundary?.laneId === lane.id && openBoundary.at === 'tail' ? ' is-open' : ''}`}
                             onClick={(event) => { event.stopPropagation(); setOpenBoundary(openBoundary?.laneId === lane.id && openBoundary.at === 'tail' ? null : { laneId: lane.id, at: 'tail' }) }}
                             aria-label={`Add a fade out on ${lane.label}`}
-                            title={lane.id === mainLane?.id ? 'Fade out to black' : `Fade out on ${lane.label}`}
+                            title={lane.id === mainLane?.id ? (lane.kind === 'audio' ? 'Fade out to silence' : 'Fade out to black') : `Fade out on ${lane.label}`}
                           />
                         )}
                         {/* What the drag is about to take off either end. The window is committed on release, so
@@ -4927,17 +4927,20 @@ export const EditJobApp: React.FC = () => {
               if (boundaryIsMainLane) setEdgeTransition(selectedBoundary.edge, type, duration)
               else applyTransition(trackEdgeFadeKey(selectedBoundary.clipKey, selectedBoundary.edge), type, duration)
             }
+            // The timeline's own edges cut from or to BLACK on a lane that carries a picture, and from or to
+            // SILENCE on one that carries only sound — the same fade, named for what is on the other side of it.
+            const boundaryWord = boundaryLane?.kind === 'audio' ? 'SILENCE' : 'BLACK'
             const heading = selectedBoundary.kind === 'edge'
               ? (selectedBoundary.edge === 'head'
-                ? (boundaryIsMainLane ? 'FADE IN FROM BLACK' : 'FADE IN')
-                : (boundaryIsMainLane ? 'FADE OUT TO BLACK' : 'FADE OUT'))
+                ? (boundaryIsMainLane ? `FADE IN FROM ${boundaryWord}` : 'FADE IN')
+                : (boundaryIsMainLane ? `FADE OUT TO ${boundaryWord}` : 'FADE OUT'))
               : `CUT ${selectedBoundary.index + 1}|${selectedBoundary.index + 2}`
             return <div className="boundary-editor">
               <span className="boundary-title">{heading}</span>
               <div className="boundary-options">
                 <button className={selectedBoundary.requested > 0 ? '' : 'is-selected'} onClick={() => set('none')}>OFF</button>
                 <button className={selectedBoundary.requested > 0 ? 'is-selected' : ''} onClick={() => set('fade', selectedBoundary.requested || Math.min(0.5, selectedBoundary.maxFade) || 0.25)}>FADE</button>
-                <button disabled title="Crossfade overlaps the clips and needs the encoder rework planned next.">X-FADE</button>
+                <button disabled title="Cross-dissolve overlaps the clips and is written by the encoder; the timeline and the monitor do not draw the overlap yet.">X-FADE</button>
               </div>
               {selectedBoundary.requested > 0 && (
                 <div className="boundary-duration" title={`Longest fade that fits here: ${selectedBoundary.maxFade.toFixed(2)}s`}>
@@ -4987,7 +4990,7 @@ export const EditJobApp: React.FC = () => {
             </div>
           )}
           {model.unusedVideoSources.length > 0 && <div className="editor-note">&gt; {model.unusedVideoSources.length} EXTRA VIDEO SOURCE(S) ({model.unusedVideoSources.map(sourceName).join(', ')}) ARE NOT USED HERE: THIS JOB MAPS ONE VIDEO STREAM. A STITCH JOB CONCATENATES THEM.</div>}
-          {showBoundaries && <div className="editor-note">&gt; [+] ON A CUT FADES BOTH SIDES OF IT; [+] AT THE TIMELINE'S ENDS FADES FROM OR TO BLACK. THE ENCODER APPLIES THEM AND THE MONITOR MIRRORS THEM.</div>}
+          {showBoundaries && <div className="editor-note">&gt; [+] ON A CUT FADES BOTH SIDES OF IT; [+] AT THE TIMELINE'S ENDS FADES FROM OR TO {model.lanes[0]?.kind === 'audio' ? 'SILENCE' : 'BLACK'}. THE ENCODER APPLIES THEM AND THE MONITOR MIRRORS THEM.</div>}
           <div className="editor-note">&gt; LANE WIDTHS ARE THE REAL TRIMMED DURATIONS; AUDIO PLAYS ALONGSIDE THE VIDEO FROM ZERO, SO THE OUTPUT RUNS TO {duration > 0 ? stamp(duration) : 'AN UNKNOWN LENGTH'}.</div>
           </>}
         </section>

@@ -873,6 +873,7 @@ app.whenReady().then(async () => {
     const soundStitchAdd = result.soundStitchAdd
     if (!soundStitchAdd) problems.push('the stitch-of-sounds [+] drive reported nothing')
     else {
+      if (soundStitchAdd.headTitle !== 'FADE IN FROM SILENCE') problems.push(`an all-sound lane's edge fade is headed ${JSON.stringify(soundStitchAdd.headTitle)} rather than FADE IN FROM SILENCE`)
       if (soundStitchAdd.after !== soundStitchAdd.before + 1) problems.push(`the [+] on a stitch of sounds added ${soundStitchAdd.after - soundStitchAdd.before} clips rather than one`)
       if (soundStitchAdd.sourceCount !== 3) problems.push(`the added sound did not land in the sequence: ${soundStitchAdd.sourceCount} sources`)
       if (soundStitchAdd.trackCount !== 0) problems.push(`the added sound was routed to ${soundStitchAdd.trackCount} track(s) on a job with no track lane`)

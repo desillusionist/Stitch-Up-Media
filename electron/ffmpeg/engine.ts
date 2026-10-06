@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, edgeFade, effectiveCropFor, jobExportsPicture, laneIsMuted, nativeRateFor, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, trackEdgeFade, tracksConcatenate, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
+import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, crossfadeAt, edgeFade, effectiveCropFor, jobExportsPicture, joinedTimeline, laneIsMuted, nativeRateFor, resolveCrossfades, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, trackEdgeFade, tracksConcatenate, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
@@ -241,6 +241,55 @@ export class FFmpegEngine {
         .on('end', () => resolve()).on('error', reject).save(output)
     })
   }
+
+  /**
+   * Joins normalized clips with a cross-DISSOLVE where a boundary asks for one, writing the result to a file.
+   *
+   * The clips arrive already conformed to the output raster, rate, pixel format and SAR — `xfade` refuses
+   * anything else — and their dip fades are baked, except at a crossfade boundary, where `resolveFades`
+   * leaves nothing to fade because the DISSOLVE is the transition there. So this writes only the join: an
+   * `xfade` (picture) and an `acrossfade` (sound) at each crossfade boundary, and the `concat` filter at each
+   * plain cut, in ONE graph rather than a second pass. A crossfade is a re-encode, which is the cost.
+   */
+  private renderCrossfadeJoin(inputs: string[], durations: number[], overlaps: number[], output: string, taskId: string): Promise<void> {
+    const { starts } = joinedTimeline(durations, overlaps)
+    const parts: string[] = []
+    let video = '0:v'
+    let audio = '0:a'
+    for (let index = 1; index < inputs.length; index += 1) {
+      const overlap = overlaps[index - 1] || 0
+      const videoOut = `xv${index}`
+      const audioOut = `xa${index}`
+      if (overlap > 0) {
+        // The OUTGOING clip's last D seconds blend under the INCOMING clip's first D, `offset` being when the
+        // dissolve begins on the stream built so far — which is exactly where the incoming clip STARTS once the
+        // overlaps are taken out.
+        parts.push(`[${video}][${index}:v]xfade=transition=fade:duration=${overlap.toFixed(3)}:offset=${starts[index].toFixed(3)}[${videoOut}]`)
+        parts.push(`[${audio}][${index}:a]acrossfade=d=${overlap.toFixed(3)}[${audioOut}]`)
+      } else {
+        parts.push(`[${video}][${index}:v]concat=n=2:v=1:a=0[${videoOut}]`)
+        parts.push(`[${audio}][${index}:a]concat=n=2:v=0:a=1[${audioOut}]`)
+      }
+      video = videoOut
+      audio = audioOut
+    }
+    const command = ffmpeg()
+    inputs.forEach((file) => command.input(file))
+    command
+      .complexFilter(parts)
+      .videoCodec('libx264')
+      .outputOptions(['-preset veryfast', '-pix_fmt yuv420p', '-video_track_timescale 90000'])
+      .audioCodec('aac')
+      .outputOptions(['-b:a 160k', '-map', `[${video}]`, '-map', `[${audio}]`])
+    return new Promise<void>((resolve, reject) => {
+      command
+        .on('start', (commandLine: string) => logEvent('ffmpeg', 'process started', { taskId, commandLine }))
+        .on('end', () => resolve())
+        .on('error', reject)
+        .save(output)
+    })
+  }
+
   private resolveOutputDirectory(directory: string): string {
     try {
       const resolved = path.resolve(directory)
@@ -506,6 +555,11 @@ export class FFmpegEngine {
     // measured rate, and the widest of them, so a clip given a rate of its own is retimed against its own.
     const nativeFpsByPath = new Map<string, number>()
     let maxFps = 0
+    // Whether EVERY clip carries both a picture and sound, which is what a cross-dissolve needs of its two
+    // neighbours: `xfade` blends two pictures and `acrossfade` two sounds, and neither can be asked of a
+    // stream that is not there. A job that fails either test keeps the plain-cut join it always had.
+    let everySourceHasPicture = true
+    let everySourceHasAudio = true
     try {
       const probes = await Promise.all(task.sourcePaths.map((source) => probeFile(source)))
       let maxW = 0, maxH = 0
@@ -516,7 +570,10 @@ export class FFmpegEngine {
         if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) {
           maxW = Math.max(maxW, resolution[0]); maxH = Math.max(maxH, resolution[1])
           sourceSizes.set(source, { width: resolution[0], height: resolution[1] })
+        } else {
+          everySourceHasPicture = false
         }
+        if (!probe.audioStreams.length) everySourceHasAudio = false
         const sequence = this.sequenceFor(task, source)
         const probed = sequence?.fps || parseFrameRate(probe.videoStreams[0]?.fps)
         nativeFpsByPath.set(source, probed)
@@ -558,12 +615,39 @@ export class FFmpegEngine {
       return
     }
     const tmpConcatFile = path.join(os.tmpdir(), `stitch_${task.id}.txt`)
-    const fileLines = normalizedSources.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n')
-    fs.writeFileSync(tmpConcatFile, fileLines, 'utf-8')
+    // WHICH JOIN IS OURS: plain cuts ride the concat DEMUXER, which copies stream to stream and re-encodes
+    // nothing; ONE cross-dissolve anywhere needs the filtergraph instead, because an overlap is not something a
+    // demuxer can express. A job with no crossfade is untouched, so the common case keeps its old cost.
+    const crossfadeOverlaps = resolveCrossfades(clipDurations, task.sourcePaths.map((source, index) => crossfadeAt(task, clipKey(task, source, index))))
+    const crossfadeReady = crossfadeOverlaps.some((value) => value > 0) && everySourceHasPicture && everySourceHasAudio
+      && task.preset.container !== 'gif' && task.preset.imageOutputMode !== 'sequence'
+    let joinedInput = tmpConcatFile
+    let joinedInputOptions = ['-f', 'concat', '-safe', '0']
+    if (crossfadeReady) {
+      joinedInput = path.join(os.tmpdir(), `stitch_${task.id}_xfade.mkv`)
+      try {
+        await this.renderCrossfadeJoin(normalizedSources, clipDurations, crossfadeOverlaps, joinedInput, task.id)
+        joinedInputOptions = []
+      } catch (error) {
+        // A graph that cannot be built falls back to the cut join rather than failing the job — the file is
+        // still the one the job asked for, minus the dissolve.
+        logEvent('ffmpeg', 'crossfade join failed; falling back to the plain-cut join', { taskId: task.id, error: String(error) })
+        try { fs.unlinkSync(joinedInput) } catch {}
+        joinedInput = tmpConcatFile
+        joinedInputOptions = ['-f', 'concat', '-safe', '0']
+      }
+    }
+    if (joinedInput === tmpConcatFile) {
+      const fileLines = normalizedSources.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n')
+      fs.writeFileSync(tmpConcatFile, fileLines, 'utf-8')
+    }
 
     let cmd = ffmpeg()
-      .input(tmpConcatFile)
-      .inputOptions(['-f', 'concat', '-safe', '0'])
+      .input(joinedInput)
+      .inputOptions(joinedInputOptions)
+
+    // A crossed join is D shorter than the clips, and the figures below are read off the join's own length.
+    const joinedSeconds = crossfadeReady ? joinedTimeline(clipDurations, crossfadeOverlaps).total : clipDurations.reduce((total, clip) => total + clip, 0)
 
     // The same rule as the transcode path: a stitch of sound files asked for a picture has none to
     // join, so the export's own frame is supplied. It takes ONE input rather than one per clip,
@@ -610,15 +694,15 @@ export class FFmpegEngine {
     if (stitchPictured) {
       // Every normalized source is written as stereo before it is joined, so the concatenated stream the
       // drawing is made from is a stereo one whatever the files were — the scope is drawn straight.
-      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, this.exportChannels(task.preset, targetChannels), clipDurations.reduce((total, clip) => total + clip, 0))
-      else if (!stitchCustom) this.addBlackPicture(cmd, task.preset, clipDurations.reduce((total, clip) => total + clip, 0))
+      if (stitchDraws) this.applyVisualization(cmd, task.preset, ['0:a:0'], this.visualizationBackgroundFor(cmd, task.preset, undefined, 1), targetSampleRate, this.exportChannels(task.preset, targetChannels), joinedSeconds)
+      else if (!stitchCustom) this.addBlackPicture(cmd, task.preset, joinedSeconds)
     }
 
     cmd
-      .on('progress', this.progressHandler(clipDurations.reduce((total, clip) => total + clip, 0), onProgress))
+      .on('progress', this.progressHandler(joinedSeconds, onProgress))
       .on('end', () => {
         try {
-          fs.unlinkSync(tmpConcatFile)
+          fs.unlinkSync(joinedInput)
         } catch {}
         normalizedSources.forEach((file) => { try { fs.unlinkSync(file) } catch {} })
         this.activeProcesses.delete(task.id)
@@ -627,7 +711,7 @@ export class FFmpegEngine {
       .on('error', (err: Error) => {
         logEvent('ffmpeg', 'process error', { taskId: task.id, error: err.message })
         try {
-          fs.unlinkSync(tmpConcatFile)
+          fs.unlinkSync(joinedInput)
         } catch {}
         normalizedSources.forEach((file) => { try { fs.unlinkSync(file) } catch {} })
         this.activeProcesses.delete(task.id)
@@ -658,6 +742,9 @@ export class FFmpegEngine {
     const clipDurations: number[] = []
     const sourceSizes: Array<{ width: number; height: number } | undefined> = []
     const comboRetimes: number[] = []
+    // A cross-dissolve needs both neighbours to carry BOTH streams — `xfade` blends pictures, `acrossfade`
+    // sounds — so a visual that is silent keeps the plain-cut join it had.
+    let everySourceHasAudio = true
     for (let index = 0; index < task.sourcePaths.length; index++) {
       const source = task.sourcePaths[index]
       let probeDuration = 0
@@ -667,6 +754,7 @@ export class FFmpegEngine {
         const probe = await probeFile(source)
         probeDuration = Number(probe.duration || 0)
         probedFps = parseFrameRate(probe.videoStreams[0]?.fps)
+        if (!probe.audioStreams.length) everySourceHasAudio = false
         const resolution = probe.videoStreams[0]?.resolution?.split('x').map(Number)
         if (resolution && resolution.length === 2 && resolution.every(Number.isFinite)) sourceSize = { width: resolution[0], height: resolution[1] }
       } catch { /* fall back to configured timing */ }
@@ -689,19 +777,27 @@ export class FFmpegEngine {
       onError(error instanceof Error ? error : new Error(String(error)))
       return null
     }
-    const listPath = path.join(os.tmpdir(), `combo_${task.id}.txt`)
-    fs.writeFileSync(listPath, normalized.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'), 'utf-8')
     const combined = path.join(os.tmpdir(), `combo_${task.id}.mkv`)
+    // ONE cross-dissolve anywhere and the visuals are joined through the filtergraph rather than the concat
+    // demuxer; a job of plain cuts keeps the demuxer and its stream copy, exactly as before.
+    const crossfadeOverlaps = resolveCrossfades(clipDurations, task.sourcePaths.map((source, index) => crossfadeAt(task, clipKey(task, source, index))))
+    const crossfadeReady = crossfadeOverlaps.some((value) => value > 0) && everySourceHasAudio
     try {
-      await new Promise<void>((resolve, reject) => {
-        ffmpeg()
-          .input(listPath)
-          .inputOptions(['-f', 'concat', '-safe', '0'])
-          .outputOptions(['-c', 'copy'])
-          .on('end', () => resolve())
-          .on('error', reject)
-          .save(combined)
-      })
+      if (crossfadeReady) {
+        await this.renderCrossfadeJoin(normalized, clipDurations, crossfadeOverlaps, combined, task.id)
+      } else {
+        const listPath = path.join(os.tmpdir(), `combo_${task.id}.txt`)
+        fs.writeFileSync(listPath, normalized.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'), 'utf-8')
+        await new Promise<void>((resolve, reject) => {
+          ffmpeg()
+            .input(listPath)
+            .inputOptions(['-f', 'concat', '-safe', '0'])
+            .outputOptions(['-c', 'copy'])
+            .on('end', () => resolve())
+            .on('error', reject)
+            .save(combined)
+        })
+      }
     } catch (error) {
       logEvent('ffmpeg', 'combo concat failed', { taskId: task.id, error: String(error) })
       onError(error instanceof Error ? error : new Error(String(error)))

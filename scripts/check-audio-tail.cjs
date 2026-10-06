@@ -1491,6 +1491,34 @@ const main = async () => {
   const soundCmd = await captureCommand(soundLevel)
   check('a sound clip\u2019s own level is written on the export\u2019s audio chain', / -af [^\n]*volume=0\.1/.test(soundCmd), true)
 
+  // X-FADE: A CROSS-DISSOLVE OVERLAPS, SO THE JOIN IS SHORTER. The two clips are conformed first — `xfade`
+  // refuses mismatched raster, rate or pixfmt — and the picture is blended with `xfade` and the sound with
+  // `acrossfade`. Read as the LENGTH of the file (the overlap is missing from it) and the COMMAND (the
+  // filtergraph is used, not the stream-copying concat demuxer), with an all-cut control beside it.
+  console.log('\n== X-FADE: a cross-dissolve overlaps, so the join is shorter ==')
+  const xfadeA = path.join(root, 'xfade-a.mp4')
+  const xfadeB = path.join(root, 'xfade-b.mp4')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=red:size=320x240:rate=25:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', xfadeA])
+  await runFfmpeg(['-f', 'lavfi', '-i', 'color=blue:size=320x240:rate=25:duration=4', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', xfadeB])
+  const xfadeTask = {
+    id: 'xfade-join', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: [xfadeA, xfadeB], outputDirectory: root, outputFilename: 'xfade.mp4', preset,
+    transitions: { [`${xfadeA}#0`]: { type: 'crossfade', duration: 1 } },
+  }
+  const xfadeCmd = await captureCommand(xfadeTask)
+  check('the join is written through a filtergraph', /xfade=transition=fade:duration=1\.000:offset=3\.000/.test(xfadeCmd), true)
+  check('and the sound cross-fades across the same boundary', /acrossfade=d=1\.000/.test(xfadeCmd), true)
+  check('and the stream-copying demuxer is not used once a crossfade is written', /-f concat/.test(xfadeCmd), false)
+  const xfadeSeconds = Number(await probeValue(path.join(root, 'xfade.mp4'), 'format=duration'))
+  check(`the join is one overlap shorter (${xfadeSeconds.toFixed(2)}s against 8.00)`, Math.abs(xfadeSeconds - 7) < 0.35, true)
+  // THE CONTROL: the same two clips with no crossfade keep the demuxer and the full length.
+  const cutTask = { ...xfadeTask, id: 'xfade-cut', outputFilename: 'plain-cut.mp4', transitions: undefined }
+  const cutCmd = await captureCommand(cutTask)
+  check('while a job of plain cuts still concatenates through the demuxer', /-f concat/.test(cutCmd), true)
+  check('and writes no cross-dissolve at all', /xfade=transition=/.test(cutCmd), false)
+  const cutSeconds = Number(await probeValue(path.join(root, 'plain-cut.mp4'), 'format=duration'))
+  check(`and runs the full length (${cutSeconds.toFixed(2)}s against 8.00)`, Math.abs(cutSeconds - 8) < 0.35, true)
+
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')
   process.exit(failures.length ? 1 : 0)
