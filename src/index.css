@@ -617,8 +617,13 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 /* A BLANK's own fill colour, painted inside its clip box and under the name, so the timeline shows the flat
    stretch the encoder will write rather than an empty box that looks like a clip that failed to load. */
 .clip-blank { position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: .85; }
-/* The colour picker a BLANK is given in PROPERTIES, sized to sit in the inspector's control row. */
-.clip-fill-input { width: 44px; height: 20px; padding: 0; border: 1px solid var(--ui-border); background: transparent; cursor: pointer; }
+/* A BLANK's colour, as a SWATCH: a square of the colour itself, sat in the value column the stamps above it
+   occupy, rather than a native colour well stretched across the whole row. The swatch's own padding and border
+   are taken off so the colour FILLS the square, which is what makes it read as the colour rather than as a box. */
+.editor-color { display: inline-flex; }
+.editor-color input[type="color"] { width: 18px; height: 18px; padding: 0; border: 1px solid var(--ui-border); background: transparent; cursor: pointer; }
+.editor-color input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.editor-color input[type="color"]::-webkit-color-swatch { border: 0; }
 
 /* Filmstrip view: the cells share the lane exactly, each showing the frame the playhead would
    show there. The clip's own label is hidden so the frames are what is read.

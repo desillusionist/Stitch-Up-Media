@@ -3,6 +3,7 @@ import { Link, Lock, RotateCcw, Unlink, Unlock, ZoomIn, ZoomOut } from 'lucide-r
 import { AppSettings, ClipSpeed, EditJobPatch, EncodingPreset, EmbeddedAudioStream, Insets, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceCrop, SourceFit, TransitionType } from '../types'
 import { deriveOutputFilename } from '../lib/outputNaming'
 import { mediaKind } from '../lib/mediaKind'
+import { videoCodecFacts } from '../lib/videoFacts'
 import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, fillCss, isPlaceholder, makePlaceholderPath, placeholderFill, placeholderKind, placeholderNamesInOrder, withPlaceholderFill } from '../lib/placeholder'
 import { outputCarriesPicture, outputTakesArt } from '../lib/outputKind'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_AMPLITUDE_SCALES, EQ_FREQUENCY_SCALES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_SENSITIVITY, EQ_PEAK_DECAY_MAX, EQ_PEAK_DECAY_MIN, EQ_SEGMENT_GAP_MAX, SCOPE_DRAWS, SCOPE_MAX_ZOOM, SCOPE_MIN_ZOOM, SPECTRUM_MAX_SATURATION, SPECTRUM_MIN_SATURATION, SPECTRUM_SCALES, VISUALIZATION_BACKGROUND, VISUALIZATION_BACKGROUNDS, VISUALIZATIONS, WAVE_CHANNELS, WAVE_SCALES, WAVE_WEIGHTS, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, drawingColorOf, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isSpectrumTemplate, isWaveTemplate, templateFor, themeFor, visualizationBackgroundKind, visualizationProgressLine } from '../lib/visualization'
@@ -2215,6 +2216,8 @@ export const EditJobApp: React.FC = () => {
   const inspectedInfo = inspectedSource ? sourceProbes[inspectedSource] : undefined
   const inspectedAudioFacts = audioFacts(inspectedInfo)
   const inspectedAudioCodec = audioCodecFacts(inspectedInfo)
+  /** What the source's PICTURE is encoded with — the line the inspector was missing beside the sound's. */
+  const inspectedVideoCodec = videoCodecFacts(inspectedInfo)
   /**
    * The clip the inspector is describing, as the key its speed is filed under.
    *
@@ -4573,6 +4576,9 @@ export const EditJobApp: React.FC = () => {
                 <EditorRow label="SOURCE" value={inspectedSegment ? segmentName(inspectedSegment) : inspectedSequence ? sequenceLabel(inspectedSequence) : sourceName(inspectedSource)} />
                 {/* A placeholder has no extension to name a format with, so it names ITSELF instead. */}
                 <EditorRow label="FORMAT" value={placeholderKind(inspectedSource) ? (placeholderKind(inspectedSource) === 'video' ? 'BLANK' : 'SILENCE') : (inspectedSource.split('.').pop() || 'UNKNOWN').toUpperCase()} />
+                {/* What the PICTURE is ENCODED with, which the inspector had only for the sound. FORMAT names
+                    the container and DEPTH names the samples; neither says how the picture is written. */}
+                {inspectedVideoCodec && <EditorRow label="VIDEO CODEC" value={inspectedVideoCodec} reason="What this source's picture is encoded with, read off its own probe. The FORMAT row names the container and the DEPTH row the samples — neither of them says how the picture is written." />}
                 {/* What the sound IS, which an inspector of an audio file had nothing to say about: the rate,
                     the sample size and the channels, and then how it is written. A lossy file has no sample
                     size and says so by leaving it out rather than by claiming zero bits. */}
@@ -4594,21 +4600,15 @@ export const EditJobApp: React.FC = () => {
                 </> : <EditorRow label="SOURCE" value={inspectedProbe ? stamp(inspectedProbe.duration) : 'PROBING...'} />}
                 {/* A BLANK's own colour, which is the one thing about it to decide: there is no file, no rate
                     and no depth, only the flat frame the encoder writes and the monitor draws. It belongs to
-                    the CLIP, so two blanks on one job can be two colours — see `setClipFill`. */}
+                    the CLIP, so two blanks on one job can be two colours — see `setClipFill`. Drawn as a
+                    SWATCH in the value column the stamps above it occupy, rather than a colour well stretched
+                    across the whole row. */}
                 {inspectedSegment && placeholderKind(inspectedSource) === 'video' && (
-                  <EditorField
+                  <EditorRow
                     label="FILL COLOR"
-                    hint="BLANK"
                     reason="The colour this BLANK is painted. The encoder writes it as a flat frame and the monitor draws it, and it belongs to the clip, so two blanks on one job can be two colours."
-                  >
-                    <input
-                      type="color"
-                      className="clip-fill-input"
-                      value={fillCss(placeholderFill(inspectedSource) ?? DEFAULT_BLANK_FILL)}
-                      onChange={(event) => setClipFill(inspectedSegment, event.target.value)}
-                      aria-label="Blank fill colour"
-                    />
-                  </EditorField>
+                    value={<label className="editor-color"><input type="color" value={fillCss(placeholderFill(inspectedSource) ?? DEFAULT_BLANK_FILL)} onChange={(event) => setClipFill(inspectedSegment, event.target.value)} aria-label="Blank fill colour" /></label>}
+                  />
                 )}
                 {/* The rate the clip's frames are READ at, with the source's own beside it as the reference. ONE
                     editable figure: a rate of the clip's own does not replace the native one, it INTERPRETS the

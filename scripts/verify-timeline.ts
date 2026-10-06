@@ -20,6 +20,7 @@ import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurati
 import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue, secondsForFrames } from '../src/lib/frameRate'
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
+import { videoCodecFacts } from '../src/lib/videoFacts'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, crossfadeAtTime, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, runsOnAnchoredClock, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipKey, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, trackKey } from '../src/lib/clipIds'
@@ -2240,6 +2241,18 @@ console.log('\n== what a sound is, and what the export will make of it ==')
   check('a source with no sound in it has no facts to show', [audioFacts(silent), audioCodecFacts(silent), probeHasAudio(silent)], [null, null, false])
   check('which is how a caller knows not to offer a sound control', probeHasAudio(sound({ channels: 2 })), true)
   check('a probe that never arrived says nothing rather than guessing', audioFacts(undefined), null)
+
+  // THE PICTURE has a line of its own, the mirror of the sound's: the container is the FORMAT row and the
+  // samples are the DEPTH row, so neither says how the picture is WRITTEN — which is why the inspector could
+  // show `AUDIO CODEC` and nothing at all for the video.
+  const picture = (stream: Partial<MediaStreamInfo>): MediaProbeInfo => ({
+    format: 'mov', duration: 5, size: 0, bitrate: 0, audioStreams: [], videoStreams: [{ codec: 'h264', ...stream }],
+  })
+  check('a picture\u2019s codec reads on its own line', videoCodecFacts(picture({})), 'H264')
+  check('and its bitrate beside it where the container records one', videoCodecFacts(picture({ codec: 'prores', bitrate: '12500k' })), 'PRORES | 12500K')
+  check('while a stream with no bitrate leaves it out rather than claiming zero', videoCodecFacts(picture({ codec: 'vp9' })), 'VP9')
+  check('a source with no picture in it has no facts to show', videoCodecFacts(silent), null)
+  check('and a probe that never arrived says nothing either', videoCodecFacts(undefined), null)
 
   // The output channel count, which is a CHOICE rather than a fact, and which stores nothing at all for SOURCE:
   // every path that owns the output layout has an answer of its own — a stitch follows the widest source it was

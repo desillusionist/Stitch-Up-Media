@@ -879,6 +879,17 @@ app.whenReady().then(async () => {
       // The transport must carry the playhead THROUGH a blank, which has no element to advance it.
       if (blankPreview.playStarted && !(blankPreview.reached > blankPreview.blankStart + 0.6)) problems.push(`the transport stalled on the blank: the playhead reached ${blankPreview.reached}s from its start at ${blankPreview.blankStart}s`)
       if (blankPreview.playStarted && blankPreview.reached < 0) problems.push('the playhead could not be read while playing over a blank')
+      // THE VIDEO CODEC LINE, which the inspector had only for the sound — so a picture's own codec could not
+      // be read at all, while its AUDIO CODEC could.
+      if (blankPreview.videoCodecLine !== 'H264') problems.push(`the inspector draws no VIDEO CODEC line for a video clip: ${JSON.stringify(blankPreview.videoCodecLine)}`)
+      if (!blankPreview.audioCodecLine) problems.push(`the inspector draws no AUDIO CODEC line, so the pair cannot be compared: ${JSON.stringify(blankPreview.audioCodecLine)}`)
+      // THE FILL COLOR, as a SWATCH on the label's own row and in the value column the stamps above occupy —
+      // not an elongated well stretched across the row.
+      if (blankPreview.fillLabel !== 'FILL COLOR') problems.push(`the BLANK's colour is on a row labelled ${JSON.stringify(blankPreview.fillLabel)} rather than FILL COLOR`)
+      if (!blankPreview.swatchInValueColumn) problems.push("the BLANK's colour swatch is not in the row's value column")
+      if (blankPreview.swatchWidth !== blankPreview.swatchHeight) problems.push(`the BLANK's colour control is ${blankPreview.swatchWidth}x${blankPreview.swatchHeight} rather than a square`)
+      if (!(blankPreview.swatchWidth > 0 && blankPreview.swatchWidth <= 24)) problems.push(`the BLANK's colour swatch is ${blankPreview.swatchWidth}px across, which is not a small square`)
+      if (String(blankPreview.swatchValue) !== '#cc3344') problems.push(`the BLANK's swatch shows ${JSON.stringify(blankPreview.swatchValue)} rather than its own colour`)
     }
     // THE FIRST SOUND ASKS HOW THE TRACKS RELATE.
     const audioAsk = result.audioAsk

@@ -1747,6 +1747,25 @@ const drive = async () => {
   const stateWhilePlaying = document.querySelector('.transport-state')?.textContent ?? null
   playButton?.click()
   await wait(200)
+  // THE PROPERTIES DRAWER. The VIDEO CODEC line, which the inspector had only for the sound, and the BLANK's
+  // FILL COLOR, which has to be a SWATCH in the value column the stamps above it occupy.
+  const openProps = async (clip: HTMLElement) => {
+    const rect = clip.getBoundingClientRect()
+    clip.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: rect.left + 4, clientY: rect.top + 4 }))
+    await wait(150)
+    const item = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'PROPERTIES') as HTMLButtonElement | undefined
+    item?.click()
+    await wait(200)
+  }
+  const firstClip = [...document.querySelectorAll('.timeline-clip')][0] as HTMLElement | undefined
+  if (firstClip) await openProps(firstClip)
+  const videoCodecLine = rowValue('VIDEO CODEC')
+  const audioCodecLine = rowValue('AUDIO CODEC')
+  const blankClipAgain = [...document.querySelectorAll('.timeline-clip')].find((clip) => clip.querySelector('.timeline-clip-name')?.textContent === 'BLANK 1') as HTMLElement | undefined
+  if (blankClipAgain) await openProps(blankClipAgain)
+  const swatch = document.querySelector('.editor-color input[type="color"]') as HTMLInputElement | null
+  const swatchRect = swatch?.getBoundingClientRect()
+  const swatchRow = swatch?.closest('.editor-row') as HTMLElement | null
   result.blankPreview = {
     clipPlaced: Boolean(blankClip),
     clipBackground,
@@ -1757,6 +1776,13 @@ const drive = async () => {
     blankStart: 12,
     playStarted: Boolean(playButton) && String(stateWhilePlaying).includes('PLAYING'),
     reached,
+    videoCodecLine,
+    audioCodecLine,
+    fillLabel: swatchRow?.querySelector('span')?.textContent?.trim() ?? null,
+    swatchInValueColumn: Boolean(swatchRow?.querySelector('strong')?.contains(swatch ?? null)),
+    swatchWidth: swatchRect ? Math.round(swatchRect.width) : 0,
+    swatchHeight: swatchRect ? Math.round(swatchRect.height) : 0,
+    swatchValue: swatch?.value ?? null,
   }
 
   // THE MODE FOLLOWS THE LIST. A CONVERT is one source; duplicating that source makes the job a STITCH, and
