@@ -51,6 +51,12 @@ export interface IElectronAPI {
   }) => Promise<string | null>
   expandMediaPaths: (paths: string[]) => Promise<string[]>
   createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => Promise<string | null>
+  /**
+   * A real placeholder clip for the editor's ADD BLANK / ADD SILENCE: black with silence, or silence
+   * alone, rendered once and cached. Inserted like any other source so the whole pipeline already knows
+   * what to do with it. See the `create-placeholder` handler.
+   */
+  createPlaceholder: (kind: 'video' | 'audio') => Promise<string | null>
   findImageSiblings: (path: string) => Promise<string[]>
   listSiblingFiles: (filePath: string) => Promise<string[]>
   getPathsTotalSize: (filePaths: string[]) => Promise<number>
@@ -152,6 +158,7 @@ const api: IElectronAPI = {
   visualizationStill: (options) => ipcRenderer.invoke('visualization-still', options),
   expandMediaPaths: (paths: string[]) => ipcRenderer.invoke('expand-media-paths', paths),
   createImageSequencePreview: (paths: string[], options?: { fps?: number; stillSeconds?: number; duration?: number }) => ipcRenderer.invoke('create-image-sequence-preview', paths, options),
+  createPlaceholder: (kind: 'video' | 'audio') => ipcRenderer.invoke('create-placeholder', kind),
   findImageSiblings: (filePath: string) => ipcRenderer.invoke('find-image-siblings', filePath),
   listSiblingFiles: (filePath: string) => ipcRenderer.invoke('list-sibling-files', filePath),
   getPathsTotalSize: (filePaths: string[]) => ipcRenderer.invoke('get-paths-total-size', filePaths),

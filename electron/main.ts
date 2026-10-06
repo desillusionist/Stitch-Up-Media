@@ -13,6 +13,7 @@ import { clipFilters } from '../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingCanvas, drawingColorOf, drawingTuneOf, eqStyleOf, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
 import { peaksFromSamples } from '../src/lib/waveform'
 import { runFfmpeg } from './ffmpeg/run'
+import { placeholderArgs } from './ffmpeg/placeholder'
 import { previewProxyFor, PreviewProxyDeps } from './previewProxy'
 import { spawn, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -662,6 +663,38 @@ app.whenReady().then(() => {
       return null
     } finally {
       try { fs.unlinkSync(listPath) } catch {}
+    }
+  })
+
+  /**
+   * Renders the ADD BLANK / ADD SILENCE placeholder, once per kind, and answers with its path.
+   *
+   * The placeholder is a REAL FILE rather than a special source the encoder has to be taught about, and that
+   * is the whole point: a black clip is a video like any other and a silence is a sound like any other, so the
+   * timeline, the trim handles, the monitor and the encoder all treat it with the rules they already have —
+   * the blank stretches by TRIMMING, and a blank between two clips can even be cross-dissolved into.
+   *
+   * Generated far longer than any single use (ten minutes) and cached, because the length a reader wants is
+   * set on the TIMELINE by dragging the clip's edges rather than by regenerating the file: the inserted clip
+   * lands at a short default and is stretched up to this. A file already in place is answered with as it is.
+   *
+   * It lives in the app's own data folder rather than the media CACHE, because a job KEEPS the path: unlike a
+   * preview proxy, which can be rebuilt from the source it was derived from, a placeholder has no source to
+   * rebuild it from, so file it somewhere "Clear Cache" does not take away.
+   */
+  ipcMain.handle('create-placeholder', async (_, kind: 'video' | 'audio') => {
+    const dir = path.join(app.getPath('userData'), 'placeholders')
+    const target = path.join(dir, kind === 'audio' ? 'SILENCE.m4a' : 'BLANK.mp4')
+    try { if (fs.existsSync(target) && fs.statSync(target).size > 0) return target } catch { /* render below */ }
+    fs.mkdirSync(dir, { recursive: true })
+    const args = ['-hide_banner', '-loglevel', 'error', '-y', ...placeholderArgs(kind), '-movflags', '+faststart', target]
+    try {
+      await runFfmpeg(args, 180000)
+      return target
+    } catch (error) {
+      logEvent('ipc', 'placeholder render failed', { kind, args: args.join(' '), error: String(error) })
+      try { fs.unlinkSync(target) } catch { /* nothing to remove */ }
+      return null
     }
   })
 

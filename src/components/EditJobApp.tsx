@@ -100,6 +100,13 @@ const JPEG_QUALITY_CHOICES = [2, 5, 10, 20, 31] as const
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
 const TAP_THRESHOLD_MS = 250
 const SLOW_MOTION_RATE = 0.5
+/**
+ * The length an ADD BLANK / ADD SILENCE placeholder lands at, before it is stretched on the timeline.
+ *
+ * The generated file is far longer than this (the main process makes ten minutes), so this is a starting
+ * point and not a limit: the clip is stretched by dragging its edges, exactly as a still's length is set.
+ */
+const PLACEHOLDER_SECONDS = 5
 
 /**
  * The fields this window owns. Everything else on a task belongs to the queue.
@@ -2499,17 +2506,47 @@ export const EditJobApp: React.FC = () => {
   }
 
   /** Where a run of files lands: visuals spliced into the join at the place, audio appended as tracks. */
-  const applyInsert = (position: number, visuals: string[], audios: string[], mode?: QueueTask['comboMode']) => {
+  const applyInsert = (position: number, visuals: string[], audios: string[], mode?: QueueTask['comboMode'], trim?: { in: number; out: number }) => {
     const current = latest()
     const at = Math.max(0, Math.min(position, current.sourcePaths.length))
     const ids = materializeClipIds(current)
     const numbers = materializeClipNumbers(current)
+    const newIds = newClipIds(visuals.length)
     const sourcePaths = [...current.sourcePaths.slice(0, at), ...visuals, ...current.sourcePaths.slice(at)]
     const tracks = [...(current.additionalAudioTracks || []), ...audios.map((path) => ({ id: newTrackId(), path, language: 'und' }))]
     updateDraft({
       ...withListType(current, sourcePaths, tracks, mode),
-      clipIds: [...ids.slice(0, at), ...newClipIds(visuals.length), ...ids.slice(at)],
+      clipIds: [...ids.slice(0, at), ...newIds, ...ids.slice(at)],
       clipNumbers: [...numbers.slice(0, at), ...addedClipNumbers(current, visuals), ...numbers.slice(at)],
+      // A placeholder arrives with its own starting LENGTH, filed under the new clip's own id, so the trim
+      // handles shape it from there — see `insertPlaceholder`.
+      ...(trim && visuals.length ? { trimPoints: { ...(current.trimPoints || {}), ...Object.fromEntries(newIds.map((id) => [id, trim])) } } : {}),
+    })
+  }
+
+  /**
+   * Places an ADD BLANK / ADD SILENCE placeholder at the open [+]'s place.
+   *
+   * The placeholder is a REAL FILE the main process renders once — black with silence, or silence alone — so
+   * everything downstream already knows what to do with it: it trims like footage, plays in the monitor, and
+   * joins like any other source, with no encoder knowledge of it at all. A BLANK goes on the picture lane and
+   * a SILENCE follows the SOUND rule — it joins a job whose sources are all sound, and becomes a track on one
+   * that is not — which is the same routing an added audio FILE takes (see `insertSources`).
+   */
+  const insertPlaceholder = async (kind: 'video' | 'audio', joinAt: number, trackAt: number) => {
+    const placeholder = await window.electronAPI?.createPlaceholder(kind)
+    if (!placeholder) return
+    const current = latest()
+    const trim = { in: 0, out: PLACEHOLDER_SECONDS }
+    const soundOnlyJob = current.sourcePaths.length > 0 && current.sourcePaths.every((path) => mediaKind(path) === 'audio')
+    if (kind === 'video' || soundOnlyJob) { applyInsert(joinAt, [placeholder], [], undefined, trim); return }
+    const tracks = [...(current.additionalAudioTracks || [])]
+    const at = Math.max(0, Math.min(trackAt, tracks.length))
+    tracks.splice(at, 0, { id: newTrackId(), path: placeholder, language: 'und' })
+    updateDraft({
+      ...withListType(current, current.sourcePaths, tracks),
+      // A track's records are keyed by the clip that IS the track, which for a plain track is `${path}#0`.
+      trimPoints: { ...(current.trimPoints || {}), [`${placeholder}#0`]: trim },
     })
   }
 
@@ -4998,6 +5035,7 @@ export const EditJobApp: React.FC = () => {
             <div className="boundary-editor">
               <span className="boundary-title">{boundaryLane.label} // EMPTY</span>
               <span className="boundary-divider" aria-hidden="true" />
+              <button className="boundary-source" onClick={() => { setOpenBoundary(null); void insertPlaceholder('audio', latest().sourcePaths.length, 0) }} title="Insert a length of silence, stretched to any length on the timeline">ADD SILENCE</button>
               <button className="boundary-source" onClick={() => { setOpenBoundary(null); void insertTrackSources(0) }} title="Add a source to this lane">ADD SOURCE</button>
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close the add-source panel">x</button>
             </div>
@@ -5008,6 +5046,7 @@ export const EditJobApp: React.FC = () => {
             <div className="boundary-editor">
               <span className="boundary-title">{boundaryLane.label} // CUT {selectedBoundary.index + 1}|{selectedBoundary.index + 2}</span>
               <span className="boundary-divider" aria-hidden="true" />
+              <button className="boundary-source" onClick={() => { const at = selectedBoundary.index + 1; setOpenBoundary(null); void insertPlaceholder('audio', latest().sourcePaths.length, at) }} title="Insert a length of silence between these tracks">ADD SILENCE</button>
               <button className="boundary-source" onClick={() => { const at = selectedBoundary.index + 1; setOpenBoundary(null); void insertTrackSources(at) }} title="Insert a source between these two tracks">ADD SOURCE</button>
               <span className="boundary-clamped">A FADE ACROSS SEQUENCED TRACKS IS NOT WRITTEN</span>
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close this panel">x</button>
@@ -5065,6 +5104,26 @@ export const EditJobApp: React.FC = () => {
                   the [+] stood for — before the first clip, between two, or after the last. On an added
                   audio lane it is a place in the TRACK list, so the source lands beside that track. */}
               <span className="boundary-divider" aria-hidden="true" />
+              <button
+                className="boundary-source"
+                onClick={() => {
+                  if (!boundaryLane) return
+                  // The place the [+] stands for, read as a place in whichever list the placeholder belongs to:
+                  // the join for a picture or for a job made of sound, the track list for a silence on a job
+                  // that has pictures. This is the routing `insertPlaceholder` applies to those two figures.
+                  const joinAt = boundaryIsMainLane
+                    ? (selectedBoundary.kind === 'edge'
+                      ? (selectedBoundary.edge === 'head' ? 0 : latest().sourcePaths.length)
+                      : selectedBoundary.index + 1)
+                    : latest().sourcePaths.length
+                  const trackIndex = model.lanes.findIndex((lane) => lane.id === boundaryLane.id) - 1
+                  const trackAt = selectedBoundary.kind === 'edge' && selectedBoundary.edge === 'tail' ? trackIndex + 1 : Math.max(0, trackIndex)
+                  const kind = boundaryLane.kind === 'video' ? 'video' : 'audio'
+                  setOpenBoundary(null)
+                  void insertPlaceholder(kind, joinAt, trackAt)
+                }}
+                title={boundaryLane?.kind === 'video' ? 'Insert a length of black with silence, stretched to any length on the timeline' : 'Insert a length of silence, stretched to any length on the timeline'}
+              >{boundaryLane?.kind === 'video' ? 'ADD BLANK' : 'ADD SILENCE'}</button>
               <button
                 className="boundary-source"
                 onClick={() => {
