@@ -143,6 +143,71 @@ export const maxFadeAtBoundary = (leftDuration: number, rightDuration: number) =
   Math.max(0, Math.min(leftDuration, rightDuration) / 2)
 
 /**
+ * X-FADE: a cross-DISSOLVE at a boundary between joined clips.
+ *
+ * A cross-dissolve OVERLAPS its two neighbours — the outgoing clip's last D seconds play UNDER the incoming
+ * clip's first D seconds — so the join runs D shorter than the two clips together. That is the whole of what
+ * separates it from the boundary FADE beside it, which dips one clip out and the next in WITHOUT overlapping
+ * and so changes no length at all. The length arithmetic lives here, next to the fade it mirrors, because the
+ * timeline, the duration readout and the encoder must all agree on the overlap before any of the three is
+ * allowed to draw or write it.
+ */
+
+/** The transition type that OVERLAPS its neighbours rather than dipping through black. */
+export const CROSSFADE = 'crossfade' as const
+
+/** The crossfade asked for at the boundary AFTER a clip, in seconds, or 0 for a plain cut. */
+export const crossfadeAt = (task: Pick<QueueTask, 'transitions'>, leftClipKey: string): number => {
+  const transition: ClipTransition | undefined = task.transitions?.[leftClipKey]
+  return transition && transition.type === CROSSFADE && transition.duration > 0 ? transition.duration : 0
+}
+
+/** The longest a single crossfade may be, mirroring `maxFadeAtBoundary`: half the shorter neighbour. */
+export const maxCrossfade = (leftDuration: number, rightDuration: number): number =>
+  Math.max(0, Math.min(leftDuration, rightDuration) / 2)
+
+/**
+ * The crossfades actually applied at a run of clip boundaries, each clamped so no clip is consumed twice over.
+ *
+ * The clamp is `maxCrossfade` — D no more than HALF the shorter neighbour, the same figure and the same reason
+ * as the non-overlapping fade: half of each is the most one side can give away without reaching into material
+ * the other still needs. On top of it there is one rule the non-overlapping fade does not need, because it
+ * takes nothing: TWO crossfades that share a clip cannot together use more than that clip, since one takes its
+ * HEAD and the other its TAIL. So each request is also clamped against what is left of the outgoing clip once
+ * its own head has been given away.
+ */
+export const resolveCrossfades = (durations: number[], requests: number[]): number[] => {
+  const applied = durations.map(() => 0)
+  let takenFromHead = 0
+  for (let index = 0; index < durations.length - 1; index += 1) {
+    const requested = Math.max(requests[index] || 0, 0)
+    const halfTheShorter = maxCrossfade(durations[index], durations[index + 1])
+    const outgoingRemaining = Math.max(0, durations[index] - takenFromHead)
+    const value = Math.max(0, Math.min(requested, halfTheShorter, outgoingRemaining))
+    applied[index] = value
+    takenFromHead = value
+  }
+  return applied
+}
+
+/**
+ * Where each clip BEGINS and how long the whole join runs, with a run of overlaps taken out.
+ *
+ * The first clip begins at zero; each next begins its overlap's length EARLIER than the one before it ended,
+ * which is what shows the dissolve as a region two neighbours share. So a run of N clips with overlaps
+ * D_0..D_(N-2) runs `Σ durations − Σ overlaps`, and its total is exactly that.
+ */
+export const joinedTimeline = (durations: number[], overlaps: number[]): { starts: number[]; total: number } => {
+  const starts: number[] = []
+  let cursor = 0
+  durations.forEach((duration, index) => {
+    starts.push(cursor)
+    cursor += Math.max(0, duration - (overlaps[index] || 0))
+  })
+  return { starts, total: cursor }
+}
+
+/**
  * The longest fade an edge can take: the whole clip, less whatever a boundary at the
  * other end of the SAME clip already uses, so the two never overlap.
  */

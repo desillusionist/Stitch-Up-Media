@@ -21,7 +21,7 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, laneIsMuted, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipKey, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, trackKey } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
@@ -249,6 +249,33 @@ console.log('\n== fades on a concatenated lane ==')
   near('the tail edge reads its own', edgeFade(edgeTask, 'tail'), 2)
   near('and neither is confused with a clip boundary', edgeFade({ ...edgeTask, transitions: { '/a.mp4#0': { type: 'fade', duration: 3 } } } as unknown as QueueTask, 'tail'), 0)
   check('a trim shortens the clip before fades are placed', segmentTiming(20, { in: 5, out: 9 }), { duration: 4, sourceIn: 5, trimmed: true })
+}
+
+console.log('\n== X-FADE: a cross-dissolve OVERLAPS, so the join is shorter ==')
+{
+  // A cross-dissolve is NOT the boundary fade: it OVERLAPS its two neighbours, so the join loses the overlap's
+  // length rather than merely darkening the cut. This is the arithmetic the timeline, the duration readout and
+  // the encoder have to agree on, proved on its own before any of the three is allowed to draw or write it.
+  const durations = [4, 6, 10]
+  near('a job of plain cuts runs the sum of its clips', joinedTimeline(durations, resolveCrossfades(durations, [0, 0, 0])).total, 20)
+  check('one crossfade is applied whole when it fits', resolveCrossfades(durations, [2, 0, 0]), [2, 0, 0])
+  near('and the join is shorter by its own length', joinedTimeline(durations, [2]).total, 18)
+  // The clamp, mirroring `maxFadeAtBoundary`: never more than half the shorter neighbour.
+  near('a crossfade is clamped to half the shorter neighbour', maxCrossfade(10, 2), 1)
+  check('so a greedy request is reduced, not accepted', resolveCrossfades(durations, [100, 100, 0]), [2, 3, 0])
+  near('and the total is the sum less the clamped overlaps', joinedTimeline(durations, resolveCrossfades(durations, [100, 100, 0])).total, 15)
+  // TWO crossfades that share a clip cannot together use more than it: one takes its HEAD, the other its TAIL.
+  check('two crossfades sharing a clip are clamped against it together', resolveCrossfades([10, 4, 10], [100, 100, 0]), [2, 2, 0])
+  // Placement: each clip begins its overlap earlier than the one before it ended, which is the region they share.
+  const placed = joinedTimeline([4, 6, 10], [2, 3, 0])
+  check('each clip begins the overlap earlier than the last ended', placed.starts, [0, 2, 5])
+  near('and the join ends on the total', placed.total, 15)
+  check('the last clip has no boundary after it to overlap', resolveCrossfades([4, 6], [1, 5])[1], 0)
+  // The reader: a boundary FADE is not a crossfade, a crossfade is, and an untouched boundary is a plain cut.
+  const fadeTask = { transitions: { a: { type: 'fade', duration: 2 }, b: { type: 'crossfade', duration: 1.5 } } } as unknown as QueueTask
+  near('a boundary FADE is not read as a crossfade', crossfadeAt(fadeTask, 'a'), 0)
+  near('while a crossfade is', crossfadeAt(fadeTask, 'b'), 1.5)
+  near('and a boundary with no transition is a plain cut', crossfadeAt(fadeTask, 'c'), 0)
 }
 
 console.log('\n== a fade on an added track ==')

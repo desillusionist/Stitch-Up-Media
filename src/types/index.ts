@@ -345,8 +345,13 @@ export interface EmbeddedAudioStream {
   gainDb?: number
 }
 
-/** Clip-boundary transitions. Only meaningful where clips are concatenated. */
-export type TransitionType = 'none' | 'fade'
+/**
+ * Clip-boundary transitions. Only meaningful where clips are concatenated.
+ *
+ * A `fade` DIPS one clip out and the next in without overlapping, so it changes no length. A `crossfade`
+ * OVERLAPS its two neighbours, so the join runs shorter than the two clips together — see `crossfadeAt`.
+ */
+export type TransitionType = 'none' | 'fade' | 'crossfade'
 
 /**
  * The region of a clip's SOURCE that the job keeps, normalised to the source's own size.
