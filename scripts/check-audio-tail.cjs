@@ -1311,6 +1311,32 @@ const main = async () => {
   const plainMid = await rmsAt(plainOut, 2.4, 0.2)
   check(`and without a fade the same stretch is NOT quieter (head ${plainHead.toFixed(3)} vs middle ${plainMid.toFixed(3)})`, plainHead > plainMid * 0.5, true)
 
+  // A FADE ON A STITCH OF SOUND. The two edges are the timeline's own and the boundary is the cut; all three
+  // are baked into each clip's OWN chain before the join. Measured at the cut and at the clip middles, so a
+  // quiet cut is a reading and not the fixture.
+  const stitchFadeA = path.join(root, 'stitch-fade-a.wav')
+  const stitchFadeB = path.join(root, 'stitch-fade-b.wav')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', stitchFadeA])
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', stitchFadeB])
+  const stitchFadeTask = {
+    id: 'stitch-fade', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: [stitchFadeA, stitchFadeB], outputDirectory: root, outputFilename: 'stitch-fade.mp4', preset,
+    transitions: { [`${stitchFadeA}#0`]: { type: 'fade', duration: 1 } },
+  }
+  const stitchFadeCmd = await captureCommand(stitchFadeTask)
+  check('a stitch bakes the boundary fade OUT into the first clip', /afade=t=out:st=2\.000:d=1\.000/.test(stitchFadeCmd), true)
+  check('and the fade IN into the second', /afade=t=in:st=0:d=1\.000/.test(stitchFadeCmd), true)
+  const stitchOutFile = path.join(root, 'stitch-fade.mp4')
+  const stitchMidA = await rmsAt(stitchOutFile, 1.0, 0.2)
+  const stitchAtCut = await rmsAt(stitchOutFile, 3.0, 0.12)
+  const stitchMidB = await rmsAt(stitchOutFile, 5.0, 0.2)
+  check(`the sound really fades at the cut (cut ${stitchAtCut.toFixed(3)} vs mid ${stitchMidA.toFixed(3)}/${stitchMidB.toFixed(3)})`, stitchAtCut < Math.min(stitchMidA, stitchMidB) * 0.4, true)
+  // THE CONTROL: the same two clips with no fade keep the cut at full level.
+  const stitchCutTask = { ...stitchFadeTask, id: 'stitch-cut', outputFilename: 'stitch-cut.mp4', transitions: undefined }
+  await captureCommand(stitchCutTask)
+  const stitchCutPlain = await rmsAt(path.join(root, 'stitch-cut.mp4'), 3.0, 0.12)
+  check(`and with no fade the cut is NOT quieter (${stitchCutPlain.toFixed(3)})`, stitchCutPlain > Math.min(stitchMidA, stitchMidB) * 0.5, true)
+
   // A FADE ON ONE ADDED TRACK IS THAT TRACK'S ALONE. The visual here carries its own sound, so the track is the
   // output's SECOND audio stream; the command has to filter the two separately, with `afade` on the track and
   // none on the picture's own sound. One shared `-af` — what the path used before — could not have said that.

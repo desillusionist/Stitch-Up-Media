@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1809,6 +1809,21 @@ const drive = async () => {
   keepItButton?.click()
   await wait(200)
   result.keepIt = { menuOpen: Boolean(document.querySelector('.timeline-menu')), clips: keepClip().length }
+
+  // AN AUDIO LANE'S OWN FADE IS HEARD IN THE PREVIEW. The picture element carried the fade (its volume and
+  // opacity), but an added track's <audio> did not, so a fade on a sound clip was silent. Each lane's OWN
+  // clip fade is multiplied into its element's volume now, so at the very head of a 1s fade it reads zero.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-audio-fade', type: 'multitrack', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 'tA', path: SOUND_FIXTURE, language: 'und' }], transitions: { [`${SOUND_FIXTURE}#0::head`]: { type: 'fade', duration: 1 } } }, 'audio-fade-preview')
+  await wait(1200)
+  const fadedAudioVolume = (document.querySelector('audio') as HTMLAudioElement | null)?.volume ?? null
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-audio-nofade', type: 'multitrack', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 'tA', path: SOUND_FIXTURE, language: 'und' }] }, 'audio-no-fade-preview')
+  await wait(1200)
+  const plainAudioVolume = (document.querySelector('audio') as HTMLAudioElement | null)?.volume ?? null
+  result.audioFadePreview = { faded: fadedAudioVolume, plain: plainAudioVolume }
 
   // THE TITLE AND THE LANES FOR A COMBO'S OWN MODE. A combo's heading names which of its two arrangements it
   // is, and its tracks land on ONE lane when they are sequenced rather than one each.

@@ -892,6 +892,14 @@ app.whenReady().then(async () => {
       if (keepIt.menuOpen) problems.push('KEEP IT re-opened the clip menu rather than dismissing the question')
       if (keepIt.clips !== 1) problems.push(`KEEP IT left ${keepIt.clips} clips rather than the one it started with`)
     }
+    // AN AUDIO LANE'S FADE IS HEARD: at the head of a 1s fade the track's element is at zero, and without the
+    // fade it is at full level.
+    const audioFadePreview = result.audioFadePreview
+    if (!audioFadePreview) problems.push('the audio-fade preview drive reported nothing')
+    else {
+      if (!(audioFadePreview.faded !== null && audioFadePreview.faded < 0.05)) problems.push(`a 1s head fade left the track's element at ${audioFadePreview.faded} rather than near zero`)
+      if (!(audioFadePreview.plain !== null && audioFadePreview.plain > 0.9)) problems.push(`a track with no fade was not at full level: ${audioFadePreview.plain}`)
+    }
     // A COMBO'S OWN MODE, IN THE TITLE AND ON THE LANES.
     const comboMode = result.comboMode
     if (!comboMode) problems.push('the combo-mode drive reported nothing')

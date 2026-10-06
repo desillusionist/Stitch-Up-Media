@@ -24,6 +24,7 @@ import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSa
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipKey, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, trackKey } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
+import { detectSequences } from '../src/lib/detectSequences'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
 import { clipAudioDropped, embeddedAudioCustomised, embeddedGainDb, embeddedStreamCount, enabledEmbeddedStreams, extractedBy, gainForDb } from '../src/lib/embeddedAudio'
 import { EncodingPreset, MediaProbeInfo, MediaStreamInfo, QueueTask, SourceFit } from '../src/types'
@@ -276,6 +277,22 @@ console.log('\n== X-FADE: a cross-dissolve OVERLAPS, so the join is shorter ==')
   near('a boundary FADE is not read as a crossfade', crossfadeAt(fadeTask, 'a'), 0)
   near('while a crossfade is', crossfadeAt(fadeTask, 'b'), 1.5)
   near('and a boundary with no transition is a plain cut', crossfadeAt(fadeTask, 'c'), 0)
+}
+
+console.log('\n== a picked image resolves to its OWN sequence, not the folder beside it ==')
+{
+  const folder = '/shots/'
+  const siblings = [`${folder}clip_0001.jpg`, `${folder}clip_0002.jpg`, `${folder}clip_0003.jpg`, `${folder}.DS_Store`, `${folder}other.mov`, `${folder}notes.txt`]
+  const found = detectSequences(siblings, { minFrames: 2 })
+  const frames = [`${folder}clip_0001.jpg`, `${folder}clip_0002.jpg`, `${folder}clip_0003.jpg`]
+  check('only the image frames form a sequence', found.length, 1)
+  check('and it carries exactly those frames', found[0].files, frames)
+  // What the app picks: the frame's OWN sequence. The whole sibling list is what dragged a neighbour movie
+  // and a dot-file into the job as extra sources.
+  const picked = found.find((sequence) => sequence.files.includes(`${folder}clip_0002.jpg`))
+  check('and the picked frame resolves to that sequence alone', picked?.files, frames)
+  check('so a neighbouring movie is not added', (picked?.files ?? []).some((file) => file.endsWith('.mov')), false)
+  check('and a dot-file is not either', (picked?.files ?? []).some((file) => file.includes('.DS_Store')), false)
 }
 
 console.log('\n== a fade on an added track ==')

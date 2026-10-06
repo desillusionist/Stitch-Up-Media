@@ -238,6 +238,7 @@ export class FFmpegEngine {
       const clipGain = mediaKind(source) === 'audio' ? this.gainFilters(embeddedGainDb(task, clipKey(task, source, clipIndex), 0)) : []
       command.audioCodec('aac').audioFrequency(48000).audioChannels(2)
         .outputOptions([`-af ${['aresample=48000:async=1', ...speedAudio, 'aformat=sample_fmts=fltp:channel_layouts=stereo', ...fades.audio, ...clipGain].join(',')}`, '-b:a 160k', '-map 0:v:0?', '-map 0:a:0?'])
+        .on('start', (commandLine: string) => logEvent('ffmpeg', 'process started', { taskId: task.id, commandLine }))
         .on('end', () => resolve()).on('error', reject).save(output)
     })
   }

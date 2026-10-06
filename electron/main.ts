@@ -588,8 +588,10 @@ app.whenReady().then(() => {
       try {
         const info = fs.statSync(candidate)
         if (info.isDirectory()) {
-          fs.readdirSync(candidate).forEach((child) => visit(path.join(candidate, child)))
-        } else if (info.isFile() && extensions.has(path.extname(candidate).slice(1).toLowerCase())) {
+          // DOT-FILES ARE NEVER MEDIA. `.DS_Store` and its kind are directory bookkeeping, not footage, and
+          // walking into them is what put one on a job's source list.
+          fs.readdirSync(candidate).filter((child) => !child.startsWith('.')).forEach((child) => visit(path.join(candidate, child)))
+        } else if (info.isFile() && !path.basename(candidate).startsWith('.') && extensions.has(path.extname(candidate).slice(1).toLowerCase())) {
           files.push(candidate)
         }
       } catch (error) {
@@ -681,7 +683,8 @@ app.whenReady().then(() => {
   ipcMain.handle('list-sibling-files', async (_, filePath: string) => {
     const dir = path.dirname(filePath)
     const entries = await fs.promises.readdir(dir, { withFileTypes: true })
-    return entries.filter((entry) => entry.isFile()).map((entry) => path.join(dir, entry.name))
+    // Dot-files (`.DS_Store`, AppleDouble `._*`) are not media and never belong on a job.
+    return entries.filter((entry) => entry.isFile() && !entry.name.startsWith('.')).map((entry) => path.join(dir, entry.name))
   })
 
   ipcMain.handle('select-output-dir', async () => {

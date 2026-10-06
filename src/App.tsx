@@ -388,8 +388,11 @@ export const App: React.FC = () => {
     if (!skipSequenceResolution && filePaths.length === 1 && isImagePath(droppedPath) && hasTrailingNumber && window.electronAPI?.listSiblingFiles) {
       try {
         const siblings = await window.electronAPI.listSiblingFiles(droppedPath)
-        const siblingSequences = detectSequences(siblings, { minFrames: 2 })
-        if (siblingSequences.some((sequence) => sequence.files.includes(droppedPath))) filePaths = siblings
+        // ONLY THE SEQUENCE the picked frame belongs to is added — its own frames, not every file sitting
+        // beside it. Handing over the whole sibling list is what dragged a folder's OTHER media (a `.mov`
+        // next to the stills) and its dot-files into the job as extra sources.
+        const match = detectSequences(siblings, { minFrames: 2 }).find((sequence) => sequence.files.includes(droppedPath))
+        if (match) filePaths = match.files
       } catch {
         // A failed sibling read means this remains a normal single still.
       }
@@ -790,7 +793,9 @@ export const App: React.FC = () => {
     if (originallySingleExistingSource && isImagePath(filePaths[0]) && /\d+\D*\.[^.]+$/.test(filePaths[0].split(/[\\/]/).pop() || '') && window.electronAPI?.listSiblingFiles) {
       try {
         const siblings = await window.electronAPI.listSiblingFiles(filePaths[0])
-        if (detectSequences(siblings, { minFrames: 2 }).some((sequence) => sequence.files.includes(filePaths[0]))) filePaths = siblings
+        // The picked frame's OWN sequence, never the whole folder beside it — see `addFilesToQueue`.
+        const match = detectSequences(siblings, { minFrames: 2 }).find((sequence) => sequence.files.includes(filePaths[0]))
+        if (match) filePaths = match.files
       } catch {}
     }
     const incomingDetected = detectSequences(filePaths)

@@ -1550,7 +1550,13 @@ export const EditJobApp: React.FC = () => {
   const audioSlaveSignature = audioSlaveKeys.join('|')
   /** Which lane each slave element belongs to, so its MUTE and LEVEL are that lane's own. */
   const laneIdBySlaveKey = new Map<string, string>()
-  audioLanes.forEach((lane) => lane.segments.forEach((_, index) => laneIdBySlaveKey.set(audioSlaveKey(lane.id, index), lane.id)))
+  /** Which SEGMENT each slave element carries, so its own FADE is read from that clip and not the playhead's. */
+  const segmentBySlaveKey = new Map<string, TimelineSegment>()
+  audioLanes.forEach((lane) => lane.segments.forEach((segment, index) => {
+    const key = audioSlaveKey(lane.id, index)
+    laneIdBySlaveKey.set(key, lane.id)
+    segmentBySlaveKey.set(key, segment)
+  }))
   /** Read by the lane refs below, which are made once and so must not close over a value that changes. */
   const mutedRef = useRef(muted)
   mutedRef.current = muted
@@ -1661,6 +1667,19 @@ export const EditJobApp: React.FC = () => {
     if (activeSegment.fadeOut && segmentLocalTime > activeSegment.duration - activeSegment.fadeOut) gain = Math.min(gain, Math.max(0, (activeSegment.duration - segmentLocalTime) / activeSegment.fadeOut))
     return Math.max(0, Math.min(1, gain))
   })()
+  /**
+   * A clip's FADE read as a gain at a place within it — the ramp the encoder bakes into the file, so the
+   * monitor multiplies the same shape into that clip's own element volume and the fade is heard as it will be
+   * written. Read per SEGMENT, because each lane's own clip carries its own fade: the main lane's is the one
+   * the picture element rides, and an added track's is its element's and nobody else's.
+   */
+  const fadeGainFor = (segment: TimelineSegment, seconds: number): number => {
+    const local = seconds - segment.start
+    let gain = 1
+    if (segment.fadeIn && local < segment.fadeIn) gain = Math.min(gain, Math.max(0, local / segment.fadeIn))
+    if (segment.fadeOut && local > segment.duration - segment.fadeOut) gain = Math.min(gain, Math.max(0, (segment.duration - local) / segment.fadeOut))
+    return Math.max(0, Math.min(1, gain))
+  }
 
   /** Clip edges on the main lane, for the arrow keys to walk between. */
   const clipEdges = useMemo(() => {
@@ -1867,6 +1886,8 @@ export const EditJobApp: React.FC = () => {
     JSON.stringify((draft?.additionalAudioTracks ?? []).map((track) => [track.id, track.gainDb])),
     JSON.stringify((draft?.additionalAudioTracks ?? []).map((track) => [track.sourceClipId, track.streamIndex, track.path])),
     Object.keys(sourceProbes).length,
+    // Each audio lane's own FADE at the playhead, so a track's ramp re-applies as the playhead crosses it.
+    audioSlaveKeys.map((key) => { const segment = segmentBySlaveKey.get(key); return segment ? fadeGainFor(segment, playback.position).toFixed(3) : '1' }).join(','),
   ].join('|')
   useEffect(() => {
     const video = playback.videoRef.current
@@ -1880,8 +1901,13 @@ export const EditJobApp: React.FC = () => {
       if (!element) return
       const laneId = laneIdBySlaveKey.get(slaveKey) ?? ''
       const level = laneLevelFor(laneId)
+      // The lane's own clip FADE, the same shape the export bakes — read from THAT clip, so an added track
+      // fades on its own ramp and a sound-only main lane fades its element too. Without it only the picture
+      // element carried a fade, which is why a fade was seen on video clips and heard on neither sound clip.
+      const segment = segmentBySlaveKey.get(slaveKey)
+      const fadeGain = segment ? fadeGainFor(segment, playback.position) : 1
       element.muted = Boolean(muted[laneId]) || level.muted
-      element.volume = Math.max(0, Math.min(1, level.gain))
+      element.volume = Math.max(0, Math.min(1, level.gain * fadeGain))
     })
   }, [monitorSignature, audioSlaveSignature, playback.videoRef, playback.segment])
 
