@@ -18,7 +18,7 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
+import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, CROSSFADE, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
 import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamCount, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
 import { presetSummary } from '../lib/presetSummary'
@@ -977,8 +977,10 @@ export const EditJobApp: React.FC = () => {
 
   const resolveTiming = (sourcePath: string): SourceTiming | undefined => probedTiming[sourcePath]
   const model: TimelineModel | null = useMemo(
-    () => (draft ? buildTimeline(draft, { resolveTiming }) : null),
-    [timelineSignature, probedTiming],
+    // The probes go in so a cross-dissolve is drawn only where the encoder will write one — see
+    // `crossfadesRenderable`. They change as the probes land, so they are deps of the memo.
+    () => (draft ? buildTimeline(draft, { resolveTiming, sourceHasPicture: sourceVideo, sourceHasAudio: sourceAudio }) : null),
+    [timelineSignature, probedTiming, sourceVideo, sourceAudio],
   )
   // The audio every lane the timeline or the monitor is drawing as a waveform, read once per file. It
   // is the file's audio rather than the clip's, so a trim or a zoom needs no new reading: what is drawn
@@ -1890,6 +1892,8 @@ export const EditJobApp: React.FC = () => {
   const monitorSignature = [
     playback.segment?.key ?? '',
     previewGain,
+    // The cross-dissolve's own progress, so the two elements' sound is re-blended every frame the blend moves.
+    playback.crossfade ? `${playback.crossfade.incoming.key}#${playback.crossfade.t.toFixed(3)}` : '',
     JSON.stringify(muted),
     JSON.stringify(draft?.embeddedAudio ?? null),
     JSON.stringify((draft?.additionalAudioTracks ?? []).map((track) => [track.id, track.gainDb])),
@@ -1899,11 +1903,24 @@ export const EditJobApp: React.FC = () => {
     audioSlaveKeys.map((key) => { const segment = segmentBySlaveKey.get(key); return segment ? fadeGainFor(segment, playback.position).toFixed(3) : '1' }).join(','),
   ].join('|')
   useEffect(() => {
+    const xfade = playback.crossfade
     const video = playback.videoRef.current
     if (video) {
       const level = playback.segment ? monitorLevelFor(playback.segment) : undefined
       video.muted = Boolean(muted.main) || Boolean(level?.muted)
-      video.volume = Math.max(0, Math.min(1, previewGain * (level?.gain ?? 1)))
+      // Through a cross-dissolve the outgoing clip is faded out as the incoming one fades in — the triangular
+      // ramps `acrossfade` writes by default — so the monitor's own sound blends exactly as the export's does.
+      video.volume = Math.max(0, Math.min(1, previewGain * (level?.gain ?? 1) * (xfade ? 1 - xfade.t : 1)))
+    }
+    // The INCOMING clip rides an element of its own, and its level and mute are its own clip's, read by the
+    // same rule the outgoing clip's are.
+    const incoming = playback.incomingRef.current
+    if (incoming) {
+      const level = xfade ? monitorLevelFor(xfade.incoming) : undefined
+      incoming.muted = Boolean(level?.muted)
+      incoming.volume = xfade
+        ? Math.max(0, Math.min(1, (level?.gain ?? 1) * xfade.t * fadeGainFor(xfade.incoming, playback.position)))
+        : 0
     }
     audioSlaveKeys.forEach((slaveKey) => {
       const element = audioElementsRef.current[slaveKey]
@@ -3250,12 +3267,18 @@ export const EditJobApp: React.FC = () => {
     // them writes no cross-fade, so the panel offers ADD SOURCE and says why a fade is not offered.
     if (!boundaryIsMainLane) return { kind: 'track-cut' as const, index }
     const transition = draft.transitions?.[first.key]
-    const requested = transition && transition.type === 'fade' && transition.duration > 0 ? transition.duration : 0
+    // A boundary carries ONE transition. FADE dips through black and changes no length; X-FADE OVERLAPS its
+    // two clips and shortens the join. The two are told apart here so the panel can offer both, select the
+    // one that is set, and step the length of whichever it is — clamping a cross-dissolve against the same
+    // overlap limit the model and the encoder apply, so the figure shown is the figure written.
+    const crossfade = Boolean(transition && transition.type === CROSSFADE)
+    const requested = transition && transition.type !== 'none' && transition.duration > 0 ? transition.duration : 0
     const maxFade = maxFadeAtBoundary(first.duration, second.duration)
+    const maxXfade = maxCrossfade(first.duration, second.duration)
     // The request and what will actually render are reported separately. A fade that
     // a neighbour's length currently clamps away still reads as set, instead of
     // looking like the editor had forgotten it.
-    return { kind: 'cut' as const, index, source: first.sourcePath, requested, fade: Math.min(requested, maxFade), maxFade }
+    return { kind: 'cut' as const, index, source: first.sourcePath, requested, crossfade, fade: Math.min(requested, crossfade ? maxXfade : maxFade), maxFade, maxXfade }
   })()
 
   /**
@@ -4275,17 +4298,39 @@ export const EditJobApp: React.FC = () => {
                             </svg>
                             : <span className="editor-screen-message">{screenMessage}</span>
                           : elementUrl
-                            ? <video
-                              ref={playback.attachVideo}
-                              className="editor-video"
-                              src={elementUrl}
-                              preload="metadata"
-                              playsInline
-                              style={{ ...mediaStyle, opacity: previewGain }}
-                              onContextMenu={(event) => event.preventDefault()}
-                              onLoadedMetadata={measureNatural}
-                              onClick={toggleFromClick}
-                            />
+                            ? <>
+                              <video
+                                ref={playback.attachVideo}
+                                className="editor-video"
+                                src={elementUrl}
+                                preload="metadata"
+                                playsInline
+                                style={{ ...mediaStyle, opacity: previewGain * (playback.crossfade ? 1 - playback.crossfade.t : 1) }}
+                                onContextMenu={(event) => event.preventDefault()}
+                                onLoadedMetadata={measureNatural}
+                                onClick={toggleFromClick}
+                              />
+                              {/* The INCOMING clip of a cross-dissolve, laid over the outgoing one and blended
+                                  by the same `t`, its sound carried by its own element. It mounts only for the
+                                  length of the dissolve, and only where the encoder writes one: the timeline
+                                  gates the transition on the same probes, so a blend the file would not
+                                  contain is never drawn. */}
+                              {playback.crossfade && (() => {
+                                const incomingUrl = sourceUrlFor(playback.crossfade.incoming)
+                                return incomingUrl
+                                  ? <video
+                                    key={playback.crossfade.incoming.key}
+                                    ref={playback.attachIncoming}
+                                    className="editor-video is-incoming"
+                                    src={incomingUrl}
+                                    preload="metadata"
+                                    playsInline
+                                    style={{ ...mediaStyle, opacity: playback.crossfade.t }}
+                                    onContextMenu={(event) => event.preventDefault()}
+                                  />
+                                  : null
+                              })()}
+                            </>
                             : <span className="editor-screen-message">{screenMessage}</span>}
                 </div>
                 {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}x{outputFrame?.height}</b></div>}
@@ -4769,7 +4814,11 @@ export const EditJobApp: React.FC = () => {
                       <div
                         key={segment.key}
                         className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${multiSelected.includes(segment.key) ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index || draggingTrackIndex === index ? ' is-dragging' : ''}${soundMuted ? ' is-muted' : ''}`}
-                        style={{ width: `${clipWidth}px` }}
+                        // A cross-dissolve OVERLAPS its two clips, so a clip that dissolves IN is pulled back over
+                        // the tail of the one before it by exactly that overlap. The lane's own width is then the
+                        // joined length — the sum of the clips less every overlap — which is the figure the lane
+                        // and the playhead are measured against, so the drawn clips and the skimmer cannot drift.
+                        style={{ width: `${clipWidth}px`, ...(segment.crossfadeIn ? { marginLeft: `${-laneWidthFor(segment.crossfadeIn, zoom)}px` } : {}) }}
                         title={clipTitle(segment)}
                         data-clip-key={segment.key}
                         draggable={canReorder}
@@ -4845,6 +4894,11 @@ export const EditJobApp: React.FC = () => {
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                         {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
+                        {/* The region two cross-dissolved clips SHARE, drawn on the incoming clip's head — which
+                            sits over the outgoing clip's tail — so the overlap reads as one band rather than as
+                            two clips that happen to touch. It is the cross-dissolve's own mark, told apart from
+                            the black ramp of a plain fade beside it. */}
+                        {segment.crossfadeIn ? <span className="clip-xfade" style={{ width: `${Math.min(100, (segment.crossfadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" title={`Cross-dissolve ${segment.crossfadeIn.toFixed(2)}s`} /> : null}
                         {/* A visual clip that carries audio says so, and says whether the export still
                             carries it: green while it does, grey while the lane is muted. */}
                         {lane.kind === 'video' && sourceAudio[segment.sourcePath]
@@ -4975,19 +5029,36 @@ export const EditJobApp: React.FC = () => {
                 ? (boundaryIsMainLane ? `FADE IN FROM ${boundaryWord}` : 'FADE IN')
                 : (boundaryIsMainLane ? `FADE OUT TO ${boundaryWord}` : 'FADE OUT'))
               : `CUT ${selectedBoundary.index + 1}|${selectedBoundary.index + 2}`
+            // A cross-dissolve needs two clips joined at a cut, so it is offered only there — never on an edge
+            // (there is no second clip to dissolve into) nor across sequenced tracks (the concat graph writes
+            // no such blend). `kind: 'cut'` is exactly the main lane's own cuts.
+            const isCut = selectedBoundary.kind === 'cut'
+            const crossfade = isCut && selectedBoundary.crossfade
+            const xfadeMax = isCut ? selectedBoundary.maxXfade : 0
+            // The length stepper writes whichever transition the boundary HOLDS, so a cross-dissolve's length
+            // is stepped as a cross-dissolve and never silently swapped for a fade.
+            const activeType: TransitionType = crossfade ? CROSSFADE : 'fade'
+            const requested = selectedBoundary.requested
             return <div className="boundary-editor">
               <span className="boundary-title">{heading}</span>
               <div className="boundary-options">
-                <button className={selectedBoundary.requested > 0 ? '' : 'is-selected'} onClick={() => set('none')}>OFF</button>
-                <button className={selectedBoundary.requested > 0 ? 'is-selected' : ''} onClick={() => set('fade', selectedBoundary.requested || Math.min(0.5, selectedBoundary.maxFade) || 0.25)}>FADE</button>
-                <button disabled title="Cross-dissolve overlaps the clips and is written by the encoder; the timeline and the monitor do not draw the overlap yet.">X-FADE</button>
+                <button className={requested > 0 ? '' : 'is-selected'} onClick={() => set('none')}>OFF</button>
+                <button className={requested > 0 && !crossfade ? 'is-selected' : ''} onClick={() => set('fade', requested || Math.min(0.5, selectedBoundary.maxFade) || 0.25)}>FADE</button>
+                <button
+                  className={crossfade ? 'is-selected' : ''}
+                  disabled={!isCut}
+                  title={isCut
+                    ? 'Cross-dissolve: the two clips OVERLAP by this length and the join runs that much shorter. The encoder writes it and the timeline and the monitor draw it.'
+                    : 'A cross-dissolve needs two clips joined at a cut.'}
+                  onClick={() => { if (isCut) set(CROSSFADE, requested || Math.min(0.5, xfadeMax) || 0.25) }}
+                >X-FADE</button>
               </div>
-              {selectedBoundary.requested > 0 && (
-                <div className="boundary-duration" title={`Longest fade that fits here: ${selectedBoundary.maxFade.toFixed(2)}s`}>
-                  <button onClick={() => set('fade', Math.max(0.25, selectedBoundary.requested - 0.25))} disabled={selectedBoundary.requested <= 0.25} aria-label="Shorter fade">-</button>
-                  <span className="boundary-duration-value">{selectedBoundary.requested.toFixed(2)}s</span>
-                  <button onClick={() => set('fade', selectedBoundary.requested + 0.25)} aria-label="Longer fade">+</button>
-                  {selectedBoundary.fade < selectedBoundary.requested && <small className="boundary-clamped">RENDERS {selectedBoundary.fade.toFixed(2)}s</small>}
+              {requested > 0 && (
+                <div className="boundary-duration" title={`Longest ${crossfade ? 'cross-dissolve' : 'fade'} that fits here: ${(crossfade ? xfadeMax : selectedBoundary.maxFade).toFixed(2)}s`}>
+                  <button onClick={() => set(activeType, Math.max(0.25, requested - 0.25))} disabled={requested <= 0.25} aria-label={crossfade ? 'Shorter cross-dissolve' : 'Shorter fade'}>-</button>
+                  <span className="boundary-duration-value">{requested.toFixed(2)}s</span>
+                  <button onClick={() => set(activeType, requested + 0.25)} aria-label={crossfade ? 'Longer cross-dissolve' : 'Longer fade'}>+</button>
+                  {selectedBoundary.fade < requested && <small className="boundary-clamped">RENDERS {selectedBoundary.fade.toFixed(2)}s</small>}
                 </div>
               )}
               {/* The panel's SECOND decision, after a rule: what is placed AT this cut. The place is the one

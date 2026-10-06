@@ -21,7 +21,7 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, crossfadeAtTime, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipKey, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, trackKey } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { detectSequences } from '../src/lib/detectSequences'
@@ -277,6 +277,51 @@ console.log('\n== X-FADE: a cross-dissolve OVERLAPS, so the join is shorter ==')
   near('a boundary FADE is not read as a crossfade', crossfadeAt(fadeTask, 'a'), 0)
   near('while a crossfade is', crossfadeAt(fadeTask, 'b'), 1.5)
   near('and a boundary with no transition is a plain cut', crossfadeAt(fadeTask, 'c'), 0)
+}
+
+console.log('\n== X-FADE on the TIMELINE: the clips OVERLAP where the encoder dissolves them ==')
+{
+  const job = (over: Partial<QueueTask> = {}) => ({
+    id: 'x', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: ['/a.mp4', '/b.mp4'], outputDirectory: '/out', outputFilename: 'o.mp4',
+    preset: { id: 'p', name: 'P', container: 'mp4', videoCodec: 'h264', audioCodec: 'aac', resolution: 'source' },
+    transitions: { '/a.mp4#0': { type: 'crossfade', duration: 2 } },
+    ...over,
+  }) as unknown as QueueTask
+  const timing = { resolveTiming: () => ({ duration: 10 }) }
+  const probes = { sourceHasPicture: { '/a.mp4': true, '/b.mp4': true }, sourceHasAudio: { '/a.mp4': true, '/b.mp4': true } }
+
+  const crossed = buildTimeline(job(), { ...timing, ...probes })
+  const lane = crossed.lanes[0]
+  const [first, second] = lane.segments
+  near('the lane is one overlap shorter than the sum', lane.duration, 18)
+  near('and so is the job', crossed.duration, 18)
+  near('the second clip BEGINS before the first ended', second.start, 8)
+  near('which is exactly the overlap', first.start + first.duration - second.start, 2)
+  near('the outgoing clip carries how far it dissolves out', first.crossfadeOut ?? 0, 2)
+  near('and the incoming one how far it dissolves in', second.crossfadeIn ?? 0, 2)
+  near('the first clip never dissolves in', first.crossfadeIn ?? 0, 0)
+  near('and the last never dissolves out', second.crossfadeOut ?? 0, 0)
+
+  // The encoder refuses a cross-dissolve whose neighbours do not BOTH carry a picture and a sound, and falls
+  // back to plain cuts. The timeline must refuse it too, or it would draw an overlap the file never takes.
+  const silent = buildTimeline(job(), { ...timing, sourceHasPicture: probes.sourceHasPicture, sourceHasAudio: { '/a.mp4': true, '/b.mp4': false } })
+  near('a silent neighbour keeps the plain-cut join', silent.lanes[0].duration, 20)
+  near('so the second clip is not pulled back', silent.lanes[0].segments[1].start, 10)
+  near('and nothing is marked as dissolving', silent.lanes[0].segments[0].crossfadeOut ?? 0, 0)
+  // A FADE is not a cross-dissolve and changes no length, so the stream test has nothing to say about it.
+  near('while a boundary FADE is unaffected by the stream test', buildTimeline(job({ transitions: { '/a.mp4#0': { type: 'fade', duration: 2 } } }), { ...timing, ...probes }).lanes[0].duration, 20)
+
+  // The MONITOR's own geometry, read from the placed lane: which clip is coming in, and how far across the
+  // blend the playhead is. This is the figure the two pictures and their sound are blended by.
+  near('the blend begins where the incoming clip begins', crossfadeAtTime(lane.segments, 8)?.t ?? -1, 0)
+  near('its midpoint is halfway across', crossfadeAtTime(lane.segments, 9)?.t ?? -1, 0.5)
+  check('and the clip it names is the INCOMING one', crossfadeAtTime(lane.segments, 9)?.incoming.key, '/b.mp4#1')
+  near('approaching the outgoing clip\u2019s end it nears one', crossfadeAtTime(lane.segments, 9.9)?.t ?? -1, 0.95)
+  check('before the blend the outgoing clip is shown alone', crossfadeAtTime(lane.segments, 7.9), null)
+  check('and past it the incoming clip is the active one, not a blend', crossfadeAtTime(lane.segments, 10), null)
+  // On the plain-cut lane the stream test forced, there is no blend anywhere.
+  check('a lane with no overlap has no blend at all', crossfadeAtTime(silent.lanes[0].segments, 9), null)
 }
 
 console.log('\n== a picked image resolves to its OWN sequence, not the folder beside it ==')

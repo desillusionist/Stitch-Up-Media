@@ -667,6 +667,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .clip-fade { position: absolute; top: 0; bottom: 0; pointer-events: none; }
 .clip-fade-in { left: 0; background: linear-gradient(to right, rgba(0, 0, 0, .92), rgba(0, 0, 0, 0)); }
 .clip-fade-out { right: 0; background: linear-gradient(to left, rgba(0, 0, 0, .92), rgba(0, 0, 0, 0)); }
+/* The SHARED region of a cross-dissolve, drawn over the two overlapping clips: a band that is neither a ramp
+   to black nor a clip of its own, in the instrument's amber so it reads as a join the encoder writes rather
+   than as a clip that lost its picture. */
+.clip-xfade { position: absolute; top: 0; bottom: 0; left: 0; z-index: 2; pointer-events: none; background: repeating-linear-gradient(135deg, rgba(197, 184, 121, .34) 0 4px, rgba(197, 184, 121, .10) 4px 8px); border-right: 1px solid var(--crt-amber); }
 /* Sits on the clip's trailing edge, which IS the cut. Half the box is the whole
    offset, so the box is centred on the edge by construction rather than by any
    arithmetic on the timeline's length. */
@@ -725,6 +729,9 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .boundary-close { margin-left: auto; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-size: 12px; line-height: 1; }
 .boundary-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; object-fit: contain; cursor: pointer; }
+/* The INCOMING clip of a cross-dissolve, laid over the outgoing one: the same box (its `left/top/width/height`
+   are set inline), just above it in the stack so the blend is drawn rather than one picture hiding the other. */
+.editor-video.is-incoming { z-index: 1; }
 .editor-still { flex: 1 1 auto; min-height: 0; max-width: 100%; background: #030910; object-fit: contain; -webkit-user-drag: none; user-select: none; }
 /* A sound-only job's own picture — the drawing the export will write. It is the whole monitor rather than a
    clip inside the frame, so it is given the video element's own rule: 100% of the frame it is drawn in, with

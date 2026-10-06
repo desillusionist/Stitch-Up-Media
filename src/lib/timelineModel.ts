@@ -58,6 +58,15 @@ export interface TimelineSegment {
   sequence?: { frames: number; fps: number }
   /** True when the encoder will loop this single frame for a fixed length. */
   still?: boolean
+  /**
+   * How far this clip DISSOLVES OUT into the next, in seconds — a cross-dissolve's half of the overlap.
+   *\
+   * Not a fade: a cross-dissolve OVERLAPS its neighbours, so this clip's last D seconds play UNDER the next
+   * clip's first D, and the timeline draws the region the two share rather than a dip to black.
+   */
+  crossfadeOut?: number
+  /** How far this clip DISSOLVES IN from the one before it, in seconds. */
+  crossfadeIn?: number
   /** Applied fade at this clip's head, in seconds. Zero when there is no fade. */
   fadeIn?: number
   /** Applied fade at this clip's tail, in seconds. Zero when there is no fade. */
@@ -208,6 +217,29 @@ export const joinedTimeline = (durations: number[], overlaps: number[]): { start
 }
 
 /**
+ * The cross-DISSOLVE a time is inside, if any: which clip dissolves IN, and how far across the blend it is.
+ *
+ * A cross-dissolve OVERLAPS its two clips, so for its length the playhead is inside BOTH. The OUTGOING one is
+ * named first — the first whose span still contains the time, exactly as `segmentAt` reads it — and the overlap
+ * is its last `crossfadeOut` seconds, which is the incoming clip's first `crossfadeIn`. `t` runs from 0 where
+ * the incoming clip begins (the start of the blend) to 1 at the outgoing clip's end, and it is the one figure
+ * the monitor blends the two pictures and their sound by. Place the lane with `placeMainLane`/`joinedTimeline`
+ * first: this reads the `start`/`crossfadeIn`/`crossfadeOut` those write.
+ */
+export const crossfadeAtTime = (segments: TimelineSegment[], seconds: number): { incoming: TimelineSegment; t: number } | null => {
+  const origin = segments.findIndex((segment) => seconds >= segment.start && seconds < segment.start + segment.duration)
+  if (origin < 0) return null
+  const outgoing = segments[origin]
+  const span = outgoing.crossfadeOut ?? 0
+  if (span <= 0) return null
+  const incoming = segments[origin + 1]
+  if (!incoming) return null
+  const start = outgoing.start + outgoing.duration - span
+  if (seconds < start) return null
+  return { incoming, t: Math.max(0, Math.min(1, (seconds - start) / span)) }
+}
+
+/**
  * The longest fade an edge can take: the whole clip, less whatever a boundary at the
  * other end of the SAME clip already uses, so the two never overlap.
  */
@@ -250,6 +282,17 @@ export type TimingResolver = (sourcePath: string) => SourceTiming | undefined
 
 export interface BuildTimelineOptions {
   resolveTiming?: TimingResolver
+  /**
+   * Whether each source carries a PICTURE, from the editor's own probes.
+   *
+   * A cross-dissolve blends two pictures and two sounds, so the encoder refuses one whose neighbours do not
+   * each carry both streams and quietly joins them with plain cuts instead. The timeline has to make the same
+   * refusal from the same probes, or it would draw an overlap the file never takes. `undefined` means not known
+   * yet and is treated as "carries it", so nothing flashes before the probe lands.
+   */
+  sourceHasPicture?: Record<string, boolean>
+  /** Whether each source carries a SOUND, from the editor's own probes. See `sourceHasPicture`. */
+  sourceHasAudio?: Record<string, boolean>
 }
 
 /** `sourceInfo` describes the task's first source only, never its tracks. */
@@ -798,6 +841,50 @@ const applyFades = (task: QueueTask, segments: TimelineSegment[]) => {
 }
 
 /**
+ * Places a concatenated lane's clips end to end, with each cross-dissolve's OVERLAP taken out.
+ *
+ * A cross-dissolve is not the boundary fade beside it: it OVERLAPS its two neighbours by D, so the clip after
+ * the boundary BEGINS D earlier than the one before it ended and the whole join is D shorter. `resolveCrossfades`
+ * clamps each D, `joinedTimeline` turns the durations and the overlaps into the starts and the total, and the two
+ * figures a clip carries — how far it dissolves OUT and how far the next dissolves IN — are written on it so the
+ * timeline can draw the region they share. A lane of plain cuts is unchanged: every overlap is zero, so the
+ * starts come out cumulative and the total is the sum, exactly as before.
+ */
+const placeMainLane = (task: QueueTask, segments: TimelineSegment[], options: BuildTimelineOptions): number => {
+  const durations = segments.map((segment) => segment.duration)
+  // A cross-dissolve is drawn ONLY where the encoder will write one: a job whose clips do not all carry the
+  // streams `xfade`/`acrossfade` need keeps the plain-cut join it will actually get, so its length is honest.
+  // See `crossfadesRenderable`.
+  const renderable = crossfadesRenderable(task, segments, options)
+  const overlaps = resolveCrossfades(durations, segments.map((segment) => (renderable ? crossfadeAt(task, segment.key) : 0)))
+  const { starts, total } = joinedTimeline(durations, overlaps)
+  segments.forEach((segment, index) => {
+    segment.start = starts[index]
+    if (overlaps[index] > 0) segment.crossfadeOut = overlaps[index]
+    if (index > 0 && overlaps[index - 1] > 0) segment.crossfadeIn = overlaps[index - 1]
+  })
+  return total
+}
+
+/**
+ * Whether the encoder will build the cross-dissolve graph for this job, from the editor's probes.
+ *
+ * The test is the one `executeStitch` and `concatComboVisuals` make for themselves: a stitch needs EVERY clip
+ * to carry both a picture and a sound, and a combo joins pictures already so it needs only the sound. Absent
+ * probes mean the answer is yes, because an unprobed clip has not been shown to lack anything. When the test
+ * fails the encoder falls back to the stream-copying concat, so the timeline must fall back with it.
+ */
+const crossfadesRenderable = (task: QueueTask, segments: TimelineSegment[], options: BuildTimelineOptions): boolean => {
+  if (!options.sourceHasPicture && !options.sourceHasAudio) return true
+  const sources = segments.map((segment) => segment.sourcePath)
+  const hasSound = (sourcePath: string) => options.sourceHasAudio?.[sourcePath] !== false
+  const hasPicture = (sourcePath: string) => options.sourceHasPicture?.[sourcePath] !== false
+  return task.type === 'stitch'
+    ? sources.every((sourcePath) => hasPicture(sourcePath) && hasSound(sourcePath))
+    : sources.every(hasSound)
+}
+
+/**
  * Builds the consolidated timeline the output will actually have.
  *
  * STITCH concatenates every source in order. TRANSCODE, MULTI-TRACK and COMBO
@@ -836,25 +923,23 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   const lanes: TimelineLane[] = []
 
   if (task.type === 'stitch') {
-    let cursor = 0
-    const segments = task.sourcePaths.map((sourcePath, index) => {
-      const segment = segmentFor(task, sourcePath, index, cursor, options)
-      cursor += segment.duration
-      return segment
-    })
+    // Built with a start of zero each and PLACED by `placeMainLane` afterwards, so a cross-dissolve's overlap can
+    // pull each clip back over the one before it — see `placeMainLane`.
+    const segments = task.sourcePaths.map((sourcePath, index) => segmentFor(task, sourcePath, index, 0, options))
     // Fades are resolved from the same rules the encoder applies, so the drawn
     // ramp is what will actually be rendered.
     applyFades(task, segments)
+    const joined = placeMainLane(task, segments, options)
     const audioOnly = task.sourcePaths.length > 0 && task.sourcePaths.every((sourcePath) => mediaKind(sourcePath) === 'audio')
     // The lane's NAME follows what the lane HOLDS, not what the export writes: a job whose sources are
     // all sound is a sound job to a reader, and calling it VIDEO described the container the bits land in
     // rather than the clips on the lane — which read as the sound having been filed on the wrong row. The
     // export may still supply a black picture beside the track (see `jobExportsPicture`), and the lane's
     // KIND still follows the file, so what is drawn stays the waveform it is.
-    lanes.push({ id: MAIN_LANE_ID, label: audioOnly ? 'AUDIO 1' : 'VIDEO', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: cursor })
+    lanes.push({ id: MAIN_LANE_ID, label: audioOnly ? 'AUDIO 1' : 'VIDEO', kind: audioOnly ? 'audio' : 'video', embedded: true, segments, duration: joined })
     // A job whose clips are pictures still gets a lane to add sound to — see `EMPTY_AUDIO_LANE_ID`.
     if (!audioOnly) lanes.push({ id: EMPTY_AUDIO_LANE_ID, label: 'AUDIO 1', kind: 'audio', embedded: false, segments: [], duration: 0 })
-    return { lanes, duration: cursor, unusedVideoSources: [] }
+    return { lanes, duration: joined, unusedVideoSources: [] }
   }
 
   // A combo concatenates its visuals, which is what the encoder now does with them.
@@ -862,12 +947,9 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   // unused and is reported as such.
   const concatenatesVisuals = task.type === 'combo' && task.sourcePaths.length > 1
   const visualSources = concatenatesVisuals ? task.sourcePaths : task.sourcePaths.slice(0, 1)
-  let cursor = 0
-  const mainSegments = visualSources.map((sourcePath, index) => {
-    const segment = segmentFor(task, sourcePath, index, cursor, options)
-    cursor += segment.duration
-    return segment
-  })
+  // Built with a start of zero each and PLACED afterwards (`placeMainLane` for a concatenating combo, plain
+  // cumulative otherwise), so a cross-dissolve's overlap can pull each clip back over the one before it.
+  const mainSegments = visualSources.map((sourcePath, index) => segmentFor(task, sourcePath, index, 0, options))
   const mainSource = visualSources[0]
   const mainIsAudio = mainSource != null && mediaKind(mainSource) === 'audio'
   // Named for what the lane HOLDS, exactly as the stitch branch above is: a lone sound file is a sound
@@ -875,13 +957,18 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
   // A combo that concatenates has real cuts, so its fades are resolved here too.
   // A multi-track job has a single clip, where resolveFades finds no boundary.
   applyFades(task, mainSegments)
+  // A combo that concatenates is joined like a stitch, so its cross-dissolves overlap exactly as a stitch's do.
+  // A multi-track job holds a single clip, where there is no boundary to dissolve and the start is zero anyway.
+  const mainDuration = concatenatesVisuals
+    ? placeMainLane(task, mainSegments, options)
+    : mainSegments.reduce((longest, segment) => Math.max(longest, segment.start + segment.duration), 0)
   lanes.push({
     id: MAIN_LANE_ID,
     label: mainIsAudio ? 'AUDIO 1' : 'VIDEO',
     kind: mainIsAudio ? 'audio' : 'video',
     embedded: true,
     segments: mainSegments,
-    duration: cursor,
+    duration: mainDuration,
   })
 
   // Audio tracks play in parallel from the start, keyed by index zero, which is

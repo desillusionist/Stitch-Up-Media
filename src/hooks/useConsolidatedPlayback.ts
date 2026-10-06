@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { TimelineModel, TimelineSegment, audioSlaveKey, laneNeedsOwnAudio } from '../lib/timelineModel'
+import { TimelineModel, TimelineSegment, audioSlaveKey, crossfadeAtTime, laneNeedsOwnAudio } from '../lib/timelineModel'
 import { nextShuttleRate, nextForwardRung } from '../lib/shuttleRates'
 import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
 import { DEFAULT_PREVIEW_SPEED, MAX_PLAYBACK_RATE, PreviewSpeed, clampPreviewSpeed, playbackRateFor, preservesPitchFor } from '../lib/previewSpeed'
@@ -28,6 +28,19 @@ export interface ConsolidatedPlayback {
   /** Index of the main-lane segment the video element should be showing. */
   segmentIndex: number
   segment: TimelineSegment | undefined
+  /**
+   * The cross-DISSOLVE the playhead is inside, if any, and how far through it the playhead is.
+   *
+   * A cross-dissolve OVERLAPS its two clips, so for its length the monitor has TWO pictures to show at once:
+   * the OUTGOING one, which rides the master element the transport already owns (`segment`), and the INCOMING
+   * one, which needs an element of its own — handed over through `attachIncoming` and driven by this hook. `t`
+   * runs from 0 at the outgoing clip to 1 at the cut, and it is the figure the renderer blends the two pictures
+   * and their sound by, so what the monitor shows is the cross-dissolve the export writes.
+   */
+  crossfade: { incoming: TimelineSegment; t: number } | null
+  /** Callback ref for the incoming clip's element, mounted only while a cross-dissolve is under way. */
+  attachIncoming: (element: HTMLVideoElement | null) => void
+  incomingRef: React.MutableRefObject<HTMLVideoElement | null>
   position: number
   playing: boolean
   /** Signed shuttle rate. Zero means ordinary playback, negative means reverse. */
@@ -201,6 +214,61 @@ export const useConsolidatedPlayback = (
     if (exact >= 0) return exact
     return seconds <= segments[0].start ? 0 : segments.length - 1
   }, [])
+
+  /** The element the INCOMING clip of a cross-dissolve rides, and the binding of its load handler. */
+  const incomingRef = useRef<HTMLVideoElement | null>(null)
+  const incomingDetachRef = useRef<(() => void) | null>(null)
+
+  /**
+   * Drives the INCOMING clip's element through a cross-dissolve, on the terms the master element and the added
+   * tracks are driven: parked outside the overlap, played inside it, and corrected by a seek only once it has
+   * drifted past the tolerance. Reverse has no element clock, so the incoming picture is painted by seeking,
+   * exactly as the outgoing one is. The blend's own geometry — which clip, and how far across — is the model's
+   * one answer, `crossfadeAtTime`, read here from the live segments and the live clock.
+   */
+  const syncCrossfade = useCallback((seconds: number, force: boolean) => {
+    const element = incomingRef.current
+    if (!element) return
+    const overlap = crossfadeAtTime(segmentsRef.current, seconds)
+    if (!overlap) { if (!element.paused) element.pause(); return }
+    const desired = sourceTimeAt(seconds, overlap.incoming)
+    const clip = overlap.incoming.speed > 0 ? overlap.incoming.speed : 1
+    if (shuttleRef.current < 0) {
+      if (!element.paused) element.pause()
+      if (element.readyState >= 1 && (force || Math.abs(element.currentTime - desired) >= 0.5 / fpsRef.current)) {
+        try { element.currentTime = desired } catch { /* element not seekable yet */ }
+      }
+      return
+    }
+    element.playbackRate = Math.min(MAX_PLAYBACK_RATE, playbackRateFor(shuttleRef.current, speedRef.current) * clip)
+    element.preservesPitch = preservesPitchFor(shuttleRef.current) && overlap.incoming.maintainPitch !== false
+    if (force || Math.abs(element.currentTime - desired) > DRIFT_TOLERANCE) {
+      try { element.currentTime = desired } catch { /* element not seekable yet */ }
+    }
+    if (stateRef.current.playing) {
+      if (element.paused) void element.play().catch(() => { /* element may still be loading */ })
+    } else if (!element.paused) {
+      element.pause()
+    }
+  }, [])
+
+  /**
+   * Hands the incoming clip's element over, and binds its load handler.
+   *
+   * The element mounts only while a cross-dissolve is under way, so a fresh one is put onto the frame the
+   * playhead already reached as soon as its media is ready — the same one-turn-behind problem the master
+   * element answers in `onLoaded`. A bare `null` releases the binding.
+   */
+  const attachIncoming = useCallback((element: HTMLVideoElement | null) => {
+    incomingDetachRef.current?.()
+    incomingDetachRef.current = null
+    incomingRef.current = element
+    if (!element) return
+    const onReady = () => syncCrossfade(stateRef.current.position, true)
+    element.addEventListener('loadedmetadata', onReady)
+    incomingDetachRef.current = () => element.removeEventListener('loadedmetadata', onReady)
+    if (element.readyState >= 1) onReady()
+  }, [syncCrossfade])
 
   const syncAddedAudio = useCallback((seconds: number, force: boolean) => {
     slavesRef.current.forEach(({ key, segment }) => {
@@ -389,7 +457,7 @@ export const useConsolidatedPlayback = (
     }, 0)
   }, [onLoaded, onMediaError, applyRate, unbindVideo])
 
-  useEffect(() => () => { unbindVideo() }, [unbindVideo])
+  useEffect(() => () => { unbindVideo(); incomingDetachRef.current?.(); incomingRef.current = null }, [unbindVideo])
 
   /** The clock that owns the playhead whenever no element is entitled to. */
   const readPosition = useCallback(() => {
@@ -521,7 +589,10 @@ export const useConsolidatedPlayback = (
     // And the picture element on the same terms: parked past its own clip so a trimmed visual cannot sound under
     // the tail a longer track draws.
     syncMainAudio(stateRef.current.position)
-  }, [playing, shuttleRate, speed, segment?.key, slaveSignature, audioElements, applyPendingSeek, applyRate, startPlayback, syncAddedAudio, syncMainAudio])
+    // The incoming clip of a cross-dissolve, begun or parked with the master so a play or a pause under the
+    // dissolve starts and stops both pictures together.
+    syncCrossfade(stateRef.current.position, true)
+  }, [playing, shuttleRate, speed, segment?.key, slaveSignature, audioElements, applyPendingSeek, applyRate, startPlayback, syncAddedAudio, syncMainAudio, syncCrossfade])
 
   // Frame loop: advance the playhead, cross junctions, correct drift.
   useEffect(() => {
@@ -537,6 +608,7 @@ export const useConsolidatedPlayback = (
       const next = readPosition()
       syncAddedAudio(next, false)
       syncMainAudio(next)
+      syncCrossfade(next, false)
       // While a crossing or seek is in flight, the position and the segment index
       // are already decided. Letting the element's stale clock re-derive them here
       // is what would bounce the playhead back to the clip it just left.
@@ -582,7 +654,8 @@ export const useConsolidatedPlayback = (
     applyPendingSeek(false)
     syncAddedAudio(bounded, true)
     syncMainAudio(bounded)
-  }, [indexForTime, syncAddedAudio, syncMainAudio, applyPendingSeek])
+    syncCrossfade(bounded, true)
+  }, [indexForTime, syncAddedAudio, syncMainAudio, syncCrossfade, applyPendingSeek])
 
   /**
    * Ends a scrub: the tracks are put onto the settled playhead and given back their ordinary rate, ONCE.
@@ -607,6 +680,7 @@ export const useConsolidatedPlayback = (
     // playhead and handed back the rate they would have had without the scrub.
     syncAddedAudio(settled, true)
     syncMainAudio(settled)
+    syncCrossfade(settled, true)
     const rate = playbackRateFor(shuttleRef.current, speedRef.current)
     slavesRef.current.forEach(({ key, segment: slaveSegment }) => {
       const element = audioElements.current?.[key]
@@ -620,7 +694,7 @@ export const useConsolidatedPlayback = (
       if (active) void element.play().catch(() => { /* element may still be loading */ })
       else element.pause()
     })
-  }, [syncAddedAudio, syncMainAudio, applyPendingSeek, startPlayback, audioElements])
+  }, [syncAddedAudio, syncMainAudio, syncCrossfade, applyPendingSeek, startPlayback, audioElements])
 
   /**
    * Drives the slaved tracks to follow a scrub by RATE, correcting with a seek only once one has drifted.
@@ -698,10 +772,11 @@ export const useConsolidatedPlayback = (
     // The PICTURE is still moved by seeking, which is what it always was and what rode smoothly; the SOUND is
     // moved by the rate below. `positionScrub` never touches the audio elements.
     applyPendingSeek(false)
+    syncCrossfade(bounded, false)
     if (resumeAfterScrubRef.current) driveScrubAudio(bounded, rate)
     if (scrubEndRef.current != null) window.clearTimeout(scrubEndRef.current)
     scrubEndRef.current = window.setTimeout(() => finishScrub(), SCRUB_IDLE_MS)
-  }, [indexForTime, applyPendingSeek, finishScrub, driveScrubAudio])
+  }, [indexForTime, applyPendingSeek, finishScrub, driveScrubAudio, syncCrossfade])
 
   /** A scrub to an absolute position, which is what a pointer drag reads off the timeline. */
   const scrub = useCallback((seconds: number) => { beginScrub(); positionScrub(seconds) }, [beginScrub, positionScrub])
@@ -742,11 +817,18 @@ export const useConsolidatedPlayback = (
     if (!running && total > 0 && at >= total - 0.01) seek(0)
   }, [seek])
 
+  // The cross-dissolve under the playhead, read from the rendered position so the renderer has the same two
+  // clips and the same `t` the frame loop drives the incoming element by.
+  const crossfade = crossfadeAtTime(mainSegments, position)
+
   return {
     attachVideo,
     videoRef,
     segmentIndex,
     segment,
+    crossfade,
+    attachIncoming,
+    incomingRef,
     position,
     playing,
     shuttleRate,
