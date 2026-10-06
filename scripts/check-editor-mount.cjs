@@ -863,6 +863,23 @@ app.whenReady().then(async () => {
       if (!emptyLane.silencePlaced) problems.push(`clicking ADD SILENCE placed no clip named SILENCE 1: ${JSON.stringify(emptyLane.silenceNames)}`)
       if (emptyLane.silenceHandles !== 2) problems.push(`the SILENCE clip drew ${emptyLane.silenceHandles} trim handles rather than two`)
     }
+    // A BLANK IS PREVIEWED IN THE MONITOR, not only boxed on the timeline. Its colour is painted into a box of
+    // the monitor's own — which has to have a SIZE, or the colour goes into nothing and the monitor shows the
+    // frame's black while the timeline's clip box, painting the colour itself, shows it.
+    const blankPreview = result.blankPreview
+    if (!blankPreview) problems.push('the blank-preview drive reported nothing')
+    else {
+      if (!blankPreview.clipPlaced) problems.push('the BLANK was not drawn on the timeline')
+      const clipFill = String(blankPreview.clipBackground ?? '')
+      const monitorFill = String(blankPreview.monitorBackground ?? '')
+      if (clipFill !== 'rgb(204, 51, 68)') problems.push(`the timeline box is not the clip's own colour: ${clipFill} rather than rgb(204, 51, 68)`)
+      if (!blankPreview.monitorPresent) problems.push('the monitor drew no blank picture at all')
+      if (!(blankPreview.monitorWidth > 0 && blankPreview.monitorHeight > 0)) problems.push(`the monitor's blank box has no size: ${blankPreview.monitorWidth}x${blankPreview.monitorHeight}`)
+      if (monitorFill !== clipFill) problems.push(`the monitor's blank is ${monitorFill} while the timeline's is ${clipFill}`)
+      // The transport must carry the playhead THROUGH a blank, which has no element to advance it.
+      if (blankPreview.playStarted && !(blankPreview.reached > blankPreview.blankStart + 0.6)) problems.push(`the transport stalled on the blank: the playhead reached ${blankPreview.reached}s from its start at ${blankPreview.blankStart}s`)
+      if (blankPreview.playStarted && blankPreview.reached < 0) problems.push('the playhead could not be read while playing over a blank')
+    }
     // THE FIRST SOUND ASKS HOW THE TRACKS RELATE.
     const audioAsk = result.audioAsk
     if (!audioAsk) problems.push('the audio-ask drive reported nothing')

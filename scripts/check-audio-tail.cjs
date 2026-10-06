@@ -1610,6 +1610,20 @@ const main = async () => {
   const silenceOutSeconds = Number(await probeValue(path.join(root, 'silence-track.mp4'), 'format=duration'))
   check(`at the length it was trimmed to (${silenceOutSeconds.toFixed(2)}s against 4.00)`, Math.abs(silenceOutSeconds - 4) < 0.4, true)
 
+  // A CROSS-DISSOLVE INTO A BLANK. The blank's normalized clip carries BOTH streams, so `xfade` and
+  // `acrossfade` are handed something they can blend — which is what a colour matte between two shots has to
+  // be, and what a picture-only blank could not have been.
+  const blankXfadeTask = {
+    id: 'blank-xfade', type: 'stitch', status: 'pending', progress: 0,
+    sourcePaths: [xfadeA, blankPath, xfadeB], outputDirectory: root, outputFilename: 'blank-xfade.mp4', preset,
+    trimPoints: { [blankPath]: { in: 0, out: 2 } },
+    transitions: { [`${xfadeA}#0`]: { type: 'crossfade', duration: 1 } },
+  }
+  const blankXfadeCmd = await captureCommand(blankXfadeTask)
+  check('a cross-dissolve into a blank builds the xfade graph', /xfade=transition=fade/.test(blankXfadeCmd), true)
+  const blankXfadeSeconds = Number(await probeValue(path.join(root, 'blank-xfade.mp4'), 'format=duration'))
+  check(`and the join runs one overlap shorter (${blankXfadeSeconds.toFixed(2)}s against 9.00)`, Math.abs(blankXfadeSeconds - 9) < 0.4, true)
+
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')
   process.exit(failures.length ? 1 : 0)

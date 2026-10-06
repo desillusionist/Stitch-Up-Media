@@ -735,8 +735,16 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .boundary-close:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .editor-video { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; object-fit: contain; cursor: pointer; }
 /* A placeholder's own picture: a BLANK is a flat colour (set inline from the clip's own fill) and a SILENCE is
-   a hairline of nothing on the monitor's black. Neither is a media element, because neither has a file. */
-.editor-blank { flex: 1 1 auto; min-height: 0; width: 100%; background: #030910; }
+   a hairline of nothing on the monitor's black. Neither is a media element, because neither has a file.
+   FILLED rather than width-only: a blank has no `mediaStyle` to be positioned and sized by — its own size is
+   nothing, which is exactly what it is — and the frame window is a plain block, so a div with an automatic
+   height collapsed to zero and the colour was painted into a box with no height. That is what kept it out of
+   the monitor while the timeline, which paints the colour on the clip box itself, showed it. */
+.editor-blank { position: absolute; inset: 0; background: #030910; }
+/* A blank being PLACED takes the placing cursor, exactly as a picture does. */
+.editor-stage.is-placing .editor-blank { cursor: inherit; }
+/* A blank coming IN over another picture rides above it, exactly as an incoming video does. */
+.editor-blank.is-incoming { z-index: 1; }
 .editor-blank.is-silence { display: grid; place-items: center; }
 .editor-blank.is-silence > i { display: block; width: 60%; height: 1px; background: var(--ui-border); }
 /* The INCOMING clip of a cross-dissolve, laid over the outgoing one: the same box (its `left/top/width/height`

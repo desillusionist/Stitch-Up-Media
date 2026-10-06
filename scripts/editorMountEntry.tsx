@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1705,6 +1705,58 @@ const drive = async () => {
   result.emptyLane = {
     laneCount: emptyLanes.length, hasClip: emptyHasClip, hasMark: Boolean(emptyMark), panelTitle: emptyPanelTitle, buttons: emptyButtons,
     silencePlaced: Boolean(silenceClip), silenceHandles, silenceNames: clipsAfterSilence.map((clip) => clip.querySelector('.timeline-clip-name')?.textContent ?? null),
+  }
+
+  // A BLANK IS PREVIEWED IN THE MONITOR, not only boxed on the timeline. A blank has no media element to ride,
+  // so the monitor paints its colour into a box of its own — and that box has to have a SIZE. A width-only div
+  // in the frame's plain-block window collapsed to no height, so the colour was drawn into nothing and the
+  // monitor showed only the frame's black while the timeline's clip box, which paints the colour itself, showed it.
+  const blankPath = 'placeholder:video:mount-blank-1:cc3344'
+  const blankTask = {
+    ...task, id: 'mount-blank-preview', type: 'stitch' as const,
+    sourcePaths: [CLIP_FIXTURE, blankPath, CLIP_FIXTURE],
+    trimPoints: { [blankPath]: { in: 0, out: 2 } },
+  }
+  flushEdits()
+  await wait(200)
+  arrive(blankTask, 'blank-preview')
+  await wait(1200)
+  const blankClip = [...document.querySelectorAll('.timeline-clip')].find((clip) => clip.querySelector('.timeline-clip-name')?.textContent === 'BLANK 1') as HTMLElement | undefined
+  const blankSwatch = blankClip?.querySelector('.clip-blank') as HTMLElement | null
+  const clipBackground = blankSwatch ? getComputedStyle(blankSwatch).backgroundColor : null
+  // Clicked at its own centre, so the seek lands inside the blank (a bare click would bubble to the lane's
+  // click-to-seek and read the playhead's far-left edge).
+  if (blankClip) {
+    const rect = blankClip.getBoundingClientRect()
+    blankClip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }))
+  }
+  await wait(800)
+  const monitorBlank = document.querySelector('.editor-frame-window .editor-blank') as HTMLElement | null
+  // Read BEFORE the transport is started: once the playhead leaves the blank this node is unmounted and would
+  // measure nothing.
+  const monitorWidth = monitorBlank ? monitorBlank.clientWidth : 0
+  const monitorHeight = monitorBlank ? monitorBlank.clientHeight : 0
+  const monitorBackground = monitorBlank ? getComputedStyle(monitorBlank).backgroundColor : null
+  // AND THE TRANSPORT RUNS THROUGH IT. Clicking the blank put the playhead at its own start; PLAY must then
+  // carry it ON. A placeholder has no media element, so without the anchored clock the playhead held at the
+  // blank's start forever, waiting for an element that never came.
+  const playButton = [...document.querySelectorAll('button')].find((button) => (button.textContent ?? '').includes('PLAY')) as HTMLButtonElement | undefined
+  playButton?.click()
+  await wait(1600)
+  const reached = Number((document.querySelector('.transport-scrub') as HTMLInputElement | null)?.value ?? -1)
+  const stateWhilePlaying = document.querySelector('.transport-state')?.textContent ?? null
+  playButton?.click()
+  await wait(200)
+  result.blankPreview = {
+    clipPlaced: Boolean(blankClip),
+    clipBackground,
+    monitorPresent: Boolean(monitorBlank),
+    monitorWidth,
+    monitorHeight,
+    monitorBackground,
+    blankStart: 12,
+    playStarted: Boolean(playButton) && String(stateWhilePlaying).includes('PLAYING'),
+    reached,
   }
 
   // THE MODE FOLLOWS THE LIST. A CONVERT is one source; duplicating that source makes the job a STITCH, and

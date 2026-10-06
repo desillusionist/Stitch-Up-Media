@@ -21,7 +21,7 @@ import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
-import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, crossfadeAtTime, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
+import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, crossfadeAtTime, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, runsOnAnchoredClock, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipKey, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, trackKey } from '../src/lib/clipIds'
 import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { detectSequences } from '../src/lib/detectSequences'
@@ -366,6 +366,20 @@ console.log('\n== ADD BLANK / ADD SILENCE placeholders ==')
   // A placeholder with no trim at all falls back to the default rather than to the ten-hour ceiling.
   const untrimmed = buildTimeline(job({ trimPoints: undefined }), timing).lanes[0].segments[1]
   near('and a blank with no trim lands at the default', untrimmed.duration, DEFAULT_PLACEHOLDER_SECONDS)
+
+  // THE TRANSPORT CLOCK. A blank has no file and so no element, so the ANCHORED clock must own the playhead
+  // through it — without which the transport held at the blank's start forever, waiting for an element that
+  // never arrives. The decision is asked here rather than inside the hook so it can be read on its own.
+  const clipSegment = { key: 'k', sourcePath: '/a.mp4', start: 0, duration: 4, sourceUsedSeconds: 4, speed: 1, sourceIn: 0, trimmed: false } as TimelineSegment
+  const blankSegment = { key: shown.key, sourcePath: blank, start: 4, duration: 4, sourceUsedSeconds: 4, speed: 1, sourceIn: 0, trimmed: false } as TimelineSegment
+  check('a blank runs on the anchored clock', runsOnAnchoredClock(blankSegment, false, false), true)
+  check('and still does if an element is left mounted beside it', runsOnAnchoredClock(blankSegment, false, true), true)
+  check('a real clip with an element owns its own clock', runsOnAnchoredClock(clipSegment, false, true), false)
+  check('and a real clip whose element has not arrived still waits for it', runsOnAnchoredClock(clipSegment, false, false), false)
+  check('a still runs on the anchored clock too', runsOnAnchoredClock({ ...clipSegment, still: true } as TimelineSegment, false, true), true)
+  check('so does a sound-only main lane with no element', runsOnAnchoredClock(clipSegment, true, false), true)
+  check('while one that HAS an element does not', runsOnAnchoredClock(clipSegment, true, true), false)
+  check('and no segment at all owns nothing', runsOnAnchoredClock(undefined, false, false), false)
 }
 
 console.log('\n== a picked image resolves to its OWN sequence, not the folder beside it ==')

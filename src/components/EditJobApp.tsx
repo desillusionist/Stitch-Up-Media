@@ -3888,6 +3888,33 @@ export const EditJobApp: React.FC = () => {
   const mediaStyle = pictureBox && frameOrigin
     ? { position: 'absolute' as const, left: pictureBox.left - frameOrigin.x, top: pictureBox.top - frameOrigin.y, width: pictureBox.width, height: pictureBox.height, maxWidth: 'none' as const, maxHeight: 'none' as const }
     : null
+  /**
+   * The INCOMING clip of a cross-dissolve, drawn over whatever the outgoing clip is.
+   *
+   * Built here rather than beside the video element because the outgoing clip may be a VIDEO, a still, or a
+   * PLACEHOLDER with no element at all — and either side of the dissolve can be the blank. A blank coming in is
+   * its own flat colour, not a media element handed a scheme for a URL, which is what it was before.
+   */
+  const crossfade = playback.crossfade
+  const crossfadeOverlay = (() => {
+    if (!crossfade) return null
+    const incoming = crossfade.incoming
+    const fill = placeholderFill(incoming.sourcePath)
+    if (fill) return <div key={incoming.key} className="editor-blank is-incoming" style={{ ...mediaStyle, background: fillCss(fill), opacity: crossfade.t }} aria-hidden="true" />
+    if (placeholderKind(incoming.sourcePath) === 'audio') return null
+    const incomingUrl = sourceUrlFor(incoming)
+    if (!incomingUrl) return null
+    return <video
+      key={incoming.key}
+      ref={playback.attachIncoming}
+      className="editor-video is-incoming"
+      src={incomingUrl}
+      preload="metadata"
+      playsInline
+      style={{ ...mediaStyle, opacity: crossfade.t }}
+      onContextMenu={(event) => event.preventDefault()}
+    />
+  })()
   // What the crop removes, as bands rather than one huge spread shadow, so the output frame outline
   // and the parts of the stage the crop does not own stay readable.
   const cropRect = (() => {
@@ -4380,8 +4407,9 @@ export const EditJobApp: React.FC = () => {
                             : <span className="editor-screen-message">{screenMessage}</span>
                           : blankFill
                             // A BLANK is the clip's own fill colour and nothing else — no file, no frames —
-                            // and it dips through black on a boundary fade exactly as a picture does.
-                            ? <div className="editor-blank" style={{ ...mediaStyle, background: fillCss(blankFill), opacity: previewGain }} aria-hidden="true" />
+                            // and it dips through black on a boundary fade or a cross-dissolve exactly as a
+                            // picture does.
+                            ? <>{<div className="editor-blank" style={{ ...mediaStyle, background: fillCss(blankFill), opacity: previewGain * (crossfade ? 1 - crossfade.t : 1) }} aria-hidden="true" />}{crossfadeOverlay}</>
                             : elementUrl
                             ? <>
                               <video
@@ -4396,25 +4424,10 @@ export const EditJobApp: React.FC = () => {
                                 onClick={toggleFromClick}
                               />
                               {/* The INCOMING clip of a cross-dissolve, laid over the outgoing one and blended
-                                  by the same `t`, its sound carried by its own element. It mounts only for the
-                                  length of the dissolve, and only where the encoder writes one: the timeline
-                                  gates the transition on the same probes, so a blend the file would not
-                                  contain is never drawn. */}
-                              {playback.crossfade && (() => {
-                                const incomingUrl = sourceUrlFor(playback.crossfade.incoming)
-                                return incomingUrl
-                                  ? <video
-                                    key={playback.crossfade.incoming.key}
-                                    ref={playback.attachIncoming}
-                                    className="editor-video is-incoming"
-                                    src={incomingUrl}
-                                    preload="metadata"
-                                    playsInline
-                                    style={{ ...mediaStyle, opacity: playback.crossfade.t }}
-                                    onContextMenu={(event) => event.preventDefault()}
-                                  />
-                                  : null
-                              })()}
+                                  by the same `t`. It is built above, so a BLANK on either side of the dissolve is
+                                  drawn as what it is — its own colour, or a fade to the outgoing picture — rather
+                                  than as a media element handed a scheme. */}
+                              {crossfadeOverlay}
                             </>
                             : <span className="editor-screen-message">{screenMessage}</span>}
                 </div>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { TimelineModel, TimelineSegment, audioSlaveKey, crossfadeAtTime, laneNeedsOwnAudio } from '../lib/timelineModel'
+import { TimelineModel, TimelineSegment, audioSlaveKey, crossfadeAtTime, laneNeedsOwnAudio, runsOnAnchoredClock } from '../lib/timelineModel'
 import { nextShuttleRate, nextForwardRung } from '../lib/shuttleRates'
 import { advanceClock, elementOwnsPosition } from '../lib/playbackClock'
 import { DEFAULT_PREVIEW_SPEED, MAX_PLAYBACK_RATE, PreviewSpeed, clampPreviewSpeed, playbackRateFor, preservesPitchFor } from '../lib/previewSpeed'
@@ -502,8 +502,10 @@ export const useConsolidatedPlayback = (
     // clamp is to the segment end, which still lets the crossing happen because
     // indexForTime reads the end of a segment as the start of the next one. A main lane that is
     // nothing but AUDIO is the same case for the same reason — there is no element to own the playhead
-    // and never will be — which is what lets a CONVERT of a sound file play rather than stand still.
-    if (current?.still || (silentMainLaneRef.current && !video)) {
+    // and never will be — which is what lets a CONVERT of a sound file play rather than stand still. And a
+    // PLACEHOLDER is the same case again: a flat colour or a silence has no file, so no element is ever
+    // mounted for it and this clock has to carry the playhead through rather than hold on one that never comes.
+    if (current && runsOnAnchoredClock(current, silentMainLaneRef.current, Boolean(video))) {
       const from = Math.max(current.start, Math.min(current.start + current.duration, snapshot.position))
       return Math.min(current.start + current.duration, anchored(from))
     }

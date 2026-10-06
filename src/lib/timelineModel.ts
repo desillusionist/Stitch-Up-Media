@@ -1041,6 +1041,21 @@ export const segmentAt = (lane: TimelineLane | undefined, seconds: number): Time
 }
 
 /**
+ * Whether a segment runs on the ANCHORED clock rather than on a media element's.
+ *
+ * True for anything the monitor draws with NO element to decode: a still frame, a main lane that is sound alone, and
+ * a PLACEHOLDER — a flat colour or a silence has no file and no element at all. The editor has to ask this BEFORE
+ * it waits on the element: a transport that waited for one that never arrives HELD at a blank's start forever, which
+ * is the one thing a colour matte must not do. `mainLaneIsAudio` and `hasElement` are the two facts only the
+ * playback hook knows.
+ */
+export const runsOnAnchoredClock = (
+  segment: TimelineSegment | undefined,
+  mainLaneIsAudio: boolean,
+  hasElement: boolean,
+): boolean => Boolean(segment && (segment.still || isPlaceholder(segment.sourcePath) || (mainLaneIsAudio && !hasElement)))
+
+/**
  * Where a clip pasted at the skimmer goes: the [+] marker nearest it wins, and that marker IS the place.
  *
  * The candidates are the timeline's own boundaries — the head at zero, every cut, and the tail at the end —
