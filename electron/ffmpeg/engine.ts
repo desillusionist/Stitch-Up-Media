@@ -8,7 +8,7 @@ import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, crossfadeAt, edg
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
-import { resolvedAudioLayout } from '../../src/lib/audioLayout'
+import { resolvedAudioLayout, CLIPPING_GUARD_FILTER } from '../../src/lib/audioLayout'
 import { placeholderFill, placeholderKind } from '../../src/lib/placeholder'
 import { blankSource, silenceSource } from './placeholder'
 import { progressPercent } from '../../src/lib/progress'
@@ -1199,9 +1199,17 @@ export class FFmpegEngine {
         return `[mx${idx}]`
       })
       // ONE lane has nothing to be summed with, so it is written as it stands rather than through a mixer of
-      // one — which is a fair graph but a needless one, and names a stream nothing mixed.
+      // one — which is a fair graph but a needless one, and names a stream nothing mixed. NOTHING is added to
+      // anything here, so the clipping guard has nothing to catch and is not dropped in either.
       if (labels.length === 1) parts[parts.length - 1] = parts[parts.length - 1].replace('[mx0]', '[aout]')
-      else parts.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest[aout]`)
+      else {
+        // THE SUM, and — when the reader asked for it — the guard after it. The guard sits AFTER the mixer so
+        // it catches what the LANES ADDED TO EACH OTHER rather than each lane on its own; a mix that is already
+        // inside full scale passes through untouched (measured), and one that is not is caught at 1.0. See
+        // `CLIPPING_GUARD_FILTER` for why it is that exact filter and not `alimiter`'s own defaults.
+        const mixChain = [`amix=inputs=${labels.length}:normalize=0:duration=longest`, ...(task.preset.audioPreventClipping === true ? [CLIPPING_GUARD_FILTER] : [])]
+        parts.push(`${labels.join('')}${mixChain.join(',')}[aout]`)
+      }
       cmd.complexFilter(parts.join(';'))
       cmd.outputOptions([`-ar 48000`, `-ac ${channels}`])
       outputOptions.push('-map [aout]')

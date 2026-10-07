@@ -2030,13 +2030,21 @@ const drive = async () => {
   const laneValue = valueOf(layoutSelect())
   const laneDisabled = fieldDisabled('TRACK OUTPUT')
   const laneOptions = layoutOptions()
+  // The CLIPPING GUARD has nothing to catch while the lanes are APART, so it is not drawn until they are summed.
+  const lanePreventBefore = Boolean(toggleInput('PREVENT CLIPPING'))
   chooseOption(layoutSelect(), 'mixdown')
+  await wait(150)
+  const lanePreventShown = Boolean(toggleInput('PREVENT CLIPPING'))
+  const lanePreventDefault = toggleInput('PREVENT CLIPPING')?.checked ?? null
+  toggleInput('PREVENT CLIPPING')?.click()
   await wait(120)
   const applyLayout = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
   applyLayout?.click()
   await wait(180)
-  const laneChose = (applied[applied.length - 1] as { preset?: { audioLayout?: string } } | undefined)?.preset?.audioLayout ?? null
-  result.trackOutput = { laneDrawn, laneValue, laneDisabled, laneOptions, laneChose }
+  const layoutPatch = applied[applied.length - 1] as { preset?: { audioLayout?: string; audioPreventClipping?: boolean } } | undefined
+  const laneChose = layoutPatch?.preset?.audioLayout ?? null
+  const laneGuard = layoutPatch?.preset?.audioPreventClipping ?? null
+  result.trackOutput = { laneDrawn, laneValue, laneDisabled, laneOptions, lanePreventBefore, lanePreventShown, lanePreventDefault, laneChose, laneGuard }
 
   // A SEQUENCED set of tracks is one concatenated stream already, so the whole setting is refused with its reason.
   flushEdits()
@@ -2045,7 +2053,7 @@ const drive = async () => {
   await wait(500)
   clickTab('AUDIO')
   await wait(120)
-  result.trackOutput = { ...(result.trackOutput as object), sequencedValue: valueOf(layoutSelect()), sequencedDisabled: fieldDisabled('TRACK OUTPUT'), sequencedNote: layoutNote() }
+  result.trackOutput = { ...(result.trackOutput as object), sequencedValue: valueOf(layoutSelect()), sequencedDisabled: fieldDisabled('TRACK OUTPUT'), sequencedNote: layoutNote(), sequencedPrevent: Boolean(toggleInput('PREVENT CLIPPING')) }
 
   // A container that carries ONE stream has no second answer to offer, so SEPARATE is refused and MIXDOWN is
   // what it will write — the reason names the format rather than leaving it to be found out by a failed job.
@@ -2055,7 +2063,7 @@ const drive = async () => {
   await wait(500)
   clickTab('AUDIO')
   await wait(120)
-  result.trackOutput = { ...(result.trackOutput as object), wavValue: valueOf(layoutSelect()), wavDisabled: fieldDisabled('TRACK OUTPUT'), wavOptions: layoutOptions(), wavNote: layoutNote() }
+  result.trackOutput = { ...(result.trackOutput as object), wavValue: valueOf(layoutSelect()), wavDisabled: fieldDisabled('TRACK OUTPUT'), wavOptions: layoutOptions(), wavNote: layoutNote(), wavPrevent: Boolean(toggleInput('PREVENT CLIPPING')) }
 
   // A DRAWING builds its own mix out of the lanes, so there is nothing left for this setting to decide.
   flushEdits()
@@ -2064,7 +2072,7 @@ const drive = async () => {
   await wait(500)
   clickTab('AUDIO')
   await wait(120)
-  result.trackOutput = { ...(result.trackOutput as object), drawingValue: valueOf(layoutSelect()), drawingDisabled: fieldDisabled('TRACK OUTPUT'), drawingNote: layoutNote() }
+  result.trackOutput = { ...(result.trackOutput as object), drawingValue: valueOf(layoutSelect()), drawingDisabled: fieldDisabled('TRACK OUTPUT'), drawingNote: layoutNote(), drawingPrevent: Boolean(toggleInput('PREVENT CLIPPING')) }
 
   // A CLIP'S OWN EMBEDDED SOUND, in PROPERTIES. A video that carries a soundtrack offers one row per stream,
   // each with a mute and a level and a way to EXTRACT it to a track; a mute has to reach the queue as

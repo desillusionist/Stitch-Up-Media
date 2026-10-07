@@ -12,7 +12,7 @@ import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, cli
 import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId, nextClipNumber, trackKey } from '../lib/clipIds'
 import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
-import { AUDIO_LAYOUTS, audioLayoutState } from '../lib/audioLayout'
+import { AUDIO_LAYOUTS, audioLayoutState, sumsAudioLanes } from '../lib/audioLayout'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
 import { FrameRate, RATE_PRESETS, frameCount, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue } from '../lib/frameRate'
@@ -4212,6 +4212,8 @@ export const EditJobApp: React.FC = () => {
    */
   const trackLanes = Boolean(draft.additionalAudioTracks?.length) && (draft.type === 'combo' || draft.type === 'multitrack')
   const layoutState = trackLanes ? audioLayoutState(draft.preset, { sequenced: tracksConcatenate(draft), drawing: drawingPicture.draws }) : null
+  /** Whether the export really SUMS the lanes, which is the only case the clipping guard can catch anything in. */
+  const sumsLanes = Boolean(layoutState && sumsAudioLanes(layoutState))
   /**
    * Whether the EXPORT writes a sound, which is a different question from whether the source IS sound.
    *
@@ -5734,6 +5736,15 @@ export const EditJobApp: React.FC = () => {
               />
             </EditorField>}
             {layoutState?.separateBlocked && <div className="editor-note">&gt; {layoutState.separateBlocked}{layoutState.locked ? '' : ' THE LANES ARE SUMMED INSTEAD.'}</div>}
+            {/* THE OPT-IN GUARD ON THE SUM. A mixdown ADDS the lanes, so two loud ones can reach above full
+                scale; the raw sum is what the drawing's own mixer writes, and turning this on drops a limiter
+                after the sum so those peaks are caught without re-levelling a mix that is already inside it. */}
+            {sumsLanes && <EditorToggle
+              label="PREVENT CLIPPING"
+              checked={draft.preset.audioPreventClipping === true}
+              onChange={(checked) => updatePreset({ audioPreventClipping: checked ? true : undefined })}
+              reason="The lanes are SUMMED, so two loud ones added together can reach above full scale, and the encoding into the file is then the only ceiling. Off - the default - writes the raw sum exactly as before. On drops a limiter after the sum, so a mix that would clip is caught at full scale while one that is already inside it passes through untouched. The lanes' own levels stay the first line of defence either way."
+            />}
             <div className="editor-note">&gt; ADDING AND REORDERING TRACKS ARRIVES WITH THE TRACK EDITOR.</div>
             {/* What a sound-only job is given to show. Every setting below it only exists while the
                 picture is being drawn, so the section reads as one decision and its consequences. */}

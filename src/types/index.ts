@@ -119,6 +119,16 @@ export interface EncodingPreset {
    */
   audioLayout?: 'separate' | 'mixdown'
   /**
+   * Whether a MIXDOWN is guarded against the sum reaching above full scale.
+   *
+   * Absent — which is what every job written before this control gets — means NO guard: the lanes are summed
+   * raw, exactly as they always have been, so an untouched export is byte-identical. On, the encoder drops a
+   * limiter after the sum (`CLIPPING_GUARD_FILTER`) so a mix that would clip is caught at full scale instead of
+   * being left to the muxer's own clamping. It has nothing to say for SEPARATE TRACKS, where nothing is added to
+   * anything. See `src/lib/audioLayout.ts`.
+   */
+  audioPreventClipping?: boolean
+  /**
    * How many bits one sample of the export's sound is, for the codecs that store samples at all.
    *
    * A lossless codec writes the samples it is given, so this is the only thing that decides what they are:

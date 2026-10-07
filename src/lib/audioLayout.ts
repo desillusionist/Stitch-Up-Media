@@ -71,3 +71,27 @@ export const audioLayoutState = (
   if (!containerHoldsStreams(preset.container)) return { value: 'mixdown', locked: false, separateBlocked: 'THIS FORMAT CARRIES ONE AUDIO TRACK.' }
   return { value: resolvedAudioLayout(preset), locked: false, separateBlocked: null }
 }
+
+/**
+ * Whether the export really SUMS several lanes, which is the ONLY case a clipping guard has anything to catch.
+ *
+ * A MIXDOWN adds the lanes together, so two loud ones can reach above full scale; a SEPARATE layout writes each
+ * lane on its own stream and nothing is added to anything. A SEQUENCED set is CONCATENATED rather than summed —
+ * one lane after another, never together — so nothing is added to anything there either; and a DRAWING does sum,
+ * but through its own graph rather than the encoder's `amix`, which is the code path the guard sits on. So the
+ * guard is offered only for an UNLOCKED MIXDOWN: the one place the encoder's `amix` is what meets the ceiling.
+ */
+export const sumsAudioLanes = (state: Pick<ReturnType<typeof audioLayoutState>, 'value' | 'locked'>): boolean =>
+  state.value === 'mixdown' && !state.locked
+
+/**
+ * The opt-in guard dropped AFTER the sum, so a mix that would reach above full scale is caught at it.
+ *
+ * `level=disabled` is the whole point of the filter here: `alimiter`'s auto-level is ON by default and can
+ * re-level the output, which is exactly the rescaling this guard must NOT do to a mix that is already inside
+ * the scale. `limit=1.0` is full scale, named rather than left to the default so the ceiling is written down.
+ * `latency=1` compensates the limiter's own lookahead: without it the guard delays the summed stream by its
+ * attack — MEASURED as 5 ms, a quarter of a frame at 25 fps — which would drift the whole soundtrack away from
+ * the picture it belongs to. With it the impulse stays where it was and the peaks are still caught at 1.0.
+ */
+export const CLIPPING_GUARD_FILTER = 'alimiter=level=disabled:limit=1.0:latency=1'

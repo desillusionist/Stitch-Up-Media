@@ -20,7 +20,7 @@ import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurati
 import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue, secondsForFrames } from '../src/lib/frameRate'
 import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
-import { AUDIO_LAYOUTS, audioLayoutState, containerHoldsStreams, resolvedAudioLayout } from '../src/lib/audioLayout'
+import { AUDIO_LAYOUTS, audioLayoutState, CLIPPING_GUARD_FILTER, containerHoldsStreams, resolvedAudioLayout, sumsAudioLanes } from '../src/lib/audioLayout'
 import { videoCodecFacts } from '../src/lib/videoFacts'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, crossfadeAtTime, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, runsOnAnchoredClock, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
@@ -2293,6 +2293,17 @@ console.log('\n== how several audio lanes are laid out ==')
   check('a SEQUENCED set is locked, because it is one stream already', audioLayoutState(mkv, { sequenced: true, drawing: false }), { value: 'mixdown', locked: true, separateBlocked: 'THE TRACKS ARE SEQUENCED, SO THEY ALREADY FORM ONE STREAM.' })
   check('a DRAWING is locked too, because it builds its own mix', audioLayoutState(mkv, { sequenced: false, drawing: true }), { value: 'mixdown', locked: true, separateBlocked: 'A DRAWING SUMMS THE LANES ITSELF.' })
   check('and a one-track container offers no SEPARATE, naming the format', audioLayoutState({ container: 'mp3' }, { sequenced: false, drawing: false }), { value: 'mixdown', locked: false, separateBlocked: 'THIS FORMAT CARRIES ONE AUDIO TRACK.' })
+
+  // THE CLIPPING GUARD is offered only for an UNLOCKED MIXDOWN: the one place the encoder's own `amix` is what
+  // meets the ceiling. A SEPARATE layout adds nothing to anything, and a SEQUENCED set is CONCATENATED — one
+  // lane after another, never together — so neither has a sum for a guard to catch.
+  check('a raw mixdown has something to guard', sumsAudioLanes({ value: 'mixdown', locked: false }), true)
+  check('but a separate layout adds nothing to anything', sumsAudioLanes({ value: 'separate', locked: false }), false)
+  check('and a locked one is not the own sum of the encoder', sumsAudioLanes({ value: 'mixdown', locked: true }), false)
+  // The guard's filter, spelled out: `level=disabled` so it never re-levels a mix that is already inside the
+  // scale, `limit=1.0` for full scale, and `latency=1` so the limiter's own lookahead does not drift the
+  // soundtrack away from its picture (measured at 5 ms without it).
+  check('the guard is a limiter that neither re-levels nor delays', CLIPPING_GUARD_FILTER, 'alimiter=level=disabled:limit=1.0:latency=1')
 }
 
 console.log('\n== whether an export draws its own sound ==')

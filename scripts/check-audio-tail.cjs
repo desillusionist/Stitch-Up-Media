@@ -157,6 +157,21 @@ const rmsStream = async (file, stream, start, duration) => {
 }
 
 /**
+ * The largest single SAMPLE of a decode, read as FLOAT so a peak ABOVE full scale shows.
+ *
+ * `volumedetect` reports any over-scale peak at 0 dB, because it clamps its own reading — useful for a file and
+ * useless for asking whether a chain caught a peak that was over the line. The raw float samples do not clamp,
+ * so this is what tells a caught peak from a raw one.
+ */
+const peakAt = async (args) => {
+  const raw = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args, '-f', 'f32le', '-ac', '1', '-'], { encoding: 'buffer' })
+  let peak = 0
+  const count = Math.floor(raw.length / 4)
+  for (let index = 0; index < count; index += 1) { const value = Math.abs(raw.readFloatLE(index * 4)); if (value > peak) peak = value }
+  return peak
+}
+
+/**
  * The average colour of where a drawing IS: a centre strip for a line, a centre column for bars and bands.
  *
  * The whole frame will not do. A waveform is a two-pixel line through a 1080-row picture, so the frame's own
@@ -1636,11 +1651,11 @@ const main = async () => {
   await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', laneA])
   await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', laneB])
   // A SILENT visual, so the two lanes are the only audio and the stream count is the lanes themselves.
-  const laneTask = (container, audioLayout, outputFilename) => ({
-    id: `lanes-${container}`, type: 'multitrack', status: 'pending', progress: 0,
+  const laneTask = (container, audioLayout, outputFilename, preventClipping) => ({
+    id: `lanes-${outputFilename}`, type: 'multitrack', status: 'pending', progress: 0,
     sourcePaths: [lanesVisual], outputDirectory: root, outputFilename,
     additionalAudioTracks: [{ id: 'la', path: laneA, language: 'eng' }, { id: 'lb', path: laneB, language: 'fra' }],
-    preset: { ...preset, container, ...(audioLayout ? { audioLayout } : {}) },
+    preset: { ...preset, container, ...(audioLayout ? { audioLayout } : {}), ...(preventClipping ? { audioPreventClipping: true } : {}) },
   })
 
   const separateCmd = await captureCommand(laneTask('mkv', undefined, 'lanes-separate.mkv'))
@@ -1668,6 +1683,61 @@ const main = async () => {
   check('and maps the summed one instead', /-map \[aout\]/.test(wavCmd), true)
   const wavProbe = await probeFile(path.join(root, 'lanes-fixed.wav'))
   check('so the file is written rather than refused', wavProbe.audioStreams.length, 1)
+
+  // THE OPT-IN CLIPPING GUARD. Off — the default — the sum is written RAW, exactly as it always was; on, a
+  // limiter is dropped AFTER the mixer, so it catches what the LANES added to each other rather than any one
+  // lane, and a lane-count rescaling (amix's own default `normalize=1`) is never used because it would fight
+  // each lane's own level.
+  const guardOffCmd = await captureCommand(laneTask('mkv', 'mixdown', 'lanes-guard-off.mkv'))
+  check('a raw sum carries no limiter', /alimiter/.test(guardOffCmd), false)
+  const guardOnCmd = await captureCommand(laneTask('mkv', 'mixdown', 'lanes-guard-on.mkv', true))
+  check('the guard drops a limiter AFTER the mixer', /amix=inputs=2:normalize=0:duration=longest,alimiter=level=disabled:limit=1\.0:latency=1\[aout\]/.test(guardOnCmd), true)
+  check('and never a lane-count rescaling', /normalize=1/.test(guardOnCmd), false)
+  // TRANSPARENT BELOW THE CEILING. The two equal tones sum to well inside full scale (peak 0.17), so the guard
+  // has nothing to catch here: the guarded mix must read the same as the raw one. That is the whole reason the
+  // guard can be OPT-IN rather than a change to every mixdown.
+  const rawGuardRms = await rmsAt(path.join(root, 'lanes-guard-off.mkv'), 0.5, 1)
+  const guardedRms = await rmsAt(path.join(root, 'lanes-guard-on.mkv'), 0.5, 1)
+  check(`and leaves a mix that is already inside the scale alone (${guardedRms.toFixed(3)} against ${rawGuardRms.toFixed(3)})`, Math.abs(guardedRms - rawGuardRms) < rawGuardRms * 0.03, true)
+  // AND IT REALLY CATCHES. `volumedetect` reports an over-scale peak at 0 dB whatever it is, so the peak is read
+  // from FLOAT samples instead. The filter string is taken from the command the encoder just wrote, so what is
+  // measured is the very filter this path drops — fed a sum that reaches ~1.4, which it must catch at 1.0.
+  const guardFilter = (guardOnCmd.match(/alimiter=[^,\[]*/) || [])[0] || ''
+  const overScale = (guard) => {
+    const graph = '[0:a]volume=8[a];[1:a]volume=8[b];[a][b]amix=inputs=2:normalize=0[o]'
+    return ['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=1', '-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=48000:duration=1', '-filter_complex', guard ? `${graph};[o]${guard}[g]` : graph, '-map', guard ? '[g]' : '[o]']
+  }
+  const rawPeak = await peakAt(overScale(undefined))
+  const caughtPeak = await peakAt(overScale(guardFilter))
+  check(`an over-scale sum is raw when the guard is off (peak ${rawPeak.toFixed(2)})`, rawPeak > 1.2, true)
+  check(`and the guard the encoder drops catches it at full scale (peak ${caughtPeak.toFixed(2)})`, caughtPeak < 1.05, true)
+
+  // AN ASYMMETRIC PAIRING, not two equal tones. The sum has to hold across a CONTOUR — one loud lane and one
+  // quiet — and not only where both lanes are alike. A raw sum ADDS energy, so the mix lands ABOVE its loud lane
+  // alone; an average (amix's own default, which this path never uses) would land BELOW it, so the two answers
+  // are told apart by which side of the loud lane the mix is on, and by how far.
+  const laneLoud = path.join(root, 'lane-loud.wav')
+  const laneQuiet = path.join(root, 'lane-quiet.wav')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', laneLoud])
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=220:sample_rate=48000:duration=3', '-af', 'volume=0.5', '-c:a', 'pcm_s16le', laneQuiet])
+  const contourTask = (audioLayout, outputFilename) => ({
+    id: `contour-${outputFilename}`, type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: [lanesVisual], outputDirectory: root, outputFilename,
+    additionalAudioTracks: [{ id: 'll', path: laneLoud, language: 'und' }, { id: 'lq', path: laneQuiet, language: 'und' }],
+    preset: { ...preset, container: 'mkv', ...(audioLayout ? { audioLayout } : {}) },
+  })
+  // The loud lane alone, as the ENCODER writes it, is the control for the reading — the same reader on both sides.
+  await captureCommand(contourTask(undefined, 'contour-separate.mkv'))
+  const loudLaneRms = await rmsStream(path.join(root, 'contour-separate.mkv'), 0, 0.5, 1)
+  const quietLaneRms = await rmsStream(path.join(root, 'contour-separate.mkv'), 1, 0.5, 1)
+  await captureCommand(contourTask('mixdown', 'contour-mix.mkv'))
+  const contourMixRms = await rmsAt(path.join(root, 'contour-mix.mkv'), 0.5, 1)
+  check(`a loud lane and a quiet one really are apart (${(loudLaneRms / quietLaneRms).toFixed(2)}x)`, loudLaneRms > quietLaneRms * 1.9, true)
+  // Half the loud lane's amplitude means a raw sum sits at sqrt(1 + 0.25) ~ 1.118x the loud lane: above it, but by
+  // less than a second full lane would (sqrt(2) ~ 1.414x). Held inside 1.05...1.25, which an average (0.75x) and
+  // a doubled sum (1.414x) both fall outside of.
+  check(`the sum adds the quiet lane to the loud one (${contourMixRms.toFixed(3)} against ${loudLaneRms.toFixed(3)})`, contourMixRms > loudLaneRms * 1.05, true)
+  check(`and by less than a second full lane would (${(contourMixRms / loudLaneRms).toFixed(3)}x against 1.414x)`, contourMixRms < loudLaneRms * 1.25, true)
 
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')

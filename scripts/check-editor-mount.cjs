@@ -89,8 +89,11 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({ width: 1320, height: 840, show: false })
   await win.loadFile(htmlPath)
   // The mounts are on timers of their own, so this waits for the page to say it is finished rather
-  // than for a fixed figure that would have to be raised whenever the render does more work.
-  const deadline = Date.now() + 90000
+  // than for a fixed figure that would have to be raised whenever the render does more work. The cap is
+  // only a safety net for a drive that HANGS: it is set well above what the drive takes, and grows with
+  // it — the TRACK OUTPUT checks mount four more jobs than the drive used to, so it is a hundred and fifty
+  // seconds rather than ninety.
+  const deadline = Date.now() + 150000
   let done = false
   while (!done && Date.now() < deadline) {
     done = await win.webContents.executeJavaScript('Boolean(window.__MOUNT_DONE)')
@@ -990,6 +993,15 @@ app.whenReady().then(async () => {
       if (trackOutput.laneDisabled) problems.push('TRACK OUTPUT was disabled on a job whose container can carry either layout')
       if (String(trackOutput.laneOptions) !== 'separate:on,mixdown:on') problems.push(`TRACK OUTPUT offered ${JSON.stringify(trackOutput.laneOptions)} rather than both entries choosable`)
       if (trackOutput.laneChose !== 'mixdown') problems.push(`choosing MIXDOWN did not reach the queue as the preset: ${JSON.stringify(trackOutput.laneChose)}`)
+      // THE CLIPPING GUARD, offered only for a sum: not drawn while the lanes are apart, drawn once they are
+      // summed, OFF by default, and reaching the queue when it is turned on.
+      if (trackOutput.lanePreventBefore) problems.push('PREVENT CLIPPING was drawn while the lanes were still separate, where nothing is added to anything')
+      if (!trackOutput.lanePreventShown) problems.push('a MIXDOWN offered no PREVENT CLIPPING control')
+      if (trackOutput.lanePreventDefault !== false) problems.push(`PREVENT CLIPPING did not start OFF: ${JSON.stringify(trackOutput.lanePreventDefault)}`)
+      if (trackOutput.laneGuard !== true) problems.push(`turning PREVENT CLIPPING on did not reach the queue: ${JSON.stringify(trackOutput.laneGuard)}`)
+      if (trackOutput.sequencedPrevent) problems.push('PREVENT CLIPPING was offered on a SEQUENCED set, which is concatenated rather than summed')
+      if (!trackOutput.wavPrevent) problems.push('PREVENT CLIPPING was withheld on a wav, whose lanes are summed and can clip')
+      if (trackOutput.drawingPrevent) problems.push('PREVENT CLIPPING was offered on a DRAWING, whose own graph takes the sum')
       if (!trackOutput.sequencedDisabled) problems.push('TRACK OUTPUT was offered on a SEQUENCED set of tracks, which is one stream already')
       if (trackOutput.sequencedValue !== 'mixdown') problems.push(`a sequenced set read as ${JSON.stringify(trackOutput.sequencedValue)} rather than the one stream it already is`)
       if (!String(trackOutput.sequencedNote || '').includes('SEQUENCED')) problems.push(`a sequenced set gave no reason on the setting: ${JSON.stringify(trackOutput.sequencedNote)}`)
