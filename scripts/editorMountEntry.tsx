@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1717,6 +1717,39 @@ const drive = async () => {
   const silencePatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ path?: string }>; trimPoints?: Record<string, { in: number; out: number }> } | undefined
   const trackPath = silencePatch?.additionalAudioTracks?.[0]?.path ?? null
   result.replaceSilence = { offered: trackSilenceOffered, source: trackSource, trackPath, length: trackPath ? silencePatch?.trimPoints?.[`${trackPath}#0`]?.out ?? null : null, shown: silenceShown }
+
+  // A COMMAND ASKED OF A SELECTION RUNS ON EVERY CLIP IN HAND, each taking the placeholder its OWN lane asks
+  // for. Selecting a VIDEO clip and an AUDIO track together and choosing the item replaces BOTH — a BLANK and a
+  // SILENCE — rather than one kind for the pair, and the item names both kinds and the count.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'replace-mixed', type: 'multitrack', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 'tA', path: SOUND_FIXTURE, language: 'und' }] }, 'replace-mixed')
+  await wait(1000)
+  const mixedVideo = () => document.querySelector('.timeline-lane-track:not(.is-audio) .timeline-clip') as HTMLElement | null
+  const mixedTrack = () => document.querySelector('.timeline-lane-track.is-audio .timeline-clip') as HTMLElement | null
+  mixedVideo()?.click()
+  await wait(120)
+  mixedTrack()?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  mixedVideo()?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const mixedItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => (button.textContent?.trim() ?? '').startsWith('REPLACE WITH')) as HTMLButtonElement | undefined
+  const mixedLabel = mixedItem?.textContent?.trim() ?? null
+  mixedItem?.click()
+  await wait(250)
+  const applyMixed = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyMixed?.click()
+  await wait(250)
+  const mixedPatch = applied[applied.length - 1] as { sourcePaths?: string[]; clipIds?: string[]; additionalAudioTracks?: Array<{ path?: string }>; trimPoints?: Record<string, { in: number; out: number }> } | undefined
+  const mixedTrackPath = mixedPatch?.additionalAudioTracks?.[0]?.path ?? null
+  const mixedId = mixedPatch?.clipIds?.[0]
+  result.replaceMixed = {
+    label: mixedLabel,
+    source: mixedPatch?.sourcePaths?.[0] ?? null,
+    sourceLength: mixedId ? mixedPatch?.trimPoints?.[mixedId]?.out ?? null : null,
+    track: mixedTrackPath,
+    trackLength: mixedTrackPath ? mixedPatch?.trimPoints?.[`${mixedTrackPath}#0`]?.out ?? null : null,
+  }
 
   // THE TIMELINE KICKER'S OWN MENU. Which unit the window shows lengths in is a setting rather than a job
   // field, so this asks the whole chain: the menu offers both, choosing FRAMESTAMP re-stamps the clips, and

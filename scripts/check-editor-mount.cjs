@@ -861,6 +861,16 @@ app.whenReady().then(async () => {
       if (!(Math.abs(Number(replaceSilence.length) - 12) < 0.6)) problems.push(`REPLACE WITH SILENCE did not keep the track's length: trim ${JSON.stringify(replaceSilence.length)} against the fixture's 12s`)
       if (!String(replaceSilence.shown ?? '').includes('00:00:12')) problems.push(`REPLACE WITH SILENCE left the track reading ${JSON.stringify(replaceSilence.shown)} rather than its own 12s`)
     }
+    // ASKED OF A SELECTION, it runs on EVERY clip in hand and each takes its OWN lane's kind.
+    const replaceMixed = result.replaceMixed
+    if (!replaceMixed) problems.push('the mixed replace drive reported nothing')
+    else {
+      if (replaceMixed.label !== 'REPLACE WITH BLANK / SILENCE (2)') problems.push(`a mixed selection's replace item reads ${JSON.stringify(replaceMixed.label)} rather than naming both kinds and the count`)
+      if (!String(replaceMixed.source ?? '').startsWith('placeholder:video:')) problems.push(`the VIDEO clip of a mixed selection became ${JSON.stringify(replaceMixed.source)} rather than a blank`)
+      if (!String(replaceMixed.track ?? '').startsWith('placeholder:audio:')) problems.push(`the AUDIO track of a mixed selection became ${JSON.stringify(replaceMixed.track)} rather than a silence`)
+      if (!(Math.abs(Number(replaceMixed.sourceLength) - 12) < 0.6)) problems.push(`the video clip's length was not kept across a multi-replace: ${JSON.stringify(replaceMixed.sourceLength)}`)
+      if (!(Math.abs(Number(replaceMixed.trackLength) - 12) < 0.6)) problems.push(`the track's length was not kept across a multi-replace: ${JSON.stringify(replaceMixed.trackLength)}`)
+    }
     // THE TIMELINE KICKER'S UNIT MENU.
     const stampMenu = result.stampMenu
     if (!stampMenu) problems.push('the stamp-menu drive reported nothing')

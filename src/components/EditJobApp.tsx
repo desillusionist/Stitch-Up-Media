@@ -2856,51 +2856,57 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
-   * Puts a PLACEHOLDER in the clip's place — a BLANK on a picture lane, a SILENCE on a sound one — at the
-   * length the clip was standing at.
+   * Puts a PLACEHOLDER in each selected clip's place — a BLANK on a picture lane, a SILENCE on a sound one —
+   * each at the length it was standing at.
    *
-   * The clip's own records go with the file that was there, exactly as REPLACE SOURCE drops them: a trim, a
-   * crop or a fit measured against that file means nothing against a flat stretch. But its LENGTH is not a
-   * record about the file — it is what the clip occupies on the timeline — so the replacement is written a
-   * trim of exactly that length. That is the whole of "the same length": a placeholder's source is endless,
-   * so its length IS its trim, and the timestamp the reader was looking at does not move. A clip on the SOURCE
-   * LIST swaps that entry and takes a new id; an added TRACK swaps its own PATH, which IS the key its records
-   * are filed under, so its records go with it too. This is the answer that works on ANY lane — an added track
-   * names no place in `sourcePaths`, which is why REPLACE SOURCE cannot reach it.
+   * The KIND follows each CLIP's own lane rather than the menu's, so a selection across a picture lane and a
+   * sound one is replaced accordingly — a blank for the pictures and a silence for the sounds — rather than all
+   * one kind, and two clips on one lane get their own placeholder each. The length is not a record about the
+   * file, so it is carried over as a trim; the clip's OTHER records go with the file, exactly as REPLACE SOURCE
+   * drops them. A clip on the SOURCE LIST swaps that entry and takes a new id; an added TRACK swaps its own
+   * PATH, which IS the key its records are filed under. This is the answer that works on ANY lane — an added
+   * track names no place in `sourcePaths`, which is why REPLACE SOURCE cannot reach it.
    */
   const replaceClipWithPlaceholder = () => {
-    const menu = timelineMenu
-    if (!menu || menu.kind !== 'clip') return
     const current = latest()
-    const sourcePath = makePlaceholderPath(menu.visual ? 'video' : 'audio')
-    // The length the clip stands at, read off the drawn segment — the same figure the eye is looking at.
-    const lane = model.lanes.find((candidate) => candidate.id === menu.laneId)
-    const length = lane?.segments[menu.segmentIndex]?.duration ?? 0
-    const trim = length > 0 ? { in: 0, out: length } : undefined
-    if (menu.mainIndex != null) {
-      const index = menu.mainIndex
-      if (index < 0 || index >= current.sourcePaths.length) return
-      const sourcePaths = [...current.sourcePaths]
-      const ids = materializeClipIds(current)
-      const numbers = materializeClipNumbers(current)
-      sourcePaths[index] = sourcePath
-      ids[index] = newClipId()
-      numbers[index] = nextClipNumber(current, sourcePath)
-      updateDraft({
-        ...withListType(current, sourcePaths, current.additionalAudioTracks), clipIds: ids, clipNumbers: numbers,
-        ...(trim ? { trimPoints: { ...(current.trimPoints || {}), [ids[index]]: trim } } : {}),
-      })
-      return
-    }
-    const tracks = [...(current.additionalAudioTracks || [])]
-    const at = tracks.findIndex((track) => trackKey(current, track) === menu.fitKey)
-    if (at < 0) return
-    const next = { ...tracks[at], path: sourcePath }
-    tracks[at] = next
-    updateDraft({
-      ...withListType(current, current.sourcePaths, tracks),
-      ...(trim ? { trimPoints: { ...(current.trimPoints || {}), [trackKey(current, next)]: trim } } : {}),
+    const keys = multiSelectedRef.current.length ? multiSelectedRef.current : (selectedRef.current ? [selectedRef.current.clipKey] : [])
+    if (!keys.length) return
+    // Each clip's own lane, so the replacement knows the KIND to place and the LENGTH it stands at. A key the
+    // model does not draw is left alone rather than replaced into a shape it never had.
+    const shape = new Map<string, { kind: 'video' | 'audio'; length: number }>()
+    model.lanes.forEach((lane) => lane.segments.forEach((segment) => shape.set(segment.key, { kind: lane.kind === 'audio' ? 'audio' : 'video', length: segment.duration })))
+    const ids = [...materializeClipIds(current)]
+    const numbers = [...materializeClipNumbers(current)]
+    const sourcePaths = [...current.sourcePaths]
+    const tracks = (current.additionalAudioTracks || []).map((track) => ({ ...track }))
+    const trims = { ...(current.trimPoints || {}) }
+    let changed = false
+    keys.forEach((key) => {
+      const clip = shape.get(key)
+      if (!clip) return
+      const placeholder = makePlaceholderPath(clip.kind)
+      const trim = clip.length > 0 ? { in: 0, out: clip.length } : undefined
+      const index = ids.indexOf(key)
+      if (index >= 0) {
+        sourcePaths[index] = placeholder
+        ids[index] = newClipId()
+        numbers[index] = nextClipNumber(current, placeholder)
+        if (trim) trims[ids[index]] = trim
+        changed = true
+        return
+      }
+      const at = tracks.findIndex((track) => trackKey(current, track) === key)
+      if (at < 0) return
+      const next = { ...tracks[at], path: placeholder }
+      tracks[at] = next
+      if (trim) trims[trackKey(current, next)] = trim
+      changed = true
     })
+    if (!changed) return
+    updateDraft({ ...withListType(current, sourcePaths, tracks), clipIds: ids, clipNumbers: numbers, trimPoints: Object.keys(trims).length ? trims : undefined })
+    // The clips took NEW ids, so the old keys name nothing: the selection goes rather than pointing at clips
+    // that are no longer there.
+    setMultiSelected([])
   }
 
   /**
@@ -6045,11 +6051,20 @@ export const EditJobApp: React.FC = () => {
           return <button role="menuitem" disabled={!inside} title={inside ? 'Cut this clip in two at the skimmer (C)' : 'Move the skimmer inside this clip to cut it'} onClick={() => { setTimelineMenu(null); splitSelectedClip() }}>SPLIT AT SKIMMER</button>
         })()}
         <button role="menuitem" disabled={timelineMenu.sourceIndex == null} title={timelineMenu.sourceIndex == null ? 'AN ADDED TRACK IS NOT IN THE SOURCE LIST, SO THERE IS NO PLACE HERE TO SWAP A FILE INTO — REPLACE WITH SILENCE BELOW PUTS A PLACEHOLDER HERE INSTEAD.' : 'Ask for a different FILE at this place in the job.'} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void replaceClipAt(index) }}>REPLACE SOURCE...</button>
-        {/* A PLACEHOLDER in the clip's own place, for a clip on ANY lane. This is the answer that works where
-            REPLACE SOURCE cannot: an added track names no place in the source list, but its own PATH is its
-            clip, so swapping the path swaps the clip — with a BLANK on a picture lane and a SILENCE on a sound
-            one, which is the same kind ADD BLANK / ADD SILENCE would place. */}
-        <button role="menuitem" title={timelineMenu.visual ? 'Put a stretch of flat colour in this clip\u2019s place, ready to be stretched to any length on the timeline.' : 'Put a stretch of silence in this clip\u2019s place, ready to be stretched to any length on the timeline.'} onClick={() => { setTimelineMenu(null); replaceClipWithPlaceholder() }}>{timelineMenu.visual ? 'REPLACE WITH BLANK' : 'REPLACE WITH SILENCE'}</button>
+        {/* A PLACEHOLDER in each clip's own place, for a clip on ANY lane. The KIND follows each clip's own lane
+            rather than the menu's, so a selection that spans a picture lane and a sound one is replaced
+            accordingly rather than all one kind — and the item names both when it does. */}
+        {(() => {
+          const keys = multiSelected.length ? multiSelected : [timelineMenu.fitKey]
+          const kinds = new Set(keys.map((key) => (model.lanes.find((lane) => lane.segments.some((segment) => segment.key === key))?.kind === 'audio' ? 'audio' : 'video')))
+          const both = kinds.has('video') && kinds.has('audio')
+          const label = both ? 'REPLACE WITH BLANK / SILENCE' : kinds.has('video') ? 'REPLACE WITH BLANK' : 'REPLACE WITH SILENCE'
+          return <button
+            role="menuitem"
+            title={`Put a placeholder in this clip's place — a BLANK on a picture lane, a SILENCE on a sound one — at the length the clip stands at.${keys.length > 1 ? ` Asked of all ${keys.length} clips in hand, each taking the kind its own lane asks for.` : ''}`}
+            onClick={() => { setTimelineMenu(null); replaceClipWithPlaceholder() }}
+          >{label}{keys.length > 1 ? ` (${keys.length})` : ''}</button>
+        })()}
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
           const blocked = timelineMenu.fitReason
