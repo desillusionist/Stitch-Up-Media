@@ -18,7 +18,7 @@ import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
 import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurationFor, clipRetime, clipSpeedLabel, slavedAudioAt, sourceTimeAt, speedAudioFilters, speedFor, speedVideoFilters, timelineTimeAt, trimmedForDuration } from '../src/lib/clipSpeed'
 import { DEFAULT_RATE, RATE_PRESETS, frameCount, frameFloor, makeRate, rateLabel, rateOf, rateRationalLabel, ratesEqual, rateValue, secondsForFrames } from '../src/lib/frameRate'
-import { AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio } from '../src/lib/audioFacts'
+import { AUDIO_CHANNELS, audioChannelsFor, audioCodecFacts, audioDepthsFor, audioFacts, channelFacts, channelLayoutFor, clampAudioChannels, kilohertz, outputChannels, probeHasAudio, resolvedAudioChannels } from '../src/lib/audioFacts'
 import { placeMenu } from '../src/lib/menuPlacement'
 import { AUDIO_LAYOUTS, audioLayoutState, CLIPPING_GUARD_FILTER, containerHoldsStreams, resolvedAudioLayout, sumsAudioLanes } from '../src/lib/audioLayout'
 import { videoCodecFacts } from '../src/lib/videoFacts'
@@ -1758,6 +1758,13 @@ console.log('\n== the graph that draws the export\u2019s own mix ==')
   const tracks = visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a', '2:a'], background: { input: 0 }, rate: 48000, channels: 2 })
   check('several tracks are summed into one mix', tracks.includes('[0:a][1:a][2:a]amix=inputs=3:normalize=0'), true)
   check('with the levels as they were set', tracks.includes('normalize=0'), true)
+  // AND THE OPT-IN CLIPPING GUARD RIDES ON THE EXPORT'S OWN HALF of the split: it sits after the sum, on the
+  // audio that is written rather than on the audio that is drawn, so the picture is still made from the raw mix.
+  const guarded = visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a', '1:a', '2:a'], background: { input: 0 }, rate: 48000, channels: 2, preventClipping: true })
+  check('a guarded drawing drops the limiter on the export’s half', guarded.includes(`[mixA]aresample=48000:async=1,aformat=sample_fmts=fltp:channel_layouts=stereo,${CLIPPING_GUARD_FILTER}[aout]`), true)
+  check('and a lone source is not guarded, having nothing to be summed with', visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a'], background: { input: 0 }, rate: 48000, channels: 2, preventClipping: true }).includes('alimiter'), false)
+  // And a 5.1 drawing lays its OWN half out at six channels, the two halves of the split agreeing.
+  check('a 5.1 drawing lays the export’s half out at 5.1', visualizationGraph({ template: 'eq', width: 1080, height: 1920, fps: 25, color: '#ffffff', sources: ['0:a'], background: { input: 0 }, rate: 48000, channels: 6 }).includes('channel_layouts=5.1[aout]'), true)
   check('the drawing sits on the picture input it was given', tracks.includes('[0:v]scale=1080:1920,setsar=1[bg]'), true)
   // The EQ is the one template whose drawing is NOT made on the capped canvas: it is made one pixel per bar at
   // the frame\u2019s own height, because the stretch that makes the bars chunky is nearest-neighbour and a
@@ -2258,14 +2265,25 @@ console.log('\n== what a sound is, and what the export will make of it ==')
   // The output channel count, which is a CHOICE rather than a fact, and which stores nothing at all for SOURCE:
   // every path that owns the output layout has an answer of its own — a stitch follows the widest source it was
   // given — and a stereo written here would override that answer with a figure nobody chose.
-  check('the layouts the editor offers', AUDIO_CHANNELS.map((option) => option.name), ['SOURCE', 'MONO', 'STEREO'])
+  check('the layouts the editor offers', AUDIO_CHANNELS.map((option) => option.name), ['SOURCE', 'MONO', 'STEREO', '5.1'])
   check('a preset that says nothing asks for nothing', outputChannels({}), undefined)
   check('and one asking for mono gets one', outputChannels({ audioChannels: 1 }), 1)
   check('and for stereo, two', [outputChannels({ audioChannels: 2 }), channelLayoutFor(2)], [2, 'stereo'])
   check('a mono layout is named for the graph', channelLayoutFor(1), 'mono')
-  check('a figure that is not on the list falls back to SOURCE rather than to two', clampAudioChannels(6), 0)
+  // 5.1 is six channels under ffmpeg's own layout name, and the name is what the drawing's `aformat` takes.
+  check('and 5.1 is six channels under its own name', [outputChannels({ audioChannels: 6 }), channelLayoutFor(6)], [6, '5.1'])
+  check('a figure that is not on the list falls back to SOURCE rather than to two', clampAudioChannels(5), 0)
   check('as does nonsense', clampAudioChannels('nonsense'), 0)
-  check('and the two that are on it are kept', [clampAudioChannels(1), clampAudioChannels(2)], [1, 2])
+  check('and the figures that are on it are kept', [clampAudioChannels(1), clampAudioChannels(2), clampAudioChannels(6)], [1, 2, 6])
+  // MP3 IS THE ONE CODEC THAT REFUSES 5.1 — MEASURED: "Specified channel layout '5.1' is not supported by the
+  // libmp3lame encoder" — so it is left off that codec's list, and a stored 5.1 falls back to the path's own
+  // answer rather than being handed to a muxer that would refuse the file. AAC, PCM, FLAC, Opus and Vorbis all
+  // write six, so they keep it.
+  check('5.1 is offered for the codecs that carry it', audioChannelsFor('aac').map((option) => option.value), [0, 1, 2, 6])
+  check('and refused for the one that does not', audioChannelsFor('mp3').map((option) => option.value), [0, 1, 2])
+  check('so a stored 5.1 is written on a codec that carries it', resolvedAudioChannels({ audioChannels: 6, audioCodec: 'aac' }), 6)
+  check('and held back on the one that does not', resolvedAudioChannels({ audioChannels: 6, audioCodec: 'mp3' }), undefined)
+  check('while a stereo is written wherever it is asked for', resolvedAudioChannels({ audioChannels: 2, audioCodec: 'mp3' }), 2)
 }
 
 console.log('\n== how several audio lanes are laid out ==')
@@ -2289,17 +2307,20 @@ console.log('\n== how several audio lanes are laid out ==')
   check('while a MIXDOWN in a roomy container is still a mixdown', resolvedAudioLayout({ container: 'mkv', audioLayout: 'mixdown' }), 'mixdown')
 
   check('both layouts are offered', AUDIO_LAYOUTS.map((entry) => entry.value), ['separate', 'mixdown'])
-  check('a job with nothing to refuse shows what it will write', audioLayoutState(mkv, { sequenced: false, drawing: false }), { value: 'separate', locked: false, separateBlocked: null })
-  check('a SEQUENCED set is locked, because it is one stream already', audioLayoutState(mkv, { sequenced: true, drawing: false }), { value: 'mixdown', locked: true, separateBlocked: 'THE TRACKS ARE SEQUENCED, SO THEY ALREADY FORM ONE STREAM.' })
-  check('a DRAWING is locked too, because it builds its own mix', audioLayoutState(mkv, { sequenced: false, drawing: true }), { value: 'mixdown', locked: true, separateBlocked: 'A DRAWING SUMMS THE LANES ITSELF.' })
-  check('and a one-track container offers no SEPARATE, naming the format', audioLayoutState({ container: 'mp3' }, { sequenced: false, drawing: false }), { value: 'mixdown', locked: false, separateBlocked: 'THIS FORMAT CARRIES ONE AUDIO TRACK.' })
+  check('a job with nothing to refuse shows what it will write', audioLayoutState(mkv, { sequenced: false, drawing: false }), { value: 'separate', locked: false, separateBlocked: null, reason: null })
+  check('a SEQUENCED set is locked, because it is one stream already', audioLayoutState(mkv, { sequenced: true, drawing: false }), { value: 'mixdown', locked: true, separateBlocked: 'THE TRACKS ARE SEQUENCED, SO THEY ALREADY FORM ONE STREAM.', reason: 'sequenced' })
+  check('a DRAWING is locked too, because it builds its own mix', audioLayoutState(mkv, { sequenced: false, drawing: true }), { value: 'mixdown', locked: true, separateBlocked: 'A DRAWING SUMMS THE LANES ITSELF.', reason: 'drawing' })
+  check('and a one-track container offers no SEPARATE, naming the format', audioLayoutState({ container: 'mp3' }, { sequenced: false, drawing: false }), { value: 'mixdown', locked: false, separateBlocked: 'THIS FORMAT CARRIES ONE AUDIO TRACK.', reason: 'format' })
 
-  // THE CLIPPING GUARD is offered only for an UNLOCKED MIXDOWN: the one place the encoder's own `amix` is what
-  // meets the ceiling. A SEPARATE layout adds nothing to anything, and a SEQUENCED set is CONCATENATED — one
-  // lane after another, never together — so neither has a sum for a guard to catch.
-  check('a raw mixdown has something to guard', sumsAudioLanes({ value: 'mixdown', locked: false }), true)
-  check('but a separate layout adds nothing to anything', sumsAudioLanes({ value: 'separate', locked: false }), false)
-  check('and a locked one is not the own sum of the encoder', sumsAudioLanes({ value: 'mixdown', locked: true }), false)
+  // THE CLIPPING GUARD is offered wherever the lanes are really SUMMED. An unlocked MIXDOWN is the encoder's own
+  // `amix`; a DRAWING sums through its own graph, which the guard is wired into too. A SEPARATE layout adds
+  // nothing to anything, and a SEQUENCED set is CONCATENATED — one lane after another, never together — so
+  // neither has a sum for a guard to catch.
+  check('a raw mixdown has something to guard', sumsAudioLanes({ value: 'mixdown', reason: null }), true)
+  check('and a drawing does too, summing in its own graph', sumsAudioLanes({ value: 'mixdown', reason: 'drawing' }), true)
+  check('and a one-track container, whose lanes are summed for it', sumsAudioLanes({ value: 'mixdown', reason: 'format' }), true)
+  check('but a separate layout adds nothing to anything', sumsAudioLanes({ value: 'separate', reason: null }), false)
+  check('and a sequenced set is concatenated rather than summed', sumsAudioLanes({ value: 'mixdown', reason: 'sequenced' }), false)
   // The guard's filter, spelled out: `level=disabled` so it never re-levels a mix that is already inside the
   // scale, `limit=1.0` for full scale, and `latency=1` so the limiter's own lookahead does not drift the
   // soundtrack away from its picture (measured at 5 ms without it).

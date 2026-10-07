@@ -80,6 +80,15 @@ const caseB = lanes('lanesB', 600,
 ${lane('B2', 'AUDIO 1', [['long.wav', 'b2', 600, false]], 0, '')}
 <div class="timeline-playhead" id="bph" style="left:${4 * pxPerSec(ZOOM)}px"></div>`)
 
+// Case L: the two START-OF-LANE markers — a head fade on a clip, and an EMPTY lane's add-a-source — must stand
+// on one vertical line, and neither may hang off the scroll area's own left edge where it would be clipped.
+// They are laid out against DIFFERENT boxes (one hangs off a clip's leading edge, the other off the lane
+// itself), so only a measurement can say whether the two agree.
+const caseL = lanes('lanesL', 10,
+  `${head('VIDEO 1')}${head('AUDIO')}`,
+  `<div class="timeline-lane" id="laneL"><div class="timeline-lane-track" id="trackL"><div class="timeline-clip" id="clipL" style="width:${laneWidthFor(10, ZOOM)}px"><span class="timeline-clip-name">a</span><small>d</small><button class="boundary-add is-head" id="headL"></button></div></div></div>
+<div class="timeline-lane" id="laneLE"><div class="timeline-lane-track is-audio" id="trackLE"><button class="boundary-add is-lane-empty" id="emptyL"></button></div></div>`)
+
 // Case C: the preview overlay. A square output frame centred in a wide stage, its label
 // anchored to the frame's top-left, and one crop band down the left edge. This checks the
 // overlay geometry a reader cannot judge from the stylesheet. The drawing sits in the pan layer,
@@ -265,6 +274,7 @@ const page = `<!doctype html><html><head><meta charset="utf-8">
 </head><body><div class="edit-job-shell"><div class="editor-body"><main class="editor-main">
 <section class="timeline-panel">${caseA}</section>
 <section class="timeline-panel">${caseB}</section>
+<section class="timeline-panel">${caseL}</section>
 <section class="timeline-panel"><div style="--filmstrip-tile:${FILMSTRIP_CLIP_HEIGHT}px">${filmLane}</div></section>
 <section class="editor-preview"><div class="editor-screen">${caseC}</div></section>
 <section class="editor-preview">${monitorStage}</section>
@@ -298,6 +308,10 @@ const measure = `(() => {
   const marker = rect('am0')
   const playhead = rect('aph')
   const bTrack = rect('track-B')
+  // The two start-of-lane markers, and the scroll edge they must stay inside.
+  const startHead = rect('headL')
+  const startEmpty = rect('emptyL')
+  const startScroll = rect('scroll-lanesL')
   const bClip0 = rect('b0')
   const bMarker = rect('bm0')
   const bPlayhead = rect('bph')
@@ -384,6 +398,9 @@ const measure = `(() => {
       fieldHeights: [dw.height, dh.height], iconHeights: [dlock.height, dreset.height],
       leadingFlush: +(rect('dwf').left - exrow.left).toFixed(2), trailingFlush: +(exrow.right - dreset.right).toFixed(2),
       columnGap: +(dh.left - dw.right).toFixed(2) },
+    caseL: { headLeft: startHead && startHead.left, emptyLeft: startEmpty && startEmpty.left,
+      headCenter: startHead && startHead.centerY, emptyCenter: startEmpty && startEmpty.centerY,
+      scrollLeft: startScroll && startScroll.left },
     caseE: { headWidth: rect('chead').width, headHeight: rect('chead').height, selectWidth: rect('csel').width, pickHeight: rect('csel').height,
       lockWidth: rect('clock').width, lockHeight: rect('clock').height,
       titleBottom: rect('ctitle').bottom, headTop: rect('chead').top,
@@ -633,6 +650,15 @@ app.whenReady().then(async () => {
   // The folding groups, asserted here rather than in the page because these are questions about
   // DIFFERENCES between two elements — one folded, one not — rather than about either alone.
   const groups = laid.caseJ
+  // The two START-OF-LANE markers must stand on one vertical line and stay inside the scroll area: a head fade
+  // hangs off a CLIP's leading edge and an empty lane's [+] off the LANE itself, so the two boxes differ and
+  // only a measurement can say whether they agree.
+  const startMarkers = laid.caseL
+  if (startMarkers) {
+    if (Math.abs(startMarkers.headLeft - startMarkers.emptyLeft) > 0.5) problems.push(`the head fade [+] and the empty lane's [+] are not on one line: ${startMarkers.headLeft} against ${startMarkers.emptyLeft}`)
+    const hangs = (left) => left < startMarkers.scrollLeft - 0.5
+    if (hangs(startMarkers.headLeft) || hangs(startMarkers.emptyLeft)) problems.push(`a start-of-lane [+] hangs past the scroll area's left edge and would be clipped (head ${startMarkers.headLeft}, empty ${startMarkers.emptyLeft}, scroll ${startMarkers.scrollLeft})`)
+  }
   // The framing controls. Which figure follows which along the row IS the layout, since the letters
   // carry the meaning; what is left to check is that they ARE one row, in the right order, evenly
   // sized, with the row's own reset at its end — and that the fields are as compact as they claim.

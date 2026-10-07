@@ -809,6 +809,19 @@ const drive = async () => {
     pictureImageName: pickButton?.textContent ?? null,
   }
 
+  // THE 5.1 LADDER IS OFFERED PER CODEC. MP3 is the one codec that refuses a 5.1 layout (measured), so
+  // switching the sound to MP3 must take that entry OFF the CHANNELS list, and switching back must put it back
+  // — an entry left on a list the codec cannot write is exactly the control-without-a-backing this checks for.
+  const codecSelect = selectIn('CODEC')
+  const channelsBefore = channelsSelect() ? optionsOf(channelsSelect()) : null
+  chooseOption(codecSelect, 'mp3')
+  await wait(140)
+  const channelsUnderMp3 = channelsSelect() ? optionsOf(channelsSelect()) : null
+  chooseOption(codecSelect, 'aac')
+  await wait(140)
+  const channelsBackOnAac = channelsSelect() ? optionsOf(channelsSelect()) : null
+  result.audio = { ...(result.audio as object), channelsBefore, channelsUnderMp3, channelsBackOnAac }
+
   // The output channel count, chosen the way a user chooses it, so the patch proves the control reaches the
   // encoder rather than merely rendering. A stereo source asked for MONO is the case the encoder harness
   // reads off the finished file; this is the half a window can be wrong about on its own.

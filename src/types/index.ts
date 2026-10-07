@@ -102,13 +102,15 @@ export interface EncodingPreset {
   audioFormat?: 'aac' | 'mp3' | 'opus' | 'pcm' | 'flac'
   audioSampleRate?: number
   /**
-   * How many channels the export writes. Absent means whatever the path would have written anyway.
+   * How many channels the export writes: one, two, or six for ffmpeg's `5.1` layout. Absent means whatever the
+   * path would have written anyway.
    *
-   * The monitor's own `-ac` for every path that owns the output layout, so a 5.1 source can be folded to
-   * stereo without a second encode. It is capped at stereo for the same reason the drawing's own graph
-   * lays its audio out as mono or stereo: the two halves of one stream cannot be laid out differently.
+   * Six is offered per CODEC rather than everywhere, because one of them cannot carry it: measured, mp3 refuses
+   * a 5.1 layout outright, so the figure is held to what the codec can write where the two meet — see
+   * `resolvedAudioChannels`. Whatever is asked for is written by the path that owns the output layout, so a wide
+   * source is kept wide or folded down without a second encode.
    */
-  audioChannels?: 1 | 2
+  audioChannels?: 1 | 2 | 6
   /**
    * How the export lays several audio lanes out: one stream each, or one stream with them summed.
    *

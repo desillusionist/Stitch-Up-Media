@@ -11,7 +11,7 @@ import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
 import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId, nextClipNumber, trackKey } from '../lib/clipIds'
 import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
-import { AUDIO_BITRATES, AUDIO_CHANNELS, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio } from '../lib/audioFacts'
+import { AUDIO_BITRATES, audioChannelsFor, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio, resolvedAudioChannels } from '../lib/audioFacts'
 import { AUDIO_LAYOUTS, audioLayoutState, sumsAudioLanes } from '../lib/audioLayout'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
 import { applyAudioChoice, applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, codecChoicesFor, defaultAudioChoiceValue, defaultCodecChoiceValue } from '../lib/codecChoices'
@@ -4283,7 +4283,7 @@ export const EditJobApp: React.FC = () => {
    */
   const chooseAudioChannels = (value: string) => {
     const channels = clampAudioChannels(value)
-    updatePreset({ audioChannels: channels === 1 || channels === 2 ? channels : undefined })
+    updatePreset({ audioChannels: channels === 0 ? undefined : channels })
   }
   /**
    * The layout of several audio lanes. SEPARATE is the long-standing behaviour and is stored EXPLICITLY once
@@ -5708,8 +5708,8 @@ export const EditJobApp: React.FC = () => {
             {/* The one audio setting about the SHAPE of the stream rather than its quality, and the only one
                 offered for a job that has sound in it: a job with none has nothing to lay out, and the field
                 would be a choice about a stream that is never written. */}
-            {jobSound && <EditorField label="CHANNELS" hint={draft.preset.audioChannels ? undefined : 'FROM THE SOURCE'} reason="How many channels the export writes. SOURCE keeps the path's own answer - a stitch follows the widest source it was given - and MONO or STEREO folds the mix down without a second encode. Two is the most this can ask for, because the drawing's own graph lays the stream it writes out as mono or stereo and the two halves of one split cannot be laid out differently.">
-              <EditorSelect value={String(clampAudioChannels(draft.preset.audioChannels))} options={AUDIO_CHANNELS.map((option) => ({ value: String(option.value), label: option.name }))} disabled={audioDisabled} onChange={chooseAudioChannels} ariaLabel="How many channels the export writes" />
+            {jobSound && <EditorField label="CHANNELS" hint={(resolvedAudioChannels(draft.preset) ?? 0) === 0 ? 'FROM THE SOURCE' : undefined} reason="How many channels the export writes. SOURCE keeps the path's own answer - a stitch follows the widest source it was given - and MONO, STEREO or 5.1 lays the stream out at that many channels without a second encode. 5.1 is a six-channel layout and is offered only for the codecs that can carry one: MP3 refuses it outright, so it is left off that codec's list rather than being offered and then folded away.">
+              <EditorSelect value={String(resolvedAudioChannels(draft.preset) ?? 0)} options={audioChannelsFor(draft.preset.audioCodec).map((option) => ({ value: String(option.value), label: option.name }))} disabled={audioDisabled} onChange={chooseAudioChannels} ariaLabel="How many channels the export writes" />
             </EditorField>}
             <EditorRow label="TRACKS" value={draft.additionalAudioTracks?.length ? `${draft.additionalAudioTracks.length + 1} (EMBEDDED + ${draft.additionalAudioTracks.length})` : '1 EMBEDDED'} />
             {/* HOW SEVERAL LANES ARE LAID OUT. SEPARATE TRACKS is a stream per lane, each with its own

@@ -1,4 +1,6 @@
 import { EncodingPreset, QueueTask } from '../types'
+import { channelLayoutFor } from './audioFacts'
+import { CLIPPING_GUARD_FILTER } from './audioLayout'
 import { IMAGE_CONTAINERS } from './containerSwitch'
 import { mediaKind } from './mediaKind'
 import { outputCarriesPicture } from './outputKind'
@@ -351,12 +353,19 @@ export interface VisualizationRequest {
    */
   background: string | { input: number }
   /**
-   * The layout the export's own audio is written at, which the drawing's half of the mix is laid out to
-   * as well — the two halves of one split cannot be laid out differently, and a stitch writes what its
-   * own sources asked for rather than what another path happens to use.
+   * The layout the export's own audio is written at, as a channel COUNT — one, two or six. The drawing's half
+   * of the split is laid out to the same figure, because the two halves of one split cannot be laid out
+   * differently, and a stitch writes what its own sources asked for rather than what another path happens to
+   * use. See `channelLayoutFor` for the layout NAME it becomes.
    */
   rate: number
   channels: number
+  /**
+   * Whether the reader asked for the summed mix to be guarded against reaching above full scale. It only bites
+   * when the lanes are really SUMMED — a lone source is not added to anything — so it is written onto the
+   * output after the `amix` and only when there is more than one source.
+   */
+  preventClipping?: boolean
   /**
    * The EQ's own knobs, when the template is one. Absent means the defaults — see `DEFAULT_EQ_STYLE`.
    */
@@ -1195,7 +1204,7 @@ export const visualizationStillGraph = (request: VisualizationStillRequest): str
  * own size.
  */
 export const visualizationGraph = (request: VisualizationRequest): string => {
-  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine, eq, tune } = request
+  const { template, width, height, fps, color, sources, background, rate, channels, duration, progressLine, preventClipping, eq, tune } = request
   const canvas = drawingCanvas(width, height, templateMaxEdge(template))
   const drawing: DrawingRequest = {
     template,
@@ -1209,6 +1218,11 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
   const listened = sources.length === 1
     ? `[${sources[0]}]asplit=2[mixA][mixV]`
     : `${sources.map((label) => `[${label}]`).join('')}amix=inputs=${sources.length}:normalize=0,asplit=2[mixA][mixV]`
+  // THE CLIPPING GUARD, when the reader asked for it and there is really a SUM to guard: a lone source is not
+  // added to anything, so it is left out there — the same rule the encoder's own MIXDOWN follows. It sits on the
+  // EXPORT's half of the split only, after the sum and before the resample, so the drawing is still made from
+  // the unguarded signal and the guard touches nothing that is drawn.
+  const guard = preventClipping && sources.length > 1 ? `,${CLIPPING_GUARD_FILTER}` : ''
   const base = typeof background === 'string'
     ? `color=c=${background}:s=${width}x${height}:r=${fps}[bg]`
     : `[${background.input}:v]scale=${width}:${height},setsar=1[bg]`
@@ -1218,8 +1232,9 @@ export const visualizationGraph = (request: VisualizationRequest): string => {
   return [
     listened,
     // The export's own audio, resampled and laid out exactly as the path that asked for the drawing
-    // writes it, and cut from the mix rather than from the files.
-    `[mixA]aresample=${rate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${channels === 1 ? 'mono' : 'stereo'}[aout]`,
+    // writes it, and cut from the mix rather than from the files. The guard, where one was asked for, is
+    // dropped here on the export's own half — see `guard` above.
+    `[mixA]aresample=${rate}:async=1,aformat=sample_fmts=fltp:channel_layouts=${channelLayoutFor(channels)}${guard}[aout]`,
     // The drawing, through the very chains the editor's own still is built from — the scale, the mirror and
     // the bars' stretch and grids included — so a knob the editor draws is a knob the encoder honours.
     ...drawingChains(drawing, '[mixV]', exportDrawingFilters(drawing), '[w]'),

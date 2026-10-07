@@ -69,21 +69,34 @@ export const probeHasAudio = (info: MediaProbeInfo | undefined): boolean => Bool
 /**
  * The channel layouts the export may be asked for, in the order the editor offers them.
  *
- * Two, and that cap is deliberate rather than a shortcut: the drawing path lays the stream it writes out as
- * mono or stereo, and the two halves of one split cannot be laid out differently — so a 5.1 export would be a
- * different pipeline, not another figure here. A 5.1 SOURCE is therefore folded down, which is the honest
- * thing to offer rather than a control that would need a graph of its own.
+ * SOURCE leaves the path its own answer, MONO and STEREO fold the mix down, and 5.1 keeps six channels —
+ * ffmpeg's own `5.1` layout. Six is the widest this app writes, and the list is offered per CODEC rather than
+ * whole because one of them cannot carry it: measured, `libmp3lame` refuses a 5.1 layout outright ("Specified
+ * channel layout '5.1' is not supported by the libmp3lame encoder") while AAC, PCM, FLAC, Opus and Vorbis all
+ * write six. See `audioChannelsFor`.
  */
-export const AUDIO_CHANNELS: Array<{ value: 0 | 1 | 2; name: string }> = [
+export type AudioChannelChoice = 0 | 1 | 2 | 6
+export const AUDIO_CHANNELS: Array<{ value: AudioChannelChoice; name: string }> = [
   { value: 0, name: 'SOURCE' },
   { value: 1, name: 'MONO' },
   { value: 2, name: 'STEREO' },
+  { value: 6, name: '5.1' },
 ]
 
+/**
+ * Whether a sound codec can write a 5.1 layout. mp3 is the one that cannot — MEASURED, above — and `copy` is
+ * left on the list because it writes the source's own channels and ignores the figure either way.
+ */
+export const codecCarriesFivePointOne = (codec: string): boolean => codec !== 'mp3'
+
+/** The channel choices a codec is offered: the whole list but for 5.1, where the codec cannot write one. */
+export const audioChannelsFor = (codec: string): Array<{ value: AudioChannelChoice; name: string }> =>
+  codecCarriesFivePointOne(codec) ? AUDIO_CHANNELS : AUDIO_CHANNELS.filter((option) => option.value !== 6)
+
 /** A stored figure held to what the export can actually write. Zero means "whatever the source is". */
-export const clampAudioChannels = (value: unknown): 0 | 1 | 2 => {
+export const clampAudioChannels = (value: unknown): AudioChannelChoice => {
   const channels = Number(value)
-  return channels === 1 ? 1 : channels === 2 ? 2 : 0
+  return channels === 1 ? 1 : channels === 2 ? 2 : channels === 6 ? 6 : 0
 }
 
 /**
@@ -94,11 +107,25 @@ export const clampAudioChannels = (value: unknown): 0 | 1 | 2 => {
  * been asked says nothing rather than saying stereo, which is what keeps a job saved before this control off
  * the list encoding exactly as it did.
  */
-export const outputChannels = (preset: Pick<EncodingPreset, 'audioChannels'>): 1 | 2 | undefined =>
-  preset.audioChannels === 1 || preset.audioChannels === 2 ? preset.audioChannels : undefined
+export const outputChannels = (preset: Pick<EncodingPreset, 'audioChannels'>): 1 | 2 | 6 | undefined =>
+  preset.audioChannels === 1 || preset.audioChannels === 2 || preset.audioChannels === 6 ? preset.audioChannels : undefined
+
+/**
+ * The channels the export will REALLY write, which is the stored figure held to the codec's own limit.
+ *
+ * A 5.1 asked for on mp3 cannot be written, so it falls back to the path's own answer rather than being handed
+ * to a muxer that refuses it — the same "held to what can actually be written" rule the sample depth follows. The
+ * stored figure is NOT thrown away: switching back to a codec that carries six brings the 5.1 back, so the
+ * choice is remembered rather than silently lost.
+ */
+export const resolvedAudioChannels = (preset: Pick<EncodingPreset, 'audioChannels' | 'audioCodec'>): 1 | 2 | 6 | undefined => {
+  const chosen = outputChannels(preset)
+  return chosen === 6 && !codecCarriesFivePointOne(preset.audioCodec) ? undefined : chosen
+}
 
 /** The ffmpeg layout name for a channel count, which is what `aformat` and the drawing's graph both take. */
-export const channelLayoutFor = (channels: number): string => (channels === 1 ? 'mono' : 'stereo')
+export const channelLayoutFor = (channels: number): string =>
+  channels === 1 ? 'mono' : channels === 6 ? '5.1' : 'stereo'
 
 /**
  * The bitrates the export is offered, in the order the editor offers them.

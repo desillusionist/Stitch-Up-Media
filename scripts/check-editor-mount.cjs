@@ -278,9 +278,14 @@ app.whenReady().then(async () => {
       if (!audio.audioRows || !audio.audioRows.some((label) => label.startsWith('SOURCE AUDIO'))) problems.push('the AUDIO tab said nothing about what the source\u2019s own audio is')
       if (!audio.channels) problems.push('the AUDIO tab offered no channel count for a job that has sound in it')
       else {
-        if (String(audio.channels.options) !== '0,1,2') problems.push(`the channel count offers ${JSON.stringify(audio.channels.options)} rather than SOURCE, MONO and STEREO`)
+        if (String(audio.channels.options) !== '0,1,2,6') problems.push(`the channel count offers ${JSON.stringify(audio.channels.options)} rather than SOURCE, MONO, STEREO and 5.1`)
         if (audio.channels.value !== '0') problems.push(`a job that says nothing starts on channel count ${audio.channels.value} rather than the source\u2019s own`)
       }
+      // The 5.1 entry is offered PER CODEC: MP3 refuses a 5.1 layout (measured), so its list is one shorter, and
+      // switching back to AAC puts it on again.
+      if (String(audio.channelsBefore) !== '0,1,2,6') problems.push(`the channel list began as ${JSON.stringify(audio.channelsBefore)} rather than with 5.1 on it`)
+      if (String(audio.channelsUnderMp3) !== '0,1,2') problems.push(`switching to MP3 did not take 5.1 off the channel list: ${JSON.stringify(audio.channelsUnderMp3)}`)
+      if (String(audio.channelsBackOnAac) !== '0,1,2,6') problems.push(`switching back to AAC did not put 5.1 back: ${JSON.stringify(audio.channelsBackOnAac)}`)
       // And the choice reaches the encoder: SOURCE stores nothing at all rather than a figure, and a figure
       // chosen is the figure sent.
       if (audio.channelsAfterChoosing !== '1') problems.push(`choosing MONO left the field on ${String(audio.channelsAfterChoosing)}`)
@@ -1001,7 +1006,7 @@ app.whenReady().then(async () => {
       if (trackOutput.laneGuard !== true) problems.push(`turning PREVENT CLIPPING on did not reach the queue: ${JSON.stringify(trackOutput.laneGuard)}`)
       if (trackOutput.sequencedPrevent) problems.push('PREVENT CLIPPING was offered on a SEQUENCED set, which is concatenated rather than summed')
       if (!trackOutput.wavPrevent) problems.push('PREVENT CLIPPING was withheld on a wav, whose lanes are summed and can clip')
-      if (trackOutput.drawingPrevent) problems.push('PREVENT CLIPPING was offered on a DRAWING, whose own graph takes the sum')
+      if (!trackOutput.drawingPrevent) problems.push('PREVENT CLIPPING was withheld on a DRAWING, whose own graph sums the lanes and is guarded too')
       if (!trackOutput.sequencedDisabled) problems.push('TRACK OUTPUT was offered on a SEQUENCED set of tracks, which is one stream already')
       if (trackOutput.sequencedValue !== 'mixdown') problems.push(`a sequenced set read as ${JSON.stringify(trackOutput.sequencedValue)} rather than the one stream it already is`)
       if (!String(trackOutput.sequencedNote || '').includes('SEQUENCED')) problems.push(`a sequenced set gave no reason on the setting: ${JSON.stringify(trackOutput.sequencedNote)}`)

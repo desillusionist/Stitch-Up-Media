@@ -60,16 +60,19 @@ export const AUDIO_LAYOUTS: Array<{ value: AudioLayout; name: string }> = [
  * `value` is the layout the export will ACTUALLY use, not the field as stored: a job that asked for SEPARATE
  * and was then pointed at a wav container reads MIXDOWN, because that is what it will get. `locked` is for the
  * cases where the setting cannot change the file at all — a sequenced set of tracks is one stream already, and
- * a drawing builds its own mix — where the whole control is refused rather than one of its two answers.
+ * a drawing builds its own mix — where the whole control is refused rather than one of its two answers. `reason`
+ * names WHICH of those a locked case is, because the clipping guard cares about the difference: a drawing sums
+ * and a sequenced set does not. See `sumsAudioLanes`.
  */
+export type AudioLayoutReason = 'sequenced' | 'drawing' | 'format'
 export const audioLayoutState = (
   preset: Pick<EncodingPreset, 'container' | 'audioLayout'>,
   options: { sequenced: boolean; drawing: boolean },
-): { value: AudioLayout; locked: boolean; separateBlocked: string | null } => {
-  if (options.drawing) return { value: 'mixdown', locked: true, separateBlocked: 'A DRAWING SUMMS THE LANES ITSELF.' }
-  if (options.sequenced) return { value: 'mixdown', locked: true, separateBlocked: 'THE TRACKS ARE SEQUENCED, SO THEY ALREADY FORM ONE STREAM.' }
-  if (!containerHoldsStreams(preset.container)) return { value: 'mixdown', locked: false, separateBlocked: 'THIS FORMAT CARRIES ONE AUDIO TRACK.' }
-  return { value: resolvedAudioLayout(preset), locked: false, separateBlocked: null }
+): { value: AudioLayout; locked: boolean; separateBlocked: string | null; reason: AudioLayoutReason | null } => {
+  if (options.drawing) return { value: 'mixdown', locked: true, separateBlocked: 'A DRAWING SUMMS THE LANES ITSELF.', reason: 'drawing' }
+  if (options.sequenced) return { value: 'mixdown', locked: true, separateBlocked: 'THE TRACKS ARE SEQUENCED, SO THEY ALREADY FORM ONE STREAM.', reason: 'sequenced' }
+  if (!containerHoldsStreams(preset.container)) return { value: 'mixdown', locked: false, separateBlocked: 'THIS FORMAT CARRIES ONE AUDIO TRACK.', reason: 'format' }
+  return { value: resolvedAudioLayout(preset), locked: false, separateBlocked: null, reason: null }
 }
 
 /**
@@ -77,12 +80,13 @@ export const audioLayoutState = (
  *
  * A MIXDOWN adds the lanes together, so two loud ones can reach above full scale; a SEPARATE layout writes each
  * lane on its own stream and nothing is added to anything. A SEQUENCED set is CONCATENATED rather than summed —
- * one lane after another, never together — so nothing is added to anything there either; and a DRAWING does sum,
- * but through its own graph rather than the encoder's `amix`, which is the code path the guard sits on. So the
- * guard is offered only for an UNLOCKED MIXDOWN: the one place the encoder's `amix` is what meets the ceiling.
+ * one lane after another, never together — so nothing is added to anything there either. A DRAWING does sum,
+ * through its OWN graph rather than the encoder's `amix`, and the guard is wired into that graph too, so it
+ * counts here. So the guard is offered for every MIXDOWN a real sum happens in: an unlocked one (the encoder's
+ * `amix`) and a drawing's (its own graph).
  */
-export const sumsAudioLanes = (state: Pick<ReturnType<typeof audioLayoutState>, 'value' | 'locked'>): boolean =>
-  state.value === 'mixdown' && !state.locked
+export const sumsAudioLanes = (state: Pick<ReturnType<typeof audioLayoutState>, 'value' | 'reason'>): boolean =>
+  state.value === 'mixdown' && state.reason !== 'sequenced'
 
 /**
  * The opt-in guard dropped AFTER the sum, so a mix that would reach above full scale is caught at it.

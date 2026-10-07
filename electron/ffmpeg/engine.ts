@@ -19,7 +19,7 @@ import { clipAudioDropped, embeddedAudioCustomised, embeddedGainDb, enabledEmbed
 import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
-import { channelLayoutFor, outputChannels } from '../../src/lib/audioFacts'
+import { channelLayoutFor, resolvedAudioChannels } from '../../src/lib/audioFacts'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -1378,7 +1378,7 @@ export class FFmpegEngine {
    * out to, because the two halves of one split cannot be laid out differently.
    */
   private exportChannels(preset: EncodingPreset, fallback: number): number {
-    return outputChannels(preset) ?? fallback
+    return resolvedAudioChannels(preset) ?? fallback
   }
 
   /**
@@ -1422,6 +1422,9 @@ export class FFmpegEngine {
       channels,
       duration,
       progressLine: visualizationProgressLine(preset),
+      // The reader's opt-in guard on a summed mix travels with the drawing too, so a drawing's own lanes can
+      // be guarded exactly as a plain MIXDOWN's are — the graph drops it on its own `[aout]`.
+      preventClipping: preset.audioPreventClipping === true,
       eq: eqStyleOf(preset),
       tune: drawingTuneOf(preset),
     })
@@ -1572,8 +1575,10 @@ export class FFmpegEngine {
     else if (preset.audioEnabled === false) cmd.outputOptions(['-an'])
     if (preset.audioSampleRate) cmd.audioFrequency(preset.audioSampleRate)
     // How many channels the export writes, where the job has been asked. Absent means the path's own answer,
-    // which is what keeps a job saved before this control off the list encoding exactly as it did.
-    if (preset.audioChannels) cmd.audioChannels(preset.audioChannels)
+    // which is what keeps a job saved before this control off the list encoding exactly as it did. A 5.1 asked
+    // for on a codec that cannot write one (mp3 — measured) falls back to the path's own answer here too.
+    const writtenChannels = resolvedAudioChannels(preset)
+    if (writtenChannels) cmd.audioChannels(writtenChannels)
     // `-vf` is emitted once, from one chain. Setting it twice leaves only the last one
     // standing, which used to drop a named resolution the moment a caller added a
     // filter of its own.

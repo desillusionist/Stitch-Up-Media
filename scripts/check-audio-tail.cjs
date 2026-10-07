@@ -1651,11 +1651,11 @@ const main = async () => {
   await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', laneA])
   await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=48000:duration=3', '-c:a', 'pcm_s16le', laneB])
   // A SILENT visual, so the two lanes are the only audio and the stream count is the lanes themselves.
-  const laneTask = (container, audioLayout, outputFilename, preventClipping) => ({
+  const laneTask = (container, audioLayout, outputFilename, preventClipping, channels) => ({
     id: `lanes-${outputFilename}`, type: 'multitrack', status: 'pending', progress: 0,
     sourcePaths: [lanesVisual], outputDirectory: root, outputFilename,
     additionalAudioTracks: [{ id: 'la', path: laneA, language: 'eng' }, { id: 'lb', path: laneB, language: 'fra' }],
-    preset: { ...preset, container, ...(audioLayout ? { audioLayout } : {}), ...(preventClipping ? { audioPreventClipping: true } : {}) },
+    preset: { ...preset, container, ...(audioLayout ? { audioLayout } : {}), ...(preventClipping ? { audioPreventClipping: true } : {}), ...(channels ? { audioChannels: channels } : {}) },
   })
 
   const separateCmd = await captureCommand(laneTask('mkv', undefined, 'lanes-separate.mkv'))
@@ -1738,6 +1738,29 @@ const main = async () => {
   // a doubled sum (1.414x) both fall outside of.
   check(`the sum adds the quiet lane to the loud one (${contourMixRms.toFixed(3)} against ${loudLaneRms.toFixed(3)})`, contourMixRms > loudLaneRms * 1.05, true)
   check(`and by less than a second full lane would (${(contourMixRms / loudLaneRms).toFixed(3)}x against 1.414x)`, contourMixRms < loudLaneRms * 1.25, true)
+
+  // THE GUARD RIDES ON A DRAWING'S OWN GRAPH TOO. A drawing sums its lanes in its OWN graph rather than the
+  // encoder's `amix`, so the guard is wired into that graph as well — on the EXPORT'S half of the split, after
+  // the sum, so the drawing itself is still made from the unguarded signal. A multitrack only DRAWS where its
+  // visual is a still cover, so the fixtures are a still and two tracks.
+  const drawingTask = (preventClipping, outputFilename) => ({
+    id: `drawing-${outputFilename}`, type: 'multitrack', status: 'pending', progress: 0,
+    sourcePaths: [still], outputDirectory: root, outputFilename,
+    additionalAudioTracks: [{ id: 'la', path: laneA, language: 'und' }, { id: 'lb', path: laneB, language: 'und' }],
+    preset: { ...preset, container: 'mp4', audioPicture: 'visualization', visualization: 'waveform', ...(preventClipping ? { audioPreventClipping: true } : {}) },
+  })
+  const drawingPlainCmd = await captureCommand(drawingTask(false, 'drawing-plain.mp4'))
+  check('a drawing sums its lanes in its own graph', /amix=inputs=2:normalize=0/.test(drawingPlainCmd), true)
+  check('and is left unguarded when nothing was asked', /alimiter/.test(drawingPlainCmd), false)
+  const drawingGuardCmd = await captureCommand(drawingTask(true, 'drawing-guard.mp4'))
+  check('a guarded drawing drops the limiter on the export\u2019s own half', /,alimiter=level=disabled:limit=1\.0:latency=1\[aout\]/.test(drawingGuardCmd), true)
+  check('and the drawing is still written with its sound', (await probeFile(path.join(root, 'drawing-guard.mp4'))).audioStreams.length >= 1, true)
+
+  // 5.1 IS REALLY WRITTEN: six channels under ffmpeg's own layout name, in a container that carries one.
+  const fiveOneCmd = await captureCommand(laneTask('mkv', 'mixdown', 'lanes-5-1.mkv', undefined, 6))
+  check('a 5.1 job lays its summed stream out at six channels', /channel_layouts=5\.1/.test(fiveOneCmd), true)
+  const fiveOneProbe = await probeFile(path.join(root, 'lanes-5-1.mkv'))
+  check('and the file really holds six', `${fiveOneProbe.audioStreams[0]?.channels}/${fiveOneProbe.audioStreams[0]?.channelLayout}`, '6/5.1')
 
   try { fs.rmSync(root, { recursive: true, force: true }) } catch {}
   console.log(failures.length ? `\n${failures.length} TAIL PROBLEM(S)\n` : '\nTHE OUTPUT RUNS TO ITS SOUND, IN BLACK\n')
