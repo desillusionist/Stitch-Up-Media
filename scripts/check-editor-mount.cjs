@@ -843,6 +843,11 @@ app.whenReady().then(async () => {
     else {
       if (!replaceBlank.offered) problems.push('a VIDEO clip offered no REPLACE WITH BLANK')
       if (!String(replaceBlank.path ?? '').startsWith('placeholder:video:')) problems.push(`REPLACE WITH BLANK left ${JSON.stringify(replaceBlank.path)} rather than a blank`)
+      // AND IT KEEPS THE CLIP'S OWN LENGTH rather than the file's: the clip this drive replaces is TRIMMED to
+      // 6s-10s, so it stands at 4s and the blank takes a 4s trim — the stamp the reader was looking at does not
+      // move, which is the whole of "the same length".
+      if (!(Math.abs(Number(replaceBlank.length) - 4) < 0.6)) problems.push(`REPLACE WITH BLANK did not keep the clip's own length: trim ${JSON.stringify(replaceBlank.length)} against the clip's 4s (the file is 12s)`)
+      if (!String(replaceBlank.shown ?? '').includes('00:00:04')) problems.push(`REPLACE WITH BLANK left the clip reading ${JSON.stringify(replaceBlank.shown)} rather than its own 4s`)
     }
     const replaceSilence = result.replaceSilence
     if (!replaceSilence) problems.push('the replace-with-silence drive reported nothing')
@@ -851,6 +856,10 @@ app.whenReady().then(async () => {
       if (!replaceSilence.source?.disabled) problems.push('REPLACE SOURCE was offered on an added audio track, whose file is not in the source list')
       if (!replaceSilence.source?.titled) problems.push('the REPLACE SOURCE that cannot be used on a track said nothing about why')
       if (!String(replaceSilence.trackPath ?? '').startsWith('placeholder:audio:')) problems.push(`REPLACE WITH SILENCE left the track at ${JSON.stringify(replaceSilence.trackPath)} rather than a silence`)
+      // The track is the WHOLE of its 12s file, so the silence takes 12s — the pair with the trimmed clip above
+      // shows the length follows the CLIP, not the file it replaced.
+      if (!(Math.abs(Number(replaceSilence.length) - 12) < 0.6)) problems.push(`REPLACE WITH SILENCE did not keep the track's length: trim ${JSON.stringify(replaceSilence.length)} against the fixture's 12s`)
+      if (!String(replaceSilence.shown ?? '').includes('00:00:12')) problems.push(`REPLACE WITH SILENCE left the track reading ${JSON.stringify(replaceSilence.shown)} rather than its own 12s`)
     }
     // THE TIMELINE KICKER'S UNIT MENU.
     const stampMenu = result.stampMenu

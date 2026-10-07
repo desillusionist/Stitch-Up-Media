@@ -2856,20 +2856,27 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
-   * Puts a PLACEHOLDER in the clip's place — a BLANK on a picture lane, a SILENCE on a sound one.
+   * Puts a PLACEHOLDER in the clip's place — a BLANK on a picture lane, a SILENCE on a sound one — at the
+   * length the clip was standing at.
    *
    * The clip's own records go with the file that was there, exactly as REPLACE SOURCE drops them: a trim, a
-   * crop or a fit measured against that file means nothing against a flat stretch. A clip on the SOURCE LIST
-   * swaps that entry and takes a new id; an added TRACK swaps its own PATH, which IS the key its records are
-   * filed under, so they go with it too. Either way the placeholder lands at its default length rather than at
-   * the length of the file it replaced, ready to be stretched on the timeline. This is the answer that works on
-   * ANY lane — an added track names no place in `sourcePaths`, which is why REPLACE SOURCE cannot reach it.
+   * crop or a fit measured against that file means nothing against a flat stretch. But its LENGTH is not a
+   * record about the file — it is what the clip occupies on the timeline — so the replacement is written a
+   * trim of exactly that length. That is the whole of "the same length": a placeholder's source is endless,
+   * so its length IS its trim, and the timestamp the reader was looking at does not move. A clip on the SOURCE
+   * LIST swaps that entry and takes a new id; an added TRACK swaps its own PATH, which IS the key its records
+   * are filed under, so its records go with it too. This is the answer that works on ANY lane — an added track
+   * names no place in `sourcePaths`, which is why REPLACE SOURCE cannot reach it.
    */
   const replaceClipWithPlaceholder = () => {
     const menu = timelineMenu
     if (!menu || menu.kind !== 'clip') return
     const current = latest()
     const sourcePath = makePlaceholderPath(menu.visual ? 'video' : 'audio')
+    // The length the clip stands at, read off the drawn segment — the same figure the eye is looking at.
+    const lane = model.lanes.find((candidate) => candidate.id === menu.laneId)
+    const length = lane?.segments[menu.segmentIndex]?.duration ?? 0
+    const trim = length > 0 ? { in: 0, out: length } : undefined
     if (menu.mainIndex != null) {
       const index = menu.mainIndex
       if (index < 0 || index >= current.sourcePaths.length) return
@@ -2879,14 +2886,21 @@ export const EditJobApp: React.FC = () => {
       sourcePaths[index] = sourcePath
       ids[index] = newClipId()
       numbers[index] = nextClipNumber(current, sourcePath)
-      updateDraft({ ...withListType(current, sourcePaths, current.additionalAudioTracks), clipIds: ids, clipNumbers: numbers })
+      updateDraft({
+        ...withListType(current, sourcePaths, current.additionalAudioTracks), clipIds: ids, clipNumbers: numbers,
+        ...(trim ? { trimPoints: { ...(current.trimPoints || {}), [ids[index]]: trim } } : {}),
+      })
       return
     }
     const tracks = [...(current.additionalAudioTracks || [])]
     const at = tracks.findIndex((track) => trackKey(current, track) === menu.fitKey)
     if (at < 0) return
-    tracks[at] = { ...tracks[at], path: sourcePath }
-    updateDraft({ ...withListType(current, current.sourcePaths, tracks) })
+    const next = { ...tracks[at], path: sourcePath }
+    tracks[at] = next
+    updateDraft({
+      ...withListType(current, current.sourcePaths, tracks),
+      ...(trim ? { trimPoints: { ...(current.trimPoints || {}), [trackKey(current, next)]: trim } } : {}),
+    })
   }
 
   /**

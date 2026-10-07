@@ -1686,12 +1686,14 @@ const drive = async () => {
   const blankItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REPLACE WITH BLANK') as HTMLButtonElement | undefined
   const blankOffered = Boolean(blankItem)
   blankItem?.click()
-  await wait(200)
+  await wait(250)
+  const blankShown = blankClips()[1]?.querySelector('small')?.textContent ?? null
   const applyBlank = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
   applyBlank?.click()
   await wait(250)
-  const blankPatch = applied[applied.length - 1] as { sourcePaths?: string[] } | undefined
-  result.replaceBlank = { offered: blankOffered, path: blankPatch?.sourcePaths?.[1] ?? null }
+  const blankPatch = applied[applied.length - 1] as { sourcePaths?: string[]; clipIds?: string[]; trimPoints?: Record<string, { in: number; out: number }> } | undefined
+  const blankId = blankPatch?.clipIds?.[1]
+  result.replaceBlank = { offered: blankOffered, path: blankPatch?.sourcePaths?.[1] ?? null, length: blankId ? blankPatch?.trimPoints?.[blankId]?.out ?? null : null, shown: blankShown }
 
   // The same on an AUDIO TRACK, where REPLACE SOURCE cannot reach: the silence item is offered, the source item
   // is out of reach and says why, and the track's own path becomes a placeholder.
@@ -1707,12 +1709,14 @@ const drive = async () => {
   const trackSource = { disabled: Boolean(trackSourceItem?.disabled), titled: Boolean(trackSourceItem?.title) }
   const trackSilenceOffered = Boolean(trackSilenceItem)
   trackSilenceItem?.click()
-  await wait(200)
+  await wait(250)
+  const silenceShown = trackClip()?.querySelector('small')?.textContent ?? null
   const applySilence = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
   applySilence?.click()
   await wait(250)
-  const silencePatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ path?: string }> } | undefined
-  result.replaceSilence = { offered: trackSilenceOffered, source: trackSource, trackPath: silencePatch?.additionalAudioTracks?.[0]?.path ?? null }
+  const silencePatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ path?: string }>; trimPoints?: Record<string, { in: number; out: number }> } | undefined
+  const trackPath = silencePatch?.additionalAudioTracks?.[0]?.path ?? null
+  result.replaceSilence = { offered: trackSilenceOffered, source: trackSource, trackPath, length: trackPath ? silencePatch?.trimPoints?.[`${trackPath}#0`]?.out ?? null : null, shown: silenceShown }
 
   // THE TIMELINE KICKER'S OWN MENU. Which unit the window shows lengths in is a setting rather than a job
   // field, so this asks the whole chain: the menu offers both, choosing FRAMESTAMP re-stamps the clips, and
