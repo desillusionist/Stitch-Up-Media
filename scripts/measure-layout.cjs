@@ -81,9 +81,9 @@ ${lane('B2', 'AUDIO 1', [['long.wav', 'b2', 600, false]], 0, '')}
 <div class="timeline-playhead" id="bph" style="left:${4 * pxPerSec(ZOOM)}px"></div>`)
 
 // Case L: the two START-OF-LANE markers — a head fade on a clip, and an EMPTY lane's add-a-source — must stand
-// on one vertical line, and neither may hang off the scroll area's own left edge where it would be clipped.
-// They are laid out against DIFFERENT boxes (one hangs off a clip's leading edge, the other off the lane
-// itself), so only a measurement can say whether the two agree.
+// ON the lane's own start line, each hanging half its width past the scroll area's left edge. They are laid out
+// against DIFFERENT boxes (one hangs off a clip's leading edge, the other off the lane itself), so only a
+// measurement can say whether the two agree on where that line is.
 const caseL = lanes('lanesL', 10,
   `${head('VIDEO 1')}${head('AUDIO')}`,
   `<div class="timeline-lane" id="laneL"><div class="timeline-lane-track" id="trackL"><div class="timeline-clip" id="clipL" style="width:${laneWidthFor(10, ZOOM)}px"><span class="timeline-clip-name">a</span><small>d</small><button class="boundary-add is-head" id="headL"></button></div></div></div>
@@ -650,14 +650,16 @@ app.whenReady().then(async () => {
   // The folding groups, asserted here rather than in the page because these are questions about
   // DIFFERENCES between two elements — one folded, one not — rather than about either alone.
   const groups = laid.caseJ
-  // The two START-OF-LANE markers must stand on one vertical line and stay inside the scroll area: a head fade
-  // hangs off a CLIP's leading edge and an empty lane's [+] off the LANE itself, so the two boxes differ and
-  // only a measurement can say whether they agree.
+  // The two START-OF-LANE markers must stand ON the lane's own start line and be level with each other: a head
+  // fade hangs off a CLIP's leading edge and an empty lane's [+] off the LANE itself, so the two boxes differ
+  // and only a measurement can say whether they agree. Centred on the line is `scrollLeft - 8.5` — half a
+  // 17-pixel box — which is what puts each marker's centre on the edge rather than beside it.
   const startMarkers = laid.caseL
   if (startMarkers) {
     if (Math.abs(startMarkers.headLeft - startMarkers.emptyLeft) > 0.5) problems.push(`the head fade [+] and the empty lane's [+] are not on one line: ${startMarkers.headLeft} against ${startMarkers.emptyLeft}`)
-    const hangs = (left) => left < startMarkers.scrollLeft - 0.5
-    if (hangs(startMarkers.headLeft) || hangs(startMarkers.emptyLeft)) problems.push(`a start-of-lane [+] hangs past the scroll area's left edge and would be clipped (head ${startMarkers.headLeft}, empty ${startMarkers.emptyLeft}, scroll ${startMarkers.scrollLeft})`)
+    const centred = startMarkers.scrollLeft - 8.5
+    if (Math.abs(startMarkers.headLeft - centred) > 0.5) problems.push(`the head fade [+] is not centred on the lane's start line: ${startMarkers.headLeft} against ${centred}`)
+    if (Math.abs(startMarkers.emptyLeft - centred) > 0.5) problems.push(`the empty lane's [+] is not centred on the lane's start line: ${startMarkers.emptyLeft} against ${centred}`)
   }
   // The framing controls. Which figure follows which along the row IS the layout, since the letters
   // carry the meaning; what is left to check is that they ARE one row, in the right order, evenly

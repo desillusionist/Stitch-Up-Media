@@ -685,12 +685,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    offset, so the box is centred on the edge by construction rather than by any
    arithmetic on the timeline's length. */
 .boundary-add { position: absolute; top: 50%; right: -8.5px; transform: translateY(-50%); z-index: 6; box-sizing: border-box; width: 17px; height: 17px; padding: 0; color: var(--ui-muted); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); }
-/* The head marker and an EMPTY lane's [+] stand on the SAME vertical line: both mark the very start of their
-   lane. A marker centred on that edge would hang half of itself past the scroll area's own left edge and be
-   clipped there, so both are drawn just inside the lane's first frame instead — which is what keeps the two
-   level with each other and both fully clickable. */
+/* The head marker and an EMPTY lane's [+] both stand ON the lane's own start line: the first clip's leading
+   edge IS where the lane begins, and an empty lane has nothing to hang off but that same line. Both therefore
+   hang half their width past the scroll area's own left edge — the convention every boundary marker follows, a
+   cut's [+] straddling its edge the same way — and the half that falls outside the scroll is clipped with it. */
 .boundary-add.is-head,
-.boundary-add.is-lane-empty { right: auto; left: 4px; }
+.boundary-add.is-lane-empty { right: auto; left: -8.5px; }
 /* The plus is drawn rather than typed, and centred with inset/margin auto rather
    than left/top 50 per cent: that pair resolves against the padding box, so the
    border used to push the glyph a pixel off centre. */
