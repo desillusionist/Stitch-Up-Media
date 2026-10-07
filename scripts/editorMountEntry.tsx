@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -1672,6 +1672,47 @@ const drive = async () => {
   await wait(250)
   const repairPatch = applied[applied.length - 1] as { trimPoints?: Record<string, unknown>; clipIds?: string[] } | undefined
   result.clipRepairs = { beforeRepairs, resetDisabled, afterReset, repairIds: repairPatch?.clipIds ?? null, repairTrims: repairPatch?.trimPoints ?? null }
+
+  // A PLACEHOLDER IN THE CLIP'S OWN PLACE. REPLACE SOURCE needs a PLACE in the job's source list, and an added
+  // AUDIO track has none — so that item is out of reach there, and it says why — while REPLACE WITH BLANK / WITH
+  // SILENCE works on ANY lane, putting a placeholder of the lane's own kind in the clip's place.
+  flushEdits()
+  await wait(200)
+  arrive(pairTask, 'replace-blank')
+  await wait(900)
+  const blankClips = () => [...document.querySelectorAll('.timeline-clip')] as HTMLElement[]
+  blankClips()[1]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const blankItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REPLACE WITH BLANK') as HTMLButtonElement | undefined
+  const blankOffered = Boolean(blankItem)
+  blankItem?.click()
+  await wait(200)
+  const applyBlank = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyBlank?.click()
+  await wait(250)
+  const blankPatch = applied[applied.length - 1] as { sourcePaths?: string[] } | undefined
+  result.replaceBlank = { offered: blankOffered, path: blankPatch?.sourcePaths?.[1] ?? null }
+
+  // The same on an AUDIO TRACK, where REPLACE SOURCE cannot reach: the silence item is offered, the source item
+  // is out of reach and says why, and the track's own path becomes a placeholder.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'replace-silence', type: 'multitrack', sourcePaths: [CLIP_FIXTURE], additionalAudioTracks: [{ id: 'tA', path: SOUND_FIXTURE, language: 'und' }] }, 'replace-silence')
+  await wait(1000)
+  const trackClip = () => document.querySelector('.timeline-lane-track.is-audio .timeline-clip') as HTMLElement | null
+  trackClip()?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const trackSourceItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REPLACE SOURCE...') as HTMLButtonElement | undefined
+  const trackSilenceItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REPLACE WITH SILENCE') as HTMLButtonElement | undefined
+  const trackSource = { disabled: Boolean(trackSourceItem?.disabled), titled: Boolean(trackSourceItem?.title) }
+  const trackSilenceOffered = Boolean(trackSilenceItem)
+  trackSilenceItem?.click()
+  await wait(200)
+  const applySilence = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applySilence?.click()
+  await wait(250)
+  const silencePatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ path?: string }> } | undefined
+  result.replaceSilence = { offered: trackSilenceOffered, source: trackSource, trackPath: silencePatch?.additionalAudioTracks?.[0]?.path ?? null }
 
   // THE TIMELINE KICKER'S OWN MENU. Which unit the window shows lengths in is a setting rather than a job
   // field, so this asks the whole chain: the menu offers both, choosing FRAMESTAMP re-stamps the clips, and

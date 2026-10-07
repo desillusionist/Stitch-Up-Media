@@ -15,6 +15,7 @@ import { mediaKind } from './lib/mediaKind'
 import { removeSourceFromTask, clipRecordsFor, withSourceList } from './lib/sourceRemoval'
 import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
 import { clipKey, legacyClipId, matchClipIdsToPaths, matchClipNumbersToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, nextClipNumber } from './lib/clipIds'
+import { filePathsOnly } from './lib/placeholder'
 
 /**
  * The rate a still image is given when it is exported as video.
@@ -244,7 +245,9 @@ export const App: React.FC = () => {
   useEffect(() => {
     const checkMissing = async () => {
       if (!window.electronAPI?.pathExists) return
-      const paths = Array.from(new Set(tasks.flatMap((task) => [...task.sourcePaths, ...(task.additionalAudioTracks || []).map((track) => track.path)])))
+      // A BLANK or a SILENCE is a source with no file behind it, so it is left out of the question rather than
+      // reported as a file that has gone missing — the file system can only say a placeholder is not there.
+      const paths = Array.from(new Set(filePathsOnly(tasks.flatMap((task) => [...task.sourcePaths, ...(task.additionalAudioTracks || []).map((track) => track.path)]))))
       const missing = new Set<string>()
       await Promise.all(paths.map(async (filePath) => { if (!(await window.electronAPI!.pathExists(filePath))) missing.add(filePath) }))
       const newlyMissing = [...missing].filter((filePath) => !missingSourcesRef.current.has(filePath))

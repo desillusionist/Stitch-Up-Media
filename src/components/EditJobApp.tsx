@@ -2856,6 +2856,40 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * Puts a PLACEHOLDER in the clip's place — a BLANK on a picture lane, a SILENCE on a sound one.
+   *
+   * The clip's own records go with the file that was there, exactly as REPLACE SOURCE drops them: a trim, a
+   * crop or a fit measured against that file means nothing against a flat stretch. A clip on the SOURCE LIST
+   * swaps that entry and takes a new id; an added TRACK swaps its own PATH, which IS the key its records are
+   * filed under, so they go with it too. Either way the placeholder lands at its default length rather than at
+   * the length of the file it replaced, ready to be stretched on the timeline. This is the answer that works on
+   * ANY lane — an added track names no place in `sourcePaths`, which is why REPLACE SOURCE cannot reach it.
+   */
+  const replaceClipWithPlaceholder = () => {
+    const menu = timelineMenu
+    if (!menu || menu.kind !== 'clip') return
+    const current = latest()
+    const sourcePath = makePlaceholderPath(menu.visual ? 'video' : 'audio')
+    if (menu.mainIndex != null) {
+      const index = menu.mainIndex
+      if (index < 0 || index >= current.sourcePaths.length) return
+      const sourcePaths = [...current.sourcePaths]
+      const ids = materializeClipIds(current)
+      const numbers = materializeClipNumbers(current)
+      sourcePaths[index] = sourcePath
+      ids[index] = newClipId()
+      numbers[index] = nextClipNumber(current, sourcePath)
+      updateDraft({ ...withListType(current, sourcePaths, current.additionalAudioTracks), clipIds: ids, clipNumbers: numbers })
+      return
+    }
+    const tracks = [...(current.additionalAudioTracks || [])]
+    const at = tracks.findIndex((track) => trackKey(current, track) === menu.fitKey)
+    if (at < 0) return
+    tracks[at] = { ...tracks[at], path: sourcePath }
+    updateDraft({ ...withListType(current, current.sourcePaths, tracks) })
+  }
+
+  /**
    * Opens the clip's REMOVE question for the SELECTED clip, which is what the Delete key asks.
    *
    * The same question the clip's own right-click menu shows, at the clip's own box — one confirmation for
@@ -5996,7 +6030,12 @@ export const EditJobApp: React.FC = () => {
           const inside = Boolean(segment && playback.position > segment.start + 1e-6 && playback.position < segment.start + segment.duration - 1e-6)
           return <button role="menuitem" disabled={!inside} title={inside ? 'Cut this clip in two at the skimmer (C)' : 'Move the skimmer inside this clip to cut it'} onClick={() => { setTimelineMenu(null); splitSelectedClip() }}>SPLIT AT SKIMMER</button>
         })()}
-        <button role="menuitem" disabled={timelineMenu.sourceIndex == null} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void replaceClipAt(index) }}>REPLACE SOURCE...</button>
+        <button role="menuitem" disabled={timelineMenu.sourceIndex == null} title={timelineMenu.sourceIndex == null ? 'AN ADDED TRACK IS NOT IN THE SOURCE LIST, SO THERE IS NO PLACE HERE TO SWAP A FILE INTO — REPLACE WITH SILENCE BELOW PUTS A PLACEHOLDER HERE INSTEAD.' : 'Ask for a different FILE at this place in the job.'} onClick={() => { const index = timelineMenu.sourceIndex; setTimelineMenu(null); void replaceClipAt(index) }}>REPLACE SOURCE...</button>
+        {/* A PLACEHOLDER in the clip's own place, for a clip on ANY lane. This is the answer that works where
+            REPLACE SOURCE cannot: an added track names no place in the source list, but its own PATH is its
+            clip, so swapping the path swaps the clip — with a BLANK on a picture lane and a SILENCE on a sound
+            one, which is the same kind ADD BLANK / ADD SILENCE would place. */}
+        <button role="menuitem" title={timelineMenu.visual ? 'Put a stretch of flat colour in this clip\u2019s place, ready to be stretched to any length on the timeline.' : 'Put a stretch of silence in this clip\u2019s place, ready to be stretched to any length on the timeline.'} onClick={() => { setTimelineMenu(null); replaceClipWithPlaceholder() }}>{timelineMenu.visual ? 'REPLACE WITH BLANK' : 'REPLACE WITH SILENCE'}</button>
         {timelineMenu.visual && (() => {
           const fit = draft.sourceFit?.[timelineMenu.fitKey]
           const blocked = timelineMenu.fitReason

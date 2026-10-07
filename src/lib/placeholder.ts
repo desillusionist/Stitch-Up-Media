@@ -63,6 +63,16 @@ export const placeholderKind = (sourcePath: string | undefined): PlaceholderKind
 /** A source is a placeholder of SOME kind, which is the question most callers actually have. */
 export const isPlaceholder = (sourcePath: string | undefined): boolean => placeholderKind(sourcePath) != null
 
+/**
+ * The paths among these that name real FILES, placeholders removed.
+ *
+ * A placeholder has nothing behind it, so anything that asks the FILE SYSTEM about a source — a missing-file
+ * check, a probe, a Quick Look — must be handed the real ones only. Named to the file system a placeholder reads
+ * as a file that is not there, which is how a job with a BLANK in it came up reporting its own blank as missing.
+ */
+export const filePathsOnly = (paths: Array<string | undefined>): string[] =>
+  paths.filter((path): path is string => Boolean(path) && !isPlaceholder(path))
+
 /** The colour a blank is painted: the six hex digits in its path, or black. Nothing for a silence. */
 export const placeholderFill = (sourcePath: string | undefined): string | null => {
   if (placeholderKind(sourcePath) !== 'video') return null

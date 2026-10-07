@@ -36,7 +36,7 @@ import { applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, 
 import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel } from '../src/lib/outputSize'
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 import { mediaKind } from '../src/lib/mediaKind'
-import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
+import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, filePathsOnly, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
  * Assertions over the pure parts of the EDIT JOB timeline: the fallback playback
@@ -340,6 +340,11 @@ console.log('\n== ADD BLANK / ADD SILENCE placeholders ==')
   check('the blank carries the colour it was made with', placeholderFill(blank), 'cc3344')
   check('a blank with no colour named is black', placeholderFill(makePlaceholderPath('video')), DEFAULT_BLANK_FILL)
   check('and a silence has no colour to carry', placeholderFill(silence), null)
+  // A PLACEHOLDER IS NOT A FILE, so the missing-file check must not be handed one: named to the file system it
+  // reads as a file that is not there, which is how a job with a BLANK in it reported its own blank as missing.
+  check('the file-system check is handed the real files', filePathsOnly(['/a.mov', '/b.wav']), ['/a.mov', '/b.wav'])
+  check('and never a job\u2019s own blanks or silences', filePathsOnly([blank, '/a.mov', silence]), ['/a.mov'])
+  check('nor a path that is nothing at all', filePathsOnly([undefined, '/a.mov']), ['/a.mov'])
   const repainted = withPlaceholderFill(blank, '#00FF99')
   check('repainting keeps the kind and the id', repainted.split(':').slice(0, 3), blank.split(':').slice(0, 3))
   check('and carries the new colour', placeholderFill(repainted), '00ff99')

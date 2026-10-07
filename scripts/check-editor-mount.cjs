@@ -837,6 +837,21 @@ app.whenReady().then(async () => {
       }
       if (repairs.repairTrims && Object.prototype.hasOwnProperty.call(repairs.repairTrims, 'pair-0')) problems.push(`RESET TRIM left the record behind: ${JSON.stringify(repairs.repairTrims)}`)
     }
+    // A PLACEHOLDER IN THE CLIP'S OWN PLACE, on any lane — the answer that works where REPLACE SOURCE cannot.
+    const replaceBlank = result.replaceBlank
+    if (!replaceBlank) problems.push('the replace-with-blank drive reported nothing')
+    else {
+      if (!replaceBlank.offered) problems.push('a VIDEO clip offered no REPLACE WITH BLANK')
+      if (!String(replaceBlank.path ?? '').startsWith('placeholder:video:')) problems.push(`REPLACE WITH BLANK left ${JSON.stringify(replaceBlank.path)} rather than a blank`)
+    }
+    const replaceSilence = result.replaceSilence
+    if (!replaceSilence) problems.push('the replace-with-silence drive reported nothing')
+    else {
+      if (!replaceSilence.offered) problems.push('an AUDIO TRACK offered no REPLACE WITH SILENCE')
+      if (!replaceSilence.source?.disabled) problems.push('REPLACE SOURCE was offered on an added audio track, whose file is not in the source list')
+      if (!replaceSilence.source?.titled) problems.push('the REPLACE SOURCE that cannot be used on a track said nothing about why')
+      if (!String(replaceSilence.trackPath ?? '').startsWith('placeholder:audio:')) problems.push(`REPLACE WITH SILENCE left the track at ${JSON.stringify(replaceSilence.trackPath)} rather than a silence`)
+    }
     // THE TIMELINE KICKER'S UNIT MENU.
     const stampMenu = result.stampMenu
     if (!stampMenu) problems.push('the stamp-menu drive reported nothing')
