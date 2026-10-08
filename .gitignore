@@ -52,3 +52,7 @@ yarn-error.log*
 # The editor mount harness (see `npm run check-mount`)
 scripts/.editor-mount.js
 scripts/.editor-mount.html
+
+# The queue card harness (see `npm run check-queue`)
+scripts/.queue-mount.js
+scripts/.queue-mount.html

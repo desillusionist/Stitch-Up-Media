@@ -108,18 +108,24 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   const [sourceMetadata, setSourceMetadata] = useState<Record<string, { resolution?: string; fps?: number; duration?: number; format?: string }>>({})
   const [trackMetadata, setTrackMetadata] = useState<Record<string, { sampleRate?: number; format?: string }>>({})
   const [croppedSources, setCroppedSources] = useState<Set<number>>(new Set())
+  /** Whether the OUTPUT's own name is too long for its column, which is what starts it crawling. */
+  const [outputCropped, setOutputCropped] = useState(false)
   useEffect(() => {
     const measure = () => {
       const cropped = new Set<number>()
-      document.querySelectorAll<HTMLElement>(`[data-task-id="${task.id}"] .source-name`).forEach((element, index) => {
+      // Scoped to the SOURCES, so the output's own name — which wears the same class — cannot shift the
+      // indices the source rows are keyed by.
+      document.querySelectorAll<HTMLElement>(`[data-task-id="${task.id}"] .queue-sources .source-name`).forEach((element, index) => {
         if (element.scrollWidth > element.clientWidth + 1) cropped.add(index)
       })
       setCroppedSources(cropped)
+      const output = document.querySelector<HTMLElement>(`[data-task-id="${task.id}"] .queue-output .source-name`)
+      setOutputCropped(Boolean(output && output.scrollWidth > output.clientWidth + 1))
     }
     measure()
     window.addEventListener('resize', measure)
     return () => window.removeEventListener('resize', measure)
-  }, [task.id, task.sourcePaths, expanded])
+  }, [task.id, task.sourcePaths, task.outputFilename, expanded])
   useEffect(() => {
     let cancelled = false
     void Promise.all(task.sourcePaths.map(async (source, index) => {
@@ -295,19 +301,33 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     <div draggable onDragStart={(event) => { event.dataTransfer.setData('application/x-stitch-job', task.id); onJobDragStart(event) }} onClick={(event) => { setContextMenu(null); onSelectTask(task, event.shiftKey, event.metaKey || event.ctrlKey) }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openContextMenu(event) }} onDoubleClick={(event) => { event.stopPropagation(); onOpenEditor(task) }} onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); if (event.dataTransfer.types.includes('application/x-stitch-job')) return; window.dispatchEvent(new Event('queue-card-drag-enter')); if (task.status !== 'encoding') setDropMode(true) }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDropMode(false) }} onDrop={async (event) => { event.preventDefault(); event.stopPropagation(); if (event.dataTransfer.types.includes('application/x-stitch-job')) { onJobDrop(event); return } window.dispatchEvent(new Event('queue-card-drag-drop')); const files = (await Promise.all(Array.from(event.dataTransfer.files).map((file) => { try { return window.electronAPI?.getPathForFile(file) || (file as File & { path?: string }).path } catch { return (file as File & { path?: string }).path } }))).filter((path): path is string => Boolean(path)); if (files.length) onAddToExisting(task, files); else onJobDrop(event); setDropMode(false) }}
     data-task-id={task.id}
     className={`queue-card group relative bg-mac-card hover:bg-mac-cardHover/70 border border-white/5 rounded-xl p-4 transition-all shadow-sm ${selected ? 'queue-card-selected' : ''} ${dropMode ? 'queue-card-drop-active' : ''} ${contextMenu ? 'queue-card-context-active' : ''}`}>
-      <div className="queue-card-main flex items-start justify-between gap-4">
-        {/* Left: Icon & File Meta */}
-        <div className="flex items-start space-x-3 flex-1 min-w-0">
+      <div className="queue-card-main">
+        <div className="flex items-start gap-3">
           <div aria-hidden="true" className="p-2.5 rounded-lg bg-white/5 text-neutral-300 flex-shrink-0">
             <JobIcon task={task} />
           </div>
 
           <div className="flex-1 min-w-0">
-            <div className="flex items-center space-x-2"><button className="queue-chevron" onClick={(event) => { event.stopPropagation(); setExpanded(!expanded) }} aria-label={expanded ? 'Collapse item' : 'Expand item'}><span className={expanded ? 'queue-chevron-glyph queue-chevron-expanded' : 'queue-chevron-glyph'}>&gt;</span></button>
+            <div className="flex items-center gap-2"><button className="queue-chevron" onClick={(event) => { event.stopPropagation(); setExpanded(!expanded) }} aria-label={expanded ? 'Collapse item' : 'Expand item'}><span className={expanded ? 'queue-chevron-glyph queue-chevron-expanded' : 'queue-chevron-glyph'}>&gt;</span></button>
               <h3 className="filename-input text-sm font-medium text-white truncate max-w-md" title={fileName}>
                 {jobTitle}{task.type === 'combo' && <> {((task.comboMode || 'multitrack') === 'multitrack' ? <Layers size={13} aria-label="Vertical stacking" /> : <Layers size={13} style={{ transform: 'rotate(-90deg)' }} aria-label="Horizontal stacking" />)} ({task.sourcePaths.length} clips / {audioCount} audio)</>}
               </h3>
               {task.sequenceInput?.hasGaps && <div className="sequence-gap-warning">Sequence has {task.sequenceInput.missing.length} missing frames (gaps).</div>}
+              {/* The PRESET, in the card's top-right corner and ABOVE the panel's top divider. It rides in this
+                  row rather than in a column of its own beside the card, because a column shortens everything
+                  below it — which is what used to stop the panel's dividers short of the right edge. */}
+              <div className="preset-controls ml-auto flex-shrink-0 flex items-end">
+                <button
+                  onClick={(event) => { event.stopPropagation(); onOpenPresetPicker(task) }}
+                  // A preset that has stopped describing the job is one whose NAME says nothing about the
+                  // output, so the CUSTOM badge is the one place the figures themselves are worth showing.
+                  title={task.preset.name === 'CUSTOM' ? presetSummary(task.preset).join('\n') : undefined}
+                  className="px-3 py-1 rounded-md text-xs font-medium bg-white/5 hover:bg-white/10 text-neutral-300 border border-white/10 hover:border-mac-accent/40 transition-all flex items-center space-x-1.5"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-mac-accent" />
+                  <span>{task.preset.name}</span>
+                </button>
+              </div>
             </div>
 
             {/* Technical Metadata info badge */}
@@ -335,7 +355,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
                 <span className="source-file-cell">
                   <span className="panel-kicker queue-output-label">OUTPUT:</span>
                   <span className="queue-output-folder" title={task.outputDirectory} aria-hidden="true"><Folder size={12} /></span>
-                  <button className="source-name filename-output" title={task.outputDirectory} onClick={() => onChangeOutputName(task)}>{task.outputFilename}</button>
+                  <button className={`source-name filename-output${outputCropped ? ' source-name-cropped' : ''}`} title={task.outputDirectory} onClick={() => onChangeOutputName(task)}><span className="source-name-track"><span>{task.outputFilename}</span><span className="source-name-copy" aria-hidden="true">{task.outputFilename}</span></span></button>
                   <span className="source-brief-details">{outputBriefDetails(task.preset)}</span>
                 </span>
                 {task.status === 'done' && <button className="source-remove" onClick={() => onRevealOutput(task)} title="Show in Finder" aria-label="Show in Finder"><ExternalLink size={12} /></button>}
@@ -344,52 +364,39 @@ export const TaskCard: React.FC<TaskCardProps> = ({
           </div>
         </div>
 
-        {/* Center: Preset Selector Badge */}
-        <div className="preset-controls flex flex-col items-end space-y-1.5 flex-shrink-0">
-          <button
-            onClick={(event) => { event.stopPropagation(); onOpenPresetPicker(task) }}
-            // A preset that has stopped describing the job is one whose NAME says nothing about the
-            // output, so the CUSTOM badge is the one place the figures themselves are worth showing.
-            title={task.preset.name === 'CUSTOM' ? presetSummary(task.preset).join('\n') : undefined}
-            className="px-3 py-1 rounded-md text-xs font-medium bg-white/5 hover:bg-white/10 text-neutral-300 border border-white/10 hover:border-mac-accent/40 transition-all flex items-center space-x-1.5"
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-mac-accent" />
-            <span>{task.preset.name}</span>
-          </button>
-
-          {/* Status Badge */}
-          <div className="flex items-center space-x-1 text-xs">
-            {task.skipped && (
-              <span className="text-neutral-400 flex items-center space-x-1">
-                <Clock className="w-3 h-3" />
-                <span>SKIP</span>
-              </span>
-            )}
-            {!task.skipped && task.status === 'pending' && (
-              <span className="text-neutral-400 flex items-center space-x-1">
-                <Clock className="w-3 h-3" />
-                <span>READY</span>
-              </span>
-            )}
-            {task.status === 'encoding' && (
-              <span className="text-mac-accent flex items-center space-x-1 font-medium">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Encoding {task.progress}%</span>
-              </span>
-            )}
-            {task.status === 'done' && (
-              <span className="text-mac-success flex items-center space-x-1 font-medium">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Complete</span>
-              </span>
-            )}
-            {task.status === 'error' && (
-              <span className="text-mac-danger flex items-center space-x-1 font-medium">
-                <AlertCircle className="w-3.5 h-3.5" />
-                <span>Failed</span>
-              </span>
-            )}
-          </div>
+        {/* The card's STATUS, at its bottom-right so it stands UNDER the panel's last divider — where the
+            sources end — rather than beside the sources' first one at the top. */}
+        <div className="queue-card-status flex items-center justify-end space-x-1 text-xs">
+          {task.skipped && (
+            <span className="text-neutral-400 flex items-center space-x-1">
+              <Clock className="w-3 h-3" />
+              <span>SKIP</span>
+            </span>
+          )}
+          {!task.skipped && task.status === 'pending' && (
+            <span className="text-neutral-400 flex items-center space-x-1">
+              <Clock className="w-3 h-3" />
+              <span>READY</span>
+            </span>
+          )}
+          {task.status === 'encoding' && (
+            <span className="text-mac-accent flex items-center space-x-1 font-medium">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              <span>Encoding {task.progress}%</span>
+            </span>
+          )}
+          {task.status === 'done' && (
+            <span className="text-mac-success flex items-center space-x-1 font-medium">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Complete</span>
+            </span>
+          )}
+          {task.status === 'error' && (
+            <span className="text-mac-danger flex items-center space-x-1 font-medium">
+              <AlertCircle className="w-3.5 h-3.5" />
+              <span>Failed</span>
+            </span>
+          )}
         </div>
 
       </div>

@@ -27,7 +27,8 @@ Needs Node, and `ffmpeg` and `ffprobe` on `PATH`.
 The suite is a set of harnesses rather than one test runner. Each prints what it checked and exits non-zero
 when something failed: `typecheck`, `verify` (the arithmetic behind the
 timeline), `verify-fit`, `verify-speed`, `verify-codecs`, `verify-run`, `verify-wave`, `check-tail` (the
-encoder, on generated fixtures), `check-mount` (the EDIT JOB window, really mounted), `check-proxy` and
-`measure` (pixel positions against the built stylesheet). `check-monitor` is run on its own.
+encoder, on generated fixtures), `check-mount` (the EDIT JOB window, really mounted), `check-queue` (a QUEUE
+card, really mounted, measured where it drew), `check-proxy` and `measure` (pixel positions against the built
+stylesheet). `check-monitor` is run on its own.
 
 `UI_DESIGN.md` and `WINDOW_ARCHITECTURE.md` hold the design notes.
