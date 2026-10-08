@@ -89,6 +89,33 @@ const caseL = lanes('lanesL', 10,
   `<div class="timeline-lane" id="laneL"><div class="timeline-lane-track" id="trackL"><div class="timeline-clip" id="clipL" style="width:${laneWidthFor(10, ZOOM)}px"><span class="timeline-clip-name">a</span><small>d</small><button class="boundary-add is-head" id="headL"></button></div></div></div>
 <div class="timeline-lane" id="laneLE"><div class="timeline-lane-track is-audio" id="trackLE"><button class="boundary-add is-lane-empty" id="emptyL"></button></div></div>`)
 
+// Case O: the export's OWN row. Its details column must hang from the SAME divider the SOURCES rows use — the
+// row is laid out as a source row, in a wrapper that takes the sources box's own inset — and one of the two sits
+// inside that box while the other is beside it, so only a measurement can say whether "aligned" holds.
+const caseO = `
+<div class="queue-card" id="ocard" style="width:760px">
+  <div id="owrap">
+    <div class="queue-sources" id="osources">
+      <div class="source-row">
+        <span class="source-file-cell"><span class="source-name" id="osrcname">a-source-file.mp4</span><span class="source-brief-details" id="osrc">720x480 · MOV · 24 FPS</span></span>
+        <span class="source-duration-column">02:46</span>
+        <button class="source-remove">×</button>
+      </div>
+      <div class="source-total"><span class="panel-kicker source-file-cell">TOTAL DURATION</span><span class="source-duration-column">04:09</span><span /></div>
+    </div>
+    <div class="queue-output" id="ooutput">
+      <div class="source-row queue-output-row">
+        <span class="source-file-cell">
+          <span class="panel-kicker queue-output-label" id="olabel">OUTPUT:</span>
+          <span class="queue-output-folder" id="ofolder"></span>
+          <button class="source-name filename-output" id="oname">out.mp4</button>
+          <span class="source-brief-details" id="obrief">1080P · H264 · 30 FPS</span>
+        </span>
+      </div>
+    </div>
+  </div>
+</div>`
+
 // Case C: the preview overlay. A square output frame centred in a wide stage, its label
 // anchored to the frame's top-left, and one crop band down the left edge. This checks the
 // overlay geometry a reader cannot judge from the stylesheet. The drawing sits in the pan layer,
@@ -278,6 +305,7 @@ const page = `<!doctype html><html><head><meta charset="utf-8">
 <section class="timeline-panel"><div style="--filmstrip-tile:${FILMSTRIP_CLIP_HEIGHT}px">${filmLane}</div></section>
 <section class="editor-preview"><div class="editor-screen">${caseC}</div></section>
 <section class="editor-preview">${monitorStage}</section>
+<section class="timeline-panel">${caseO}</section>
 </main><aside class="export-sidebar" id="fside">${caseF}</aside></div></div></body></html>`
 
 const htmlPath = path.join(__dirname, '.measure.html')
@@ -312,6 +340,9 @@ const measure = `(() => {
   const startHead = rect('headL')
   const startEmpty = rect('emptyL')
   const startScroll = rect('scroll-lanesL')
+  // The OUTPUT row's divider against the SOURCES' one.
+  const outputSourceDivider = rect('osrc')
+  const outputRowDivider = rect('obrief')
   const bClip0 = rect('b0')
   const bMarker = rect('bm0')
   const bPlayhead = rect('bph')
@@ -401,6 +432,8 @@ const measure = `(() => {
     caseL: { headLeft: startHead && startHead.left, emptyLeft: startEmpty && startEmpty.left,
       headCenter: startHead && startHead.centerY, emptyCenter: startEmpty && startEmpty.centerY,
       scrollLeft: startScroll && startScroll.left },
+    caseO: { sourceDivider: outputSourceDivider && outputSourceDivider.left, outputDivider: outputRowDivider && outputRowDivider.left,
+      label: rect('olabel') && rect('olabel').left, sourcesLeft: rect('osources') && rect('osources').left },
     caseE: { headWidth: rect('chead').width, headHeight: rect('chead').height, selectWidth: rect('csel').width, pickHeight: rect('csel').height,
       lockWidth: rect('clock').width, lockHeight: rect('clock').height,
       titleBottom: rect('ctitle').bottom, headTop: rect('chead').top,
@@ -650,6 +683,13 @@ app.whenReady().then(async () => {
   // The folding groups, asserted here rather than in the page because these are questions about
   // DIFFERENCES between two elements — one folded, one not — rather than about either alone.
   const groups = laid.caseJ
+  // THE EXPORT'S OWN ROW must hang its details column from the SAME divider the SOURCES rows use. One is laid
+  // out inside the sources box and the other beside it, so the two agree only if the wrapper's inset is right.
+  const outputRow = laid.caseO
+  if (outputRow) {
+    if (Math.abs(outputRow.outputDivider - outputRow.sourceDivider) > 0.5) problems.push(`the OUTPUT row's divider is not on the SOURCES': output at ${outputRow.outputDivider} against source at ${outputRow.sourceDivider}`)
+    if (!(outputRow.label < outputRow.sourceDivider)) problems.push(`the OUTPUT label does not stand before its divider: ${outputRow.label} against ${outputRow.sourceDivider}`)
+  }
   // The two START-OF-LANE markers must stand ON the lane's own start line and be level with each other: a head
   // fade hangs off a CLIP's leading edge and an empty lane's [+] off the LANE itself, so the two boxes differ
   // and only a measurement can say whether they agree. Centred on the line is `scrollLeft - 8.5` — half a

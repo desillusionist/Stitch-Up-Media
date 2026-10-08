@@ -1,6 +1,8 @@
 import { EncodingPreset } from '../types'
 import { hasCrop } from './outputFrame'
 import { outputCarriesPicture } from './outputKind'
+import { kilohertz } from './audioFacts'
+import { rateValue } from './frameRate'
 
 /**
  * What a preset will actually produce, as the lines a tooltip shows.
@@ -38,4 +40,29 @@ export const presetSummary = (preset: EncodingPreset): string[] => {
     ? 'AUDIO DROPPED'
     : `AUDIO ${preset.audioCodec.toUpperCase()}${preset.audioBitrate && preset.audioCodec !== 'copy' && preset.audioCodec !== 'pcm' ? ` ${preset.audioBitrate.toUpperCase()}` : ''}`)
   return lines
+}
+
+/** A frame rate as the brief line writes it: `30`, or `29.97` where it is not a whole number. */
+const briefFps = (value: number | undefined): string | null => {
+  const fps = Number(value)
+  if (!Number.isFinite(fps) || fps <= 0) return null
+  const text = Math.abs(fps - Math.round(fps)) < 0.01 ? String(Math.round(fps)) : fps.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
+  return `${text} FPS`
+}
+
+/**
+ * What a preset will produce, as the ONE line that sits beside the output's name in the QUEUE.
+ *
+ * The same three facts a SOURCE row carries beside its own name — a size, what it is written as, and a rate —
+ * so the two columns read alike and the export's line lines up under the sources'. Read from the PRESET alone,
+ * exactly as `presetSummary` is, so nothing is probed for it: a figure the preset does not carry is NAMED as the
+ * source's rather than guessed at, so a job that names nothing reads `SOURCE SIZE · H264 · SOURCE FPS`.
+ */
+export const outputBriefDetails = (preset: EncodingPreset): string => {
+  if (!outputCarriesPicture(preset.container) || preset.outputMode === 'audio') {
+    const hz = preset.audioSampleRate ? `${kilohertz(preset.audioSampleRate)} KHZ` : 'SOURCE RATE'
+    return [`AUDIO ${preset.audioCodec.toUpperCase()}`, hz].join(' · ')
+  }
+  const size = preset.width && preset.height ? `${preset.width}x${preset.height}` : preset.resolution === 'source' ? 'SOURCE SIZE' : preset.resolution.toUpperCase()
+  return [size, preset.videoCodec.toUpperCase(), briefFps(preset.fpsRate ? rateValue(preset.fpsRate) : preset.fps) ?? 'SOURCE FPS'].join(' · ')
 }

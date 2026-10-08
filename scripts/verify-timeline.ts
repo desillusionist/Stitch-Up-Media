@@ -13,7 +13,7 @@ import { scrollToKeepVisible, skimmerOffset } from '../src/lib/timelinePan'
 import { BASE_PX_PER_SECOND, FIT_TRAILING_MARKER, RULER_STEPS, ZOOM_MAX, ZOOM_MIN, clampZoom, fitZoom, laneWidthFor, pxPerSec, rulerSteps, rulerTicks, secondsAt, zoomedBy } from '../src/lib/timelineScale'
 import { HISTORY_LIMIT, emptyHistory, endGesture, recordChange, sameField, stepHistory } from '../src/lib/draftHistory'
 import { outputCarriesPicture, outputKind, outputTakesArt } from '../src/lib/outputKind'
-import { presetSummary } from '../src/lib/presetSummary'
+import { outputBriefDetails, presetSummary } from '../src/lib/presetSummary'
 import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_MAX_EDGE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES, EQ_DEFAULT_BARS, EQ_DEFAULT_PEAK_DECAY, EQ_LABEL_FREQUENCIES, EQ_MAX_BARS, EQ_MAX_GAP, EQ_MAX_SENSITIVITY, EQ_MIN_BARS, EQ_MIN_BAR_PX, EQ_PEAK_DECAY_MAX, EQ_PILL_PEAK_DECAY, EQ_SEGMENT_GAP_MAX, MATRIX_DIM_SHARE, MONO_MIX, PROGRESS_LINE_CASE, SCROLLING_WAVEFORM_MAX_EDGE, SCOPE_DEFAULT_PERSIST, VISUALIZATIONS, VISUALIZATION_DEFAULTS, VISUALIZATION_PROGRESS_CASE_COLOR, VISUALIZATION_PROGRESS_COLOR, WAVE_DEFAULT_CHANNELS, barsGeometry, clampEqBars, clampEqGap, clampEqSensitivity, clampPeakDecay, clampSaturation, clampScopePersist, clampScopeZoom, clampSegmentGap, colourList, dimmedColour, drawingCanvas, drawingColorOf, drawingDefaultsFor, drawingPictureFor, drawingTuneOf, eqStyleOf, isBarsTemplate, isMirroredTemplate, isSpectrumTemplate, isWaveTemplate, progressLineWidth, scopeFade, scopeSide, scopeTint, scopeTintFilter, segmentHeight, stillWarmupSeconds, templateFor, templateMaxEdge, themeFor, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine, visualizationStillGraph } from '../src/lib/visualization'
 import { DEFAULT_PREVIEW_SPEED, PREVIEW_SPEEDS, clampPreviewSpeed, playbackRateFor, preservesPitchFor, steppedPreviewSpeed } from '../src/lib/previewSpeed'
 import { MAX_CLIP_SPEED, MIN_CLIP_SPEED, atempoChain, clampClipSpeed, clipDurationFor, clipRetime, clipSpeedLabel, slavedAudioAt, sourceTimeAt, speedAudioFilters, speedFor, speedVideoFilters, timelineTimeAt, trimmedForDuration } from '../src/lib/clipSpeed'
@@ -2403,6 +2403,17 @@ console.log('\n== what a custom preset will actually produce ==')
   check('and an audio bitrate rides with the codec', presetSummary(preset({ audioBitrate: '320k' })).some((line) => line === 'AUDIO AAC 320K'), true)
   check('a still frame is named before the container', presetSummary(preset({ imageOutputMode: 'still' }))[0], 'SINGLE FRAME')
   check('and a sequence likewise', presetSummary(preset({ imageOutputMode: 'sequence' }))[0], 'IMAGE SEQUENCE')
+
+  // THE OUTPUT'S OWN BRIEF LINE, which sits beside the export's name in the QUEUE — the same three facts a
+  // SOURCE row carries (a size, what it is written as, and a rate), read from the preset alone.
+  check('an export that names nothing briefs the source\u2019s own figures', outputBriefDetails(preset()), 'SOURCE SIZE · H264 · SOURCE FPS')
+  check('an exact size and rate are the figures they are', outputBriefDetails(preset({ width: 1920, height: 1080, fps: 30 })), '1920x1080 · H264 · 30 FPS')
+  check('a named rung reads as its name', outputBriefDetails(preset({ resolution: '1080p' })), '1080P · H264 · SOURCE FPS')
+  // An exact rate is read as the rational it is stored as, not rounded to a whole frame a second.
+  check('an exact rate is briefed as it is written', outputBriefDetails(preset({ fpsRate: makeRate(30000, 1001) })), 'SOURCE SIZE · H264 · 29.97 FPS')
+  check('a sound-only container briefs the sound', outputBriefDetails(preset({ container: 'mp3', videoCodec: 'copy', audioCodec: 'mp3' })), 'AUDIO MP3 · SOURCE RATE')
+  check('and a rate it was given', outputBriefDetails(preset({ container: 'wav', audioCodec: 'pcm', audioSampleRate: 48000 })), 'AUDIO PCM · 48 KHZ')
+  check('as does a sound-only EXPORT of a picture container', outputBriefDetails(preset({ outputMode: 'audio' })), 'AUDIO AAC · SOURCE RATE')
 }
 
 console.log('\n== the timeline scale ==')

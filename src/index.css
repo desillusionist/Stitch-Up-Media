@@ -1100,6 +1100,14 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
   border-top: 1px solid var(--crt-line);
 }
 .source-total .source-file-cell { color: var(--crt-amber); }
+/* The export's OWN row, laid out as a SOURCE row so its details column hangs from the SAME divider as the
+   sources'. The wrapper gives it the same left inset and the same width the sources box above it takes —
+   `.queue-sources` is `margin-left: 26px` plus `padding: 8px` on the left and 8 on the right — so the fixed
+   280px details column lands on the same line however wide the card is. */
+.queue-output { margin: 4px 8px 0 34px; min-width: 0; }
+.source-row.queue-output-row .source-file-cell { grid-template-columns: auto 18px minmax(0, 1fr) 280px; }
+.queue-output-label { grid-column: 1; white-space: nowrap; color: var(--ui-muted); }
+.queue-output-folder { grid-column: 2; display: grid; place-items: center; color: var(--ui-muted); }
 .source-info-button {
   min-width: 18px;
   padding: 0 2px;
