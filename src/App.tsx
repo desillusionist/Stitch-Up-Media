@@ -868,6 +868,30 @@ export const App: React.FC = () => {
     }))
     if (files.length > 1) handleAddToExisting(task, files.slice(1))
   }
+  /**
+   * The same for an added AUDIO TRACK, whose row is not a place in the source list.
+   *
+   * A track is named by its own ID rather than by its path, because an EXTRACTED track's path IS the visual it
+   * came out of — so a row told apart by the path alone could not say which of the two the reader clicked. The
+   * track KEEPS its id: that id is the track's identity, and its level travels on the track itself. Its per-clip
+   * records are keyed by the path, though, so they go with the file it replaced, exactly as a replaced
+   * source's do.
+   */
+  const handleReplaceTrack = async (task: QueueTask, trackId: string) => {
+    const files = await window.electronAPI?.selectFiles()
+    if (!files?.length) return
+    setTasks((prev) => prev.map((item) => {
+      if (item.id !== task.id) return item
+      const tracks = item.additionalAudioTracks || []
+      if (!tracks.some((track) => track.id === trackId)) return item
+      return {
+        ...item,
+        additionalAudioTracks: tracks.map((track) => (track.id === trackId ? { ...track, path: files[0] } : track)),
+        status: 'pending' as const, progress: 0,
+      }
+    }))
+    if (files.length > 1) handleAddToExisting(task, files.slice(1))
+  }
   const handleReorderSources = (task: QueueTask, sourcePaths: string[], from?: number, to?: number) => {
     setTasks((prev) => prev.map((item) => {
       if (item.id !== task.id) return item
@@ -958,6 +982,7 @@ export const App: React.FC = () => {
         onReorderTracks={handleReorderTracks}
         onReorderTasks={handleReorderTasks}
         onReplaceSource={handleReplaceSource}
+        onReplaceTrack={handleReplaceTrack}
         onChangeJobType={handleChangeJobType}
         onChangeComboMode={handleChangeComboMode}
         onOpenPresetPicker={(t) => {

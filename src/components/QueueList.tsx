@@ -14,6 +14,8 @@ interface QueueListProps {
   onReorderTracks: (task: QueueTask, tracks: NonNullable<QueueTask['additionalAudioTracks']>) => void
   onReorderTasks: (tasks: QueueTask[]) => void
   onReplaceSource: (task: QueueTask, sourcePath: string) => void
+  /** The same for an added AUDIO track, which names no place in the source list — so its id is the target. */
+  onReplaceTrack?: (task: QueueTask, trackId: string) => void
   onChangeJobType: (task: QueueTask, type: QueueTask['type']) => void
   onChangeComboMode?: (task: QueueTask, mode: 'multitrack' | 'stitch') => void
   selectedTaskIds?: string[]
@@ -45,6 +47,7 @@ export const QueueList: React.FC<QueueListProps> = ({
   onReorderTracks,
   onReorderTasks,
   onReplaceSource,
+  onReplaceTrack,
   onChangeJobType,
   onChangeComboMode,
   selectedTaskIds,
@@ -171,6 +174,7 @@ export const QueueList: React.FC<QueueListProps> = ({
               onJobDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-stitch-job', task.id) }}
               onJobDrop={(event) => { event.preventDefault(); const draggedId = event.dataTransfer.getData('application/x-stitch-job'); if (!draggedId || draggedId === task.id) return; const from = tasks.findIndex((candidate) => candidate.id === draggedId); if (from < 0) return; const next = [...tasks]; const [moved] = next.splice(from, 1); next.splice(taskIndex, 0, moved); onReorderTasks(next) }}
               onReplaceSource={onReplaceSource}
+              onReplaceTrack={onReplaceTrack}
               onChangeJobType={onChangeJobType}
               onChangeComboMode={onChangeComboMode}
               onOpenPresetPicker={onOpenPresetPicker}

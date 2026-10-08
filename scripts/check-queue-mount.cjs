@@ -56,12 +56,38 @@ app.whenReady().then(async () => {
     // THE TYPE the filename is set in. The row sits OUTSIDE the box that set the source rows' size, so a name
     // left to inherit is set at the card's own — which is the whole of the fault.
     if (result.type?.output !== result.type?.source) problems.push(`the output filename is set at ${JSON.stringify(result.type?.output)} where a source's own name is set at ${JSON.stringify(result.type?.source)}`)
+    // AN ADDED TRACK'S NAME IS SET LIKE A SOURCE'S, not left to inherit the card's own type. The track row is
+    // the third kind of name the card draws, and before this the row was never measured at all.
+    if (result.type?.track !== result.type?.source) problems.push(`an added track's name is set at ${JSON.stringify(result.type?.track)} where a source's own name is set at ${JSON.stringify(result.type?.source)}`)
 
     // AND IT CRAWLS WHEN IT DOES NOT FIT: a track to run on, the class that starts it, and a fixture that really
     // overruns — without the last, the first two would pass on a name with nothing to crawl about.
     if (!result.crawling?.hasTrack) problems.push('the output name has no track to crawl on')
     if (!result.crawling?.overflow) problems.push('the fixture output name did not overrun its column, so nothing was tested')
     if (!result.crawling?.armed) problems.push('an overrun output name was not marked as cropped, so it never crawls')
+
+    // AN ADDED AUDIO TRACK IS A ROW A READER CAN CLICK, exactly as a source row is. The reported fault was that
+    // its name was a SPAN — no click, no title — while only the sources' names were buttons. So the track's name
+    // must be a button carrying the same `title`, and, being long in the fixture, it must overrun its column and
+    // be marked to crawl on a track, just as a source's is.
+    const rows = result.rows
+    if (!rows) problems.push('no source or track rows were measured')
+    else {
+      if (rows.sourceTag !== 'BUTTON') problems.push(`a source's name is a ${JSON.stringify(rows.sourceTag)}, not a clickable button`)
+      if (rows.trackTag !== 'BUTTON') problems.push(`an added track's name is a ${JSON.stringify(rows.trackTag)}, not a clickable button — so it cannot replace its media`)
+      if (rows.trackTitle !== 'Click to replace media') problems.push(`an added track's name is titled ${JSON.stringify(rows.trackTitle)} rather than Click to replace media`)
+      if (!rows.trackOverflow) problems.push('the fixture track name did not overrun its column, so nothing was tested')
+      if (!rows.trackCrawls) problems.push('an overrun track name was not marked as cropped, so it never crawls')
+      if (!rows.trackHasTrack) problems.push('the track name has no track to crawl on')
+    }
+
+    // AND A CLICK ASKS TO REPLACE THE RIGHT THING: the track row must name ITS track (by id, since its path is
+    // shared with the visual it was extracted from), and the source row must name its own place in the list.
+    const calls = result.replaceCalls || []
+    const askedTrack = calls.some((call) => call.kind === 'track' && call.target === 'track-a')
+    const askedSource = calls.some((call) => call.kind === 'source' && call.target === '/media/JapaneseFashionVlogger.mp4#0')
+    if (!askedTrack) problems.push(`clicking an added track's name did not ask to replace that track; it asked ${JSON.stringify(calls)}`)
+    if (!askedSource) problems.push(`clicking a source's name did not ask to replace that source; it asked ${JSON.stringify(calls)}`)
 
     // THE DIVIDERS reach the card's own right margin.
     const edges = result.edges
