@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -633,6 +633,18 @@ const drive = async () => {
     // UNKNOWN: its picture is a CRF delivery codec, which is bracketed rather than unknown.
     summary: document.querySelector('.export-summary')?.textContent ?? null,
   }
+  // THE TRANSPORT'S GLYPHS. The four bracket-and-pipe tokens `[|<] [>] [>|] [||]` were text; they are drawn
+  // SVG symbols now, so what is read is each button's own glyph and that no bracket-character survives in its
+  // text. The middle button carries the PLAY symbol at rest and the PAUSE one while running.
+  {
+    const buttons = [...document.querySelectorAll('.transport button')]
+    result.transportIcons = {
+      count: buttons.length,
+      glyphs: buttons.map((button) => button.querySelector('svg')?.getAttribute('data-glyph') ?? null),
+      texts: buttons.map((button) => button.textContent ?? ''),
+    }
+  }
+
   // THE TRANSPORT'S SCRUBBER, which is drawn by the WINDOW rather than by the platform: an inset groove
   // with the played part in the accent and a thin rectangular handle, in the stylesheet's own terms.
   const scrub = document.querySelector('.transport-scrub') as HTMLElement | null
@@ -642,6 +654,36 @@ const drive = async () => {
     inputRule: cssRule('.transport-scrub'),
     trackRule: cssRule('.transport-scrub::-webkit-slider-runnable-track'),
     thumbRule: cssRule('.transport-scrub::-webkit-slider-thumb'),
+  }
+
+  // THE PREVIEW'S OWN HEADING, and the label drawn over the picture. The output frame's size belongs in the
+  // panel's heading now, beside what the panel IS — `PREVIEW // ASSEMBLED OUTPUT (1920x1080)` — rather than in
+  // a label drawn over the picture, where it covered the very picture it described. So the heading is read for
+  // a bracketed pair and the frame is read for the absence of a label of its own.
+  result.preview = {
+    title: document.querySelector('.editor-preview .panel-kicker')?.textContent ?? null,
+    frameLabel: Boolean(document.querySelector('.editor-frame b')),
+  }
+  // THE GUTTER'S LIVE READOUT IS AN EDITABLE STAMP: a field that shows the skimmer's own position rather than a
+  // static label. Read first as its tag and kind, and then — which is the whole of it — by whether typing the
+  // window's OWN timecode into it and pressing ENTER actually moves the skimmer there.
+  const stampInput = document.querySelector('.timeline-gutter-ruler input') as HTMLInputElement | null
+  const scrubValue = () => Number((document.querySelector('.transport-scrub') as HTMLInputElement | null)?.value ?? -1)
+  const stampBefore = scrubValue()
+  if (stampInput) {
+    // The native setter, because a plain assignment to a controlled input's `value` is swallowed by React.
+    const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+    setValue?.call(stampInput, '00:00:04.00')
+    stampInput.dispatchEvent(new Event('input', { bubbles: true }))
+    await wait(40)
+    stampInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await wait(150)
+  }
+  result.stampEditor = {
+    tag: document.querySelector('.timeline-gutter-ruler')?.firstElementChild?.tagName ?? null,
+    kind: stampInput?.type ?? null,
+    before: +stampBefore.toFixed(2),
+    after: +scrubValue().toFixed(2),
   }
 
   // THE ONE-STREAM RULE. A file with neither a picture nor a sound in it is nothing, so unchecking one

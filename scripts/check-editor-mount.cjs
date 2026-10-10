@@ -139,6 +139,39 @@ app.whenReady().then(async () => {
       if (String(transport.rate).trim() !== '1x') problems.push(`an idle transport reads ${JSON.stringify(transport.rate)} rather than the speed it is watched at`)
       if (transport.speedSelector) problems.push('the preview speed dropdown is still drawn under the monitor')
     }
+    // THE TRANSPORT'S GLYPHS ARE DRAWN SYMBOLS, not the bracket-and-pipe text they were: the four tokens
+    // `[|<]`, `[>]`, `[>|]` and `[||]` are SVG now, so each button is read for its own glyph and for the
+    // absence of a bracket-character in its text. The middle button carries PLAY at rest.
+    const icons = result.transportIcons
+    if (!icons) problems.push('the transport reported nothing about its buttons')
+    else {
+      if (icons.count !== 3) problems.push(`the transport drew ${icons.count} buttons rather than three`)
+      else if (!['prev', 'play', 'next'].every((glyph, index) => icons.glyphs[index] === glyph)) problems.push(`the transport's glyphs are ${JSON.stringify(icons.glyphs)} rather than the step-back, play and step-forward symbols`)
+      if ((icons.texts || []).some((text) => String(text).includes('['))) problems.push(`the transport still draws its bracket-and-pipe glyphs: ${JSON.stringify(icons.texts)}`)
+    }
+    // THE PREVIEW'S HEADING CARRIES THE OUTPUT SIZE, and no label is drawn over the picture: the size used to
+    // sit in a `b` over the frame, where it covered the picture it described. It is the heading's business now,
+    // beside what the panel IS, so the heading is read for a bracketed size and the frame for the absence of a
+    // label. A monitor with a source that reports no size yet is allowed no bracket — an empty heading is not a
+    // fault; a heading with a size AND a label over the picture is.
+    const preview = result.preview
+    if (!preview) problems.push('the preview reported neither its heading nor its frame label')
+    else {
+      if (!/^PREVIEW \/\/ ASSEMBLED OUTPUT \(\d+x\d+\)$/.test(String(preview.title))) problems.push(`the preview heading reads ${JSON.stringify(preview.title)} rather than the output size beside it`)
+      if (preview.frameLabel) problems.push('a size label is still drawn over the monitor picture')
+    }
+    // THE GUTTER'S STAMP IS AN EDITABLE FIELD, and typing a timecode into it and pressing ENTER moves the
+    // skimmer there. Read as the tag and kind, then as the skimmer's own position before and after: a field that
+    // only looked editable would pass the first two and fail the last, so the gesture is the whole of it.
+    const stampEditor = result.stampEditor
+    if (!stampEditor) problems.push('the timeline gutter reported nothing about its stamp')
+    else {
+      if (stampEditor.tag !== 'INPUT') problems.push(`the gutter's stamp is a ${JSON.stringify(stampEditor.tag)} rather than an editable field`)
+      if (stampEditor.kind !== 'text') problems.push(`the gutter's field is a ${JSON.stringify(stampEditor.kind)} field rather than a formatted text one`)
+      // The skimmer must have been somewhere ELSE, or a moved figure could not be told from one that never moved.
+      if (!(Math.abs(stampEditor.before - 4) > 0.5)) problems.push(`the skimmer already stood at ${stampEditor.before}s, so typing a timecode could not be told to have moved it`)
+      else if (!(Math.abs(stampEditor.after - 4) < 0.2)) problems.push(`typing 00:00:04.00 into the gutter left the skimmer at ${stampEditor.after}s rather than at four seconds`)
+    }
     // THE SIZE ESTIMATE, which is where the report about UNKNOWN came from: a movie job's picture is a CRF
     // delivery codec, and its figure is a bracket rather than the word UNKNOWN.
     if (String(rendered && rendered.summary).includes('UNKNOWN')) problems.push(`the summary of a movie job still says UNKNOWN: ${String(rendered && rendered.summary)}`)

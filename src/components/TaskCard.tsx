@@ -203,6 +203,25 @@ export const TaskCard: React.FC<TaskCardProps> = ({
       document.removeEventListener('contextmenu', closeFromOutside, true)
     }
   }, [])
+  /**
+   * The drop highlight is cleared when the drag ENDS, wherever it ends.
+   *
+   * `onDragLeave` alone was not enough to clear it: a file drag ends with a drop on another card, over the
+   * panel, or outside the window altogether, and the leave that would have cleared this card never fires with
+   * the pointer over the card itself. A stuck highlight looked exactly like a selected card and no click or
+   * DE-SELECT ALL could take it off, because it is not selection — it is this card's own drop state. The drag
+   * end and the drop are the two moments that always fire, so clearing here makes the highlight a fact about a
+   * drag in progress rather than something a particular path could leave behind.
+   */
+  useEffect(() => {
+    const clear = () => setDropMode(false)
+    window.addEventListener('dragend', clear)
+    window.addEventListener('drop', clear)
+    return () => {
+      window.removeEventListener('dragend', clear)
+      window.removeEventListener('drop', clear)
+    }
+  }, [])
   const fileName = task.sourcePaths[0]?.split('/').pop() || 'Unknown'
   const audioCount = task.additionalAudioTracks?.length || 0
   // What each placeholder is CALLED, numbered across the whole job so the card names a blank the same way the
@@ -319,7 +338,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   }
 
   return (
-    <div draggable onDragStart={(event) => { event.dataTransfer.setData('application/x-stitch-job', task.id); onJobDragStart(event) }} onClick={(event) => { setContextMenu(null); onSelectTask(task, event.shiftKey, event.metaKey || event.ctrlKey) }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openContextMenu(event) }} onDoubleClick={(event) => { event.stopPropagation(); onOpenEditor(task) }} onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); if (event.dataTransfer.types.includes('application/x-stitch-job')) return; window.dispatchEvent(new Event('queue-card-drag-enter')); if (task.status !== 'encoding') setDropMode(true) }} onDragLeave={(event) => { if (event.currentTarget === event.target) setDropMode(false) }} onDrop={async (event) => { event.preventDefault(); event.stopPropagation(); if (event.dataTransfer.types.includes('application/x-stitch-job')) { onJobDrop(event); return } window.dispatchEvent(new Event('queue-card-drag-drop')); const files = (await Promise.all(Array.from(event.dataTransfer.files).map((file) => { try { return window.electronAPI?.getPathForFile(file) || (file as File & { path?: string }).path } catch { return (file as File & { path?: string }).path } }))).filter((path): path is string => Boolean(path)); if (files.length) onAddToExisting(task, files); else onJobDrop(event); setDropMode(false) }}
+    <div draggable onDragStart={(event) => { event.dataTransfer.setData('application/x-stitch-job', task.id); onJobDragStart(event) }} onClick={(event) => { setContextMenu(null); onSelectTask(task, event.shiftKey, event.metaKey || event.ctrlKey) }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openContextMenu(event) }} onDoubleClick={(event) => { event.stopPropagation(); onOpenEditor(task) }} onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); if (event.dataTransfer.types.includes('application/x-stitch-job')) return; window.dispatchEvent(new Event('queue-card-drag-enter')); if (task.status !== 'encoding') setDropMode(true) }} onDragLeave={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const { clientX, clientY } = event; if (clientX <= rect.left || clientX >= rect.right || clientY <= rect.top || clientY >= rect.bottom) setDropMode(false) }} onDrop={async (event) => { event.preventDefault(); event.stopPropagation(); if (event.dataTransfer.types.includes('application/x-stitch-job')) { onJobDrop(event); return } window.dispatchEvent(new Event('queue-card-drag-drop')); const files = (await Promise.all(Array.from(event.dataTransfer.files).map((file) => { try { return window.electronAPI?.getPathForFile(file) || (file as File & { path?: string }).path } catch { return (file as File & { path?: string }).path } }))).filter((path): path is string => Boolean(path)); if (files.length) onAddToExisting(task, files); else onJobDrop(event); setDropMode(false) }}
     data-task-id={task.id}
     className={`queue-card group relative bg-mac-card hover:bg-mac-cardHover/70 border border-white/5 rounded-xl p-4 transition-all shadow-sm ${selected ? 'queue-card-selected' : ''} ${dropMode ? 'queue-card-drop-active' : ''} ${contextMenu ? 'queue-card-context-active' : ''}`}>
       <div className="queue-card-main">

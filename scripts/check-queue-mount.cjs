@@ -89,6 +89,21 @@ app.whenReady().then(async () => {
     if (!askedTrack) problems.push(`clicking an added track's name did not ask to replace that track; it asked ${JSON.stringify(calls)}`)
     if (!askedSource) problems.push(`clicking a source's name did not ask to replace that source; it asked ${JSON.stringify(calls)}`)
 
+    // AND A DROP HIGHLIGHT IS RAISED ONLY WHILE A DRAG IS OVER THE CARD. The reported fault was a card that stayed
+    // looking SELECTED for good: the highlight is the card's own drop state, not selection, and it used to be
+    // cleared only on a leave whose target was the card itself — so crossing the card's own rows, or ending the
+    // drag on another card, left it raised. It must stand while the pointer is INSIDE the card, and clear the
+    // moment the pointer is OUTSIDE it or the drag ends anywhere.
+    const drag = result.dragHighlight
+    if (!drag) problems.push('the card reported nothing about its drop highlight')
+    else {
+      if (!drag.afterOver) problems.push('dragging files over a card did not raise its drop highlight')
+      if (!drag.afterInnerLeave) problems.push("a dragleave with the pointer still inside the card cleared the highlight, so dragging over a card's own rows would flicker")
+      if (drag.afterOuterLeave) problems.push('a dragleave with the pointer outside the card left the highlight raised, which is the stuck highlight the bug reported')
+      if (!drag.afterOverAgain) problems.push('the drop highlight could not be raised a second time')
+      if (drag.afterDragEnd) problems.push('a drag that ended elsewhere left the highlight raised, which is the stuck highlight the bug reported')
+    }
+
     // THE DIVIDERS reach the card's own right margin.
     const edges = result.edges
     const marginRight = edges && edges.card ? edges.card.right - edges.cardPadding : null

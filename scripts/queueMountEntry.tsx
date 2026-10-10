@@ -125,6 +125,36 @@ const drive = async () => {
   await wait(80)
   result.replaceCalls = [...replaceCalls]
 
+  // THE DROP HIGHLIGHT, which the bug reported as a card stuck looking SELECTED. It is the card's own drop
+  // state, raised while files are dragged over it, and it used to be cleared only on a leave whose target was
+  // the card itself — so crossing the card's own rows, or ending the drag on another card, left it raised for
+  // good, and no click or DE-SELECT ALL could take it off. What is driven here is exactly that path: a raise, a
+  // leave still INSIDE the card (which must NOT clear it), a leave OUTSIDE it (which must), and a drag that ends
+  // elsewhere with no clean leave at all (which the dragend must clear).
+  const dropActive = () => Boolean(card?.classList.contains('queue-card-drop-active'))
+  if (card) {
+    const rect = card.getBoundingClientRect()
+    const inside = { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }
+    const outside = { clientX: rect.right + 40, clientY: rect.top + rect.height / 2 }
+    const fileDrag = () => new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() })
+    card.dispatchEvent(fileDrag())
+    await wait(40)
+    const afterOver = dropActive()
+    card.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true, ...inside }))
+    await wait(40)
+    const afterInnerLeave = dropActive()
+    card.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true, ...outside }))
+    await wait(40)
+    const afterOuterLeave = dropActive()
+    card.dispatchEvent(fileDrag())
+    await wait(40)
+    const afterOverAgain = dropActive()
+    window.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }))
+    await wait(40)
+    const afterDragEnd = dropActive()
+    result.dragHighlight = { afterOver, afterInnerLeave, afterOuterLeave, afterOverAgain, afterDragEnd }
+  }
+
   result.edges = { sources: box(sources), card: box(card), cardPadding, output: box(output) }
   result.order = { preset: box(preset), sources: box(sources), outputRow: box(outputRow), status: box(status) }
 

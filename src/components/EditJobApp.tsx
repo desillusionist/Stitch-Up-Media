@@ -69,6 +69,7 @@ import { scrollToKeepVisible, skimmerOffset } from '../lib/timelinePan'
 import { placeMenu } from '../lib/menuPlacement'
 import { emptyHistory, DraftHistory, endGesture, recordChange, stepHistory as stepBack } from '../lib/draftHistory'
 import { NumberField } from './NumberField'
+import { NextFrameIcon, PauseIcon, PlayIcon, PrevFrameIcon } from './TransportIcons'
 
 const tabs = ['EXPORT', 'VIDEO', 'IMAGE', 'AUDIO', 'EFFECTS', 'CAPTIONS'] as const
 type Tab = typeof tabs[number]
@@ -3187,6 +3188,20 @@ export const EditJobApp: React.FC = () => {
   /** The unit the window is showing lengths in, which is a setting rather than a fact about any clip. */
   const timestampMode: 'framestamp' | 'timestamp' = settings?.timestampDisplayMode === 'framestamp' ? 'framestamp' : 'timestamp'
   /**
+   * What a figure TYPED into the timeline's own stamp means.
+   *
+   * In framestamp mode the field shows `FRAME 000123`, and either that or a bare `123` seeks to frame 123, so
+   * the word need not be typed or deleted. In timestamp mode a timecode is read by the same rule the clip's own
+   * length uses. A figure the rule cannot read is not applied at all, rather than guessed at.
+   */
+  const parseStamp = (text: string): number | null => {
+    if (timestampMode === 'framestamp') {
+      const frames = Number(text.trim().replace(/^frame\s*/i, ''))
+      return Number.isFinite(frames) ? frames / Math.max(1, rateValue(sourceRateValue)) : null
+    }
+    return secondsFromTimecode(text, sourceRateValue)
+  }
+  /**
    * The SOURCE length a clip is drawn against.
    *
    * For everything but a placeholder that is the file's whole length — what the clip is a piece of. A
@@ -4421,7 +4436,7 @@ export const EditJobApp: React.FC = () => {
     <div className="editor-body">
       <main className="editor-main">
         <section className="editor-preview">
-          <div className="panel-kicker">PREVIEW // ASSEMBLED OUTPUT</div>
+          <div className="panel-kicker">PREVIEW // ASSEMBLED OUTPUT{outputFrame ? ` (${outputFrame.width}x${outputFrame.height})` : ''}</div>
           <div className="editor-screen" onWheel={speedByWheel}>
             {/* The media sits in its own measured stage, so the output frame outline can
                 be drawn around the picture rather than around the panel. The stage is also the
@@ -4507,7 +4522,7 @@ export const EditJobApp: React.FC = () => {
                             </>
                             : <span className="editor-screen-message">{screenMessage}</span>}
                 </div>
-                {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true"><b>OUTPUT {outputFrame?.width}x{outputFrame?.height}</b></div>}
+                {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true" />}
                 {/* The box the clip's own margins leave inside the frame. The background the export
                     will fill them with is already what shows through — the window is the output's own
                     black — so this only says where the box IS: the picture is scaled into it and
@@ -4568,9 +4583,9 @@ export const EditJobApp: React.FC = () => {
             <b className="transport-state">{playback.playing ? '> PLAYING' : '|| PAUSED'}</b>
           </div>
           <div className="transport">
-            <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[|&lt;] FRAME</button>
-            <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[{playback.playing ? '||' : '>'}] PLAY</button>
-            <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'}>[&gt;|] FRAME</button>
+            <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? 'Step back one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step back one frame"><PrevFrameIcon /> FRAME</button>
+            <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'} aria-label={playback.playing ? 'Pause' : 'Play'}>{playback.playing ? <PauseIcon /> : <PlayIcon />} PLAY</button>
+            <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? 'Step forward one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step forward one frame"><NextFrameIcon /> FRAME</button>
             <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 || (playback.shuttleRate === 0 && playback.playing && playback.speed > 1) ? ' is-fast' : ''}`}>
               {/* The rate the transport is being driven at: the shuttle's own when one is running, and otherwise
                   the shared speed value the wheel and L both write. It is shown even when the transport is
@@ -4927,8 +4942,26 @@ export const EditJobApp: React.FC = () => {
               <div
                 className="timeline-gutter-ruler"
                 onContextMenu={(event) => { event.preventDefault(); const point = menuPoint(event); setTimelineMenu({ kind: 'stamp', x: point.x, y: point.y }) }}
-                title="Right-click to choose whether lengths read as a timestamp or a framestamp"
-              >{stamp(playback.position)}</div>
+                onFocusCapture={() => { if (playback.playing) playback.pause() }}
+                title="Type a timecode or frame number, then Enter, to jump the skimmer. Right-click to choose whether lengths read as a timestamp or a framestamp."
+              >
+                {/* The live readout IS an editable stamp: what it shows is where the skimmer is, and what is
+                    typed into it moves the skimmer there. A formatted field, so a figure is confirmed on
+                    ENTER or on leaving rather than applied on every keystroke — see the note in NumberField.
+                    Editing pauses the monitor, because a playhead still advancing would have the field's own
+                    value change under the caret. */}
+                <NumberField
+                  className="timeline-gutter-stamp"
+                  value={playback.position}
+                  min={0}
+                  max={timelineDuration}
+                  step={1 / Math.max(1, fps)}
+                  format={stamp}
+                  parse={parseStamp}
+                  onValue={(seconds) => playback.seek(seconds)}
+                  ariaLabel="Timeline position: type a timecode or frame number to jump the skimmer"
+                />
+              </div>
               {model.lanes.map((lane) => {
                 // An ADDED, STACKED track is dragged by its own HEAD to re-order the track list: the lane IS the
                 // track, so moving the head moves the track, and the drawn lanes and the export follow the one

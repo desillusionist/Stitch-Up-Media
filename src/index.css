@@ -429,6 +429,10 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .timeline-gutter { display: flex; flex-direction: column; background: var(--ui-panel); border-right: 1px dotted var(--ui-border); }
 /* Exactly the ruler's own height and margin, so both columns' first lane starts on the same line. */
 .timeline-gutter-ruler { height: 20px; margin: 0 0 6px; padding: 0 6px; display: flex; align-items: center; border-bottom: 1px dotted var(--ui-border); color: var(--ui-foreground); font-size: 9px; letter-spacing: .04em; white-space: nowrap; overflow: hidden; }
+/* The live readout is an EDITABLE stamp: the field gives up its own box so the gutter still reads as one row,
+   and keeps the row's own type, so the figure sits where it always did until it is clicked into. */
+.timeline-gutter-ruler .timeline-gutter-stamp { flex: 0 1 auto; width: 100%; min-width: 0; height: 16px; padding: 0; background: transparent !important; border: 0 !important; border-radius: 0 !important; color: inherit !important; font: inherit !important; letter-spacing: inherit; text-align: left; caret-color: var(--ui-accent); }
+.timeline-gutter-ruler .timeline-gutter-stamp:focus { outline: 1px solid var(--ui-accent); outline-offset: 1px; }
 .timeline-scroll { overflow-x: auto; overflow-y: hidden; min-width: 0; }
 /* The output shape buttons, and the four crop figures. */
 .aspect-row { display: flex; flex-wrap: wrap; gap: 5px; }
