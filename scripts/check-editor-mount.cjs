@@ -147,7 +147,7 @@ app.whenReady().then(async () => {
     else {
       if (icons.count !== 3) problems.push(`the transport drew ${icons.count} buttons rather than three`)
       else if (!['prev', 'play', 'next'].every((glyph, index) => icons.glyphs[index] === glyph)) problems.push(`the transport's glyphs are ${JSON.stringify(icons.glyphs)} rather than the step-back, play and step-forward symbols`)
-      if ((icons.texts || []).some((text) => String(text).includes('['))) problems.push(`the transport still draws its bracket-and-pipe glyphs: ${JSON.stringify(icons.texts)}`)
+      if ((icons.texts || []).some((text) => String(text).trim() !== '')) problems.push(`the transport buttons still carry labels rather than standing as icons: ${JSON.stringify(icons.texts)}`)
     }
     // THE PREVIEW'S HEADING CARRIES THE OUTPUT SIZE, and no label is drawn over the picture: the size used to
     // sit in a `b` over the frame, where it covered the picture it described. It is the heading's business now,
@@ -171,6 +171,7 @@ app.whenReady().then(async () => {
       // The skimmer must have been somewhere ELSE, or a moved figure could not be told from one that never moved.
       if (!(Math.abs(stampEditor.before - 4) > 0.5)) problems.push(`the skimmer already stood at ${stampEditor.before}s, so typing a timecode could not be told to have moved it`)
       else if (!(Math.abs(stampEditor.after - 4) < 0.2)) problems.push(`typing 00:00:04.00 into the gutter left the skimmer at ${stampEditor.after}s rather than at four seconds`)
+      if (stampEditor.focusedAfterEnter) problems.push('ENTER confirmed the timecode but left the caret in the field, so it never left editing mode')
     }
     // THE SIZE ESTIMATE, which is where the report about UNKNOWN came from: a movie job's picture is a CRF
     // delivery codec, and its figure is a bracket rather than the word UNKNOWN.
@@ -734,7 +735,7 @@ app.whenReady().then(async () => {
       else if (!(gestures.growWidth > 1)) problems.push(`the expansion drawer is in the DOM but drawn with no width (${JSON.stringify(gestures.growWidth)}px)`)
       else if (!String(gestures.growHit || '').includes('clip-trim-grow')) problems.push(`the expansion drawer is drawn but not visible: the point at its centre hits ${JSON.stringify(gestures.growHit)} instead`)
       if (!(gestures.growEdges > 0)) problems.push('growing a clip showed no marker on the edge it is pulling, which the outside drawer cannot give at the timeline\u2019s own edge')
-      if (!gestures.playheadMoved) problems.push('the monitor did not follow the edge while a trim was dragged')
+      if (!gestures.playheadStayed) problems.push('dragging a trim handle moved the skimmer, so the reader lost their own place')
       const entries = (gestures.trimEntries || [])
       // The job already trims BOTH copies (five and four seconds of the twelve-second source), so the reading
       // is not "one entry" but "the second copy's window changed and the first copy's did not".
@@ -821,6 +822,9 @@ app.whenReady().then(async () => {
       if (splitLabels[0] !== 'PREV LAST' || splitLabels[1] !== 'THIS CLIP') problems.push(`the IN handle's two panes are labelled ${JSON.stringify(splitLabels)} rather than PREV LAST and THIS CLIP`)
       if (!splitView.splitFrameHidden) problems.push('the export frame enclosure is not hidden while a trim is in hand')
       if (!splitView.splitGone) problems.push('the two-up view outlived the handle it belongs to')
+      // THE SKIMMER STAYS PUT while a handle is dragged: the preview follows the HANDLE, so the reader keeps
+      // the place they set the skimmer to rather than having it driven onto the landing frame.
+      if (Number(splitView.playheadBefore) !== Number(splitView.playheadDuring)) problems.push(`dragging a trim handle moved the skimmer from ${splitView.playheadBefore}s to ${splitView.playheadDuring}s, so the reader's own place was lost`)
     }
     // THE AUDIO LANE'S OWN CONTROLS. An added track is a lane of its own and gets the same trim handles the
     // video lane's clips do, and a [+] whose panel offers ADD SOURCE; a fade on it is not written by the
@@ -831,7 +835,7 @@ app.whenReady().then(async () => {
       if (audioLane.laneCount !== 2) problems.push(`the multitrack job drew ${audioLane.laneCount} lanes rather than a video lane and one audio track`)
       if (audioLane.audioHandles !== 2) problems.push(`the added audio track's clip drew ${audioLane.audioHandles} trim handles rather than two`)
       if (audioLane.audioSplitPanes !== 0) problems.push(`dragging a SOUND lane's handle drew ${audioLane.audioSplitPanes} split-view panes; there is no frame to judge a cut against on a sound lane`)
-      if (!audioLane.audioPlayheadMoved) problems.push('dragging a sound lane\u2019s handle did not move the playhead, which is where an audio cut lands')
+      if (!audioLane.audioPlayheadStayed) problems.push('dragging a sound lane\u2019s handle moved the skimmer, which is the reader\u2019s own place')
       if (!audioLane.hasBoundary) problems.push('the added audio track\'s clip drew no [+]')
       if (String(audioLane.audioPanelTitle ?? '') !== 'FADE IN') problems.push(`the added track's [+] panel is headed ${JSON.stringify(audioLane.audioPanelTitle)} rather than FADE IN`)
       // A fade on an added track IS written now, so the control is offered, not gated — and choosing it files

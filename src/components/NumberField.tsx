@@ -38,7 +38,9 @@ import React, { useRef, useState } from 'react'
  * the way to the length that was meant — `1` on the road to `10:00` is one second, and the timeline
  * follows it there and back. So a formatted field holds what is typed and hands it over on ENTER, or when
  * it is left; a figure its `parse` refuses is not applied at all and the field falls back to the value it
- * had, because a length is not something to guess at. Every other field keeps applying as it is typed.
+ * had, because a length is not something to guess at. ENTER also LEAVES the field — a formatted figure is
+ * a destination rather than a value to keep typing into, so confirming it takes the caret out as well.
+ * Every other field keeps applying as it is typed.
  */
 
 /**
@@ -202,7 +204,7 @@ export const NumberField: React.FC<{
       if (parsed !== null && Number.isFinite(parsed)) { ownEntry.current = true; onValue(parsed) }
     }}
     onKeyDown={(event) => {
-      if (format && event.key === 'Enter') { event.preventDefault(); commit(); return }
+      if (format && event.key === 'Enter') { event.preventDefault(); commit(); event.currentTarget.blur(); return }
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
       // Read here rather than left to the platform's own stepper, so the bounds are a real stop and the
       // caret does not jump to the field's start or end instead of the figure moving.

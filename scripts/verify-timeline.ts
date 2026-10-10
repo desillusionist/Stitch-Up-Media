@@ -25,7 +25,7 @@ import { videoCodecFacts } from '../src/lib/videoFacts'
 import { WAVEFORM_BAR, WAVEFORM_PEAKS, normalisePeaks, peaksForTrim, peaksFromSamples, waveformPath } from '../src/lib/waveform'
 import { buildTimeline, canApplyClipFit, canApplyClipSpeed, clipRangeLabel, clipRateFor, clipSummary, crossfadeAt, crossfadeAtTime, edgeFade, EMPTY_AUDIO_LANE_ID, firstVisualSource, jobExportsPicture, joinedTimeline, laneIsMuted, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, resolveCrossfades, resolveFades, runsOnAnchoredClock, secondsFromTimecode, segmentTiming, sourceCropFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, STITCHED_AUDIO_LANE_ID, stampPair, stillSecondsFor, taskHasFootage, timecode, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, trimFor, usesClipFraming } from '../src/lib/timelineModel'
 import { addedClipNumbers, clipIdAt, clipKey, clipNumberAt, copyLabelFor, matchClipIdsToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, trackKey } from '../src/lib/clipIds'
-import { dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
+import { dragTrimWindow, snapTrimDelta, trimWindowOf, windowIsWholeSource } from '../src/lib/clipTrim'
 import { detectSequences } from '../src/lib/detectSequences'
 import { clipRecordsFor } from '../src/lib/sourceRemoval'
 import { clipAudioDropped, embeddedAudioCustomised, embeddedGainDb, embeddedStreamCount, enabledEmbeddedStreams, extractedBy, gainForDb } from '../src/lib/embeddedAudio'
@@ -644,6 +644,15 @@ console.log('\n== trimming a clip ==')
   check('dropping anything off the tail is a trim', windowIsWholeSource({ in: 0, out: 9 }, 10), false)
   check('trimming the head is a trim', windowIsWholeSource({ in: 1, out: 10 }, 10), false)
   check('and an unknown length cannot be called whole', windowIsWholeSource({ in: 0, out: 10 }, 0), false)
+  // THE SNAP onto the skimmer: an edge landing within the zone is pulled EXACTLY onto it, and one landing outside
+  // keeps its own delta — an attraction rather than a stop, so a drag carries on past the skimmer. The OUT edge of
+  // this ten-second clip sits at 10 and the IN edge at 0, so a near miss on either is a delta away from the clip's
+  // own edge rather than from zero.
+  check('an out edge landing just inside the zone snaps onto the skimmer', snapTrimDelta(10, -5.05, 5, 0.1), -5)
+  check('an edge landing on the skimmer exactly is left as it is', snapTrimDelta(10, -5, 5, 0.1), -5)
+  check('an edge landing outside the zone keeps its own delta', snapTrimDelta(10, -4.5, 5, 0.1), -4.5)
+  check('the in edge snaps against the clip start', snapTrimDelta(0, 4.95, 5, 0.1), 5)
+  check('and a drag carried on past the skimmer is not held', snapTrimDelta(0, 5.5, 5, 0.1), 5.5)
 }
 
 console.log('\n== a timeline reorder moves every list together ==')

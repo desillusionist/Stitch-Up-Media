@@ -10,7 +10,7 @@ import { DEFAULT_EQ_STYLE, DEFAULT_TUNE, DRAWING_STILL_SETTLE_MS, DRAWING_THEMES
 import { speedLabel, steppedPreviewSpeed } from '../lib/previewSpeed'
 import { DEFAULT_CLIP_SPEED, MAX_CLIP_SPEED, MIN_CLIP_SPEED, clampClipSpeed, clipSpeedLabel, sourceTimeAt, speedFor } from '../lib/clipSpeed'
 import { addedClipNumbers, clipIdAt, clipKey, copyLabelFor, materializeClipIds, materializeClipNumbers, moveAlong, newClipId, newClipIds, newTrackId, nextClipNumber, trackKey } from '../lib/clipIds'
-import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
+import { MIN_TRIM_SECONDS, TrimWindow, dragTrimWindow, snapTrimDelta, trimWindowOf, windowIsWholeSource } from '../lib/clipTrim'
 import { AUDIO_BITRATES, audioChannelsFor, audioCodecFacts, audioDepthsFor, audioFacts, bitrateApplies, bitrateOptionOf, bitrateValue, clampAudioChannels, probeHasAudio, resolvedAudioChannels } from '../lib/audioFacts'
 import { AUDIO_LAYOUTS, audioLayoutState, sumsAudioLanes } from '../lib/audioLayout'
 import { applyContainerChange, applyImageOutputChoice, AUDIO_CONTAINERS, defaultImageOutputChoiceValue, FRAME_CONTAINERS, IMAGE_CONTAINERS, imageOutputChoicesFor, imageOutputChoiceValue, PICTURE_CONTAINERS } from '../lib/containerSwitch'
@@ -104,6 +104,16 @@ const JPEG_QUALITY_CHOICES = [2, 5, 10, 20, 31] as const
 /** K plus J/L held this long becomes slow motion; a shorter press steps a frame. */
 const TAP_THRESHOLD_MS = 250
 const SLOW_MOTION_RATE = 0.5
+
+/**
+ * How near the skimmer, in PIXELS of the timeline, a dragged trim edge has to come before it SNAPS onto it.
+ *
+ * The skimmer is the one position the reader can set exactly — a click on a lane, a nudge with the arrow keys —
+ * so a trim edge that lands on it is a cut at a frame that was CHOSEN rather than one that was aimed at. A
+ * pixel distance rather than a time, so the snap zone is the same size on screen at every zoom, and an
+ * attraction rather than a stop: dragging on past the zone keeps trimming.
+ */
+const TRIM_SNAP_PIXELS = 6
 
 /**
  * The fields this window owns. Everything else on a task belongs to the queue.
@@ -708,6 +718,14 @@ export const EditJobApp: React.FC = () => {
   const [trimNeighbour, setTrimNeighbour] = useState<{ side: 'left' | 'right'; segment: TimelineSegment; at: number } | null>(null)
   const [trimPreview, setTrimPreview] = useState<TrimWindow | null>(null)
   const trimPreviewRef = useRef<TrimWindow | null>(null)
+  /**
+   * The clip whose edge is being dragged, that edge, and the SOURCE second the cut lands on.
+   *
+   * This is what the monitor's trim preview streams while the handle is down. It is held apart from the
+   * neighbour because the playhead no longer moves to the landing frame: the preview follows the HANDLE, and the
+   * clip it names is the one being trimmed rather than whichever clip the skimmer happens to rest on.
+   */
+  const [trimHandle, setTrimHandle] = useState<{ segment: TimelineSegment; edge: 'in' | 'out'; at: number; video: boolean } | null>(null)
   /** The OTHER clips a grouped trim is moving, keyed like the primary, so each shows its own drawer. */
   const [trimGroup, setTrimGroup] = useState<Record<string, TrimWindow>>({})
   const trimGroupRef = useRef<Record<string, TrimWindow>>({})
@@ -3031,14 +3049,18 @@ export const EditJobApp: React.FC = () => {
    * the window is worked out from where the drag STARTED rather than step by step, so it cannot drift as the
    * clip reflows under it. The WINDOW is not written until the release — the timeline is a gapless
    * concatenation, so a live write would move the very clip the pointer is trimming, and the drag is one step
-   * back either way — but the MONITOR follows the edge being dragged: the source second the cut will land on is
-   * turned back into a timeline second by that same retime and the playhead is put there, so the frame the cut
-   * lands on is what is on screen while the handle is down.
+   * back either way.
+   *
+   * THE PLAYHEAD IS LEFT WHERE THE READER PUT IT. It used to be driven onto the landing frame so the monitor
+   * would show it, which cost the reader the place they had lined the skimmer up at. The MONITOR follows the edge
+   * a different way now: the trim preview streams the frame the cut will land on — the clip's own pane — beside
+   * the frame it will join (see `trimHandle`), so the same judgement is made without the skimmer moving. And when
+   * the dragged edge comes within a few pixels of the skimmer it SNAPS onto it, that being the one position the
+   * reader set exactly; the snap is an attraction rather than a stop, so the drag carries on past it.
    */
   const beginTrimDrag = (event: React.PointerEvent, segment: TimelineSegment, edge: 'in' | 'out', lane: TimelineLane) => {
     event.preventDefault()
     event.stopPropagation()
-    const retime = segment.duration > 0 && segment.sourceUsedSeconds > 0 ? segment.sourceUsedSeconds / segment.duration : 1
     const min = Math.max(MIN_TRIM_SECONDS, 1 / Math.max(1, rateValue(segment.nativeRate ?? rateOf(30))))
     const pxPerSecond = Math.max(1e-6, laneWidthFor(1, zoom))
     const startX = event.clientX
@@ -3060,12 +3082,7 @@ export const EditJobApp: React.FC = () => {
       segment: neighbour,
       at: edge === 'in' ? neighbour.sourceIn + neighbour.sourceUsedSeconds : neighbour.sourceIn,
     } : null)
-    /** Where on the TIMELINE the dragged edge's source second sits, within the clip as it stands now. */
-    const edgePosition = (window: TrimWindow) => {
-      const source = edge === 'in' ? window.in : window.out
-      const raw = segment.start + (source - segment.sourceIn) / Math.max(1e-6, retime)
-      return Math.max(segment.start, Math.min(segment.start + segment.duration - 1e-3, raw))
-    }
+    setTrimHandle({ segment, edge, at: edge === 'in' ? from.in : from.out, video: lane.kind === 'video' })
     trimPreviewRef.current = from
     setTrimDragKey(key)
     setTrimPreview(from)
@@ -3086,14 +3103,21 @@ export const EditJobApp: React.FC = () => {
     trimGroupRef.current = atStart
     setTrimGroup({ ...atStart })
     const move = (moveEvent: PointerEvent) => {
-      const deltaTimeline = (moveEvent.clientX - startX) / pxPerSecond
+      const rawDelta = (moveEvent.clientX - startX) / pxPerSecond
+      // SNAP: an edge dragged to within a few pixels of the skimmer lands exactly ON it — the skimmer is the frame
+      // the reader lined up precisely — while a drag that carries on past the zone is not held back. `edgeStart`
+      // is the edge's own place on the timeline: the clip's start for an IN handle, its end for an OUT.
+      const edgeStart = edge === 'in' ? segment.start : segment.start + segment.duration
+      const deltaTimeline = snapTrimDelta(edgeStart, rawDelta, playback.position, TRIM_SNAP_PIXELS / pxPerSecond)
       const next: Record<string, TrimWindow> = {}
       members.forEach((member) => { next[member.key] = dragTrimWindow(member.from, edge, deltaTimeline * member.retime, member.full, min) })
       trimPreviewRef.current = next[key]
       trimGroupRef.current = next
       setTrimPreview(next[key])
       setTrimGroup({ ...next })
-      playback.seek(edgePosition(next[key]))
+      // The frame the cut lands on, in the clip's own SOURCE seconds, is what the monitor streams: the playhead
+      // itself does not move.
+      setTrimHandle({ segment, edge, at: edge === 'in' ? next[key].in : next[key].out, video: lane.kind === 'video' })
     }
     const up = () => {
       window.removeEventListener('pointermove', move)
@@ -3105,6 +3129,7 @@ export const EditJobApp: React.FC = () => {
       setTrimPreview(null)
       setTrimGroup({})
       setTrimNeighbour(null)
+      setTrimHandle(null)
       const entries = members.map((member) => ({ key: member.key, window: finalPreviews[member.key], full: member.full })).filter((entry) => Boolean(entry.window))
       if (entries.length) writeTrims(entries)
     }
@@ -4442,7 +4467,7 @@ export const EditJobApp: React.FC = () => {
                 be drawn around the picture rather than around the panel. The stage is also the
                 pan surface: everything drawn lives in one layer inside it and moves together
                 when a zoom has left more than the panel can show. */}
-            <div className={`editor-stage${drawable ? ' is-pannable' : ''}${canPlacePicture ? ' is-placing' : ''}${cropDragging ? ' is-cropping' : ''}${trimNeighbour ? ' is-trimming' : ''}`} ref={attachStage} onPointerDown={beginMonitorDrag}>
+            <div className={`editor-stage${drawable ? ' is-pannable' : ''}${canPlacePicture ? ' is-placing' : ''}${cropDragging ? ' is-cropping' : ''}${trimHandle ? ' is-trimming' : ''}`} ref={attachStage} onPointerDown={beginMonitorDrag}>
               <div className="editor-stage-pan" style={{ transform: `translate(${panX}px, ${panY}px)` }}>
                 {/* The frame's own window: the picture is drawn inside it and clipped by it, so
                     what the monitor shows is the output's own area and not the picture spilling
@@ -4537,22 +4562,21 @@ export const EditJobApp: React.FC = () => {
                   ))}
                 </div>}
               </div>
-              {/* The TRIM'S TWO-UP VIEW: while a handle is down the monitor shows the two frames the cut
-                  will join, side by side, filling the whole preview. Each pane is shaped to the OUTPUT's
-                  own aspect ratio so both read as the export will frame them. The clip being trimmed is on
-                  the side the handle is NOT, so an IN handle (cutting the head) has its neighbour — the
-                  previous clip's LAST frame — on the left, and an OUT handle (cutting the tail) has the
-                  next clip's FIRST on the right. The main element runs on behind, moved to the landing
-                  frame by the drag itself, and the frame's own enclosure is hidden (see `is-trimming`). */}
-              {trimNeighbour && (() => {
-                const current = playback.segment
-                const currentTarget = current ? pictureSourceFor(current) : null
-                const currentHasPicture = Boolean(current) && sourceVideo[current!.sourcePath] !== false
-                const neighbour = trimNeighbour.segment
-                const neighbourTarget = pictureSourceFor(neighbour)
-                const neighbourHasPicture = sourceVideo[neighbour.sourcePath] !== false
+              {/* THE TRIM'S PREVIEW: while a handle is down the monitor streams the frames the cut is being
+                  judged between. The clip being trimmed shows the frame its own handle lands on, and — where the
+                  clip is joined to a neighbour — that neighbour's LAST frame for an IN handle or its FIRST for an
+                  OUT handle sits beside it on the side the handle is on. The PLAYHEAD does not move: the preview
+                  follows the HANDLE, so the reader keeps the skimmer where they set it. A SOUND lane has no frame
+                  to show, so it draws no preview and its own readout is the feedback. */}
+              {trimHandle?.video && (() => {
+                const current = trimHandle.segment
+                const currentTarget = pictureSourceFor(current)
+                const currentHasPicture = Boolean(current.still) || sourceVideo[current.sourcePath] !== false
+                const neighbour = trimNeighbour?.segment
+                const neighbourTarget = neighbour ? pictureSourceFor(neighbour) : null
+                const neighbourHasPicture = Boolean(neighbour) && sourceVideo[neighbour!.sourcePath] !== false
                 const aspect = outputFrame ? `${outputFrame.width} / ${outputFrame.height}` : '16 / 9'
-                const neighbourPane = <TrimPairPane
+                const neighbourPane = neighbour && trimNeighbour ? <TrimPairPane
                   key="neighbour"
                   label={trimNeighbour.side === 'left' ? 'PREV LAST' : 'NEXT FIRST'}
                   sourcePath={neighbour.sourcePath}
@@ -4560,18 +4584,18 @@ export const EditJobApp: React.FC = () => {
                   videoUrl={neighbourHasPicture && neighbourTarget ? mediaUrl(neighbourTarget) : null}
                   seekTo={trimNeighbour.at}
                   aspect={aspect}
-                />
+                /> : null
                 const currentPane = <TrimPairPane
                   key="current"
                   label="THIS CLIP"
-                  sourcePath={current?.sourcePath ?? ''}
-                  still={Boolean(current?.still)}
+                  sourcePath={current.sourcePath}
+                  still={Boolean(current.still)}
                   videoUrl={currentHasPicture && currentTarget ? mediaUrl(currentTarget) : null}
-                  seekTo={current ? sourceTimeAt(playback.position, current) : 0}
+                  seekTo={trimHandle.at}
                   aspect={aspect}
                 />
                 return <div className="editor-trim-pair">
-                  {trimNeighbour.side === 'left' ? <>{neighbourPane}{currentPane}</> : <>{currentPane}{neighbourPane}</>}
+                  {neighbourPane && trimNeighbour?.side === 'left' ? <>{neighbourPane}{currentPane}</> : <>{currentPane}{neighbourPane}</>}
                 </div>
               })()}
             </div>
@@ -4583,9 +4607,9 @@ export const EditJobApp: React.FC = () => {
             <b className="transport-state">{playback.playing ? '> PLAYING' : '|| PAUSED'}</b>
           </div>
           <div className="transport">
-            <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? 'Step back one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step back one frame"><PrevFrameIcon /> FRAME</button>
-            <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'} aria-label={playback.playing ? 'Pause' : 'Play'}>{playback.playing ? <PauseIcon /> : <PlayIcon />} PLAY</button>
-            <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? 'Step forward one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step forward one frame"><NextFrameIcon /> FRAME</button>
+            <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? 'Step back one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step back one frame"><PrevFrameIcon /></button>
+            <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'} aria-label={playback.playing ? 'Pause' : 'Play'}>{playback.playing ? <PauseIcon /> : <PlayIcon />}</button>
+            <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? 'Step forward one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step forward one frame"><NextFrameIcon /></button>
             <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 || (playback.shuttleRate === 0 && playback.playing && playback.speed > 1) ? ' is-fast' : ''}`}>
               {/* The rate the transport is being driven at: the shuttle's own when one is running, and otherwise
                   the shared speed value the wheel and L both write. It is shown even when the transport is
@@ -4600,7 +4624,6 @@ export const EditJobApp: React.FC = () => {
                 rate and a wheel over the monitor still steps it — see `speedByWheel` — so the readout on
                 the line beside this comment is where the figure is, and the dropdown that used to sit here
                 was a second control for a figure the transport already owns. */}
-            <span className="transport-stamp">{stampPair(playback.position, duration, outputRate, timestampMode)}</span>
             {/* The scrubber, drawn like the timeline's own playhead rather than like the platform's: an inset
                 groove with the played part in the accent and a THIN RECTANGULAR handle. The platform's is a
                 round blue knob on a blue track, which was the one thing on this panel that was not of the
@@ -4621,6 +4644,9 @@ export const EditJobApp: React.FC = () => {
               onChange={(event) => playback.seek(Number(event.target.value))}
               aria-label="Playhead across the assembled output"
             />
+            {/* The stamp, read AFTER the bar: the figure that moves with the scrub sits where the eye is
+                after the drag, at the end of the row rather than before the bar it belongs to. */}
+            <span className="transport-stamp">{stampPair(playback.position, duration, outputRate, timestampMode)}</span>
           </div>
           <div className="editor-preview-actions">
             <span className="preview-divider" aria-hidden="true" />

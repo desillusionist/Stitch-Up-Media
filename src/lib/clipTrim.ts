@@ -68,3 +68,18 @@ export const dragTrimWindow = (
  */
 export const windowIsWholeSource = (window: TrimWindow, full: number): boolean =>
   full > 0 && window.in <= 1e-6 && window.out >= full - 1e-6
+
+/**
+ * The timeline delta a trim drag should really use, with the SNAP onto the skimmer folded in.
+ *
+ * The skimmer is the one position the reader can set exactly, so a dragged edge that comes within `snapSeconds`
+ * of it is pulled onto it — a cut at a frame that was chosen rather than aimed at. `edgeStart` is where the
+ * dragged edge sits on the TIMELINE before the drag (the clip's own start for an IN handle, its end for an
+ * OUT), so the edge's landing is `edgeStart + rawDelta`; the snap hands back the delta that lands it exactly on
+ * the skimmer instead. It is an ATTRACTION rather than a stop: a drag whose landing falls outside the zone
+ * keeps its own delta, so the edge carries on past the skimmer and trimming continues.
+ */
+export const snapTrimDelta = (edgeStart: number, rawDelta: number, skimmer: number, snapSeconds: number): number =>
+  Number.isFinite(snapSeconds) && snapSeconds > 0 && Math.abs(edgeStart + rawDelta - skimmer) <= snapSeconds
+    ? skimmer - edgeStart
+    : rawDelta

@@ -684,6 +684,8 @@ const drive = async () => {
     kind: stampInput?.type ?? null,
     before: +stampBefore.toFixed(2),
     after: +scrubValue().toFixed(2),
+    // ENTER confirms the figure AND leaves the field, so the caret must not still be in it.
+    focusedAfterEnter: Boolean(stampInput) && document.activeElement === stampInput,
   }
 
   // THE ONE-STREAM RULE. A file with neither a picture nor a sound in it is nothing, so unchecking one
@@ -1377,7 +1379,7 @@ const drive = async () => {
   let growWidth = 0
   let growHeight = 0
   let growHit: string | null = null
-  let playheadMoved = false
+  let playheadStayed = false
   if (outHandle && handleBox) {
     const x = handleBox.left + handleBox.width / 2
     const y = handleBox.top + handleBox.height / 2
@@ -1389,9 +1391,10 @@ const drive = async () => {
     await wait(60)
     trimReadout = (document.querySelector('.clip-trim-readout') as HTMLElement | null)?.textContent ?? null
     trimShades = document.querySelectorAll('.clip-trim-shade').length
-    // The MONITOR follows the dragged edge: the playhead is put where the cut will land, which is what the
-    // monitor draws, so the skimmer's own position is the reading that says the live view is on.
-    playheadMoved = playheadLeft() !== beforePlayhead
+    // THE SKIMMER STAYS PUT: it used to be driven onto the landing frame so the monitor would show it, which
+    // lost the reader their own place. The monitor follows the HANDLE now, so the skimmer's own position is the
+    // reading that says the drag left it alone.
+    playheadStayed = playheadLeft() === beforePlayhead
     // GROWING draws its own drawer OUTSIDE the clip's box, where removing draws shading inside it. This clip
     // is trimmed to four of twelve seconds, so dragging the out edge RIGHT grows it — captured here and then
     // put back at the shrink position before release, so the released window is the one asserted below.
@@ -1452,7 +1455,7 @@ const drive = async () => {
     growWidth,
     growHeight,
     growHit,
-    playheadMoved,
+    playheadStayed,
     afterTrim,
     trimEntries,
     afterOrder,
@@ -1591,13 +1594,19 @@ const drive = async () => {
   let splitLabels: string[] = []
   let splitFrameHidden = false
   let splitPanes = 0
+  let playheadBefore = -1
+  let playheadDuring = -1
   if (inHandle) {
     const box = inHandle.getBoundingClientRect()
     const at = { clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 }
+    // THE PLAYHEAD MUST NOT MOVE while the handle is dragged: the skimmer is the reader's own place, kept
+    // while the preview streams the frame the cut lands on.
+    playheadBefore = Number((document.querySelector('.transport-scrub') as HTMLInputElement | null)?.value ?? -1)
     inHandle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, ...at }))
     await wait(60)
     window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: at.clientX + 20, clientY: at.clientY }))
     await wait(80)
+    playheadDuring = Number((document.querySelector('.transport-scrub') as HTMLInputElement | null)?.value ?? -1)
     splitPanes = document.querySelectorAll('.editor-trim-pane').length
     const paneLabels = [...document.querySelectorAll('.editor-trim-pane-label')].map((node) => node.textContent ?? '')
     splitSide = paneLabels[0] === 'PREV LAST' ? 'left' : paneLabels[0] === 'NEXT FIRST' ? 'right' : null
@@ -1608,7 +1617,7 @@ const drive = async () => {
     await wait(120)
   }
   const splitGone = document.querySelector('.editor-trim-pair') === null
-  result.splitView = { splitSide, splitLabel, splitPanes, splitGone, splitLabels, splitFrameHidden }
+  result.splitView = { splitSide, splitLabel, splitPanes, splitGone, splitLabels, splitFrameHidden, playheadBefore, playheadDuring }
 
   // THE AUDIO LANE'S OWN CONTROLS. A multitrack job's added track is a lane of its own: its clip has to offer
   // the same trim handles the video lane's do, and a [+] whose panel offers ADD SOURCE — but a fade on an
@@ -1621,10 +1630,10 @@ const drive = async () => {
   const audioLaneBody = laneBodies[1]
   const audioClip = audioLaneBody?.querySelector('.timeline-clip') as HTMLElement | null
   const audioHandles = audioClip ? audioClip.querySelectorAll('.clip-trim-handle').length : 0
-  // A SOUND lane gets NO two-up view: there is no frame at the end of a track to judge a cut against, so a
-  // handle dragged there must leave the monitor as it was and move the playhead instead.
+  // A SOUND lane gets NO trim preview: there is no frame at the end of a track to judge a cut against, so a
+  // handle dragged there leaves the monitor as it was — and, like every trim, leaves the SKIMMER where it is.
   let audioSplitPanes = -1
-  let audioPlayheadMoved = false
+  let audioPlayheadStayed = false
   const audioOut = audioClip?.querySelector('.clip-trim-handle.is-out') as HTMLElement | null
   if (audioOut) {
     const audioBox = audioOut.getBoundingClientRect()
@@ -1636,7 +1645,7 @@ const drive = async () => {
     window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: audioAt.clientX - 30, clientY: audioAt.clientY }))
     await wait(80)
     audioSplitPanes = document.querySelectorAll('.editor-trim-pane').length
-    audioPlayheadMoved = playheadLeft() !== beforeAudioPlayhead
+    audioPlayheadStayed = playheadLeft() === beforeAudioPlayhead
     window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: audioAt.clientX - 30, clientY: audioAt.clientY }))
     await wait(120)
   }
@@ -1657,7 +1666,7 @@ const drive = async () => {
   await wait(250)
   const fadePatch = applied[applied.length - 1] as { transitions?: Record<string, unknown> } | undefined
   const fadeKeys = fadePatch?.transitions ? Object.keys(fadePatch.transitions) : []
-  result.audioLane = { laneCount: laneBodies.length, audioHandles, audioSplitPanes, audioPlayheadMoved, hasBoundary: Boolean(audioBoundary), audioPanelTitle, fadeDisabled, blockedNote, audioAddSource, fadeKeys }
+  result.audioLane = { laneCount: laneBodies.length, audioHandles, audioSplitPanes, audioPlayheadStayed, hasBoundary: Boolean(audioBoundary), audioPanelTitle, fadeDisabled, blockedNote, audioAddSource, fadeKeys }
 
   // A TRIM THE QUEUE MADE, LANDING ON A WINDOW THAT IS DIRTY. The QUICK LOOK helper's in/out points come back
   // through the queue, and the window is usually dirty when they do — the timeline was probably just trimmed.
