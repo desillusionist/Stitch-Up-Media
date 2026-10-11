@@ -148,6 +148,19 @@ app.whenReady().then(async () => {
       if (!String(chrome.zoomLabel).trim()) problems.push('the zoom control shows no scale beside its button')
       if ((chrome.zoomOptions || []).map((label) => String(label).trim()).includes('FIT')) problems.push(`the zoom list still offers FIT: ${JSON.stringify(chrome.zoomOptions)}`)
     }
+    // THE ZOOM PANEL'S OWN BOXES: the list reads, the CUSTOM field is compact, and the control is INSET from the
+    // monitor's corner rather than jammed into it.
+    const zoom = result.zoomPanel
+    if (!zoom) problems.push('the zoom panel reported nothing about its own boxes')
+    else {
+      if (!(Number(zoom.fromLeft) > 3)) problems.push(`the zoom control is jammed against the monitor's left edge: ${zoom.fromLeft}px in`)
+      if (!(Number(zoom.fromBottom) > 3)) problems.push(`the zoom control is jammed against the monitor's bottom edge: ${zoom.fromBottom}px up`)
+      if (!(Number(zoom.optionCount) >= 5)) problems.push(`the zoom list drew only ${zoom.optionCount} entries`)
+      if ((zoom.cropped || []).length) problems.push(`the zoom list crops entries it cannot read: ${JSON.stringify(zoom.cropped)}`)
+      if (!(Number(zoom.menuWidth) >= 90)) problems.push(`the zoom menu is only ${zoom.menuWidth}px wide, so its entries are cropped`)
+      if (!(Number(zoom.fieldWidth) > 0 && Number(zoom.fieldWidth) <= 64)) problems.push(`the CUSTOM field is ${zoom.fieldWidth}px wide, which is not compact`)
+      if (!(Number(zoom.fieldHeight) > 0 && Number(zoom.fieldHeight) <= 26)) problems.push(`the CUSTOM field is ${zoom.fieldHeight}px tall, which is not compact`)
+    }
     // THE TRANSPORT'S GLYPHS ARE DRAWN SYMBOLS, not the bracket-and-pipe text they were: the four tokens
     // `[|<]`, `[>]`, `[>|]` and `[||]` are SVG now, so each button is read for its own glyph and for the
     // absence of a bracket-character in its text. The middle button carries PLAY at rest.

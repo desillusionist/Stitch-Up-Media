@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -2385,6 +2385,35 @@ const drive = async () => {
   const splitPatch = applied[applied.length - 1] as { sourcePaths?: string[]; trimPoints?: Record<string, { in: number; out: number }>; clipIds?: string[] } | undefined
   const splitTrims = splitPatch?.trimPoints ? Object.values(splitPatch.trimPoints) : []
   result.splitClip = { before: splitClipsBefore, afterKey, after: splitClipsAfter, menuDisabled: splitMenuDisabled, paths: splitPatch?.sourcePaths?.length ?? null, halves: splitTrims.length, idCount: splitPatch?.clipIds?.length ?? null, readout: splitReadout, clipText: splitClipText, trims: splitTrims }
+
+  // THE ZOOM PANEL ITSELF, read last so changing the zoom for the CUSTOM field disturbs nothing before it. The
+  // list has to be wide enough to READ, the CUSTOM field compact rather than a browser-sized number box, and the
+  // control inset from the monitor's own corner rather than jammed into it.
+  {
+    const dock = document.querySelector('.preview-zoom-dock') as HTMLElement | null
+    const screen = document.querySelector('.editor-screen') as HTMLElement | null
+    const d = dock?.getBoundingClientRect()
+    const s = screen?.getBoundingClientRect()
+    ;(dock?.querySelector('.editor-select-trigger') as HTMLElement | null)?.click()
+    await wait(80)
+    const menu = dock?.querySelector('.editor-select-menu') as HTMLElement | null
+    const options = [...(menu?.querySelectorAll('.editor-select-option') ?? [])] as HTMLElement[]
+    const cropped = options.filter((option) => option.scrollWidth > option.clientWidth + 1).map((option) => option.textContent ?? '')
+    const menuWidth = menu ? menu.getBoundingClientRect().width : 0
+    options.find((option) => (option.textContent ?? '').includes('CUSTOM'))?.click()
+    await wait(80)
+    const field = document.querySelector('.preview-zoom-field input') as HTMLElement | null
+    const f = field?.getBoundingClientRect()
+    result.zoomPanel = {
+      fromLeft: d && s ? +(d.left - s.left).toFixed(1) : null,
+      fromBottom: d && s ? +(s.bottom - d.bottom).toFixed(1) : null,
+      menuWidth: +menuWidth.toFixed(1),
+      optionCount: options.length,
+      cropped,
+      fieldWidth: f ? +f.width.toFixed(1) : null,
+      fieldHeight: f ? +f.height.toFixed(1) : null,
+    }
+  }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true
 }
