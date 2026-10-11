@@ -289,6 +289,12 @@ export const useConsolidatedPlayback = (
       // picture element is given and the same one the encoder writes — see `sourceTimeAt`.
       const desired = sourceTimeAt(seconds, segment)
       if (force || Math.abs(element.currentTime - desired) > DRIFT_TOLERANCE) element.currentTime = desired
+      // NEVER RESTART AN ENDED TRACK, for the same reason the picture element is not restarted: `play()` on an
+      // ended element seeks it back to its own head, so a track whose file ends a hair before its slot — the
+      // probe and the file disagreeing by a frame — would replay from the start, heard as a loop under a job
+      // that runs on past its last track. The clock runs the tail instead. A real seek back un-ends it first,
+      // because setting `currentTime` clears `ended`.
+      if (element.ended) return
       if (element.paused) void element.play().catch(() => { /* element may still be loading */ })
     })
   }, [audioElements])
@@ -506,8 +512,28 @@ export const useConsolidatedPlayback = (
     // PLACEHOLDER is the same case again: a flat colour or a silence has no file, so no element is ever
     // mounted for it and this clock has to carry the playhead through rather than hold on one that never comes.
     if (current && runsOnAnchoredClock(current, silentMainLaneRef.current, Boolean(video))) {
-      const from = Math.max(current.start, Math.min(current.start + current.duration, snapshot.position))
-      return Math.min(current.start + current.duration, anchored(from))
+      // INSIDE the segment: the anchored clock advances within the segment's own span.
+      if (snapshot.position < current.start + current.duration) {
+        const from = Math.max(current.start, snapshot.position)
+        return Math.min(current.start + current.duration, anchored(from))
+      }
+      // PAST it, and the output runs on: a still or a BLANK can be the LAST thing on the main lane under a
+      // LONGER added track, so the output does not end where the segment does. Clamping to the segment end —
+      // which is all this did — held the playhead on that segment's last frame while the track beneath it kept
+      // being re-seeked onto the same frame, which is heard as the track looping on one frame. The tail runs on
+      // the anchored clock, exactly as it does when the main lane's own element ends a hair before its slot.
+      const tailFrom = Math.max(current.start + current.duration, Math.min(snapshot.duration, snapshot.position))
+      return Math.min(snapshot.duration, anchored(tailFrom))
+    }
+
+    // NO main-lane segment at all: a MULTI-TRACK whose VISUAL lane is empty, so a job of nothing but added
+    // tracks. There is no element and no segment to bound the clock, so it carries the playhead across the whole
+    // output rather than holding it — the hold froze the playhead on whatever frame it stood at while every
+    // track was re-seeked onto that frame, heard as a loop until a video source gave the lane an element to own
+    // the clock with.
+    if (!current) {
+      const from = Math.max(0, Math.min(snapshot.duration, snapshot.position))
+      return Math.min(snapshot.duration, anchored(from))
     }
 
     if (video && current && video.readyState >= 1) {

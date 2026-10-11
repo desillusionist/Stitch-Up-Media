@@ -152,7 +152,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .editor-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 14px; gap: 14px; overflow: hidden; }
 .editor-preview, .timeline-panel, .export-sidebar { border: 1px solid var(--ui-border); background: var(--ui-panel); }
 .editor-preview { padding: 10px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.editor-screen { min-height: 120px; flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--ui-muted); background: #1c2228; border-top: 1px dashed var(--ui-border); border-bottom: 1px dashed var(--ui-border); margin-top: 8px; overflow: hidden; }
+.editor-screen { position: relative; min-height: 120px; flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--ui-muted); background: #1c2228; border-top: 1px dashed var(--ui-border); border-bottom: 1px dashed var(--ui-border); margin-top: 8px; overflow: hidden; }
 /* The picture's own box, so the output frame outline can be drawn around it. A column, so
    the media stretches to the space available exactly as it did as a direct child. */
 .editor-stage { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
@@ -389,15 +389,16 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 
 /* EDIT JOB window: frame-accurate preview panel and proportional timeline */
 .editor-screen small { color: var(--ui-muted); font-size: 10px; }
-.editor-preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; }
-/* The monitor's zoom. Deliberately named ZOOM and nothing else: the clip's own FIT TO WIDTH /
-   FIT TO HEIGHT changes what the export contains, and this changes only how big it is drawn. */
-.preview-zoom { display: flex; align-items: center; gap: 6px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
-.preview-zoom .editor-select { width: auto; }
-.preview-zoom .editor-select-trigger { padding: 6px 7px; color: var(--ui-accent); font-size: 9px; }
+/* The monitor's zoom lives in the picture's own bottom-left CORNER: an icon button and the scale it is set to,
+   over the monitor rather than on a row below it. The panel is the positioning context for that corner, and the
+   trigger is an icon, so the caret and the value text go. */
+.preview-zoom-dock { position: absolute; left: 8px; bottom: 8px; z-index: 6; display: flex; align-items: center; gap: 6px; }
+.preview-zoom-dock .editor-select { width: auto; }
+.preview-zoom-dock .editor-select-trigger { padding: 5px 6px; color: var(--ui-accent); }
+.preview-zoom-icon { display: block; }
+.preview-zoom-label { color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
 .preview-zoom-field { width: 72px; }
 .preview-zoom-field input { padding: 6px 4px; }
-.preview-divider { width: 1px; align-self: stretch; min-height: 18px; background: var(--ui-border-dim); }
 .timeline-ruler { position: relative; height: 20px; padding: 0; margin: 0 0 6px; color: var(--ui-muted); font-size: 9px; border-bottom: 1px dotted var(--ui-border); }
 .timeline-ruler span { position: absolute; white-space: nowrap; }
 /* The scale's own grid: a line for every mark, and a label only on the ones with room for one. Both are

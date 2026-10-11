@@ -282,6 +282,50 @@ const tailMeasure = `(async () => {
   return { playingInside, parkedInTail, tailAt: +(window.__duration - 0.35).toFixed(3) }
 })()`
 
+/**
+ * THE FROZEN CASE, with no video element at all.
+ *
+ * A MULTI-TRACK whose VISUAL lane is empty and whose one added track runs the whole output. The playhead must
+ * ADVANCE on the anchored clock rather than hold: the reported fault was the clock standing still while the track
+ * under it was re-seeked onto the same frame, heard as a track looping on one frame. Read as the hook's own
+ * position advancing near 1x, since with no element there is no element clock to read it off.
+ */
+const frozenMeasure = `(async () => {
+  const p = window.__playback
+  if (!p) return { HARNESS_ERROR: 'no playback hook' }
+  if (document.querySelector('video')) return { HARNESS_ERROR: 'the no-video case mounted a video element' }
+  const start = p.position
+  p.toggle()
+  const t0 = performance.now()
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  const mid = window.__playback.position
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  const end = window.__playback.position
+  const wall = (performance.now() - t0) / 1000
+  window.__playback.pause()
+  return { start: +start.toFixed(3), mid: +mid.toFixed(3), end: +end.toFixed(3), wall: +wall.toFixed(3) }
+})()`
+
+/**
+ * THE BLANK-TAIL CASE: a BLANK as the last thing on the visual lane, under a longer track.
+ *
+ * The playhead starts just inside the blank and must run PAST the blank's end into the tail. It used to clamp to
+ * the blank's own end, which held it on one frame while the track beneath it was re-seeked onto that frame.
+ */
+const blankTailMeasure = `(async () => {
+  const p = window.__playback
+  if (!p) return { HARNESS_ERROR: 'no playback hook' }
+  if (document.querySelector('video')) return { HARNESS_ERROR: 'the blank-tail case mounted a video element' }
+  const blankEnd = window.__duration - 2
+  const start = Math.max(0, blankEnd - 0.4)
+  p.seek(start)
+  p.toggle()
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+  const end = window.__playback.position
+  window.__playback.pause()
+  return { blankEnd: +blankEnd.toFixed(3), start: +start.toFixed(3), end: +end.toFixed(3) }
+})()`
+
 const runFfmpeg = (args) => new Promise((resolve, reject) => {
   execFile('ffmpeg', args, { maxBuffer: 8 * 1024 * 1024 }, (error, _stdout, stderr) => {
     if (error) reject(new Error(String(stderr || error.message)))
@@ -363,6 +407,15 @@ app.whenReady().then(async () => {
     }
   }
 
+  // THE FROZEN CASE: no video source at all, so nothing but the anchored fallback owns the clock. Its own page
+  // load, because the model it needs is a different one.
+  await win.loadFile(htmlPath, { query: { case: 'frozen' } })
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  results.frozen = await run(frozenMeasure)
+  await win.loadFile(htmlPath, { query: { case: 'blanktail' } })
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  results.blankTail = await run(blankTailMeasure)
+
   console.log(JSON.stringify({ file: PROVIDED || 'generated 1080p fixture', sourceDuration: +duration.toFixed(3), sampleSeconds: SAMPLE_SECONDS, results }, null, 2))
 
   const problems = []
@@ -421,6 +474,23 @@ app.whenReady().then(async () => {
     if (!tail.parkedInTail) problems.push('the picture element kept playing past a trimmed clip, so the trimmed-away sound ran on under the tail')
   } else if (results.tail) {
     problems.push(`the tail could not be measured: ${results.tail.HARNESS_ERROR}`)
+  }
+  // NO VIDEO SOURCE: the playhead must ADVANCE rather than hold, so the track under it is not re-seeked onto one
+  // frame for as long as playback runs.
+  if (results.frozen && !results.frozen.HARNESS_ERROR) {
+    const frozen = results.frozen
+    const advanced = frozen.end - frozen.start
+    if (!(advanced > 0.8)) problems.push(`a job with no video source froze the playhead: it advanced ${advanced.toFixed(2)}s over ${frozen.wall}s`)
+    if (!(frozen.mid > frozen.start + 0.2)) problems.push(`the playhead did not advance in the first half without a video source: it reached ${frozen.mid}s from ${frozen.start}s`)
+  } else if (results.frozen) {
+    problems.push(`the no-video case could not be measured: ${results.frozen.HARNESS_ERROR}`)
+  }
+  // A BLANK AS THE LAST VISUAL: the tail must run on past it rather than hold on its last frame.
+  if (results.blankTail && !results.blankTail.HARNESS_ERROR) {
+    const blankTail = results.blankTail
+    if (!(blankTail.end > blankTail.blankEnd + 0.3)) problems.push(`a BLANK as the last visual held the playhead at ${blankTail.end}s instead of running its tail past the blank's end at ${blankTail.blankEnd}s`)
+  } else if (results.blankTail) {
+    problems.push(`the blank-tail case could not be measured: ${results.blankTail.HARNESS_ERROR}`)
   }
   if (!problems.length) {
     // The element is handed a real, seekable video through the app's own URL: it must play it at the

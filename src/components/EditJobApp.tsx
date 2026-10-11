@@ -21,7 +21,8 @@ import { rememberedPreviewFor, resolveQuickLookRequest, rememberedProxyFor } fro
 import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
-import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRangeLabel, clipRateFor, clipSummary, clipsConcatenate, CROSSFADE, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, outputRangeLabel, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, usesAllSource } from '../lib/timelineModel'
+import { ZoomIcon } from './ZoomIcon'
+import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRateFor, clipSummary, clipsConcatenate, CROSSFADE, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
 import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamCount, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
 import { presetSummary } from '../lib/presetSummary'
@@ -1210,9 +1211,6 @@ export const EditJobApp: React.FC = () => {
   // A PLACEHOLDER is named for what it IS, numbered among its own kind, rather than by a scheme.
   const focusedLabel = (playback.segment ? placeholderNames.get(playback.segment.key) : undefined)
     ?? (focusedSequence ? sequenceLabel(focusedSequence) : sourceName(focusedSource))
-  // What the monitor's own line calls the clip it is showing: `COPY n` when the file appears more than once,
-  // so the monitor names the same clip the timeline and the inspector do.
-  const focusedCopyLabel = draft ? copyLabelFor(draft, focusedSourceIndex) : undefined
 
   // An image sequence's generated clip is resolved here, once per rate, in the background. Nothing on
   // the playback path waits for it: the window draws the clip the queue remembers for it, and only
@@ -3295,6 +3293,21 @@ export const EditJobApp: React.FC = () => {
     mode: timestampMode,
   })}`
   /**
+   * The clip's SHAPE, appended to its name on the timeline: the source's own resolution and rate, as
+   * ` • 1280x720 • 25 FPS`.
+   *
+   * The monitor used to print this under the picture; it belongs with the clip it describes, on the box a reader
+   * already looks at. Nothing for a source with no picture — a BLANK, a SILENCE, or a lone sound — so those clips
+   * keep the bare name the rest of the window finds them by.
+   */
+  const segmentShape = (segment: TimelineSegment) => {
+    if (placeholderKind(segment.sourcePath) || sourceVideo[segment.sourcePath] === false) return ''
+    const resolution = sourceProbes[segment.sourcePath]?.videoStreams?.[0]?.resolution || draft.sourceMetadata?.[segment.sourcePath]?.resolution
+    const rate = sourceFps(draft, segment.sourcePath, undefined, resolveTiming)
+    const parts = [resolution, rate > 0 ? `${Math.round(rate)} FPS` : undefined].filter(Boolean)
+    return parts.length ? ` • ${parts.join(' • ')}` : ''
+  }
+  /**
    * Where the right-click menu was asked for, and where it ended up.
    *
    * The asked-for point is what the handler knows; the menu's own height is only known once it has
@@ -3605,20 +3618,6 @@ export const EditJobApp: React.FC = () => {
 
   const laneGap = (lane: TimelineLane) => Math.max(0, duration - lane.duration)
   const activeSegmentKey = playback.segment?.key
-  /**
-   * What the monitor's own line says the source is: the shape of a picture, and the facts about the sound
-   * where there is no picture.
-   *
-   * An audio file has no resolution at all, so that line used to read `SOURCE` — three words that describe
-   * nothing about the file in hand — where `48 KHZ · 24 BIT · STEREO` is something a reader can act on. The
-   * probe is the one this window already made, so nothing here is a second read of any file.
-   */
-  const focusedProbe = focusedSource ? sourceProbes[focusedSource] : undefined
-  const focusedSoundLine = focusedProbe && !focusedProbe.videoStreams?.length ? audioFacts(focusedProbe) : null
-  const resolutionLabel = focusedProbe?.videoStreams?.[0]?.resolution
-    || draft.sourceInfo?.videoStreams?.[0]?.resolution
-    || draft.sourceMetadata?.[focusedSource ?? '']?.resolution
-    || (draft.preset.width && draft.preset.height ? `${draft.preset.width}x${draft.preset.height}` : 'SOURCE')
 
   const dirty = windowDirty(draft, baseline ?? draft)
   // A preset is only worth its name while it still describes the job. Once any of its own
@@ -4223,6 +4222,18 @@ export const EditJobApp: React.FC = () => {
     : previewZoom.kind === 'percent'
       ? (isPresetZoom(previewZoom.percent) ? String(previewZoom.percent) : 'custom')
       : previewZoom.kind
+  /** The zoom list: the named scales, the two fits, and the user's own figure. FIT is not offered — it is the
+   *  DEFAULT the window opens on, so a reader has no need to pick it, and the two named fits cover what they
+   *  reach for it for. */
+  const zoomChoices = [
+    ...PREVIEW_ZOOM_STEPS.map((step) => ({ value: String(step), label: `${step}%` })),
+    { value: 'fitWidth', label: 'FIT WIDTH' },
+    { value: 'fitHeight', label: 'FIT HEIGHT' },
+    { value: 'custom', label: 'CUSTOM...' },
+  ]
+  /** What the chosen scale is CALLED, written beside the button: the option's own label, with FIT named even
+   *  though it is not in the list, because it is the state the window opens in. */
+  const zoomLabel = zoomOption === 'fit' ? 'FIT' : (zoomChoices.find((choice) => choice.value === zoomOption)?.label ?? '')
   const chooseZoom = (option: string) => {
     if (option === 'fit' || option === 'fitWidth' || option === 'fitHeight') {
       setZoomCustom(false)
@@ -4599,12 +4610,33 @@ export const EditJobApp: React.FC = () => {
                 </div>
               })()}
             </div>
-            <small>{focusedCopyLabel ? `${focusedCopyLabel} // ` : ''}{focusedLabel} | {focusedSoundLine ?? resolutionLabel}{duration > 0 ? ` | ${Math.round(fps)} FPS` : ''}</small>
-            <small>{activeSegment ? `CLIP ${clipRangeLabel({ usedSeconds: activeSegment.sourceUsedSeconds, sourceIn: activeSegment.sourceIn, totalSeconds: sourceTotalFor(activeSegment), fps: activeSegment.nativeRate ?? rateOf(sourceFps(draft, activeSegment.sourcePath, undefined, resolveTiming)), mode: timestampMode })} | ${outputRangeLabel(duration, outputRate, timestampMode)}` : outputRangeLabel(duration, outputRate, timestampMode)}</small>
-            {/* What the transport is doing. A single line, and the one place it is said: the pause glyph that
-                used to sit among the buttons said the same thing a second time, next to a PLAY toggle that
-                already carries the state. */}
-            <b className="transport-state">{playback.playing ? '> PLAYING' : '|| PAUSED'}</b>
+            {/* THE MONITOR'S OWN CORNER: the zoom control is an icon button at the bottom-left of the picture,
+                with the scale it is set to written beside it. It was a labelled dropdown on a row below the
+                monitor; the button belongs ON the monitor it changes. It steps aside while a trim is in hand,
+                since the two-up view covers the whole panel then. */}
+            {!trimHandle && <div className="preview-zoom-dock">
+              <EditorSelect
+                icon={<ZoomIcon />}
+                className="preview-zoom-button"
+                value={zoomOption}
+                options={zoomChoices}
+                onChange={chooseZoom}
+                title="How large the monitor draws the output frame. The export is not affected, and neither is a clip's own fit."
+                ariaLabel="Zoom the preview monitor"
+              />
+              <span className="preview-zoom-label">{zoomLabel}</span>
+              {zoomOption === 'custom' && <label className="mini-field preview-zoom-field">
+                <input
+                  type="number"
+                  min={MIN_PREVIEW_ZOOM}
+                  max={MAX_PREVIEW_ZOOM}
+                  value={zoomText}
+                  onChange={(event) => typeZoom(event.target.value)}
+                  aria-label="Zoom percentage"
+                />
+                <span>%</span>
+              </label>}
+            </div>}
           </div>
           <div className="transport">
             <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? 'Step back one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step back one frame"><PrevFrameIcon /></button>
@@ -4647,36 +4679,6 @@ export const EditJobApp: React.FC = () => {
             {/* The stamp, read AFTER the bar: the figure that moves with the scrub sits where the eye is
                 after the drag, at the end of the row rather than before the bar it belongs to. */}
             <span className="transport-stamp">{stampPair(playback.position, duration, outputRate, timestampMode)}</span>
-          </div>
-          <div className="editor-preview-actions">
-            <span className="preview-divider" aria-hidden="true" />
-            <div className="preview-zoom">
-              <span>ZOOM</span>
-              <EditorSelect
-                value={zoomOption}
-                options={[
-                  ...PREVIEW_ZOOM_STEPS.map((step) => ({ value: String(step), label: `${step}%` })),
-                  { value: 'fitWidth', label: 'FIT WIDTH' },
-                  { value: 'fitHeight', label: 'FIT HEIGHT' },
-                  { value: 'fit', label: 'FIT' },
-                  { value: 'custom', label: 'CUSTOM...' },
-                ]}
-                onChange={chooseZoom}
-                title="How large the monitor draws the output frame. The export is not affected, and neither is a clip's own fit."
-                ariaLabel="Zoom the preview monitor"
-              />
-            </div>
-            {zoomOption === 'custom' && <label className="mini-field preview-zoom-field">
-              <input
-                type="number"
-                min={MIN_PREVIEW_ZOOM}
-                max={MAX_PREVIEW_ZOOM}
-                value={zoomText}
-                onChange={(event) => typeZoom(event.target.value)}
-                aria-label="Zoom percentage"
-              />
-              <span>%</span>
-            </label>}
           </div>
           {inspectorOpen && inspectedSource && (
             <div className="media-inspector">
@@ -5142,7 +5144,7 @@ export const EditJobApp: React.FC = () => {
                         {/* A BLANK is what it IS rather than what it holds: its own fill colour, drawn under
                             the name so the clip reads as the flat stretch it will write. */}
                         {placeholderKind(segment.sourcePath) === 'video' && <span className="clip-blank" style={{ background: fillCss(placeholderFill(segment.sourcePath) ?? undefined) }} aria-hidden="true" />}
-                        <span className="timeline-clip-name">{segmentName(segment)}</span>
+                        <span className="timeline-clip-name">{segmentName(segment)}{segmentShape(segment)}</span>
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                         {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}

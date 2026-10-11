@@ -126,18 +126,27 @@ app.whenReady().then(async () => {
       if (preset.options.some((value) => String(value).startsWith('prores'))) problems.push('the mp4 preset list offers ProRes, which an mp4 cannot hold')
       if (preset.options.some((value) => value === 'mpeg4' || value === 'qtrle')) problems.push('the mp4 preset list offers a QuickTime-only codec')
     }
-    // WHAT THE TRANSPORT SAYS, and where it says it. The state belongs under the monitor on one line, and the
-    // buttons must not state it a second time: the rate readout beside them carries the SPEED the monitor is
-    // watched at rather than a pause glyph, so an idle transport reads its own speed rather than nothing. The
-    // speed dropdown that used to sit beside the transport must be GONE — the wheel over the monitor still
-    // climbs the ladder, and the readout is where the figure is, so a dropdown was a duplicate rather than an
-    // offer.
+    // WHAT THE TRANSPORT SAYS, and where it says it. The block of detail under the monitor is gone and the
+    // state is carried by the play/pause glyph alone, so the readout's ABSENCE is asserted and an idle transport
+    // must name itself Play. The speed dropdown beside the transport must stay gone too.
     const transport = rendered && rendered.transport
     if (!transport) problems.push('the monitor said nothing about what the transport was doing')
     else {
-      if (transport.state !== '|| PAUSED') problems.push(`an idle monitor reads ${JSON.stringify(transport.state)} rather than a pause`)
+      if (!transport.readout) problems.push('the detail readout under the monitor is still drawn')
+      if (transport.playLabel !== 'Play') problems.push(`an idle transport's play/pause button names itself ${JSON.stringify(transport.playLabel)} rather than Play`)
       if (String(transport.rate).trim() !== '1x') problems.push(`an idle transport reads ${JSON.stringify(transport.rate)} rather than the speed it is watched at`)
       if (transport.speedSelector) problems.push('the preview speed dropdown is still drawn under the monitor')
+    }
+    // THE PREVIEW'S CHROME: no detail lines under the picture, the file's shape on the clip instead, and the zoom
+    // as an icon button in the monitor's own corner with its scale written beside it.
+    const chrome = result.previewChrome
+    if (!chrome) problems.push('the preview reported nothing about its own chrome')
+    else {
+      if (chrome.detailLines !== 0) problems.push(`the monitor still draws ${chrome.detailLines} detail line(s) under the picture`)
+      if (!/1280x720|1920x1080/.test(String(chrome.clipName)) || !/\d+ FPS/.test(String(chrome.clipName))) problems.push(`a clip's name does not carry its own shape: ${JSON.stringify(chrome.clipName)}`)
+      if (!chrome.zoomInDock) problems.push('the zoom control is not in the monitor\u2019s own corner')
+      if (!String(chrome.zoomLabel).trim()) problems.push('the zoom control shows no scale beside its button')
+      if ((chrome.zoomOptions || []).map((label) => String(label).trim()).includes('FIT')) problems.push(`the zoom list still offers FIT: ${JSON.stringify(chrome.zoomOptions)}`)
     }
     // THE TRANSPORT'S GLYPHS ARE DRAWN SYMBOLS, not the bracket-and-pipe text they were: the four tokens
     // `[|<]`, `[>]`, `[>|]` and `[||]` are SVG now, so each button is read for its own glyph and for the
@@ -704,7 +713,6 @@ app.whenReady().then(async () => {
         if (!names[1].includes('COPY 2')) problems.push(`the second copy's box is not labelled COPY 2: ${JSON.stringify(names[1])}`)
       }
       if (copyFraming.activeCopyIndex !== 1) problems.push(`opening PROPERTIES on the second copy left the playhead on clip ${copyFraming.activeCopyIndex} rather than the second one`)
-      if (!String(copyFraming.monitorLine).includes('COPY 2')) problems.push(`the monitor's own line does not name the copy it is showing: ${JSON.stringify(copyFraming.monitorLine)}`)
       if (!String(copyFraming.propertiesSource).includes('COPY 2')) problems.push(`PROPERTIES does not name the copy it describes: ${JSON.stringify(copyFraming.propertiesSource)}`)
       // The monitor's crop box is drawn against the picture it measured, and a repeated source does not reload
       // the element — so this is the reading that says the size travelled from the first copy to the second.

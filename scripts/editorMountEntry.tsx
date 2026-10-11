@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -618,15 +618,14 @@ const drive = async () => {
       videoCodecField: Boolean(fieldFor('VIDEO CODEC')),
       container: valueOf(selectIn('FORMAT')),
     },
-    // WHAT THE TRANSPORT SAYS. Two halves of one question: the state has to be stated somewhere — the readout
-    // under the monitor — and it must NOT be said a second time by a pause glyph among the buttons. The rate
-    // readout is read as its own text so that an idle transport saying NOTHING is what is asserted.
+    // WHAT THE TRANSPORT SAYS, and where it says it. The block of detail that used to sit under the monitor —
+    // the file's shape, the CLIP/TOTAL times and the transport's own state — is GONE, so the readout's absence
+    // is what is asserted, and the state is now carried by the play/pause glyph alone: the button names itself
+    // Pause while the monitor runs and Play at rest. The speed dropdown beside the transport must stay GONE too.
     transport: {
-      state: document.querySelector('.transport-state')?.textContent ?? null,
+      readout: document.querySelector('.transport-state') === null,
+      playLabel: document.querySelector('.transport button[aria-label="Play"], .transport button[aria-label="Pause"]')?.getAttribute('aria-label') ?? null,
       rate: document.querySelector('.transport-rate')?.textContent ?? null,
-      // The speed dropdown beside the transport was chosen here until this pass. It must now be GONE:
-      // the wheel over the monitor still steps the rate, and the readout on the line above is where the
-      // figure is, so a second control for it was a duplicate of what the transport already owned.
       speedSelector: speedSelector(),
     },
     // THE SUMMARY'S OWN LINE, which is where the size estimate is read. A movie job must not answer
@@ -663,6 +662,16 @@ const drive = async () => {
   result.preview = {
     title: document.querySelector('.editor-preview .panel-kicker')?.textContent ?? null,
     frameLabel: Boolean(document.querySelector('.editor-frame b')),
+  }
+  // THE PREVIEW'S CHROME: the block of detail that used to sit under the monitor is gone, and the file's own
+  // shape moved onto the clip it belongs to (`name • resolution • fps`). The zoom control is now an icon button
+  // in the monitor's own bottom-left corner with the scale written beside it.
+  result.previewChrome = {
+    detailLines: document.querySelectorAll('.editor-preview small').length,
+    clipName: document.querySelector('.timeline-clip-name')?.textContent ?? null,
+    zoomInDock: Boolean(document.querySelector('.editor-screen .preview-zoom-dock')),
+    zoomLabel: document.querySelector('.preview-zoom-label')?.textContent ?? null,
+    zoomOptions: [...document.querySelectorAll('.preview-zoom-dock .editor-select-option')].map((node) => node.textContent ?? ''),
   }
   // THE GUTTER'S LIVE READOUT IS AN EDITABLE STAMP: a field that shows the skimmer's own position rather than a
   // static label. Read first as its tag and kind, and then — which is the whole of it — by whether typing the
@@ -1326,7 +1335,6 @@ const drive = async () => {
   propertiesItem?.click()
   await wait(300)
   const activeCopyIndex = copyClips().findIndex((clip) => clip.classList.contains('is-active'))
-  const monitorLine = document.querySelector('.editor-preview small')?.textContent ?? null
   const propertiesSource = rowValue('SOURCE')
   // A crop on that copy: the FRAMING controls live under the VIDEO tab of EXPORT SETTINGS, so that tab is
   // opened first, then FRAMING is unfolded and FREEFORM chosen, which is what turns a region on.
@@ -1350,7 +1358,6 @@ const drive = async () => {
   result.copyFraming = {
     clipNames,
     activeCopyIndex,
-    monitorLine,
     propertiesSource,
     cropFields,
     cropBoxDrawn,
@@ -1886,7 +1893,7 @@ const drive = async () => {
   playButton?.click()
   await wait(1600)
   const reached = Number((document.querySelector('.transport-scrub') as HTMLInputElement | null)?.value ?? -1)
-  const stateWhilePlaying = document.querySelector('.transport-state')?.textContent ?? null
+  const stateWhilePlaying = document.querySelector('.transport button[aria-label="Pause"]') ? 'PLAYING' : 'PAUSED'
   playButton?.click()
   await wait(200)
   // THE PROPERTIES DRAWER. The VIDEO CODEC line, which the inspector had only for the sound, and the BLANK's

@@ -41,8 +41,8 @@ const logMediaElement = (element: HTMLVideoElement | null, kind: string) => {
   globals.__log.push({ kind, src: marked.currentSrc || marked.src })
 }
 
-const model = {
-  lanes: [
+const model = (() => {
+  const lanes = [
     // The PICTURE's one clip is TRIMMED to leave a tail: its segment stops a second short of the job, which
     // the added track below runs through. That is the padding a longer track draws, and the stretch where a
     // trimmed visual's own sound used to run on.
@@ -58,6 +58,37 @@ const model = {
       { key: 'joined#0', sourcePath: globals.__file, start: 0, duration: globals.__duration / 4, sourceUsedSeconds: globals.__duration / 4, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false },
       { key: 'joined#1', sourcePath: globals.__file, start: globals.__duration / 4, duration: globals.__duration / 4, sourceUsedSeconds: globals.__duration / 4, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false },
     ] },
+  ]
+  return { lanes, duration: globals.__duration, unusedVideoSources: [] as string[] }
+})()
+
+/**
+ * The FROZEN case: a MULTI-TRACK whose VISUAL lane is EMPTY — no video source at all.
+ *
+ * This is the job reported as "a track looping on one frame": with no main-lane segment, the clock had nothing
+ * to own it and held the playhead wherever it stood, so every added track was re-seeked onto that same frame
+ * for as long as playback ran. NOTHING here mounts a video element, which is the whole point of the case.
+ */
+const frozenModel = {
+  lanes: [
+    { id: 'main', label: 'VIDEO', kind: 'video' as const, embedded: true, duration: 0, segments: [] as never[] },
+    { id: 'sound', label: 'AUDIO 1', kind: 'audio' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'sound#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceUsedSeconds: globals.__duration, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false }] },
+  ],
+  duration: globals.__duration,
+  unusedVideoSources: [] as string[],
+}
+
+/**
+ * The BLANK-TAIL case: a BLANK as the LAST thing on the VISUAL lane, with a LONGER added track under it.
+ *
+ * The main lane ends two seconds before the output, so past the blank the tail has to run on the anchored clock
+ * rather than hold on the blank's last frame. This is the other half of the reported freeze, and no video element
+ * is mounted for a placeholder here either.
+ */
+const blankTailModel = {
+  lanes: [
+    { id: 'main', label: 'VIDEO', kind: 'video' as const, embedded: true, duration: globals.__duration - 2, segments: [{ key: 'blank#0', sourcePath: 'placeholder:video:harness:000000', start: 0, duration: globals.__duration - 2, sourceUsedSeconds: globals.__duration - 2, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false }] },
+    { id: 'sound', label: 'AUDIO 1', kind: 'audio' as const, embedded: false, duration: globals.__duration, segments: [{ key: 'sound#0', sourcePath: globals.__file, start: 0, duration: globals.__duration, sourceUsedSeconds: globals.__duration, speed: 1, speedInterpolation: 'sampling' as const, maintainPitch: true, sourceIn: 0, trimmed: false }] },
   ],
   duration: globals.__duration,
   unusedVideoSources: [] as string[],
@@ -71,7 +102,13 @@ const model = {
  */
 const Monitor: React.FC<{ variant: 'stable' | 'inline' }> = ({ variant }) => {
   const audioElements = React.useRef<Record<string, HTMLAudioElement | null>>({})
-  const playback = useConsolidatedPlayback(model, audioElements, { playable: true, fps: globals.__fps })
+  const caseName = new URLSearchParams(window.location.search).get('case') || 'default'
+  const used = caseName === 'frozen' ? frozenModel : caseName === 'blanktail' ? blankTailModel : model
+  const mainSegment = used.lanes[0].segments[0] as { sourcePath: string } | undefined
+  // A still or a BLANK draws no element in the real monitor, so the harness mounts none either: that absence is
+  // the whole reason the clock has to fall back to the anchored one.
+  const hasVideo = Boolean(mainSegment) && !mainSegment!.sourcePath.startsWith('placeholder:')
+  const playback = useConsolidatedPlayback(used, audioElements, { playable: true, fps: globals.__fps })
   globals.__renders += 1
   React.useEffect(() => {
     globals.__playback = playback
@@ -83,17 +120,17 @@ const Monitor: React.FC<{ variant: 'stable' | 'inline' }> = ({ variant }) => {
     ? playback.attachVideo
     : (element: HTMLVideoElement | null) => { playback.attachVideo(element); logMediaElement(element, 'monitor-video') }
   return <>
-    <video
+    {hasVideo && <video
       ref={attach}
       src={mediaUrl(globals.__file)}
       preload="metadata"
       playsInline
       muted
       style={{ width: 240, background: '#000' }}
-    />
+    />}
     <audio ref={(element) => { audioElements.current['sound#0'] = element }} src={mediaUrl(globals.__file)} preload="auto" />
-    <audio ref={(element) => { audioElements.current['joined#0'] = element }} src={mediaUrl(globals.__file)} preload="auto" />
-    <audio ref={(element) => { audioElements.current['joined#1'] = element }} src={mediaUrl(globals.__file)} preload="auto" />
+    {caseName === 'default' && <audio ref={(element) => { audioElements.current['joined#0'] = element }} src={mediaUrl(globals.__file)} preload="auto" />}
+    {caseName === 'default' && <audio ref={(element) => { audioElements.current['joined#1'] = element }} src={mediaUrl(globals.__file)} preload="auto" />}
   </>
 }
 

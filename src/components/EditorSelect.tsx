@@ -33,7 +33,12 @@ export const EditorSelect: React.FC<{
   title?: string
   ariaLabel?: string
   className?: string
-}> = ({ value, options, onChange, disabled, title, ariaLabel, className }) => {
+  /**
+   * A glyph to show IN PLACE of the value text, for a trigger that is an ICON and whose value is written beside it.
+   * The caret goes with it, because an icon button is not a value field. `ariaLabel` is then the only name it has.
+   */
+  icon?: React.ReactNode
+}> = ({ value, options, onChange, disabled, title, ariaLabel, className, icon }) => {
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const [place, setPlace] = useState<{ left: number; width: number; top?: number; bottom?: number; maxHeight: number } | null>(null)
@@ -146,10 +151,11 @@ export const EditorSelect: React.FC<{
       onClick={() => (open ? setOpen(false) : openMenu())}
       onKeyDown={onKeyDown}
     >
-      <span className="editor-select-value">{current?.label ?? ''}</span>
+      <span className="editor-select-value">{icon ?? (current?.label ?? '')}</span>
       {/* The same glyph the queue's own chevron uses, turned a quarter turn clockwise: one mark for the
-          two disclosures in the app, and a `>` reads as a point rather than as a letter. */}
-      <span className="editor-select-caret" aria-hidden="true">{'>'}</span>
+          two disclosures in the app, and a `>` reads as a point rather than as a letter. An ICON trigger
+          carries none: the glyph is the whole button. */}
+      {!icon && <span className="editor-select-caret" aria-hidden="true">{'>'}</span>}
     </button>
     <div
       className="editor-select-menu"
