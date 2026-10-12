@@ -2400,6 +2400,22 @@ const drive = async () => {
     const options = [...(menu?.querySelectorAll('.editor-select-option') ?? [])] as HTMLElement[]
     const cropped = options.filter((option) => option.scrollWidth > option.clientWidth + 1).map((option) => option.textContent ?? '')
     const menuWidth = menu ? menu.getBoundingClientRect().width : 0
+    // THE OPEN LIST MUST PAINT OVER THE TIMELINE'S [+] MARKERS. The dock carries a z-index of its own, which CAPS
+    // the list inside it; a cap below the markers' layer is what drew the markers over the list. Read two ways:
+    // the layer the dock asks for against the markers' own, and — where a marker actually falls under the open
+    // list — a hit test, which is the thing a reader sees.
+    const dockZ = dock ? getComputedStyle(dock).zIndex : null
+    const markerZ = (() => { const marker = document.querySelector('.boundary-add'); return marker ? getComputedStyle(marker).zIndex : null })()
+    const menuRect = menu?.getBoundingClientRect()
+    const markersUnder = [...document.querySelectorAll('.boundary-add')].filter((marker) => {
+      const r = marker.getBoundingClientRect()
+      return Boolean(menuRect && r.left + r.width / 2 > menuRect.left && r.left + r.width / 2 < menuRect.right && r.top + r.height / 2 > menuRect.top && r.top + r.height / 2 < menuRect.bottom)
+    })
+    const menuOnTop = markersUnder.filter((marker) => {
+      const r = marker.getBoundingClientRect()
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+      return Boolean(top && menu && menu.contains(top))
+    }).length
     options.find((option) => (option.textContent ?? '').includes('CUSTOM'))?.click()
     await wait(80)
     const field = document.querySelector('.preview-zoom-field input') as HTMLElement | null
@@ -2412,6 +2428,10 @@ const drive = async () => {
       cropped,
       fieldWidth: f ? +f.width.toFixed(1) : null,
       fieldHeight: f ? +f.height.toFixed(1) : null,
+      dockZ,
+      markerZ,
+      markersUnderMenu: markersUnder.length,
+      menuOnTop,
     }
   }
 

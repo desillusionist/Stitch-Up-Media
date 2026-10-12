@@ -392,7 +392,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 /* The monitor's zoom lives in the picture's own bottom-left CORNER: an icon button and the scale it is set to,
    over the monitor rather than on a row below it. The panel is the positioning context for that corner, and the
    trigger is an icon, so the caret and the value text go. */
-.preview-zoom-dock { position: absolute; left: 10px; bottom: 10px; z-index: 6; display: flex; align-items: center; gap: 6px; }
+.preview-zoom-dock { position: absolute; left: 10px; bottom: 10px; z-index: 90; display: flex; align-items: center; gap: 6px; }
+/* The dock's layer is the DROPDOWN layer, not a few pixels above the picture. A z-index of its own makes a
+   stacking context, which CAPS everything inside it — so a dock at the picture's own depth confined its
+   `EditorSelect` list (z-index 90 of its own) to that depth, and the timeline's [+] markers, drawn later in the
+   document at their own z-index, were painted OVER the open list. At 90 the list sits where every other
+   `EditorSelect` list sits, above the timeline's markers and menus. */
 .preview-zoom-dock .editor-select { width: auto; }
 .preview-zoom-dock .editor-select-trigger { padding: 5px 6px; color: var(--ui-accent); }
 /* The icon trigger is far NARROWER than a value one, so the list is given a floor of its own rather than the

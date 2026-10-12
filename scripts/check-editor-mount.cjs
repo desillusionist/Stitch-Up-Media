@@ -160,6 +160,9 @@ app.whenReady().then(async () => {
       if (!(Number(zoom.menuWidth) >= 90)) problems.push(`the zoom menu is only ${zoom.menuWidth}px wide, so its entries are cropped`)
       if (!(Number(zoom.fieldWidth) > 0 && Number(zoom.fieldWidth) <= 64)) problems.push(`the CUSTOM field is ${zoom.fieldWidth}px wide, which is not compact`)
       if (!(Number(zoom.fieldHeight) > 0 && Number(zoom.fieldHeight) <= 26)) problems.push(`the CUSTOM field is ${zoom.fieldHeight}px tall, which is not compact`)
+      // The open list must sit ABOVE the timeline's [+] markers, which the dock's own layer used to cap it below.
+      if (!(Number(zoom.dockZ) > Number(zoom.markerZ))) problems.push(`the zoom control's layer (z-index ${zoom.dockZ}) does not outrank the timeline's [+] markers (z-index ${zoom.markerZ}), so an open list is painted under them`)
+      if (Number(zoom.markersUnderMenu) > 0 && Number(zoom.menuOnTop) !== Number(zoom.markersUnderMenu)) problems.push(`the timeline's [+] markers paint over the open zoom list: ${zoom.menuOnTop} of ${zoom.markersUnderMenu} on top`)
     }
     // THE TRANSPORT'S GLYPHS ARE DRAWN SYMBOLS, not the bracket-and-pipe text they were: the four tokens
     // `[|<]`, `[>]`, `[>|]` and `[||]` are SVG now, so each button is read for its own glyph and for the
