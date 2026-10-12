@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -673,6 +673,31 @@ const drive = async () => {
     zoomInDock: Boolean(document.querySelector('.editor-screen .preview-zoom-dock')),
     zoomLabel: document.querySelector('.preview-zoom-label')?.textContent ?? null,
     zoomOptions: [...document.querySelectorAll('.preview-zoom-dock .editor-select-option')].map((node) => node.textContent ?? ''),
+  }
+  // THE MONITOR'S SPEED WHEEL IS INCREMENTAL, and the transport's figure follows a SCRUB. Both read the figure
+  // the reader sees move.
+  {
+    const screen = document.querySelector('.editor-screen') as HTMLElement | null
+    const lanes = document.querySelector('.timeline-lanes') as HTMLElement | null
+    const rateNow = () => document.querySelector('.transport-rate')?.textContent?.trim() ?? null
+    const roll = (target: HTMLElement | null, deltaY: number) => target?.dispatchEvent(new WheelEvent('wheel', { deltaY, deltaMode: 0, bubbles: true, cancelable: true }))
+    const atRest = rateNow()
+    roll(screen, -2)
+    await wait(50)
+    const afterNudge = rateNow()
+    for (let n = 0; n < 12; n++) roll(screen, -2)
+    await wait(50)
+    const afterScroll = rateNow()
+    result.speedWheel = { atRest, afterNudge, afterScroll }
+    // A wheel over the LANES scrubs (RW/FF), which drives the tracks by RATE; the figure must show that rate
+    // while the gesture lasts and return to the resting figure once it settles.
+    const scrubRest = rateNow()
+    roll(lanes, -40)
+    await wait(50)
+    const scrubbing = rateNow()
+    await wait(600)
+    const scrubSettled = rateNow()
+    result.scrubReadout = { rest: scrubRest, scrubbing, settled: scrubSettled }
   }
   // THE GUTTER'S LIVE READOUT IS AN EDITABLE STAMP: a field that shows the skimmer's own position rather than a
   // static label. Read first as its tag and kind, and then — which is the whole of it — by whether typing the

@@ -149,6 +149,20 @@ app.whenReady().then(async () => {
       if (!String(chrome.zoomLabel).trim()) problems.push('the zoom control shows no scale beside its button')
       if ((chrome.zoomOptions || []).map((label) => String(label).trim()).includes('FIT')) problems.push(`the zoom list still offers FIT: ${JSON.stringify(chrome.zoomOptions)}`)
     }
+    // THE MONITOR'S SPEED WHEEL IS INCREMENTAL: a nudge must not move it, a deliberate scroll must.
+    const wheel = result.speedWheel
+    if (!wheel) problems.push('the monitor\u2019s speed wheel reported nothing')
+    else {
+      if (wheel.afterNudge !== wheel.atRest) problems.push(`a two-pixel nudge moved the watch speed from ${wheel.atRest} to ${wheel.afterNudge}, so the wheel is not incremental`)
+      if (wheel.afterScroll === wheel.atRest) problems.push('a deliberate wheel scroll did not move the watch speed at all')
+    }
+    // THE TRANSPORT'S FIGURE SHOWS THE REAL RATE OF A SCRUB, and returns to the resting figure once it settles.
+    const scrubReadout = result.scrubReadout
+    if (!scrubReadout) problems.push('the transport reported nothing about its figure during a scrub')
+    else {
+      if (scrubReadout.scrubbing === scrubReadout.rest) problems.push(`a wheel scrub left the transport figure at ${JSON.stringify(scrubReadout.rest)}, so the real rate is not shown`)
+      if (scrubReadout.settled !== scrubReadout.rest) problems.push(`the transport figure stayed at ${JSON.stringify(scrubReadout.settled)} after the scrub settled rather than returning to ${JSON.stringify(scrubReadout.rest)}`)
+    }
     // THE ZOOM PANEL'S OWN BOXES: the list reads, the CUSTOM field is compact, and the control is INSET from the
     // monitor's corner rather than jammed into it.
     const zoom = result.zoomPanel

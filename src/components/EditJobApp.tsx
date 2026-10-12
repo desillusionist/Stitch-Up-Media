@@ -117,6 +117,18 @@ const SLOW_MOTION_RATE = 0.5
 const TRIM_SNAP_PIXELS = 6
 
 /**
+ * How much wheel, in PIXELS, climbs one rung of the preview-speed ladder.
+ *
+ * A wheel over the monitor changes the speed being watched at, and stepping a rung per EVENT — which is what it
+ * did — raced the whole ladder in one flick: a trackpad sends a stream of small pixel deltas, and six rungs is
+ * nothing when a gesture is sixty events, so the figure jumped from 1x to 8x or to 0.5x almost at once. The wheel
+ * ACCUMULATES instead, one rung per this many pixels, and carries the remainder: a nudge moves nothing at all and
+ * a deliberate scroll climbs a rung at a time. On this platform an ordinary notch is a handful of pixels — see
+ * `NumberField` — so this is a few notches.
+ */
+const SPEED_WHEEL_PIXELS_PER_RUNG = 12
+
+/**
  * The fields this window owns. Everything else on a task belongs to the queue.
  */
 const editableSlice = (task: QueueTask) => ({
@@ -1918,9 +1930,30 @@ export const EditJobApp: React.FC = () => {
    * one. The ladder is climbed and STOPS at its ends rather than wrapping, and it is the same ladder the
    * selector offers, so the two can never disagree about what a rung is.
    */
+  const speedWheelRef = useRef(0)
+  /**
+   * The watch speed as the wheel last left it.
+   *
+   * A burst of wheel events arrives faster than a render, so reading `playback.speed` inside the handler would
+   * have every step in the burst climb from the SAME rendered figure — a flick that crossed three rungs would
+   * land on the first. This carries the figure the wheel itself set, and is re-synced to the rendered speed on
+   * every render so the selector and L are still honoured.
+   */
+  const speedRateRef = useRef<number>(playback.speed)
+  speedRateRef.current = playback.speed
   const speedByWheel = (event: React.WheelEvent<HTMLElement>) => {
     if (event.deltaY === 0) return
-    playback.setSpeed(steppedPreviewSpeed(playback.speed, event.deltaY < 0 ? 1 : -1))
+    // One rung per a DELIBERATE amount of scroll, with the remainder carried, so a trackpad's stream of tiny
+    // deltas no longer races the ladder from one end to the other in a single flick.
+    const perRung = event.deltaMode === 0 ? SPEED_WHEEL_PIXELS_PER_RUNG : 1
+    speedWheelRef.current += -event.deltaY / perRung
+    const steps = Math.trunc(speedWheelRef.current)
+    if (steps === 0) return
+    speedWheelRef.current -= steps
+    let rate = speedRateRef.current
+    for (let taken = 0; taken < Math.abs(steps); taken++) rate = steppedPreviewSpeed(rate, steps > 0 ? 1 : -1)
+    speedRateRef.current = rate
+    playback.setSpeed(rate)
   }
 
   // Level and mute are applied to the ELEMENTS directly and never reach the task — and they are the SAME
@@ -4236,6 +4269,22 @@ export const EditJobApp: React.FC = () => {
   /** What the chosen scale is CALLED, written beside the button: the option's own label, with FIT named even
    *  though it is not in the list, because it is the state the window opens in. */
   const zoomLabel = zoomOption === 'fit' ? 'FIT' : (zoomChoices.find((choice) => choice.value === zoomOption)?.label ?? '')
+  /**
+   * What the transport's own readout says, and whether it reads as fast or reversed.
+   *
+   * A SCRUB in flight — a wheel RW/FF over the lanes, the bar or the monitor's own scrubber — drives the tracks by
+   * RATE rather than by seeking, so that rate is the one the sound is REALLY at, and it is shown while the gesture
+   * lasts, signed by the direction the playhead is being pushed. Otherwise it is the shuttle's own rate, and the
+   * speed being watched at when neither is running. It is shown even when the transport is IDLE, because it is the
+   * speed the monitor is WATCHED at rather than a state.
+   */
+  const transportRate = playback.scrubRate != null
+    ? { fast: Math.abs(playback.scrubRate) > 1.02, reverse: playback.scrubRate < 0, text: `${playback.scrubRate < 0 ? '<' : '>'} ${Math.round(Math.abs(playback.scrubRate) * 10) / 10}x` }
+    : playback.shuttleRate > 0
+      ? { fast: playback.shuttleRate > 1, reverse: false, text: `> ${playback.shuttleRate}x` }
+      : playback.shuttleRate < 0
+        ? { fast: Math.abs(playback.shuttleRate) > 1, reverse: true, text: `< ${Math.abs(playback.shuttleRate)}x` }
+        : { fast: playback.playing && playback.speed > 1, reverse: false, text: `${playback.playing ? '> ' : ''}${speedLabel(playback.speed)}` }
   const chooseZoom = (option: string) => {
     if (option === 'fit' || option === 'fitWidth' || option === 'fitHeight') {
       setZoomCustom(false)
@@ -4651,15 +4700,10 @@ export const EditJobApp: React.FC = () => {
             <button disabled={!playable} onClick={() => playback.step(-1 / Math.max(1, fps))} title={playable ? 'Step back one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step back one frame"><PrevFrameIcon /></button>
             <button disabled={!playable} onClick={playback.toggle} title={playable ? undefined : 'NOTHING PLAYABLE HERE YET.'} aria-label={playback.playing ? 'Pause' : 'Play'}>{playback.playing ? <PauseIcon /> : <PlayIcon />}</button>
             <button disabled={!playable} onClick={() => playback.step(1 / Math.max(1, fps))} title={playable ? 'Step forward one frame' : 'NOTHING PLAYABLE HERE YET.'} aria-label="Step forward one frame"><NextFrameIcon /></button>
-            <span className={`transport-rate${playback.shuttleRate < 0 ? ' is-reverse' : playback.shuttleRate > 1 || (playback.shuttleRate === 0 && playback.playing && playback.speed > 1) ? ' is-fast' : ''}`}>
-              {/* The rate the transport is being driven at: the shuttle's own when one is running, and otherwise
-                  the shared speed value the wheel and L both write. It is shown even when the transport is
-                  IDLE, because it is the speed the monitor is WATCHED at rather than a state — the line above
-                  already says PAUSED, and this is the figure the selector used to show beside it. */}
-              {playback.shuttleRate > 0 ? `> ${playback.shuttleRate}x`
-                : playback.shuttleRate < 0 ? `< ${Math.abs(playback.shuttleRate)}x`
-                  : playback.playing ? `> ${speedLabel(playback.speed)}`
-                    : speedLabel(playback.speed)}
+            <span className={`transport-rate${transportRate.reverse ? ' is-reverse' : transportRate.fast ? ' is-fast' : ''}`}>
+              {/* The rate the transport is running at RIGHT NOW — see `transportRate` for what the figure is while
+                  a scrub or a shuttle is in flight. */}
+              {transportRate.text}
             </span>
             {/* The speed the monitor is watched at was chosen here until this pass. It is a preview-only
                 rate and a wheel over the monitor still steps it — see `speedByWheel` — so the readout on

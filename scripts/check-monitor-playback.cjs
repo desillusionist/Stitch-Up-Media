@@ -191,11 +191,37 @@ const keysMeasure = `(async () => {
   const revPlaying = !a.paused
   const revRate = a.playbackRate
   live().pause()
+  // REVERSE AFTER A WHEEL SPEED: the wheel raises the preview speed, and a rewind under that speed must STILL
+  // sound — the reported fault is that it goes silent once the wheel has accelerated the tracks.
+  live().setSpeed(4)
+  await sleep(40)
+  live().setShuttleRate(-1)
+  await sleep(250)
+  const wheelRevStart = live().position
+  const wheelRevPlaying = !a.paused
+  const wheelRevRate = a.playbackRate
+  await sleep(500)
+  const wheelRevEnd = live().position
+  live().pause()
+  // J DURING A WHEEL SCRUB: the wheel's RW/FF drives the sound through the gesture; a reverse pressed while it
+  // is in flight must still return the track once the scrub settles.
+  live().seek(window.__duration / 2)
+  live().toggle()
+  await sleep(250)
+  live().scrubBy(0.4)
+  await sleep(60)
+  live().setShuttleRate(-1)
+  await sleep(1500)
+  const scrubRevPlaying = !a.paused
+  const scrubRevRate = a.playbackRate
+  live().pause()
   return {
     slowPlaying,
     slowAdvanced: +(slowEnd - slowStart).toFixed(3),
     speedSet, speedAfterStop, speedAfterPlay,
     revPlaying, revAdvanced: +(revEnd - revStart).toFixed(3), revRate: +revRate.toFixed(3),
+    wheelRevPlaying, wheelRevRate: +wheelRevRate.toFixed(3), wheelRevAdvanced: +(wheelRevEnd - wheelRevStart).toFixed(3),
+    scrubRevPlaying, scrubRevRate: +scrubRevRate.toFixed(3),
   }
 })()`
 
@@ -453,6 +479,10 @@ app.whenReady().then(async () => {
     // REVERSE IS AUDIBLE: the slaved track keeps running while the playhead walks back.
     if (!keys.revPlaying) problems.push('a backward shuttle (J) left the added track PAUSED, so it was silent')
     if (!(keys.revAdvanced < -0.2)) problems.push(`a backward shuttle did not walk the playhead back: it moved ${keys.revAdvanced}s over 0.6s`)
+    // A REWIND AFTER A WHEEL SPEED, and a rewind pressed DURING a wheel scrub: the added track must still sound.
+    if (!keys.wheelRevPlaying) problems.push('a rewind under a wheel-set speed left the added track PAUSED, so it went silent')
+    if (!(keys.wheelRevAdvanced < -0.2)) problems.push(`a rewind under a wheel-set speed did not walk the playhead back: it moved ${keys.wheelRevAdvanced}s`)
+    if (!keys.scrubRevPlaying) problems.push('a rewind pressed during a wheel scrub left the added track PAUSED, so it went silent')
   } else if (results.keys) {
     problems.push(`the keys could not be measured: ${results.keys.HARNESS_ERROR}`)
   }

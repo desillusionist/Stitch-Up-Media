@@ -70,7 +70,16 @@ export interface ConsolidatedPlayback {
   accelerate: () => void
   setShuttleRate: (rate: number) => void
   /**
-   * A wheel- or drag-scrub of the playhead.
+   /**
+    * The rate a SCRUB is driving the sound at, signed by the direction the playhead moves, or null when no scrub
+    * is in flight.
+    *
+    * A wheel's RW/FF drives the tracks by RATE rather than by seeking — see `scrubRateFor` — so the speed the
+    * sound is really at during a gesture is known only here. It is published so the transport's readout can show
+    * the figure the sound is ACTUALLY running at rather than the speed the transport would run at.
+    */
+   scrubRate: number | null
+   /** A wheel- or drag-scrub of the playhead.
    *
    * It is a scrub rather than a seek because of who else writes the playhead: a plain `seek` during playback
    * leaves the auto-advance clock running, so a wheel tick and the element's own clock both write, the two
@@ -159,6 +168,8 @@ export const useConsolidatedPlayback = (
   const [shuttleRate, setShuttleRateState] = useState(0)
   const [speed, setSpeedState] = useState<PreviewSpeed>(DEFAULT_PREVIEW_SPEED)
   const [error, setError] = useState<string | null>(null)
+  /** How fast a scrub in flight is driving the sound, signed by direction: null when none is running. */
+  const [scrubRate, setScrubRate] = useState<number | null>(null)
 
   const mainSegments = model.lanes[0]?.segments ?? []
   const segment = mainSegments[segmentIndex]
@@ -697,6 +708,7 @@ export const useConsolidatedPlayback = (
     if (!scrubbingRef.current) return
     scrubbingRef.current = false
     scrubTickRef.current = null
+    setScrubRate(null)
     const wasPlaying = resumeAfterScrubRef.current
     resumeAfterScrubRef.current = false
     const settled = stateRef.current.position
@@ -793,6 +805,8 @@ export const useConsolidatedPlayback = (
     const previous = tick?.rate ?? 1
     const rate = tick ? scrubRateFor((bounded - tick.position) / Math.max(0.008, (now - tick.at) / 1000), previous) : previous
     scrubTickRef.current = { at: now, position: bounded, rate }
+    // Signed by where this tick moved the playhead, so the readout can say RW from FF as well as how fast.
+    setScrubRate(tick && bounded < tick.position ? -rate : rate)
     setPosition(bounded)
     setSegmentIndex(indexForTime(bounded))
     pendingSeekRef.current = bounded
@@ -868,6 +882,7 @@ export const useConsolidatedPlayback = (
       anchorRef.current = null
     }, []),
     error,
+    scrubRate,
     /**
      * Play or pause, and put the transport back to ORDINARY while doing it.
      *
