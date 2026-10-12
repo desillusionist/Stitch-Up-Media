@@ -392,7 +392,7 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 /* The monitor's zoom lives in the picture's own bottom-left CORNER: an icon button and the scale it is set to,
    over the monitor rather than on a row below it. The panel is the positioning context for that corner, and the
    trigger is an icon, so the caret and the value text go. */
-.preview-zoom-dock { position: absolute; left: 10px; bottom: 10px; z-index: 90; display: flex; align-items: center; gap: 6px; }
+.preview-zoom-dock { position: absolute; left: 0; bottom: 0; z-index: 90; display: flex; align-items: center; gap: 6px; }
 /* The dock's layer is the DROPDOWN layer, not a few pixels above the picture. A z-index of its own makes a
    stacking context, which CAPS everything inside it — so a dock at the picture's own depth confined its
    `EditorSelect` list (z-index 90 of its own) to that depth, and the timeline's [+] markers, drawn later in the
@@ -408,7 +408,12 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .preview-zoom-dock .preview-zoom-field { width: 52px; }
 .preview-zoom-dock .preview-zoom-field input { width: 100%; min-width: 0; padding: 2px 3px; font-size: 9px; line-height: 1.4; }
 .preview-zoom-icon { display: block; }
-.preview-zoom-label { color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
+/* The scale is AUTO-HIDING: it is not printed over the picture at rest, and comes up when the reader is at the
+   button — hovering it or with the list open (the trigger keeps the focus, so `:focus-within` covers that). A
+   label that is always up is a caption for a control the reader has already found by its glyph. */
+.preview-zoom-label { color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; pointer-events: none; opacity: 0; transition: opacity .12s ease; }
+.preview-zoom-dock:hover .preview-zoom-label,
+.preview-zoom-dock:focus-within .preview-zoom-label { opacity: 1; }
 .timeline-ruler { position: relative; height: 20px; padding: 0; margin: 0 0 6px; color: var(--ui-muted); font-size: 9px; border-bottom: 1px dotted var(--ui-border); }
 .timeline-ruler span { position: absolute; white-space: nowrap; }
 /* The scale's own grid: a line for every mark, and a label only on the ones with room for one. Both are

@@ -3235,6 +3235,20 @@ export const EditJobApp: React.FC = () => {
    */
   const sourceTotalFor = (segment: TimelineSegment) =>
     isPlaceholder(segment.sourcePath) ? segment.sourceUsedSeconds : sourceDuration(draft, segment.sourcePath, undefined, resolveTiming)
+  /**
+   * The source's own SHAPE, as `720x1280 | 25 FPS`: its resolution and rate, in the terms a reader compares one
+   * file against another.
+   *
+   * It rides the clip's DETAIL line rather than its name — the name is the file's, and the figures ABOUT the file
+   * belong on the line below it. Nothing for a source with no picture: a BLANK, a SILENCE and a lone sound have no
+   * shape to print, and those clips keep the bare lines the rest of the window finds them by.
+   */
+  const segmentShape = (segment: TimelineSegment) => {
+    if (placeholderKind(segment.sourcePath) || sourceVideo[segment.sourcePath] === false) return ''
+    const resolution = sourceProbes[segment.sourcePath]?.videoStreams?.[0]?.resolution || draft.sourceMetadata?.[segment.sourcePath]?.resolution
+    const rate = sourceFps(draft, segment.sourcePath, undefined, resolveTiming)
+    return [resolution, rate > 0 ? `${Math.round(rate)} FPS` : null].filter(Boolean).join(' | ')
+  }
   const segmentDetail = (segment: TimelineSegment) => {
     const parts = [stamp(segment.duration)]
     // TRIMMED only when the trim takes something away: a clip that uses the whole of its source is the
@@ -3261,6 +3275,9 @@ export const EditJobApp: React.FC = () => {
     // clip's box.
     const sound = sourceAudio[segment.sourcePath] && !sourceVideo[segment.sourcePath] ? audioFacts(sourceProbes[segment.sourcePath]) : null
     if (sound) parts.push(sound)
+    // The source's own SHAPE, last on the line: `720x1280 | 25 FPS`.
+    const shape = segmentShape(segment)
+    if (shape) parts.push(shape)
     return parts.join(' // ')
   }
   const segmentLabel = (segment: TimelineSegment) => {
@@ -3292,21 +3309,6 @@ export const EditJobApp: React.FC = () => {
     trimmed: segment.trimmed,
     mode: timestampMode,
   })}`
-  /**
-   * The clip's SHAPE, appended to its name on the timeline: the source's own resolution and rate, as
-   * ` • 1280x720 • 25 FPS`.
-   *
-   * The monitor used to print this under the picture; it belongs with the clip it describes, on the box a reader
-   * already looks at. Nothing for a source with no picture — a BLANK, a SILENCE, or a lone sound — so those clips
-   * keep the bare name the rest of the window finds them by.
-   */
-  const segmentShape = (segment: TimelineSegment) => {
-    if (placeholderKind(segment.sourcePath) || sourceVideo[segment.sourcePath] === false) return ''
-    const resolution = sourceProbes[segment.sourcePath]?.videoStreams?.[0]?.resolution || draft.sourceMetadata?.[segment.sourcePath]?.resolution
-    const rate = sourceFps(draft, segment.sourcePath, undefined, resolveTiming)
-    const parts = [resolution, rate > 0 ? `${Math.round(rate)} FPS` : undefined].filter(Boolean)
-    return parts.length ? ` • ${parts.join(' • ')}` : ''
-  }
   /**
    * Where the right-click menu was asked for, and where it ended up.
    *
@@ -5144,7 +5146,7 @@ export const EditJobApp: React.FC = () => {
                         {/* A BLANK is what it IS rather than what it holds: its own fill colour, drawn under
                             the name so the clip reads as the flat stretch it will write. */}
                         {placeholderKind(segment.sourcePath) === 'video' && <span className="clip-blank" style={{ background: fillCss(placeholderFill(segment.sourcePath) ?? undefined) }} aria-hidden="true" />}
-                        <span className="timeline-clip-name">{segmentName(segment)}{segmentShape(segment)}</span>
+                        <span className="timeline-clip-name">{segmentName(segment)}</span>
                         <small>{segmentDetail(segment)}</small>
                         {segment.fadeIn ? <span className="clip-fade clip-fade-in" style={{ width: `${Math.min(100, (segment.fadeIn / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}
                         {segment.fadeOut ? <span className="clip-fade clip-fade-out" style={{ width: `${Math.min(100, (segment.fadeOut / Math.max(segment.duration, 0.001)) * 100)}%` }} aria-hidden="true" /> : null}

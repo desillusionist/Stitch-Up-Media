@@ -143,7 +143,8 @@ app.whenReady().then(async () => {
     if (!chrome) problems.push('the preview reported nothing about its own chrome')
     else {
       if (chrome.detailLines !== 0) problems.push(`the monitor still draws ${chrome.detailLines} detail line(s) under the picture`)
-      if (!/1280x720|1920x1080/.test(String(chrome.clipName)) || !/\d+ FPS/.test(String(chrome.clipName))) problems.push(`a clip's name does not carry its own shape: ${JSON.stringify(chrome.clipName)}`)
+      if (!/\d+x\d+/.test(String(chrome.clipDetail)) || !/\d+ FPS/.test(String(chrome.clipDetail))) problems.push(`a clip's DETAIL line does not carry the file's shape: ${JSON.stringify(chrome.clipDetail)}`)
+      if (/\d+ FPS/.test(String(chrome.clipName))) problems.push(`the file's shape is still on the clip's NAME line: ${JSON.stringify(chrome.clipName)}`)
       if (!chrome.zoomInDock) problems.push('the zoom control is not in the monitor\u2019s own corner')
       if (!String(chrome.zoomLabel).trim()) problems.push('the zoom control shows no scale beside its button')
       if ((chrome.zoomOptions || []).map((label) => String(label).trim()).includes('FIT')) problems.push(`the zoom list still offers FIT: ${JSON.stringify(chrome.zoomOptions)}`)
@@ -153,8 +154,12 @@ app.whenReady().then(async () => {
     const zoom = result.zoomPanel
     if (!zoom) problems.push('the zoom panel reported nothing about its own boxes')
     else {
-      if (!(Number(zoom.fromLeft) > 3)) problems.push(`the zoom control is jammed against the monitor's left edge: ${zoom.fromLeft}px in`)
-      if (!(Number(zoom.fromBottom) > 3)) problems.push(`the zoom control is jammed against the monitor's bottom edge: ${zoom.fromBottom}px up`)
+      // FLUSH in the monitor's own corner: the dock's own offsets are 0, and it stands no measurable distance in.
+      if (String(zoom.dockLeft) !== '0px' || String(zoom.dockBottom) !== '0px') problems.push(`the zoom control's own offsets are left ${zoom.dockLeft} / bottom ${zoom.dockBottom} rather than flush at 0px`)
+      if (!(Number(zoom.fromLeft) <= 1 && Number(zoom.fromBottom) <= 1)) problems.push(`the zoom control stands ${zoom.fromLeft}px in and ${zoom.fromBottom}px up rather than in the monitor's corner`)
+      // AND ITS SCALE AUTO-HIDES: absent at rest, up when the control is in hand.
+      if (String(zoom.labelAtRest) !== '0') problems.push(`the zoom scale is shown at rest (opacity ${zoom.labelAtRest}) rather than hidden`)
+      if (String(zoom.labelOnFocus) !== '1') problems.push(`the zoom scale does not come up when the control is in hand (opacity ${zoom.labelOnFocus})`)
       if (!(Number(zoom.optionCount) >= 5)) problems.push(`the zoom list drew only ${zoom.optionCount} entries`)
       if ((zoom.cropped || []).length) problems.push(`the zoom list crops entries it cannot read: ${JSON.stringify(zoom.cropped)}`)
       if (!(Number(zoom.menuWidth) >= 90)) problems.push(`the zoom menu is only ${zoom.menuWidth}px wide, so its entries are cropped`)

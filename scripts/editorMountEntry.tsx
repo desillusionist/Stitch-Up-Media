@@ -669,6 +669,7 @@ const drive = async () => {
   result.previewChrome = {
     detailLines: document.querySelectorAll('.editor-preview small').length,
     clipName: document.querySelector('.timeline-clip-name')?.textContent ?? null,
+    clipDetail: document.querySelector('.timeline-clip small')?.textContent ?? null,
     zoomInDock: Boolean(document.querySelector('.editor-screen .preview-zoom-dock')),
     zoomLabel: document.querySelector('.preview-zoom-label')?.textContent ?? null,
     zoomOptions: [...document.querySelectorAll('.preview-zoom-dock .editor-select-option')].map((node) => node.textContent ?? ''),
@@ -2394,7 +2395,17 @@ const drive = async () => {
     const screen = document.querySelector('.editor-screen') as HTMLElement | null
     const d = dock?.getBoundingClientRect()
     const s = screen?.getBoundingClientRect()
-    ;(dock?.querySelector('.editor-select-trigger') as HTMLElement | null)?.click()
+    // THE LABEL AUTO-HIDES: it is absent at rest and comes up when the control is in hand. Read as its computed
+    // opacity, which the transition settles to 0 or 1 well inside the waits below.
+    const label = dock?.querySelector('.preview-zoom-label') as HTMLElement | null
+    const trigger = dock?.querySelector('.editor-select-trigger') as HTMLElement | null
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    await wait(250)
+    const labelAtRest = label ? getComputedStyle(label).opacity : null
+    trigger?.focus()
+    await wait(250)
+    const labelOnFocus = label ? getComputedStyle(label).opacity : null
+    trigger?.click()
     await wait(80)
     const menu = dock?.querySelector('.editor-select-menu') as HTMLElement | null
     const options = [...(menu?.querySelectorAll('.editor-select-option') ?? [])] as HTMLElement[]
@@ -2423,6 +2434,8 @@ const drive = async () => {
     result.zoomPanel = {
       fromLeft: d && s ? +(d.left - s.left).toFixed(1) : null,
       fromBottom: d && s ? +(s.bottom - d.bottom).toFixed(1) : null,
+      dockLeft: dock ? getComputedStyle(dock).left : null,
+      dockBottom: dock ? getComputedStyle(dock).bottom : null,
       menuWidth: +menuWidth.toFixed(1),
       optionCount: options.length,
       cropped,
@@ -2432,6 +2445,8 @@ const drive = async () => {
       markerZ,
       markersUnderMenu: markersUnder.length,
       menuOnTop,
+      labelAtRest,
+      labelOnFocus,
     }
   }
 
