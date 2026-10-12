@@ -405,15 +405,20 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .preview-zoom-dock .editor-select-menu { min-width: 120px; }
 /* The typed percentage, kept as compact as the sidebar's own fields: a number input otherwise takes the
    browser's default width, which is a box many times the size of the label beside it. */
-.preview-zoom-dock .preview-zoom-field { width: 52px; }
+.preview-zoom-dock .preview-zoom-field { width: 52px; opacity: 0; pointer-events: none; transition: opacity .12s ease; }
 .preview-zoom-dock .preview-zoom-field input { width: 100%; min-width: 0; padding: 2px 3px; font-size: 9px; line-height: 1.4; }
 .preview-zoom-icon { display: block; }
-/* The scale is AUTO-HIDING: it is not printed over the picture at rest, and comes up when the reader is at the
-   button — hovering it or with the list open (the trigger keeps the focus, so `:focus-within` covers that). A
-   label that is always up is a caption for a control the reader has already found by its glyph. */
+/* The scale AND the typed figure AUTO-HIDE together: neither is printed over the picture at rest, and both come up
+   when the reader is at the button — hovering it, or with the list open or the field in hand (`:focus-within`
+   covers both, the trigger keeping the focus while the list is up). A label that is always up is a caption for a
+   control the reader has already found by its glyph. */
 .preview-zoom-label { color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; pointer-events: none; opacity: 0; transition: opacity .12s ease; }
 .preview-zoom-dock:hover .preview-zoom-label,
-.preview-zoom-dock:focus-within .preview-zoom-label { opacity: 1; }
+.preview-zoom-dock:focus-within .preview-zoom-label,
+.preview-zoom-dock:hover .preview-zoom-field,
+.preview-zoom-dock:focus-within .preview-zoom-field { opacity: 1; }
+.preview-zoom-dock:hover .preview-zoom-field,
+.preview-zoom-dock:focus-within .preview-zoom-field { pointer-events: auto; }
 .timeline-ruler { position: relative; height: 20px; padding: 0; margin: 0 0 6px; color: var(--ui-muted); font-size: 9px; border-bottom: 1px dotted var(--ui-border); }
 .timeline-ruler span { position: absolute; white-space: nowrap; }
 /* The scale's own grid: a line for every mark, and a label only on the ones with room for one. Both are

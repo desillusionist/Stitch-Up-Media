@@ -160,6 +160,10 @@ app.whenReady().then(async () => {
       // AND ITS SCALE AUTO-HIDES: absent at rest, up when the control is in hand.
       if (String(zoom.labelAtRest) !== '0') problems.push(`the zoom scale is shown at rest (opacity ${zoom.labelAtRest}) rather than hidden`)
       if (String(zoom.labelOnFocus) !== '1') problems.push(`the zoom scale does not come up when the control is in hand (opacity ${zoom.labelOnFocus})`)
+      // THE CUSTOM FIELD AUTO-HIDES WITH THE LABEL, and ENTER leaves the caret out of it.
+      if (String(zoom.fieldAtRest) !== '0') problems.push(`the CUSTOM field is shown at rest (opacity ${zoom.fieldAtRest}) rather than hidden`)
+      if (String(zoom.fieldOnFocus) !== '1') problems.push(`the CUSTOM field does not come up when it is in hand (opacity ${zoom.fieldOnFocus})`)
+      if (zoom.fieldFocusedAfterEnter) problems.push('ENTER left the caret in the CUSTOM field rather than leaving it')
       if (!(Number(zoom.optionCount) >= 5)) problems.push(`the zoom list drew only ${zoom.optionCount} entries`)
       if ((zoom.cropped || []).length) problems.push(`the zoom list crops entries it cannot read: ${JSON.stringify(zoom.cropped)}`)
       if (!(Number(zoom.menuWidth) >= 90)) problems.push(`the zoom menu is only ${zoom.menuWidth}px wide, so its entries are cropped`)

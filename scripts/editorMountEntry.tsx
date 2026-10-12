@@ -2431,6 +2431,18 @@ const drive = async () => {
     await wait(80)
     const field = document.querySelector('.preview-zoom-field input') as HTMLElement | null
     const f = field?.getBoundingClientRect()
+    // THE CUSTOM FIELD AUTO-HIDES TOO, and ENTER leaves it. Read as the field LABEL's opacity at rest and in hand,
+    // then as whether the caret stays in the input after a physical ENTER.
+    const fieldLabel = document.querySelector('.preview-zoom-field') as HTMLElement | null
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    await wait(250)
+    const fieldAtRest = fieldLabel ? getComputedStyle(fieldLabel).opacity : null
+    field?.focus()
+    await wait(250)
+    const fieldOnFocus = fieldLabel ? getComputedStyle(fieldLabel).opacity : null
+    field?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await wait(80)
+    const fieldFocusedAfterEnter = Boolean(field) && document.activeElement === field
     result.zoomPanel = {
       fromLeft: d && s ? +(d.left - s.left).toFixed(1) : null,
       fromBottom: d && s ? +(s.bottom - d.bottom).toFixed(1) : null,
@@ -2447,6 +2459,9 @@ const drive = async () => {
       menuOnTop,
       labelAtRest,
       labelOnFocus,
+      fieldAtRest,
+      fieldOnFocus,
+      fieldFocusedAfterEnter,
     }
   }
 

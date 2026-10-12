@@ -4260,6 +4260,11 @@ export const EditJobApp: React.FC = () => {
     if (text.trim() === '' || !Number.isFinite(typed) || typed < MIN_PREVIEW_ZOOM) return
     setPreviewZoom({ kind: 'percent', percent: clampPreviewZoom(typed) })
   }
+  /**
+   * Leaves the CUSTOM field — by ENTER or by clicking away — and writes the figure it ACTUALLY became back into the
+   * box, so it never reads a percentage the monitor is not at (a typed 1000 is held to `MAX_PREVIEW_ZOOM`).
+   */
+  const commitZoom = () => setZoomText(String(previewZoom.kind === 'percent' ? previewZoom.percent : 100))
   // The exact-size fields. Empty means "not overridden": the placeholder shows the frame the
   // encoder is already writing, and editing either edge pins the pair to that starting point.
   const exactSize = exactSizeFields({ width: draft.preset.width, height: draft.preset.height }, outputFrame)
@@ -4634,6 +4639,8 @@ export const EditJobApp: React.FC = () => {
                   max={MAX_PREVIEW_ZOOM}
                   value={zoomText}
                   onChange={(event) => typeZoom(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }}
+                  onBlur={commitZoom}
                   aria-label="Zoom percentage"
                 />
                 <span>%</span>
