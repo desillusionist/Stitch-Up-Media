@@ -24,10 +24,11 @@ import { pipeline } from 'node:stream/promises'
  * `scripts/check-update.cjs` against a fake server rather than only when a release happens to exist.
  *
  * ONE THING THE ENDPOINT CANNOT DO ON ITS OWN: GitHub answers a PRIVATE repository with 404, and an app shipped
- * to readers cannot carry a token to read one. So the release this points at has to be PUBLICLY readable — either
- * this repository is public, or `UPDATE_RELEASES_API` names a public feed that carries the same version/tag and
- * disk-image asset. Measured: anonymously, this repository's endpoint answers 404; with the maintainer's own
- * token, 200 and the newest tag. Until it is public every reader's check will say it could not reach GitHub.
+ * to readers cannot carry a token to read one. So the release this points at has to be PUBLICLY readable — this
+ * repository is public, and its releases are what the app resolves. MEASURED, both ways: while the repository was
+ * private this exact call answered 404 anonymously and 200 with the maintainer's token; made public, it answers
+ * 200 with the newest tag and its `.dmg`, and the asset URL downloads. If the repository is ever made private
+ * again, every reader's check will honestly say it could not reach GitHub.
  */
 export const UPDATE_RELEASES_API = 'https://api.github.com/repos/desillusionist/Stitch-Up-Media/releases/latest'
 export const UPDATE_RELEASES_PAGE = 'https://github.com/desillusionist/Stitch-Up-Media/releases'

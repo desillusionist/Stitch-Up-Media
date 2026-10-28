@@ -109,20 +109,20 @@ const main = async () => {
   check('a release without a disk image cannot be installed', /no disk image/.test(noDmg), noDmg)
 
   fs.rmSync(root, { recursive: true, force: true })
-  // The real endpoint, when asked for: `UPDATE_LIVE=1` runs the same call against a PUBLIC repository, which is
-  // what proves the request, the parse and the asset choice against the real API rather than a stand-in. It is
-  // opt-in because a harness that needs the network is a harness that fails on a train.
+  // The real endpoint, when asked for: `UPDATE_LIVE=1` runs the same call against THE APP'S OWN releases, which is
+  // what proves the request, the parse and the asset choice against the real API rather than a stand-in. It needs
+  // the releases to be publicly readable — GitHub answers a private repository with 404 — so a refusal is
+  // reported and not counted as a failure. Opt-in because a harness that needs the network fails on a train.
   if (process.env.UPDATE_LIVE) {
-    console.log('\n== against the real API (public repository) ==')
+    console.log('\n== against the real API ==')
     try {
-      const live = await fetchLatestRelease(fetch, '0.0.1', 'https://api.github.com/repos/desillusionist/sunburst-disk/releases/latest')
-      console.log(`  the public endpoint answered: ${live.version}, disk image ${live.dmg ? live.dmg.name : '(none)'}`)
-      check('a real release is read, and its version is newer than 0.0.1', isNewerVersion(live.version, '0.0.1'), live.version)
-      check('and a disk image was picked out of its real assets', Boolean(live.dmg && live.dmg.url.startsWith('https://')), JSON.stringify(live.dmg))
+      const live = await fetchLatestRelease(fetch, '0.0.1')
+      console.log(`  the endpoint answered: ${live.version}, disk image ${live.dmg ? live.dmg.name : '(none)'}, ${live.dmg ? live.dmg.size : 0} bytes`)
+      check('a real release is read, and it is newer than 0.0.1', isNewerVersion(live.version, '0.0.1'), live.version)
+      check('and a disk image is among its assets', Boolean(live.dmg && live.dmg.url.startsWith('https://')), JSON.stringify(live.dmg))
     } catch (error) {
-      // A refusal here is not a failure of the code: this repository is PRIVATE, and an app cannot carry a token
-      // to read one. Said plainly rather than as a pass.
       console.log(`  the endpoint refused: ${String(error)}`)
+      console.log('  (a private repository answers 404 anonymously — see `electron/updater.ts`)')
     }
   }
 

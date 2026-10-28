@@ -26,10 +26,10 @@ newest release, then downloads its disk image, opens it in Finder and points at 
 made by the app, so the copy you drag across carries no quarantine flag. Nothing is installed without that
 drag: the app never replaces its own bundle.
 
-The check reads the GitHub releases API **anonymously**, so the release it compares against has to be publicly
-readable: GitHub answers a private repository with 404. While this repository is private the check says it could
-not reach GitHub — either make it public, or point `UPDATE_RELEASES_API` in `electron/updater.ts` at a public feed
-that carries the same version tag and a `.dmg` asset.
+The check reads the GitHub releases API **anonymously**, so this repository's releases have to stay publicly
+readable — they are, and the 1.0.7 DMG downloads without a token. An app cannot carry a token for them: a secret
+in a bundle is a secret anyone can extract, so a private repository would simply make the check answer that it
+could not reach GitHub.
 
 ## Developing
 
