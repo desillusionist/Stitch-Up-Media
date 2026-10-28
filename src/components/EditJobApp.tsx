@@ -5114,16 +5114,21 @@ export const EditJobApp: React.FC = () => {
                       // answer the export and the monitor both ask, so the shade on the box, the green mark and
                       // what is heard cannot disagree.
                       const soundMuted = Boolean(muted[lane.id]) || clipAudioDropped(draft, segment.key, segment.sourcePath, embeddedStreamCount(draft, segment.key, segment.sourcePath, sourceProbes[segment.sourcePath]?.audioStreams?.length ?? 0))
+                      // A PICTURE'S SOUND IS NOT THE PICTURE. Dropping it leaves every frame exactly where it was, so a
+                      // clip WITH picture keeps its box unshaded and says so on the hairline that already tells the reader
+                      // it carries sound (`.clip-audio`). Only a clip that IS sound hangs off its own box, because there
+                      // the sound is the whole of it.
+                      const soundOnlyClip = lane.kind !== 'video'
                       return (
                       <div
                         key={segment.key}
-                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${multiSelected.includes(segment.key) ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index || draggingTrackIndex === index ? ' is-dragging' : ''}${soundMuted ? ' is-muted' : ''}`}
+                        className={`timeline-clip${segment.trimmed ? ' is-trimmed' : ''}${segment.key === activeSegmentKey ? ' is-active' : ''}${multiSelected.includes(segment.key) ? ' is-selected' : ''}${filmstripLanes[lane.id] ? ' is-film' : ''}${draggingClipIndex === index || draggingTrackIndex === index ? ' is-dragging' : ''}${soundMuted && soundOnlyClip ? ' is-muted' : ''}`}
                         // A cross-dissolve OVERLAPS its two clips, so a clip that dissolves IN is pulled back over
                         // the tail of the one before it by exactly that overlap. The lane's own width is then the
                         // joined length — the sum of the clips less every overlap — which is the figure the lane
                         // and the playhead are measured against, so the drawn clips and the skimmer cannot drift.
                         style={{ width: `${clipWidth}px`, ...(segment.crossfadeIn ? { marginLeft: `${-laneWidthFor(segment.crossfadeIn, zoom)}px` } : {}) }}
-                        title={clipTitle(segment)}
+                        title={`${clipTitle(segment)}${soundMuted && !soundOnlyClip ? ' - SOUND MUTED' : ''}`}
                         data-clip-key={segment.key}
                         draggable={canReorder}
                         onClick={(event) => selectClip(lane.id, segment.key, event.shiftKey)}

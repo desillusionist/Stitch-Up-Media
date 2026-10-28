@@ -1066,8 +1066,19 @@ app.whenReady().then(async () => {
     else {
       if (!clipMute.hadItem) problems.push('a clip with sound offered no MUTE CLIP in its context menu')
       if (clipMute.shadedBefore) problems.push('a clip was drawn muted before it was muted')
-      if (!clipMute.shadedAfter) problems.push('muting a clip did not shade its box on the timeline')
+      // A PICTURE'S SOUND IS NOT THE PICTURE: muting it must not dim or hatch the frames, only mark the sound.
+      if (clipMute.shadedAfter) problems.push('muting a PICTURE clip shaded its box: the frames are still there')
+      if (clipMute.markedBefore) problems.push('a clip’s sound was marked dropped before it was muted')
+      if (!clipMute.markedAfter) problems.push('muting a picture clip did not mark its soundtrack on the clip itself')
       if (!(clipMute.mutedIndexes || []).length) problems.push(`muting a clip wrote no muted stream to the queue: ${JSON.stringify(clipMute.mutedIndexes)}`)
+    }
+    // A clip that IS sound is the other half of that rule: the box is hatched, because the sound is the whole of it.
+    const soundClipMute = result.soundClipMute
+    if (!soundClipMute) problems.push('the sound-clip mute drive reported nothing')
+    else {
+      if (!soundClipMute.hadItem) problems.push('a clip of sound offered no MUTE CLIP in its context menu')
+      if (soundClipMute.shadedBefore) problems.push('a clip of sound was drawn muted before it was muted')
+      if (!soundClipMute.shadedAfter) problems.push('muting a clip OF SOUND did not shade its box, which is all there is of it')
     }
     // A mute on a COMBO's clip reaches the MONITOR, which used to apply it only where the in-place controls
     // were offered.

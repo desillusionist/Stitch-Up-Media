@@ -41,6 +41,13 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true },
 }])
 
+// THE PRODUCT'S NAME, not the package's. Electron takes the name in the menu — "About stitch-up-media", "Hide
+// stitch-up-media", "Quit stitch-up-media" — from `app.name`, which is the package.json `name` unless the app says
+// otherwise: electron-builder's `productName` names the BUNDLE, and Electron never reads it for the menu. Set before
+// the app is ready so the default menu is built with it. `userData` is set explicitly below, so the default path
+// this would otherwise move is not used either way.
+app.setName('Stitch Up Media')
+
 // One state directory, shared by the development app and the packaged build. Electron
 // derives the default from the app's own name, which is not the same in both, so settings
 // and the queue were only ever remembered within whichever one wrote them: a rebuild
@@ -379,8 +386,17 @@ app.whenReady().then(() => {
   // A MENU NICETY MUST NOT BE ABLE TO STOP THE APP. If a future Electron's default menu is shaped differently this
   // is a missing menu item, not a launch that never happens.
   try {
-    if (!applicationSubmenu) throw new Error('the application menu has no first submenu')
+    if (!applicationMenu || !applicationSubmenu) throw new Error('the application menu has no first submenu')
     applicationSubmenu.insert(1, new MenuItem({ id: 'check-for-updates', label: 'Check for Updates…', click: () => { void runUpdateCheck() } }))
+    // The About item is named after `app.name`, which is set above; this renames it in the menu itself as well, so
+    // the line reads the product's name even in a build whose metadata lags behind it.
+    const about = applicationSubmenu.items[0]
+    if (about && /^About\b/.test(about.label)) about.label = 'About Stitch Up Media'
+    // THE MENU HAS TO BE INSTALLED AGAIN, not merely edited. Inserting into the object read back from
+    // `getApplicationMenu()` updates Electron's own list — the log below proves the item is there — but it does not
+    // rebuild the native menu, so the reader's menu bar kept showing the default and the item was never seen.
+    // Measured: the item was listed at index 1 while the menu bar showed nothing new.
+    Menu.setApplicationMenu(applicationMenu)
     logEvent('update', 'app menu prepared', { items: applicationSubmenu.items.map((item) => item.label) })
   } catch (error) {
     logEvent('update', 'could not add the check to the application menu', { error: String(error) })

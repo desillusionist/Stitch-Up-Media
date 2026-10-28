@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -2090,25 +2090,46 @@ const drive = async () => {
   result.audioFadePreview = { faded: fadedAudioVolume, plain: plainAudioVolume }
 
   // A CLIP'S OWN SOUND ON ONE SWITCH, from its context menu. MUTE silences THIS clip — the lane's M silences the
-  // whole lane — the box is shaded, and the mute reaches the queue as the clip's embedded record.
+  // whole lane — and the mute reaches the queue as the clip's embedded record. THIS CLIP HAS PICTURE: its frames are
+  // untouched by a mute, so its box must stay at full brightness and its soundtrack is marked on the hairline along
+  // its bottom edge instead.
   flushEdits()
   await wait(200)
   arrive({ ...task, id: 'mount-clip-mute', type: 'transcode', sourcePaths: [CLIP_AUDIO] }, 'clip-mute')
   await wait(1200)
   const clipMuteBox = () => document.querySelector('.timeline-clip') as HTMLElement | null
+  const clipMuteMarked = () => Boolean(document.querySelector('.clip-audio')?.classList.contains('is-muted'))
   const clipMuteShadedBefore = Boolean(clipMuteBox()?.classList.contains('is-muted'))
+  const clipMuteMarkedBefore = clipMuteMarked()
   clipMuteBox()?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
   await wait(150)
   const clipMuteItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'MUTE CLIP') as HTMLButtonElement | undefined
   clipMuteItem?.click()
   await wait(300)
   const clipMuteShadedAfter = Boolean(clipMuteBox()?.classList.contains('is-muted'))
+  const clipMuteMarkedAfter = clipMuteMarked()
   const applyClipMute = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
   applyClipMute?.click()
   await wait(250)
   const clipMutePatch = applied[applied.length - 1] as { embeddedAudio?: Record<string, Array<{ index?: number; muted?: boolean }>> } | undefined
   const clipMuteRecord = clipMutePatch?.embeddedAudio?.[`${CLIP_AUDIO}#0`] ?? []
-  result.clipMute = { hadItem: Boolean(clipMuteItem), shadedBefore: clipMuteShadedBefore, shadedAfter: clipMuteShadedAfter, mutedIndexes: clipMuteRecord.filter((entry) => entry.muted).map((entry) => entry.index) }
+  result.clipMute = { hadItem: Boolean(clipMuteItem), shadedBefore: clipMuteShadedBefore, shadedAfter: clipMuteShadedAfter, markedBefore: clipMuteMarkedBefore, markedAfter: clipMuteMarkedAfter, mutedIndexes: clipMuteRecord.filter((entry) => entry.muted).map((entry) => entry.index) }
+
+  // A CLIP THAT IS SOUND is the other half of that rule: there are no frames underneath to keep bright, so muting
+  // it does hang the hatch over the whole box.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-sound-mute', type: 'transcode', sourcePaths: [SOUND_FIXTURE] }, 'sound-mute')
+  await wait(1200)
+  const soundMuteBox = () => document.querySelector('.timeline-clip') as HTMLElement | null
+  const soundMuteShadedBefore = Boolean(soundMuteBox()?.classList.contains('is-muted'))
+  soundMuteBox()?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+  await wait(150)
+  const soundMuteItem = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'MUTE CLIP') as HTMLButtonElement | undefined
+  soundMuteItem?.click()
+  await wait(300)
+  const soundMuteShadedAfter = Boolean(soundMuteBox()?.classList.contains('is-muted'))
+  result.soundClipMute = { hadItem: Boolean(soundMuteItem), shadedBefore: soundMuteShadedBefore, shadedAfter: soundMuteShadedAfter }
 
   // A CLIP MUTED IN A COMBO GOES QUIET. The monitor applied a clip's own mute only where the in-place controls
   // were offered (a CONVERT or a MULTI-TRACK), while the encoder silenced the clip on EVERY path — so a COMBO's
