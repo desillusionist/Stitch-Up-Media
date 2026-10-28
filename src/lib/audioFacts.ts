@@ -29,7 +29,14 @@ export const kilohertz = (sampleRate: number): string => `${Math.round(sampleRat
  */
 export const channelFacts = (stream: MediaStreamInfo | undefined): string | null => {
   if (!stream) return null
-  if (stream.channelLayout) return stream.channelLayout.toUpperCase()
+  // A layout is read only when it is a NAME. A probe's own value can be a number — `5.1` is parsed as one — and
+  // a JOB SAVED with such a probe carries it in its state file, so this reader cannot assume the type the field
+  // promises has always been kept: `.toUpperCase()` on a number threw during render and unmounted the whole
+  // EDIT JOB window. An unreadable layout falls through to the count, which is always a fact.
+  if (typeof stream.channelLayout === 'string' && stream.channelLayout) return stream.channelLayout.toUpperCase()
+  // The numeric spellings: `5.1` and `7.1` are names, `5` (which was `5.0`) is a truncated one, so it falls
+  // through to the count rather than being shown as a name that is not a layout.
+  if (typeof stream.channelLayout === 'number' && !Number.isInteger(stream.channelLayout)) return String(stream.channelLayout)
   if (stream.channels === 1) return 'MONO'
   if (stream.channels === 2) return 'STEREO'
   if (stream.channels && stream.channels > 0) return `${stream.channels} CH`

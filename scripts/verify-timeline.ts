@@ -2254,6 +2254,11 @@ console.log('\n== what a sound is, and what the export will make of it ==')
   check('a 16-bit stereo wav reads as its rate, its sample size and its layout', audioFacts(sound({ channels: 2, sampleRate: 48000, bitDepth: 16 })), '48 KHZ | 16 BIT | STEREO')
   check('a 24-bit one at 44.1 reads as that', audioFacts(sound({ channels: 2, sampleRate: 44100, bitDepth: 24 })), '44.1 KHZ | 24 BIT | STEREO')
   check('a file that names its layout is believed over its count', audioFacts(sound({ channels: 6, sampleRate: 48000, bitDepth: 16, channelLayout: '5.1' })), '48 KHZ | 16 BIT | 5.1')
+  // A LAYOUT THAT ARRIVED AS A NUMBER. The probe's own JSON reader turns the name `5.1` into the number 5.1, and
+  // a job saved with such a probe carries that number. Calling a string method on it threw DURING RENDER, which
+  // unmounted the EDIT JOB window and left a blank page — so both spellings are checked here.
+  check('a layout read as a number still reads as its name', audioFacts(sound({ channels: 6, sampleRate: 48000, bitDepth: 16, channelLayout: 5.1 })), '48 KHZ | 16 BIT | 5.1')
+  check('and a numeric layout with its zero truncated falls back to the count', channelFacts({ codec: 'pcm_s16le', channels: 5, channelLayout: 5 }), '5 CH')
   check('and one that names none has its count spoken for it', audioFacts(sound({ channels: 6, sampleRate: 48000 })), '48 KHZ | 6 CH')
   // A lossy file has no sample size, and the line leaves it out rather than claiming zero bits of one.
   check('a lossy file loses the part the container does not carry', audioFacts(sound({ codec: 'mp3', channels: 2, sampleRate: 48000 })), '48 KHZ | STEREO')

@@ -4,6 +4,22 @@ import { QueueTask, MediaProbeInfo, AppSettings, EditJobPatch, SourceFit } from 
 export interface IElectronAPI {
   probeMedia: (filePath: string) => Promise<MediaProbeInfo>
   selectFiles: () => Promise<string[]>
+  /**
+   * Files Finder handed over through its "Open With…" list — or that a second launch forwarded here — waiting
+   * for the ADD MEDIA confirmation.
+   *
+   * A PULL, and it DRAINS: the file can arrive before this window's renderer has mounted, so asking on mount
+   * is what catches it, and taking the files away as they are read is what stops a reload from asking the
+   * reader the same question about the same file again.
+   */
+  getOpenFiles: () => Promise<string[]>
+  /**
+   * A file was opened with the app. A wake-up, not the files: the subscriber answers it with `getOpenFiles`.
+   *
+   * A push that carried the paths would deliver them twice — once pushed, once pulled — and a push sent before
+   * the renderer mounted would be lost, which is exactly what the pull exists to survive.
+   */
+  onOpenFiles: (callback: () => void) => () => void
   /** One image, for a drawing to sit on. Its own picker so a sound cannot be chosen for a picture. */
   selectImage: () => Promise<string | null>
   /**
@@ -111,6 +127,23 @@ export interface IElectronAPI {
   showItemInFolder: (path: string) => Promise<void>
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
+  /** This app's own version, as the bundle carries it. */
+  appVersion: () => Promise<string>
+  /**
+   * Compares the running version with the newest published release.
+   *
+   * The whole flow lives in the main process — it asks, downloads, mounts the disk image and opens its Finder
+   * window — so what comes back is only what happened, for a caller that wants to print it. Nothing is downloaded
+   * unless the reader picks Download in the dialog.
+   */
+  checkForUpdate: () => Promise<{ status: 'busy' | 'newer' | 'current' | 'error'; current: string; latest?: string; error?: string; downloaded?: boolean; mountPath?: string }>
+  /**
+   * How a download is going: downloading with byte counts, mounting, done with the mount path, or error.
+   *
+   * A push rather than a pull because a download has no end the caller can wait on without holding a dialog open:
+   * the window shows it and goes on.
+   */
+  onUpdateProgress: (callback: (progress: { phase: 'downloading' | 'mounting' | 'done' | 'error'; version?: string; received?: number; total?: number; mountPath?: string; error?: string }) => void) => () => void
   /** Settings changed in another window, so the app-state file can be brought up to date. */
   onSettingsChanged: (callback: (settings: AppSettings) => void) => () => void
   clearCache: (directory?: string) => Promise<{ deleted: number }>
@@ -148,6 +181,12 @@ export interface IElectronAPI {
 const api: IElectronAPI = {
   probeMedia: (filePath: string) => ipcRenderer.invoke('probe-media', filePath),
   selectFiles: () => ipcRenderer.invoke('select-files'),
+  getOpenFiles: () => ipcRenderer.invoke('get-open-files'),
+  onOpenFiles: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('open-files', handler)
+    return () => ipcRenderer.removeListener('open-files', handler)
+  },
   selectImage: () => ipcRenderer.invoke('select-image'),
   visualizationStill: (options) => ipcRenderer.invoke('visualization-still', options),
   expandMediaPaths: (paths: string[]) => ipcRenderer.invoke('expand-media-paths', paths),
@@ -212,6 +251,13 @@ const api: IElectronAPI = {
   showItemInFolder: (path: string) => ipcRenderer.invoke('show-item-in-folder', path),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: AppSettings) => ipcRenderer.invoke('save-settings', settings),
+  appVersion: () => ipcRenderer.invoke('app-version'),
+  checkForUpdate: () => ipcRenderer.invoke('check-for-update'),
+  onUpdateProgress: (callback) => {
+    const handler = (_: any, progress: { phase: 'downloading' | 'mounting' | 'done' | 'error'; version?: string; received?: number; total?: number; mountPath?: string; error?: string }) => callback(progress)
+    ipcRenderer.on('update-progress', handler)
+    return () => ipcRenderer.removeListener('update-progress', handler)
+  },
   onSettingsChanged: (callback) => {
     const handler = (_: any, settings: AppSettings) => callback(settings)
     ipcRenderer.on('settings-changed', handler)

@@ -38,6 +38,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
     if (result) window.alert(`Cleared ${result.deleted} cached item(s).`)
   }
   const handleSave = () => { onSaveSettings(localSettings); onClose() }
+  // The running version, read when the panel opens: it is what the update check compares against, so it belongs
+  // beside the button that starts one.
+  const [version, setVersion] = useState('')
+  useEffect(() => {
+    if (isOpen) void window.electronAPI?.appVersion().then((current) => setVersion(current || ''))
+  }, [isOpen])
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -68,6 +74,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
           <div><label className="font-medium text-neutral-200 block mb-1">Quick Look Stamp Display</label><p className="text-[11px] text-neutral-400 mb-2">Choose timecode or frame-count stamps in the Advanced helper.</p><select className="w-full px-2.5 py-1.5" value={localSettings.timestampDisplayMode || 'timestamp'} onChange={(event) => setLocalSettings((prev) => ({ ...prev, timestampDisplayMode: event.target.value as 'timestamp' | 'framestamp' }))}><option value="timestamp">TIMESTAMP · HH:MM:SS.FF</option><option value="framestamp">FRAMESTAMP · FRAME NUMBER</option></select></div>
           <div className="h-px bg-white/5" />
           <div><span className="font-medium text-neutral-200 block mb-1">Screenshots</span><div className="flex items-center space-x-2"><div className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-neutral-300 truncate">{localSettings.screenshotDirectory || "Pictures folder"}</div><button onClick={handleSelectScreenshots} className="px-2.5 py-1.5 bg-white/10 rounded-lg text-neutral-200"><Folder className="w-3.5 h-3.5" /></button></div><p className="text-[11px] text-neutral-400 mt-1">Cmd+S screenshots are saved here.</p></div><div className="h-px bg-white/5" /><div><span className="font-medium text-neutral-200 block mb-1">Temporary / Cache</span><div className="flex items-center space-x-2"><div className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5 text-neutral-300 truncate">{localSettings.saveTempNextToSource ? 'Save next to source' : (localSettings.cacheDirectory || 'System temporary folder')}</div><button onClick={handleSelectCache} className="px-2.5 py-1.5 bg-white/10 rounded-lg text-neutral-200"><Folder className="w-3.5 h-3.5" /></button></div><label className="flex items-center gap-2 mt-2 text-neutral-300"><input type="checkbox" checked={localSettings.saveTempNextToSource} onChange={(e) => setLocalSettings({ ...localSettings, saveTempNextToSource: e.target.checked })} className="w-4 h-4 accent-mac-accent" />Save temporary and trimmed files next to source</label><button onClick={handleClearCache} className="mt-2 px-2.5 py-1.5 bg-white/10 rounded-lg text-neutral-200">Clear Cache</button></div>
+          <div className="h-px bg-white/5" />
+          {/* The running version sits beside the button that compares it against the newest release: it is the
+              figure the check is about, so it is not a thing to go hunting for in About. */}
+          <div className="flex items-center justify-between gap-3"><div><span className="font-medium text-neutral-200 block">Stitch Up Media{version ? ` ${version}` : ''}</span><span className="text-[11px] text-neutral-400">Checks GitHub for a newer release and opens its installer.</span></div><button onClick={() => void window.electronAPI?.checkForUpdate()} className="px-2.5 py-1.5 bg-white/10 rounded-lg text-neutral-200 whitespace-nowrap">Check for Updates</button></div>
         </div>
         <div className="flex items-center justify-end space-x-2 px-5 py-3 border-t border-white/5 bg-white/[0.02]"><button onClick={onClose} className="px-3 py-1.5 rounded-lg text-xs text-neutral-400">Cancel</button><button onClick={handleSave} className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-mac-accent text-white">Save Changes</button></div>
       </div>

@@ -1,6 +1,6 @@
 {
   "name": "stitch-up-media",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Minimalist macOS media encoder & stitcher powered by FFmpeg",
   "author": "Nitai Das <kiddow.san@gmail.com>",
   "main": "dist-electron/main.js",
@@ -19,6 +19,10 @@
     "verify-wave": "npm run build && esbuild src/lib/waveform.ts --bundle --platform=node --format=cjs --outfile=scripts/.waveform.cjs --log-level=warning && node scripts/check-waveform.cjs",
     "verify-run": "esbuild electron/ffmpeg/run.ts --bundle --platform=node --format=cjs --outfile=scripts/.ffmpegRun.cjs --log-level=warning && node scripts/check-ffmpeg-run.cjs",
     "check-proxy": "esbuild electron/previewProxy.ts --bundle --platform=node --format=cjs --outfile=scripts/.previewProxy.cjs --log-level=warning && node scripts/check-preview-proxy.cjs",
+    "check-open-files": "esbuild electron/openFiles.ts --bundle --platform=node --format=cjs --outfile=scripts/.openFiles.cjs --log-level=warning && node scripts/check-open-files.cjs",
+    "check-audio-peaks": "esbuild electron/audioPeaks.ts --bundle --platform=node --format=cjs --outfile=scripts/.audioPeaks.cjs --log-level=warning && esbuild electron/ffmpeg/probe.ts --bundle --platform=node --format=cjs --outfile=scripts/.probe.cjs --log-level=warning && esbuild src/lib/waveform.ts --bundle --platform=node --format=cjs --outfile=scripts/.waveform.cjs --log-level=warning && node scripts/check-audio-peaks.cjs",
+    "check-update": "esbuild electron/updater.ts --bundle --platform=node --format=cjs --outfile=scripts/.updater.cjs --log-level=warning && node scripts/check-update.cjs",
+    "check-app-menu": "electron scripts/check-app-menu.cjs",
     "check-mount": "npm run build && electron scripts/check-editor-mount.cjs",
     "check-queue": "npm run build && electron scripts/check-queue-mount.cjs",
     "check-scale": "swiftc electron/quicklook-scale.swift scripts/check-quicklook-scale.swift -o scripts/.check-scale && scripts/.check-scale",
@@ -75,6 +79,20 @@
       "icon": "build/AppIcon.icns",
       "category": "public.app-category.video",
       "darkModeSupport": true,
+      "fileAssociations": [
+        {
+          "name": "Movie",
+          "ext": ["mp4", "mov", "mkv", "avi", "wmv", "flv", "webm", "wav", "mp3", "aac", "m4a", "flac"],
+          "role": "Editor",
+          "rank": "Alternate"
+        },
+        {
+          "name": "Image",
+          "ext": ["jpg", "jpeg", "png", "tif", "tiff", "heic"],
+          "role": "Editor",
+          "rank": "Alternate"
+        }
+      ],
       "extendInfo": {
         "CFBundleIconName": "AppIcon"
       },

@@ -24,6 +24,12 @@ scripts/.visualization.cjs
 scripts/.probe.cjs
 scripts/.placeholder.cjs
 scripts/.previewProxy.cjs
+# The Finder hand-off harness (see `npm run check-open-files`)
+scripts/.openFiles.cjs
+# The waveform decode harness (see `npm run check-audio-peaks`)
+scripts/.audioPeaks.cjs
+# The update check harness (see `npm run check-update`)
+scripts/.updater.cjs
 # The compact scale's arithmetic harness (see `npm run check-scale`)
 scripts/.check-scale
 # The strip's runtime harness (see `npm run check-sync`)

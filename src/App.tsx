@@ -16,6 +16,22 @@ import { removeSourceFromTask, clipRecordsFor, withSourceList } from './lib/sour
 import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
 import { clipKey, legacyClipId, matchClipIdsToPaths, matchClipNumbersToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, nextClipNumber } from './lib/clipIds'
 import { filePathsOnly } from './lib/placeholder'
+import { sizeLabel } from './lib/outputSize'
+
+/**
+ * A release download, as the main process reports it.
+ *
+ * Kept here rather than in `types` because nothing else reads it: the whole of the update flow is the shell's,
+ * and this window only draws what it is told.
+ */
+type UpdateProgress = {
+  phase: 'downloading' | 'mounting' | 'done' | 'error'
+  version?: string
+  received?: number
+  total?: number
+  mountPath?: string
+  error?: string
+}
 
 /**
  * The rate a still image is given when it is exported as video.
@@ -143,6 +159,8 @@ export const App: React.FC = () => {
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
   const [statusFilters, setStatusFilters] = useState({ ready: true, skip: true, done: true })
   const [pendingFiles, setPendingFiles] = useState<string[] | null>(null)
+  /** The release download, while there is one — see `onUpdateProgress` below. */
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
   const [sequenceChoice, setSequenceChoice] = useState<{ frames: number; resolve: (whole: boolean) => void } | null>(null)
   const [notice, setNotice] = useState<{ title: string; message: string } | null>(null)
   const [theme, setTheme] = useState<'retro' | 'modern'>('retro')
@@ -376,6 +394,41 @@ export const App: React.FC = () => {
         unsubscribeRemoveSource()
       }
     }
+  }, [])
+
+  // A release download reports itself here. It has to be drawn in the WINDOW: the dialog that offered it is a
+  // modal sheet, so the window behind it is the only place a progress bar can be seen while it runs.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onUpdateProgress((progress) => {
+      setUpdateProgress(progress)
+      // A finished or failed download is left up long enough to be read and then taken away; a download in
+      // flight stays until it has something else to say.
+      if (progress.phase === 'done' || progress.phase === 'error') {
+        window.setTimeout(() => setUpdateProgress((current) => (current === progress ? null : current)), 12000)
+      }
+    })
+    return () => unsubscribe?.()
+  }, [])
+
+  // Files opened with the app from Finder's "Open With…" list — or forwarded from a second launch — come in
+  // through the SAME confirmation a hand-picked set gets: what a file should become is still the reader's call.
+  // Pulled on mount because the hand-off can happen before this window exists to be pushed to, and the pull
+  // DRAINS, so a reload cannot put the same question in front of the reader twice.
+  useEffect(() => {
+    if (!window.electronAPI) return
+    const takeOpenedFiles = () => {
+      void window.electronAPI?.getOpenFiles().then((files) => {
+        if (!files || files.length === 0) return
+        // Merged into a confirmation that is already open rather than replacing it: a file opened while the
+        // first question is on screen belongs to that question, and replacing the list would silently drop
+        // the set the reader is currently deciding about.
+        setPendingFiles((current) => current
+          ? [...current, ...files.filter((file) => !current.includes(file))]
+          : files)
+      })
+    }
+    takeOpenedFiles()
+    return window.electronAPI.onOpenFiles(takeOpenedFiles)
   }, [])
 
   const askSequenceChoice = (frames: number) => new Promise<boolean>((resolve) => setSequenceChoice({ frames, resolve }))
@@ -1038,6 +1091,23 @@ export const App: React.FC = () => {
         onAddMultiAudioTask={handleAddMultiAudioTask}
       />
 
+      {updateProgress && <div className={`update-toast ${updateProgress.phase}`} role="status" aria-live="polite">
+        <span className="panel-kicker">STITCH UP MEDIA // UPDATE{updateProgress.version ? ` ${updateProgress.version}` : ''}</span>
+        <strong>
+          {updateProgress.phase === 'downloading' ? 'DOWNLOADING'
+            : updateProgress.phase === 'mounting' ? 'OPENING THE INSTALLER'
+              : updateProgress.phase === 'done' ? 'UPDATE DOWNLOADED'
+                : 'UPDATE DOWNLOAD FAILED'}
+        </strong>
+        <small>
+          {updateProgress.phase === 'downloading'
+            ? `${sizeLabel(updateProgress.received || 0)}${updateProgress.total ? ` OF ${sizeLabel(updateProgress.total)}` : ''}`
+            : updateProgress.phase === 'mounting' ? 'THE DISK IMAGE OPENS IN FINDER.'
+              : updateProgress.phase === 'done' ? 'DRAG IT INTO APPLICATIONS, THEN QUIT AND REOPEN.'
+                : (updateProgress.error || 'TRY AGAIN FROM THE APP MENU.')}
+        </small>
+        {updateProgress.phase === 'downloading' && <div className="update-toast-bar"><div className="update-toast-fill" style={{ width: `${updateProgress.total ? Math.min(100, Math.round(((updateProgress.received || 0) / updateProgress.total) * 100)) : 100}%` }} /></div>}
+      </div>}
       {notice && <div className="retro-notice-overlay" role="alertdialog" aria-modal="true"><div className="retro-notice"><span className="panel-kicker">STITCH UP MEDIA // NOTICE</span><h2>{notice.title}</h2><p>{notice.message.split('\n').map((line, index) => <React.Fragment key={`${line}-${index}`}>{index > 0 && <br />}{line}</React.Fragment>)}</p><button onClick={() => setNotice(null)}>OK</button></div></div>}
       {/* Settings Modal */}
       <CommandBar statusFilters={statusFilters} onToggleStatus={(status) => setStatusFilters((current) => ({ ...current, [status]: !current[status] }))} stats={{ ready: tasks.filter((task) => task.status === 'pending').length, skip: tasks.filter((task) => task.skipped || task.status === 'paused').length, done: tasks.filter((task) => task.status === 'done').length }} canStartQueue={tasks.some((task) => task.status === 'pending')} onOpen={handlePickFiles} onConvert={handleToggleQueue} onAdvanced={() => setIsSettingsOpen(true)} onToggleTheme={() => setTheme((current) => current === 'retro' ? 'modern' : 'retro')} theme={theme} isQueueRunning={isQueueRunning} />

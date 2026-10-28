@@ -1,8 +1,9 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, Menu, MenuItem, net } from 'electron'
+import type { MessageBoxOptions } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
-import { probeFile } from './ffmpeg/probe'
+import { probeFile, FFMPEG_BINARY } from './ffmpeg/probe'
 import { QueueManager } from './queue/manager'
 import { QueueTask, AppSettings, EditJobPatch, SourceFit } from '../src/types'
 import { logEvent, getLogFile } from './logger'
@@ -11,10 +12,13 @@ import { FILMSTRIP_CLIP_HEIGHT, FILMSTRIP_SCALE, frameKey } from '../src/lib/fil
 import { cropFilter, hasCrop, CropFractions } from '../src/lib/outputFrame'
 import { clipFilters } from '../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingCanvas, drawingColorOf, drawingTuneOf, eqStyleOf, stillWarmupSeconds, templateMaxEdge, visualizationStillGraph } from '../src/lib/visualization'
-import { peaksFromSamples } from '../src/lib/waveform'
+import { peaksForFile } from './audioPeaks'
 import { runFfmpeg } from './ffmpeg/run'
 import { previewProxyFor, PreviewProxyDeps } from './previewProxy'
-import { spawn, execFileSync } from 'node:child_process'
+import { createOpenFileBuffer, OPEN_WITH_EXTENSIONS } from './openFiles'
+import { downloadDestination, downloadRelease, fetchLatestRelease, isNewerVersion, mountRelease, UpdateProgress, LatestRelease } from './updater'
+import { UPDATE_RELEASES_PAGE } from './updater'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -43,6 +47,58 @@ protocol.registerSchemesAsPrivileged([{
 // looked like everything had been forgotten. Must run before the app is ready, and before
 // anything asks for the userData path.
 app.setPath('userData', path.join(app.getPath('appData'), 'stitch-up-media'))
+
+// ONE INSTANCE OWNS THE STATE FILE AND THE WINDOWS. Opening a media file with this app while it is already
+// running is a SECOND LAUNCH from LaunchServices' point of view, and a second process would open the same
+// app-state file and build a second queue over it. Taking the lock makes the newcomer hand its arguments to
+// the instance that is already up — through `second-instance` below — and leave.
+const isPrimaryInstance = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) app.quit()
+
+/**
+ * Files Finder handed over, waiting for a renderer to ask for them.
+ *
+ * Registered BEFORE the app is ready because macOS fires `open-file` DURING LAUNCH: a listener added in
+ * `whenReady` is added after the very file that launched the app has already been announced, so the first
+ * drop through Finder would be silently dropped.
+ */
+const openFiles = createOpenFileBuffer()
+
+/**
+ * Puts opened files in front of the reader exactly as a hand-picked set is put: through the window's own
+ * ADD MEDIA confirmation, never straight into the queue. A file opened with the app is not a decision about
+ * what it should become, so CONVERT / STITCH UP / MULTI-TRACK / COMBO is still the reader's to make.
+ */
+function queueOpenFiles(entries: string[]) {
+  const fresh = openFiles.push(entries)
+  if (fresh.length === 0) return
+  logEvent('main', 'files opened with the app', { count: fresh.length, files: fresh })
+  // No window yet — the launch's own file still leaves the buffer in place, and the window that is about to
+  // be created pulls it as it mounts.
+  if (!mainWindow) return
+  // A WAKE-UP, not the files themselves. The paths would otherwise be delivered twice — once here and once
+  // by the mount pull that drains the same buffer — and a fire-and-forget push is what raced the renderer in
+  // the first place. The renderer answers this by pulling, and a lost wake-up costs nothing because the
+  // buffer is the record.
+  mainWindow.webContents.send('open-files')
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+  // The app itself, not just its window: Finder keeps the focus it had, and a confirmation dialog in a
+  // window behind another app is a dialog nobody sees.
+  app.focus({ steal: true })
+}
+
+app.on('open-file', (event, filePath) => {
+  // Without this macOS follows the launch up by opening the file in its default handler as well.
+  event.preventDefault()
+  queueOpenFiles([filePath])
+})
+
+// The command line of a launch that lost the lock. It carries the app path, the flags and `--` separators
+// as well as the files, so `openFilePaths` keeps only absolute paths with a media extension that exist on
+// disk as files.
+app.on('second-instance', (_event, argv) => queueOpenFiles(argv))
 
 let mainWindow: BrowserWindow | null = null
 let queueManager: QueueManager | null = null
@@ -79,6 +135,149 @@ const previewProxyDeps = (): PreviewProxyDeps => {
   }
 }
 
+/**
+ * Helper builds in flight, by the binary each one writes.
+ *
+ * The native helper is COMPILED by `swiftc` the first time it is wanted, and that takes half a minute. It used to
+ * be `execFileSync`, which held the main process for the whole compile — every window stops painting, the media
+ * protocol stops answering and the app reads as hung. Measured in the log that prompted this fix: `starting
+ * native helper` at 09:43:40 and the next line at 09:44:14, thirty-four seconds later. The build is awaited
+ * instead, and two requests for the same binary share one compile rather than racing two.
+ */
+const helperBuilds = new Map<string, Promise<void>>()
+const buildHelper = (helper: string, sources: string[]): Promise<void> => {
+  const running = helperBuilds.get(helper)
+  if (running) return running
+  const build = new Promise<void>((resolve, reject) => {
+    const child = spawn('swiftc', [...sources, '-o', helper, '-framework', 'AppKit', '-framework', 'AVKit', '-framework', 'AVFoundation'], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+    let stderr = ''
+    child.stderr?.on('data', (chunk: Buffer) => { if (stderr.length < 65536) stderr += chunk.toString() })
+    child.on('error', (error) => { helperBuilds.delete(helper); reject(error) })
+    child.on('close', (code) => {
+      helperBuilds.delete(helper)
+      if (code === 0) resolve()
+      else reject(new Error(`swiftc exited with ${code}: ${stderr.trim().slice(-400)}`))
+    })
+  })
+  helperBuilds.set(helper, build)
+  return build
+}
+
+/** Whether a check is already on screen, so two entries into it cannot stack two dialogs. */
+let updateCheckInFlight = false
+
+/** A dialog attached to the window where there is one: an unattached dialog can open behind the app. */
+const askUser = (options: MessageBoxOptions) => {
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)
+}
+
+/**
+ * Download, mount and reveal a release — the installing half of the check.
+ *
+ * The download is made BY THE APP, which is not a detail: a file fetched by the app itself carries no
+ * `com.apple.quarantine` attribute, so the copy the reader drags into Applications opens without the Gatekeeper
+ * question. Progress is sent to the window for the status panel; the outcome is said in a dialog, because it is
+ * the thing the reader asked for and it should not be something they have to notice.
+ */
+const downloadAndReveal = async (release: LatestRelease) => {
+  const version = release.version
+  if (!release.dmg) {
+    await shell.openExternal(release.pageUrl)
+    return { status: 'error' as const, latest: version, error: 'the release has no disk image to install' }
+  }
+  const report = (progress: UpdateProgress) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-progress', progress)
+  }
+  report({ phase: 'downloading', version, received: 0, total: release.dmg.size })
+  try {
+    const destination = downloadDestination(app.getPath('downloads'), release.dmg)
+    await downloadRelease({
+      fetchImpl: net.fetch,
+      release,
+      destination,
+      onProgress: ({ received, total }) => report({ phase: 'downloading', version, received, total }),
+    })
+    report({ phase: 'mounting', version })
+    const mountPath = await mountRelease(destination)
+    report({ phase: 'done', version, mountPath })
+    logEvent('update', 'downloaded and mounted', { version, mountPath })
+    await askUser({
+      type: 'info',
+      title: 'Update downloaded',
+      message: `Drag \u201cStitch Up Media\u201d into the Applications folder, then quit and reopen it to use ${version}.`,
+      buttons: ['OK'],
+      defaultId: 0,
+    })
+    return { status: 'newer' as const, latest: version, mountPath, downloaded: true }
+  } catch (error) {
+    logEvent('update', 'download failed', { version, error: String(error) })
+    report({ phase: 'error', version, error: String(error) })
+    const answer = await askUser({
+      type: 'warning',
+      title: 'Update download failed',
+      message: `The update could not be downloaded or opened.\n\n${String(error)}`,
+      buttons: ['Open Releases Page', 'Close'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (answer.response === 0) await shell.openExternal(release.pageUrl)
+    return { status: 'error' as const, latest: version, error: String(error) }
+  }
+}
+
+/**
+ * Compare the running version with the newest published release, and offer to install it.
+ *
+ * The same entry point serves the app menu's CHECK FOR UPDATES… and the button in SETTINGS: one flow, one set of
+ * answers. Nothing is downloaded unless the reader picks Download — a check is a check.
+ */
+const runUpdateCheck = async () => {
+  const current = app.getVersion()
+  if (updateCheckInFlight) return { status: 'busy' as const, current }
+  updateCheckInFlight = true
+  try {
+    const release = await fetchLatestRelease(net.fetch, current)
+    logEvent('update', 'checked', { current, latest: release.version })
+    if (!isNewerVersion(release.version, current)) {
+      await askUser({
+        type: 'info',
+        title: 'Check for Updates',
+        message: `Stitch Up Media ${current} is the newest version.`,
+        buttons: ['OK'],
+        defaultId: 0,
+      })
+      return { status: 'current' as const, current, latest: release.version }
+    }
+    const answer = await askUser({
+      type: 'info',
+      title: 'A new version is available',
+      message: `Stitch Up Media ${release.version} is available. You are running ${current}.\n\nThe download opens in Finder: drag Stitch Up Media into the Applications folder to install it.`,
+      buttons: ['Download', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (answer.response !== 0) return { status: 'newer' as const, current, latest: release.version, downloaded: false }
+    return await downloadAndReveal(release)
+  } catch (error) {
+    logEvent('update', 'check failed', { error: String(error) })
+    const answer = await askUser({
+      type: 'warning',
+      title: 'Check for Updates',
+      message: 'Stitch Up Media could not reach GitHub to check for updates.',
+      buttons: ['Open Releases Page', 'Close'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (answer.response === 0) await shell.openExternal(UPDATE_RELEASES_PAGE)
+    return { status: 'error' as const, current, error: String(error) }
+  } finally {
+    updateCheckInFlight = false
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1080,
@@ -111,6 +310,9 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // A launch that did not take the lock is already quitting; it must not build a queue first.
+  if (!isPrimaryInstance) return
+
   logEvent('main', 'Application starting', { platform: process.platform, version: process.versions.electron, logFile: getLogFile() })
 
   // The Dock shows the app BUNDLE's icon, which only exists once packaged — a development run shows the stock
@@ -168,6 +370,26 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+
+  // CHECK FOR UPDATES… directly below About, where macOS apps have it. The default menu is EDITED rather than
+  // replaced: the Edit menu's copy/paste is what every text field in this app pastes with, and a hand-built menu
+  // would have to reproduce all of it to add one line.
+  const applicationMenu = Menu.getApplicationMenu()
+  const applicationSubmenu = applicationMenu?.items[0]?.submenu
+  // A MENU NICETY MUST NOT BE ABLE TO STOP THE APP. If a future Electron's default menu is shaped differently this
+  // is a missing menu item, not a launch that never happens.
+  try {
+    if (!applicationSubmenu) throw new Error('the application menu has no first submenu')
+    applicationSubmenu.insert(1, new MenuItem({ id: 'check-for-updates', label: 'Check for Updates…', click: () => { void runUpdateCheck() } }))
+    logEvent('update', 'app menu prepared', { items: applicationSubmenu.items.map((item) => item.label) })
+  } catch (error) {
+    logEvent('update', 'could not add the check to the application menu', { error: String(error) })
+  }
+
+  ipcMain.handle('app-version', () => app.getVersion())
+  // The button in SETTINGS asks the same question the menu item does, and gets the same dialogs and the same
+  // progress reports. The answer is for the caller's own reading: the decision is made in the dialogs.
+  ipcMain.handle('check-for-update', () => runUpdateCheck())
 
   // IPC Handlers
   const sendEditJobTask = () => {
@@ -411,9 +633,9 @@ app.whenReady().then(() => {
     if (audioPeaksCache.has(filePath)) return audioPeaksCache.get(filePath) ?? null
     let peaks: number[] | null = null
     try {
-      const raw = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', filePath, '-vn', '-ac', '1', '-ar', '8000', '-f', 'f32le', '-'], { maxBuffer: 256 * 1024 * 1024 })
-      const samples = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4))
-      peaks = samples.length ? peaksFromSamples(samples) : null
+      // Awaited, not blocked on, and through the binary the probe resolved rather than through PATH: see
+      // `audioPeaks.ts` for both halves of that.
+      peaks = await peaksForFile(filePath, FFMPEG_BINARY)
     } catch (error) {
       logEvent('ipc', 'waveform extraction failed', { filePath, error: String(error) })
     }
@@ -581,8 +803,12 @@ app.whenReady().then(() => {
     }
   })
 
+  // What Finder opened the app with, taken once. Draining is what stops a reload from putting a confirmation
+  // back in front of the reader for files they already answered.
+  ipcMain.handle('get-open-files', () => openFiles.drain())
+
   ipcMain.handle('expand-media-paths', async (_, inputPaths: string[]) => {
-    const extensions = new Set(['mp4', 'mov', 'mkv', 'avi', 'wmv', 'flv', 'webm', 'wav', 'mp3', 'aac', 'm4a', 'flac', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'heic'])
+    const extensions = new Set<string>(OPEN_WITH_EXTENSIONS)
     const files: string[] = []
     const visit = (candidate: string) => {
       try {
@@ -777,7 +1003,8 @@ app.whenReady().then(() => {
       const helper = path.join(os.tmpdir(), `${base}-${stamp}`)
       logEvent('quick-look', 'starting native helper', { source, helper, targetPath, stillMode })
       if (!fs.existsSync(helper)) {
-        execFileSync('swiftc', [...sources, '-o', helper, '-framework', 'AppKit', '-framework', 'AVKit', '-framework', 'AVFoundation'])
+        logEvent('quick-look', 'building native helper', { helper })
+        await buildHelper(helper, sources)
         // Every build from an earlier revision is dead weight AND a trap, since the stamped name is only worth
         // anything while the old names are gone. Swept here, where the directory is already being touched,
         // rather than on every open.

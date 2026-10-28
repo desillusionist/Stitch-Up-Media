@@ -27,8 +27,14 @@ export interface MediaStreamInfo {
    * zero for an mp3 — the absence is the fact, and a `0 BIT` would be a claim about the file.
    */
   bitDepth?: number
-  /** The speaker layout where the file names one (`stereo`, `5.1`). `unknown` is answered as none. */
-  channelLayout?: string
+  /**
+   * The speaker layout where the file names one (`stereo`, `5.1`). `unknown` is answered as none.
+   *
+   * A LAYOUT IS A STRING — but a probe taken before this field was normalised can hold the NUMBER 5.1, because
+   * a layout whose name is numeric is parsed as a number on the way in. Such a probe is in saved jobs' state
+   * files, so a reader has to accept both rather than trusting the type; `channelFacts` is where that is done.
+   */
+  channelLayout?: string | number
   /**
    * The pixel format a PICTURE is stored in, straight from the probe (`yuv420p`, `yuv420p10le`, `rgb24`).
    *

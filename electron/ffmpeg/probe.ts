@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { MediaProbeInfo } from '../../src/types'
 
-// Automatically point to Homebrew ffmpeg/ffprobe on Apple Silicon or standard locations
+// Automatically point to Homebrew ffmpeg/ffprobe on Apple Silicon or standard locations. THE PATHS ARE NAMED
+// rather than left to PATH because a Finder-launched app inherits LaunchServices' own PATH, which has neither
+// of them: the binaries were found while the app was started from a terminal and not once it was installed.
 const POSSIBLE_FFMPEG_PATHS = [
   '/opt/homebrew/bin/ffmpeg',
   '/usr/local/bin/ffmpeg',
@@ -16,18 +18,28 @@ const POSSIBLE_FFPROBE_PATHS = [
   '/usr/bin/ffprobe'
 ]
 
-for (const p of POSSIBLE_FFMPEG_PATHS) {
-  if (fs.existsSync(p)) {
-    ffmpeg.setFfmpegPath(p)
-    break
-  }
-}
+const firstInstalled = (candidates: string[], fallback: string): string => candidates.find((candidate) => fs.existsSync(candidate)) || fallback
 
-for (const p of POSSIBLE_FFPROBE_PATHS) {
-  if (fs.existsSync(p)) {
-    ffmpeg.setFfprobePath(p)
-    break
-  }
+/** The ffmpeg every other module must use, resolved once. `'ffmpeg'` is only right where one really is on PATH. */
+export const FFMPEG_BINARY = firstInstalled(POSSIBLE_FFMPEG_PATHS, 'ffmpeg')
+const FFPROBE_BINARY = firstInstalled(POSSIBLE_FFPROBE_PATHS, 'ffprobe')
+
+ffmpeg.setFfmpegPath(FFMPEG_BINARY)
+ffmpeg.setFfprobePath(FFPROBE_BINARY)
+
+/**
+ * A stream's layout NAME, as ffprobe writes it and as everything that shows one expects it.
+ *
+ * THE NAME CAN ARRIVE AS A NUMBER. ffprobe says `"5.1"` for a six-channel file, and the JSON parser this
+ * probe runs on turns any numeric-looking string into a number — so a 5.1 wav's layout reached the app as
+ * `5.1`, the reader called `.toUpperCase()` on it, and the throw took the whole EDIT JOB window with it: a
+ * blank page and nothing in the log. Put the name back where it can be read; a name that came back as a
+ * WHOLE number was one with a zero in it (`5.0` read as `5`), and that reading is an ABSENCE rather than a
+ * wrong name, because the channel count says it better than a truncated layout does.
+ */
+export const layoutName = (value: unknown): string | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) return Number.isInteger(value) ? undefined : String(value)
+  return typeof value === 'string' && value && value !== 'unknown' ? value : undefined
 }
 
 export function probeFile(filePath: string): Promise<MediaProbeInfo> {
@@ -73,7 +85,7 @@ export function probeFile(filePath: string): Promise<MediaProbeInfo> {
             bitrate: s.bit_rate ? `${Math.round(Number(s.bit_rate) / 1000)}k` : undefined,
             language: (s.tags as any)?.language || 'und',
             bitDepth: sampleBits > 0 ? sampleBits : undefined,
-            channelLayout: s.channel_layout && s.channel_layout !== 'unknown' ? s.channel_layout : undefined,
+            channelLayout: layoutName(s.channel_layout),
             // The stream's place among the AUDIO streams, which is what `-map 0:a:N` addresses — not
             // `s.index`, which counts every stream in the container (video included) and would name the
             // wrong one the moment a picture sat beside the sound. The title rides along where the
