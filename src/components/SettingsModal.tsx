@@ -11,6 +11,15 @@ interface SettingsModalProps {
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings, onSaveSettings }) => {
   const [localSettings, setLocalSettings] = useState<AppSettings>(settings)
+  // The running version, read when the panel opens: it is what the update check compares against, so it belongs
+  // beside the button that starts one.
+  //
+  // IT IS DECLARED ABOVE THE EARLY RETURN, and that is not a style choice: a hook called after `if (!isOpen)
+  // return null` runs on the render where the panel opens and not on any render before it, so React saw a
+  // different number of hooks than the previous render, threw, and unmounted the whole window — SETTINGS
+  // blanked the app and only a reload brought it back, with the panel still shut. Every hook this component
+  // has must be above that return.
+  const [version, setVersion] = useState('')
   // The panel is always mounted and merely returns null while closed, so this state was
   // captured on the very first render, before the saved settings had been read back from
   // disk. Opening it then showed the defaults, and saving wrote those defaults over every
@@ -19,6 +28,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
   useEffect(() => {
     if (isOpen) setLocalSettings(settings)
   }, [isOpen, settings])
+  useEffect(() => {
+    if (isOpen) void window.electronAPI?.appVersion?.().then((current) => setVersion(current || ''))
+  }, [isOpen])
   if (!isOpen) return null
 
   const handleSelectDefaultOutput = async () => {
@@ -38,12 +50,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
     if (result) window.alert(`Cleared ${result.deleted} cached item(s).`)
   }
   const handleSave = () => { onSaveSettings(localSettings); onClose() }
-  // The running version, read when the panel opens: it is what the update check compares against, so it belongs
-  // beside the button that starts one.
-  const [version, setVersion] = useState('')
-  useEffect(() => {
-    if (isOpen) void window.electronAPI?.appVersion().then((current) => setVersion(current || ''))
-  }, [isOpen])
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">

@@ -1,6 +1,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { TaskCard } from '../src/components/TaskCard'
+import { SettingsModal } from '../src/components/SettingsModal'
 import { QueueTask } from '../src/types'
 
 /**
@@ -31,6 +32,7 @@ const replaceCalls: Array<{ kind: string; target: string }> = []
   }),
   getPathsTotalSize: async () => 0,
   quickLook: async () => undefined,
+  appVersion: async () => '0.0.0-check',
 }
 
 /** A LONG name on the first track, so the row has something to overflow and start crawling. */
@@ -157,6 +159,36 @@ const drive = async () => {
 
   result.edges = { sources: box(sources), card: box(card), cardPadding, output: box(output) }
   result.order = { preset: box(preset), sources: box(sources), outputRow: box(outputRow), status: box(status) }
+
+  // THE SETTINGS PANEL, OPENED FOR REAL. It is mounted CLOSED and then opened, because the fault lived in that
+  // transition: two hooks sat below `if (!isOpen) return null`, so opening the panel changed the number of hooks
+  // React saw, React threw, and the WHOLE window unmounted — SETTINGS blanked the app and only a reload brought it
+  // back, still shut. Rendering it open from the start would not have caught it.
+  const panelHost = document.createElement('div')
+  document.body.appendChild(panelHost)
+  const panelRoot = createRoot(panelHost)
+  const settingsFixture = {
+    maxConcurrentTasks: 2, useHardwareAcceleration: true, notifyOnCompletion: true, saveTempNextToSource: true,
+    pauseOnHighLoad: false, sequenceFps: 24, defaultImageFps: 25, defaultImageDuration: 10,
+    timestampDisplayMode: 'timestamp' as const,
+  }
+  const renderPanel = (isOpen: boolean) => panelRoot.render(<SettingsModal isOpen={isOpen} onClose={() => undefined} settings={settingsFixture} onSaveSettings={() => undefined} />)
+  renderPanel(false)
+  await wait(80)
+  const settingsClosedNodes = panelHost.querySelectorAll('*').length
+  const errorsBeforeOpen = errors.length
+  renderPanel(true)
+  await wait(250)
+  const panel = panelHost.querySelector('.fixed.inset-0') as HTMLElement | null
+  const panelText = (panel?.textContent || '').replace(/\s+/g, ' ')
+  result.settings = {
+    closedNodes: settingsClosedNodes,
+    opened: Boolean(panel),
+    text: panelText.slice(0, 160),
+    showsVersion: /0\.0\.0-check/.test(panelText),
+    hasUpdateButton: Boolean([...panelHost.querySelectorAll('button')].find((button) => /Check for Updates/i.test(button.textContent || ''))),
+    errorsWhileOpening: errors.slice(errorsBeforeOpen),
+  }
 
   ;(window as unknown as Record<string, unknown>).__QUEUE_DONE = true
 }

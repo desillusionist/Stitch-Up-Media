@@ -125,6 +125,17 @@ app.whenReady().then(async () => {
     }
 
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
+
+    // THE SETTINGS PANEL OPENS rather than blanking the window — see the drive for why it is opened from CLOSED.
+    const settings = result.settings
+    if (!settings) problems.push('the settings drive reported nothing')
+    else {
+      if (settings.closedNodes !== 0) problems.push(`a CLOSED settings panel drew ${settings.closedNodes} nodes`)
+      if (!settings.opened) problems.push('opening SETTINGS drew no panel: the window blanked instead')
+      if (!settings.showsVersion) problems.push(`SETTINGS did not show the running version: ${JSON.stringify(settings.text)}`)
+      if (!settings.hasUpdateButton) problems.push('SETTINGS drew no CHECK FOR UPDATES control')
+      if ((settings.errorsWhileOpening || []).length) problems.push(...settings.errorsWhileOpening.map((error) => 'opening SETTINGS threw: ' + error))
+    }
   }
   console.log(JSON.stringify(result, null, 2))
   fs.unlinkSync(htmlPath)

@@ -1,7 +1,7 @@
 {
   "name": "stitch-up-media",
   "productName": "Stitch Up Media",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Minimalist macOS media encoder & stitcher powered by FFmpeg",
   "author": "Nitai Das <kiddow.san@gmail.com>",
   "main": "dist-electron/main.js",
@@ -83,13 +83,33 @@
       "fileAssociations": [
         {
           "name": "Movie",
-          "ext": ["mp4", "mov", "mkv", "avi", "wmv", "flv", "webm", "wav", "mp3", "aac", "m4a", "flac"],
+          "ext": [
+            "mp4",
+            "mov",
+            "mkv",
+            "avi",
+            "wmv",
+            "flv",
+            "webm",
+            "wav",
+            "mp3",
+            "aac",
+            "m4a",
+            "flac"
+          ],
           "role": "Editor",
           "rank": "Alternate"
         },
         {
           "name": "Image",
-          "ext": ["jpg", "jpeg", "png", "tif", "tiff", "heic"],
+          "ext": [
+            "jpg",
+            "jpeg",
+            "png",
+            "tif",
+            "tiff",
+            "heic"
+          ],
           "role": "Editor",
           "rank": "Alternate"
         }

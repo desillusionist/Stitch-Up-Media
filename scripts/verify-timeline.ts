@@ -36,6 +36,7 @@ import { applyCodecChoice, audioChoiceValue, audioChoicesFor, codecChoiceValue, 
 import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel } from '../src/lib/outputSize'
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 import { mediaKind } from '../src/lib/mediaKind'
+import { EXPORT_SUFFIX, deriveOutputFilename, exportName, stableBaseName, withExtension, withoutExtension } from '../src/lib/outputNaming'
 import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, filePathsOnly, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
@@ -3163,6 +3164,26 @@ void (async () => {
     check('an extracted stream is itself evidence of a stream', embeddedStreamCount(onlyExtracted, clipId, '/v.mp4', 0), 1)
     check('so the picture is dropped rather than sounding under the track', clipAudioDropped(onlyExtracted, clipId, '/v.mp4', embeddedStreamCount(onlyExtracted, clipId, '/v.mp4', 0)), true)
   }
+
+  // == THE NAME OF AN EXPORT ==
+  // ONE NAME, WHATEVER THE PRESET: `originalname_export.<ext>`. The old derived names carried the codec, bitrate and
+  // mode (`X_Audio_MP3_320k.mp4`, `X_stitched.mp4`), so changing a preset renamed the file and two exports of one
+  // source were told apart by a suffix nobody chose. These are the old tails the migration still strips, and the
+  // one shape every new derivation produces.
+  const namePreset = { container: 'mp4', id: 'p', suffix: 'Audio_MP3_320k' } as unknown as EncodingPreset
+  const named = (over: Record<string, unknown> = {}) => ({ outputFilename: 'clip_Audio_MP3_320k.mp4', sourceBaseName: 'clip', ...over })
+  check('a job is named for its source and the one thing the app does', deriveOutputFilename(named(), namePreset), 'clip_export.mp4')
+  check('the preset plays no part in the name', deriveOutputFilename(named(), { container: 'mov', id: 'x', suffix: 'ProRes422HQ' } as unknown as EncodingPreset, 'mov'), 'clip_export.mov')
+  check('and deriving it again does not stack a second suffix', deriveOutputFilename(named({ outputFilename: 'clip_export.mp4' }), namePreset), 'clip_export.mp4')
+  check('a name typed by hand is kept, and only its extension follows the container', deriveOutputFilename(named({ outputFilename: 'MY NAME.mp4', outputFilenameManuallySet: true }), namePreset, 'mkv'), 'MY NAME.mkv')
+  check('a job saved with a preset tail loses it', deriveOutputFilename({ outputFilename: 'clip_Audio_MP3_320k.mp4' }, namePreset), 'clip_export.mp4')
+  check('a job saved with a mode tail loses that too', [deriveOutputFilename({ outputFilename: 'clip_stitched.mp4' }, namePreset), deriveOutputFilename({ outputFilename: 'clip_combo.mkv' }, namePreset, 'mkv')], ['clip_export.mp4', 'clip_export.mkv'])
+  // The strip only recognises ITS OWN tails, so a source really called `interview_audio` keeps its name.
+  check('a source name that ends in a word of its own is not eaten', deriveOutputFilename({ outputFilename: 'interview_audio.mp4' }, namePreset), 'interview_audio_export.mp4')
+  check('the recorded base name wins over anything in the filename', stableBaseName({ sourceBaseName: 'Shoot Day 3', outputFilename: 'renamed.mp4' }), 'Shoot Day 3')
+  check('and there is one spelling of the suffix', EXPORT_SUFFIX, '_export')
+  check('the shape every caller composes is the same one', [exportName('Shoot Day 3', 'mp4'), exportName('Shoot Day 3', 'wav')], ['Shoot Day 3_export.mp4', 'Shoot Day 3_export.wav'])
+  check('the extension helpers only touch the extension', [withoutExtension('a.b.c'), withExtension('a.b.c', 'mkv')], ['a.b', 'a.b.mkv'])
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
   process.exit(failures === 0 ? 0 : 1)

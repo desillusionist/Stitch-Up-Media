@@ -10,7 +10,7 @@ import { QueueTask, EncodingPreset, AppSettings, EditJobPatch } from './types'
 import { withSourceTiming } from './lib/sourceTiming'
 import { DEFAULT_PRESETS } from './constants/presets'
 import { detectSequences, isImagePath } from './lib/detectSequences'
-import { deriveOutputFilename } from './lib/outputNaming'
+import { deriveOutputFilename, exportName } from './lib/outputNaming'
 import { mediaKind } from './lib/mediaKind'
 import { removeSourceFromTask, clipRecordsFor, withSourceList } from './lib/sourceRemoval'
 import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
@@ -496,10 +496,10 @@ export const App: React.FC = () => {
     const originalName = first.split('/').pop() || 'media'
     const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName
     const preset = DEFAULT_PRESETS[0]
-    const suffix = preset.suffix ? `_${preset.suffix}` : ''
     const task: QueueTask = {
       id: Math.random().toString(36).substring(7), type: effectiveType, sourcePaths: detectedSequence && sequenceFps ? [detectedSequence.firstFrame] : effectiveType === 'stitch' && videoCount === 0 ? filePaths : effectiveType === 'stitch' || effectiveType === 'combo' || jobType === 'multitrack' ? filePaths.filter((path) => mediaKind(path) !== 'audio') : [first],
-      outputDirectory: settings.defaultOutputDir || dir, outputFilename: `${baseName}${effectiveType === 'stitch' ? '_stitched' : effectiveType === 'combo' ? '_combo' : suffix}.${preset.container}`,
+      // `ORIGINALNAME_export.<ext>`, whatever the mode and whoever's preset it starts on. See `EXPORT_SUFFIX`.
+      outputDirectory: settings.defaultOutputDir || dir, outputFilename: exportName(baseName, preset.container),
       preset, status: 'pending', progress: 0, sourceBaseName: baseName, stillImageDuration: mediaKind(first) === 'image' ? Math.max(0.1, settings.defaultImageDuration || 10) : undefined,
       additionalAudioTracks: (effectiveType === 'multitrack' || effectiveType === 'combo') ? filePaths.filter((path) => mediaKind(path) === 'audio').map((path) => ({ id: newTrackId(), path, language: 'und' })) : undefined,
       imageSequencePreviews: imageSequencePreview && detectedSequence && sequenceFps
@@ -565,13 +565,16 @@ export const App: React.FC = () => {
   const handleAddStitchTask = (partial: Partial<QueueTask>) => {
     const firstClip = partial.sourcePaths?.[0] || ''
     const dir = firstClip.substring(0, firstClip.lastIndexOf('/')) || '/tmp'
+    // A name is derived from the first source, like every other job's: the modal may hand one over, and then that
+    // is the name it gets.
+    const firstBase = (firstClip.split('/').pop() || '').replace(/\.[^.]+$/, '')
 
     const newTask: QueueTask = {
       id: Math.random().toString(36).substring(7),
       type: 'stitch',
       sourcePaths: partial.sourcePaths || [],
       outputDirectory: settings.defaultOutputDir || dir,
-      outputFilename: partial.outputFilename || 'stitched_output.mp4',
+      outputFilename: partial.outputFilename || exportName(firstBase || 'stitched_output', (partial.preset || DEFAULT_PRESETS[0]).container),
       preset: partial.preset || DEFAULT_PRESETS[0],
       status: 'pending',
       progress: 0,
@@ -584,6 +587,7 @@ export const App: React.FC = () => {
   const handleAddMultiAudioTask = (partial: Partial<QueueTask>) => {
     const firstClip = partial.sourcePaths?.[0] || ''
     const dir = firstClip.substring(0, firstClip.lastIndexOf('/')) || '/tmp'
+    const firstBase = (firstClip.split('/').pop() || '').replace(/\.[^.]+$/, '')
 
     const newTask: QueueTask = {
       id: Math.random().toString(36).substring(7),
@@ -591,7 +595,7 @@ export const App: React.FC = () => {
       sourcePaths: partial.sourcePaths || [],
       additionalAudioTracks: partial.additionalAudioTracks || [],
       outputDirectory: settings.defaultOutputDir || dir,
-      outputFilename: partial.outputFilename || 'multitrack_video.mp4',
+      outputFilename: partial.outputFilename || exportName(firstBase || 'multitrack_video', (partial.preset || DEFAULT_PRESETS[0]).container),
       preset: partial.preset || DEFAULT_PRESETS[0],
       status: 'pending',
       progress: 0,
@@ -770,7 +774,7 @@ export const App: React.FC = () => {
               ...item, id: `${item.id}-${index}-${Date.now()}`, type: 'transcode' as const,
               sourcePaths: [sourcePath], clipIds: [key], clipNumbers: [number], additionalAudioTracks: undefined,
               ...clipRecordsFor(item, key, sourcePath),
-              outputFilename: `${sourcePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'output'}_${item.preset.suffix || item.preset.id}.${item.preset.container}`,
+              outputFilename: exportName(sourcePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'output', item.preset.container),
               status: 'pending' as const, progress: 0,
             }
           })
@@ -781,8 +785,11 @@ export const App: React.FC = () => {
         const item = chosen[0]
         const visual = item.sourcePaths.filter((source) => mediaKind(source) !== 'audio')
         const audio = (item.additionalAudioTracks || []).map((track) => track.path)
-        const makeJob = (paths: string[], suffix: string, index: number) => ({ ...item, id: `${item.id}-stitch-${index}-${Date.now()}`, type: 'stitch' as const, sourcePaths: paths, clipIds: matchClipIdsToPaths(item.sourcePaths, materializeClipIds(item), paths), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, materializeClipNumbers(item), paths), additionalAudioTracks: undefined, trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, outputFilename: `${item.sourceBaseName || suffix}_${suffix}.${item.preset.container}`, status: 'pending' as const, progress: 0 })
-        const split = [visual.length > 0 ? makeJob(visual, 'video', 0) : null, audio.length > 0 ? makeJob(audio, 'audio', 1) : null].filter(Boolean) as QueueTask[]
+        // Both halves come out of ONE source name, and two files cannot be called the same thing: the sound half keeps
+        // a tail of its own. That is disambiguation between two outputs, not the preset naming this app no longer does.
+        const fallbackBase = item.sourceBaseName || 'export'
+        const makeJob = (paths: string[], tail: string, index: number) => ({ ...item, id: `${item.id}-stitch-${index}-${Date.now()}`, type: 'stitch' as const, sourcePaths: paths, clipIds: matchClipIdsToPaths(item.sourcePaths, materializeClipIds(item), paths), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, materializeClipNumbers(item), paths), additionalAudioTracks: undefined, trimPoints: undefined, transitions: undefined, sourceFit: undefined, sourceCrop: undefined, sourceSpeed: undefined, sourceFps: undefined, outputFilename: exportName(`${fallbackBase}${tail}`, item.preset.container), status: 'pending' as const, progress: 0 })
+        const split = [visual.length > 0 ? makeJob(visual, '', 0) : null, audio.length > 0 ? makeJob(audio, '_audio', 1) : null].filter(Boolean) as QueueTask[]
         setSelectedTaskIds(split.map((job) => job.id)); setSelectedTaskId(split[0]?.id); return [...prev.filter((candidate) => candidate.id !== item.id), ...split]
       }
       if (ids.length > 1 && type !== 'transcode') {
@@ -814,7 +821,7 @@ export const App: React.FC = () => {
           sourceSpeed: undefined, sourceFps: undefined,
           status: 'pending' as const,
           progress: 0,
-          outputFilename: `${base.sourceBaseName || 'merged'}_${type === 'stitch' ? 'stitched' : 'multitrack'}.${base.preset.container}`,
+          outputFilename: exportName(base.sourceBaseName || 'merged', base.preset.container),
         }
         setSelectedTaskIds([merged.id]); setSelectedTaskId(merged.id); return [...prev.filter((item) => !ids.includes(item.id)), merged]
       }
