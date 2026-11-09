@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; customFrame?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -2088,6 +2088,36 @@ const drive = async () => {
   await wait(1200)
   const plainAudioVolume = (document.querySelector('audio') as HTMLAudioElement | null)?.volume ?? null
   result.audioFadePreview = { faded: fadedAudioVolume, plain: plainAudioVolume }
+
+  // RESOLUTION READS CUSTOM WHILE AN EXACT SIZE OVERRIDES IT. The size fields take precedence in the encoder, so a
+  // named resolution left on the row named a figure the export would not use. Driven both ways: a job whose exact
+  // size is set reads CUSTOM, and clearing the size puts the named resolution back.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-custom-frame', preset: { ...task.preset, resolution: '1080p', width: 2160, height: 2160 } }, 'custom-frame')
+  await wait(1200)
+  clickTab('VIDEO')
+  await wait(150)
+  await openInspector()
+  const customFrameSelect = selectIn('RESOLUTION')
+  const customFrameOption = [...(customFrameSelect?.querySelectorAll('.editor-select-option') ?? [])].find((option) => option.getAttribute('data-value') === 'custom') as HTMLButtonElement | undefined
+  const customFrameLabel = customFrameSelect?.querySelector('.editor-select-value')?.textContent?.trim() ?? ''
+  const customFrameValue = valueOf(customFrameSelect)
+  const customFrameOffers = optionsOf(customFrameSelect)
+  // The clear button on the EXACT SIZE row: [0] is the proportion lock, [1] is the reset.
+  const exactRowButtons = fieldFor('EXACT SIZE')?.querySelectorAll('.exact-icon')
+  ;(exactRowButtons?.[1] as HTMLButtonElement | undefined)?.click()
+  await wait(200)
+  const clearedSelect = selectIn('RESOLUTION')
+  result.customFrame = {
+    value: customFrameValue,
+    label: customFrameLabel,
+    offersCustom: Boolean(customFrameOption),
+    customDisabled: Boolean(customFrameOption?.disabled),
+    offers: customFrameOffers,
+    clearedValue: valueOf(clearedSelect),
+    clearedLabel: clearedSelect?.querySelector('.editor-select-value')?.textContent?.trim() ?? '',
+  }
 
   // A CLIP'S OWN SOUND ON ONE SWITCH, from its context menu. MUTE silences THIS clip — the lane's M silences the
   // whole lane — and the mute reaches the queue as the clip's embedded record. THIS CLIP HAS PICTURE: its frames are

@@ -5501,9 +5501,23 @@ export const EditJobApp: React.FC = () => {
             <EditorField
               label="RESOLUTION"
               reason={videoReason}
-              canReset={draft.preset.resolution !== 'source'}
+              // A reset that only moved the named resolution would do nothing while an exact size overrode it, so
+              // this clears both: the row reads CUSTOM *because of* the size fields, and that is what it undoes.
+              canReset={draft.preset.resolution !== 'source' || exactSet}
               onReset={() => updatePreset({ resolution: 'source', width: undefined, height: undefined })}
-            ><EditorSelect value={draft.preset.resolution} options={RESOLUTIONS.map((name) => ({ value: name, label: name.toUpperCase() }))} disabled={audioOnly || isGif} onChange={(next) => changeResolution(next as EncodingPreset['resolution'])} /></EditorField>
+            ><EditorSelect
+              // THE SIZES BELOW OVERRIDE THIS LIST. While they are set, the row names what the export will really
+              // use — the reader's own figure — rather than a named resolution it will not. CUSTOM is a READOUT,
+              // not a choice: it is disabled, because the fields beneath are where the size is changed, and
+              // choosing a named resolution clears them (see `changeResolution`), which is the way back.
+              value={exactSet ? 'custom' : draft.preset.resolution}
+              options={[
+                ...RESOLUTIONS.map((name) => ({ value: name, label: name.toUpperCase() })),
+                ...(exactSet ? [{ value: 'custom', label: 'CUSTOM', disabled: true, title: 'SET BY EXACT SIZE' }] : []),
+              ]}
+              disabled={audioOnly || isGif}
+              onChange={(next) => changeResolution(next as EncodingPreset['resolution'])}
+            /></EditorField>
             <div className="editor-field"><span>EXACT SIZE<em>OVERRIDES RESOLUTION</em></span>
               <div className="exact-row">
                 <label className="mini-field"><span>W</span><NumberField min={2} step={2} className="editor-input" value={draft.preset.width} placeholder={outputFrame ? String(outputFrame.width) : '-'} disabled={audioOnly || isGif} onValue={(value) => setExactEdge('width', value)} title="Output width in pixels" /></label>

@@ -1072,6 +1072,17 @@ app.whenReady().then(async () => {
       if (!clipMute.markedAfter) problems.push('muting a picture clip did not mark its soundtrack on the clip itself')
       if (!(clipMute.mutedIndexes || []).length) problems.push(`muting a clip wrote no muted stream to the queue: ${JSON.stringify(clipMute.mutedIndexes)}`)
     }
+    // RESOLUTION SAYS CUSTOM WHILE AN EXACT SIZE OVERRIDES IT — the named resolution would be naming a figure the
+    // export does not use. And clearing the size puts the name back, so the row is a readout of what is in force.
+    const customFrame = result.customFrame
+    if (!customFrame) problems.push('the exact-size drive reported nothing')
+    else {
+      if (customFrame.value !== 'custom') problems.push(`RESOLUTION reads ${JSON.stringify(customFrame.value)} while an exact size overrides it`)
+      if (customFrame.label !== 'CUSTOM') problems.push(`RESOLUTION is written ${JSON.stringify(customFrame.label)} while an exact size overrides it`)
+      if (!customFrame.offersCustom) problems.push('RESOLUTION offers no CUSTOM entry to carry the state')
+      if (!customFrame.customDisabled) problems.push('the CUSTOM entry can be chosen from the list, though the size fields are where a custom size is set')
+      if (customFrame.clearedValue !== '1080p') problems.push(`clearing the exact size left RESOLUTION reading ${JSON.stringify(customFrame.clearedValue)} rather than 1080p`)
+    }
     // A clip that IS sound is the other half of that rule: the box is hatched, because the sound is the whole of it.
     const soundClipMute = result.soundClipMute
     if (!soundClipMute) problems.push('the sound-clip mute drive reported nothing')

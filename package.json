@@ -1,7 +1,7 @@
 {
   "name": "stitch-up-media",
   "productName": "Stitch Up Media",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Minimalist macOS media encoder & stitcher powered by FFmpeg",
   "author": "Nitai Das <kiddow.san@gmail.com>",
   "main": "dist-electron/main.js",
