@@ -181,7 +181,23 @@ const drive = async () => {
   await wait(250)
   const panel = panelHost.querySelector('.fixed.inset-0') as HTMLElement | null
   const panelText = (panel?.textContent || '').replace(/\s+/g, ' ')
+  // WHAT THE PLATFORM PAINTS INSIDE THE PANEL. A checkbox and a range slider are drawn by the system, so
+  // `accent-color` is the only thing that reaches them; the palette's own value is read off a probe element rather
+  // than written here, so the check follows the stylesheet instead of restating it.
+  const colourProbe = document.createElement('span')
+  colourProbe.style.color = 'var(--crt-green)'
+  document.body.appendChild(colourProbe)
+  const paletteGreen = getComputedStyle(colourProbe).color
+  colourProbe.remove()
+  const rangeInput = panelHost.querySelector('input[type="range"]') as HTMLElement | null
+  const boxInput = panelHost.querySelector('input[type="checkbox"]') as HTMLElement | null
   result.settings = {
+    accentColor: {
+      palette: paletteGreen,
+      range: rangeInput ? getComputedStyle(rangeInput).accentColor : null,
+      checkbox: boxInput ? getComputedStyle(boxInput).accentColor : null,
+    },
+    selectionBackground: getComputedStyle(document.body, '::selection').backgroundColor,
     closedNodes: settingsClosedNodes,
     opened: Boolean(panel),
     text: panelText.slice(0, 160),

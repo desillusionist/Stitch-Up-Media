@@ -133,6 +133,13 @@ app.whenReady().then(async () => {
       if (settings.closedNodes !== 0) problems.push(`a CLOSED settings panel drew ${settings.closedNodes} nodes`)
       if (!settings.opened) problems.push('opening SETTINGS drew no panel: the window blanked instead')
       if (!settings.showsVersion) problems.push(`SETTINGS did not show the running version: ${JSON.stringify(settings.text)}`)
+      // THE CONTROLS THE PLATFORM PAINTS ARE TINTED. A checkbox and a range slider are drawn by the system, so
+      // `accent-color` is the only thing that reaches them — and it was still the modern palette's Apple blue.
+      const accent = settings.accentColor || {}
+      if (!accent.palette) problems.push('the panel reported no palette colour to compare its native controls against')
+      if (accent.range !== accent.palette) problems.push(`the parallel limit slider is tinted ${JSON.stringify(accent.range)} rather than the app accent ${JSON.stringify(accent.palette)}`)
+      if (accent.checkbox !== accent.palette) problems.push(`a settings checkbox is tinted ${JSON.stringify(accent.checkbox)} rather than the app accent ${JSON.stringify(accent.palette)}`)
+      if (settings.selectionBackground !== accent.palette) problems.push(`selected text is highlighted ${JSON.stringify(settings.selectionBackground)} rather than the app accent ${JSON.stringify(accent.palette)}`)
       if (!settings.hasUpdateButton) problems.push('SETTINGS drew no CHECK FOR UPDATES control')
       if ((settings.errorsWhileOpening || []).length) problems.push(...settings.errorsWhileOpening.map((error) => 'opening SETTINGS threw: ' + error))
     }
