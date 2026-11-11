@@ -40,6 +40,7 @@ scripts/.check-sync
 # Commit message and release-note scratch files (see the repo's commit convention)
 .commitmsg
 .release-body.md
+.release-notes.md
 npm-debug.log*
 yarn-error.log*
 

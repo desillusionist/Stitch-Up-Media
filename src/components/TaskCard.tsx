@@ -54,6 +54,8 @@ interface TaskCardProps {
   onChangeSourceTiming: (task: QueueTask, sourceKey: string, override: { fps?: number; seconds?: number }) => void
   onChangeOutputName: (task: QueueTask) => void
   onDuplicateTask: (task: QueueTask) => void
+  /** Split a multi-channel sound's channels into mono sources. Offered only where the file really has more than one. */
+  onExtractStems?: (task: QueueTask, sourcePath: string) => void
   onSkipTask: (task: QueueTask) => void
   onSelectAll: () => void
   onExpandAll: () => void
@@ -85,6 +87,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onChangeSourceTiming,
   onChangeOutputName,
   onDuplicateTask,
+  onExtractStems,
   onSkipTask,
   onSelectAll,
   onExpandAll,
@@ -177,6 +180,26 @@ export const TaskCard: React.FC<TaskCardProps> = ({
     return () => { cancelled = true }
   }, [task.additionalAudioTracks])
   const [mediaInfos, setMediaInfos] = useState<Array<{ id: string; info: any; source: string; x: number; y: number }>>([])
+  /**
+   * THE CHANNELS OF A SOUND SOURCE, read when the card's menu is opened.
+   *
+   * EXTRACT STEMS is offered only for a file that really has more than one channel, and that is a fact about the FILE
+   * rather than about its extension — a mono wav and a 5.1 wav are both `.wav`. Probed on demand rather than for every
+   * card on screen: one probe per right-click, remembered for the card's life.
+   */
+  const [channelCounts, setChannelCounts] = useState<Record<string, number>>({})
+  useEffect(() => {
+    if (!contextMenu) return
+    const unknown = task.sourcePaths.filter((source) => channelCounts[source] === undefined && AUDIO_EXT.includes((source.split('.').pop() || '').toLowerCase()))
+    if (!unknown.length) return
+    let cancelled = false
+    void Promise.all(unknown.map(async (source) => {
+      try { const info: any = await window.electronAPI?.probeMedia(source); return [source, info?.audioStreams?.[0]?.channels ?? 0] as const } catch { return [source, 0] as const }
+    })).then((entries) => { if (!cancelled) setChannelCounts((current) => ({ ...current, ...Object.fromEntries(entries) })) })
+    return () => { cancelled = true }
+  }, [contextMenu, channelCounts, task.sourcePaths])
+  /** The multi-channel sound among this job's sources, which is what EXTRACT STEMS would split. */
+  const stemSource = task.sourcePaths.find((source) => (channelCounts[source] ?? 0) > 1) ?? null
   useEffect(() => {
     if (!mediaInfos.length) return
     const dismiss = (event: KeyboardEvent) => { if (event.key === 'Escape') setMediaInfos((current) => current.slice(0, -1)) }
@@ -472,7 +495,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         if (item.info.videoStreams?.length > 0) return (<section><b>VIDEO DETAILS</b><span>Resolution: {vstream?.resolution || 'Unknown'}</span><span>Codec: {vstream?.codec || 'Unknown'}</span><span>Frame Rate: {vstream?.fps ? `${formatFps(vstream.fps)} fps` : 'Unknown'}</span><span>Data Rate: {vstream?.bitrate || 'Unknown'}</span></section>)
         return null
       })()}{item.info.audioStreams?.length > 0 && <section><b>AUDIO DETAILS</b><span>Codec: {item.info.audioStreams[0].codec || 'Unknown'}</span><span>Language: {item.info.audioStreams[0].language || 'Unknown'}</span><span>Channels: {item.info.audioStreams[0].channels || 'Unknown'}</span><span>Sample Rate: {item.info.audioStreams[0].sampleRate ? `${item.info.audioStreams[0].sampleRate} Hz` : 'Unknown'}</span><span>Data Rate: {item.info.audioStreams[0].bitrate || 'Unknown'}</span></section>}</div>, document.body))}
-      {contextMenu && <div ref={contextMenuRef} className="job-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><div className="context-menu-group"><button onClick={() => { onEncodeSelected(); setContextMenu(null) }}>ENCODE SELECTED</button></div><div className="context-menu-group"><span>EXPORT MODE</span><button onClick={() => { onChangeJobType(task, 'transcode'); setContextMenu(null) }}>CONVERT</button><button onClick={() => { onChangeJobType(task, 'stitch'); setContextMenu(null) }}>STITCH UP</button><button onClick={() => { onChangeJobType(task, 'multitrack'); setContextMenu(null) }}>MULTI-TRACK</button><button onClick={() => { onChangeJobType(task, 'combo'); setContextMenu(null) }}>COMBO</button></div><div className="context-menu-group"><span>JOB</span><button onClick={() => { onOpenEditor(task); setContextMenu(null) }}>JOB EDIT</button><button onClick={() => { onDuplicateTask(task); setContextMenu(null) }}>DUPLICATE</button><button onClick={() => { onSkipTask(task); setContextMenu(null) }}>{task.skipped || task.status === 'done' || task.status === 'error' ? 'RESET STATUS' : 'SKIP'}</button><button onClick={() => { onRemoveTask(task.id); setContextMenu(null) }}>REMOVE</button></div><div className="context-menu-group"><span>SELECTION</span><button onClick={() => { onSelectAll(); setContextMenu(null) }}>SELECT ALL</button><button onClick={() => { onExpandAll(); setContextMenu(null) }}>EXPAND ALL</button><button onClick={() => { onCollapseAll(); setContextMenu(null) }}>COLLAPSE ALL</button></div></div>}
+      {contextMenu && <div ref={contextMenuRef} className="job-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><div className="context-menu-group"><button onClick={() => { onEncodeSelected(); setContextMenu(null) }}>ENCODE SELECTED</button></div><div className="context-menu-group"><span>EXPORT MODE</span><button onClick={() => { onChangeJobType(task, 'transcode'); setContextMenu(null) }}>CONVERT</button><button onClick={() => { onChangeJobType(task, 'stitch'); setContextMenu(null) }}>STITCH UP</button><button onClick={() => { onChangeJobType(task, 'multitrack'); setContextMenu(null) }}>MULTI-TRACK</button><button onClick={() => { onChangeJobType(task, 'combo'); setContextMenu(null) }}>COMBO</button></div><div className="context-menu-group"><span>JOB</span><button onClick={() => { onOpenEditor(task); setContextMenu(null) }}>JOB EDIT</button>{stemSource && <button onClick={() => { onExtractStems?.(task, stemSource); setContextMenu(null) }} title={`Split this file's ${channelCounts[stemSource]} channels into mono sources`}>EXTRACT STEMS</button>}<button onClick={() => { onDuplicateTask(task); setContextMenu(null) }}>DUPLICATE</button><button onClick={() => { onSkipTask(task); setContextMenu(null) }}>{task.skipped || task.status === 'done' || task.status === 'error' ? 'RESET STATUS' : 'SKIP'}</button><button onClick={() => { onRemoveTask(task.id); setContextMenu(null) }}>REMOVE</button></div><div className="context-menu-group"><span>SELECTION</span><button onClick={() => { onSelectAll(); setContextMenu(null) }}>SELECT ALL</button><button onClick={() => { onExpandAll(); setContextMenu(null) }}>EXPAND ALL</button><button onClick={() => { onCollapseAll(); setContextMenu(null) }}>COLLAPSE ALL</button></div></div>}
     </div>
   )
 }

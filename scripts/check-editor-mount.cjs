@@ -1072,6 +1072,17 @@ app.whenReady().then(async () => {
       if (!clipMute.markedAfter) problems.push('muting a picture clip did not mark its soundtrack on the clip itself')
       if (!(clipMute.mutedIndexes || []).length) problems.push(`muting a clip wrote no muted stream to the queue: ${JSON.stringify(clipMute.mutedIndexes)}`)
     }
+    // A PINCH INSIDE THE FRAME CROPS; ONE OUTSIDE IT ZOOMS THE VIEWER, and neither does the other's job.
+    const pinch = result.pinch
+    if (!pinch) problems.push('the pinch drive reported nothing')
+    else {
+      if (pinch.bandsBefore !== 0) problems.push(`an uncropped clip drew ${pinch.bandsBefore} crop bands before any pinch`)
+      if (!(pinch.bandsAfterCropPinch > 0)) problems.push('a pinch inside the frame drew no crop: the picture was not scaled')
+      if (pinch.zoomAfterCropPinch !== pinch.zoomBeforePinch) problems.push(`a pinch inside the frame moved the viewer's zoom from ${JSON.stringify(pinch.zoomBeforePinch)} to ${JSON.stringify(pinch.zoomAfterCropPinch)}`)
+      if (!pinch.zoomAfterViewerPinch || pinch.zoomAfterViewerPinch === pinch.zoomBeforePinch) problems.push(`a pinch outside the frame left the viewer's zoom at ${JSON.stringify(pinch.zoomAfterViewerPinch)}`)
+      if (pinch.bandsAfterViewerPinch !== pinch.bandsAfterCropPinch) problems.push(`a pinch outside the frame changed the crop too (${pinch.bandsAfterCropPinch} bands became ${pinch.bandsAfterViewerPinch})`)
+      if (!pinch.crop || !(pinch.crop.left > 0 || pinch.crop.top > 0 || pinch.crop.right > 0 || pinch.crop.bottom > 0)) problems.push(`the pinch wrote no crop to the job: ${JSON.stringify(pinch.crop)}`)
+    }
     // RESOLUTION SAYS CUSTOM WHILE AN EXACT SIZE OVERRIDES IT — the named resolution would be naming a figure the
     // export does not use. And clearing the size puts the name back, so the row is a readout of what is in force.
     const customFrame = result.customFrame

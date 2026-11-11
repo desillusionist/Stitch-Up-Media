@@ -202,7 +202,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; customFrame?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; pinch?: unknown; customFrame?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -2088,6 +2088,42 @@ const drive = async () => {
   await wait(1200)
   const plainAudioVolume = (document.querySelector('audio') as HTMLAudioElement | null)?.volume ?? null
   result.audioFadePreview = { faded: fadedAudioVolume, plain: plainAudioVolume }
+
+  // A PINCH INSIDE THE FRAME CROPS; A PINCH OUTSIDE IT ZOOMS THE VIEWER. Chromium reports a trackpad pinch as a wheel
+  // event with ctrlKey set, so that is what is dispatched — first over the frame's own window, then over the stage.
+  flushEdits()
+  await wait(200)
+  arrive({ ...task, id: 'mount-pinch', type: 'transcode', sourcePaths: [CLIP_FIXTURE] }, 'pinch')
+  await wait(1200)
+  const pinchWheel = (target: Element | null, deltaY: number) => Boolean(target?.dispatchEvent(new WheelEvent('wheel', { deltaY, ctrlKey: true, bubbles: true, cancelable: true })))
+  const bandsBefore = document.querySelectorAll('.editor-crop-shade').length
+  const zoomBeforePinch = document.querySelector('.preview-zoom-label')?.textContent?.trim() ?? null
+  // A PINCH IN (fingers together) is a positive delta: that is the one that CROPS, which is the direction a reader
+  // uses to keep less of the picture. The other way is checked to leave the crop alone rather than to expand it.
+  pinchWheel(document.querySelector('.editor-frame-window'), 240)
+  await wait(200)
+  const bandsAfterCropPinch = document.querySelectorAll('.editor-crop-shade').length
+  const zoomAfterCropPinch = document.querySelector('.preview-zoom-label')?.textContent?.trim() ?? null
+  pinchWheel(document.querySelector('.editor-screen'), -240)
+  await wait(200)
+  const zoomAfterViewerPinch = document.querySelector('.preview-zoom-label')?.textContent?.trim() ?? null
+  const bandsAfterViewerPinch = document.querySelectorAll('.editor-crop-shade').length
+  // Through APPLY, so what the pinch wrote is read from the patch rather than from the drawing alone.
+  const applyPinch = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyPinch?.click()
+  await wait(250)
+  const pinchPatch = applied[applied.length - 1] as { sourceCrop?: Record<string, { left: number; top: number; right: number; bottom: number }>; preset?: { crop?: { left: number; top: number; right: number; bottom: number } } } | undefined
+  result.pinch = {
+    bandsBefore,
+    bandsAfterCropPinch,
+    zoomBeforePinch,
+    zoomAfterCropPinch,
+    zoomAfterViewerPinch,
+    bandsAfterViewerPinch,
+    // A job whose visuals are CONCATENATED keeps the crop per clip; a lone clip keeps it on the preset, which is
+    // where a pinch on this fixture is recorded.
+    crop: Object.values(pinchPatch?.sourceCrop ?? {})[0] ?? pinchPatch?.preset?.crop ?? null,
+  }
 
   // RESOLUTION READS CUSTOM WHILE AN EXACT SIZE OVERRIDES IT. The size fields take precedence in the encoder, so a
   // named resolution left on the row named a figure the export would not use. Driven both ways: a job whose exact

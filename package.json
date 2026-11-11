@@ -1,7 +1,7 @@
 {
   "name": "stitch-up-media",
   "productName": "Stitch Up Media",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Minimalist macOS media encoder & stitcher powered by FFmpeg",
   "author": "Nitai Das <kiddow.san@gmail.com>",
   "main": "dist-electron/main.js",
@@ -32,7 +32,8 @@
     "electron:dev": "vite",
     "icon": "xcrun actool --output-format human-readable-text --notices --warnings --platform macosx --minimum-deployment-target 27.0 --target-device mac --app-icon AppIcon --output-partial-info-plist /tmp/stitchup-appicon-partial.plist --compile build build/AppIcon.icon",
     "dist": "npm run build && electron-builder --mac",
-    "dist:dir": "npm run build && electron-builder --mac --dir"
+    "dist:dir": "npm run build && electron-builder --mac --dir",
+    "publish:release": "node scripts/publish-release.cjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

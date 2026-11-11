@@ -665,6 +665,41 @@ app.whenReady().then(() => {
     return await peaksFor(filePath)
   })
 
+  /**
+   * A MULTI-CHANNEL FILE'S CHANNELS, AS FILES — one mono wav each, in the cache.
+   *
+   * One decode pass writes them all: `pan=mono|c0=cN` names a channel by its NUMBER rather than by the layout, because
+   * a wav may name no layout at all (or name one the reader would not recognise) and an index is always true. The
+   * files are registered as generated, so CLEAR CACHE takes them away with the rest, and the app's own ffmpeg is
+   * named outright rather than looked up on PATH — a Finder-launched app has none, which is what made every waveform
+   * a flat line until that was fixed.
+   */
+  ipcMain.handle('extract-stems', async (_, filePath: string) => {
+    try {
+      const info = await probeFile(filePath)
+      const channels = info.audioStreams[0]?.channels ?? 0
+      if (channels < 2) return []
+      const settings = queueManager?.getSettings()
+      const cacheRoot = settings?.saveTempNextToSource
+        ? path.dirname(filePath)
+        : (settings?.cacheDirectory || path.join(app.getPath('temp'), 'Stitch Up Media'))
+      fs.mkdirSync(cacheRoot, { recursive: true })
+      const base = path.basename(filePath).replace(/\.[^.]+$/, '')
+      const stamp = Date.now()
+      const outputs = Array.from({ length: channels }, (_, index) => path.join(cacheRoot, `${base}_stem_${index + 1}_${stamp}.wav`))
+      const filters = Array.from({ length: channels }, (_, index) => `[0:a]pan=mono|c0=c${index}[s${index}]`).join(';')
+      const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', filePath, '-filter_complex', filters]
+      outputs.forEach((output, index) => args.push('-map', `[s${index}]`, '-c:a', 'pcm_s16le', output))
+      await runFfmpeg(args, 60 * 60 * 1000, FFMPEG_BINARY)
+      outputs.forEach((output) => registerGeneratedPreview(output))
+      logEvent('ipc', 'stems extracted', { filePath, channels, files: outputs.length })
+      return outputs
+    } catch (error) {
+      logEvent('ipc', 'stem extraction failed', { filePath, error: String(error) })
+      return []
+    }
+  })
+
   ipcMain.handle('get-paths-total-size', async (_, filePaths: string[]) => {
     return filePaths.reduce((total, filePath) => {
       try { return total + fs.statSync(filePath).size } catch { return total }

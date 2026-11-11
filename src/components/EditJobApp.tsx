@@ -1941,6 +1941,50 @@ export const EditJobApp: React.FC = () => {
    */
   const speedRateRef = useRef<number>(playback.speed)
   speedRateRef.current = playback.speed
+  /**
+   * A TRACKPAD PINCH — which Chromium reports as a wheel event with `ctrlKey` set.
+   *
+   * INSIDE THE FRAME it scales the CROP about its own centre, because the frame is the picture and the reader is
+   * pointing at the part of it they want to keep. ANYWHERE ELSE over the stage it zooms the VIEWER, the same thing
+   * the zoom control in the corner does — a pinch is a gesture about what is being looked at, and the two answers
+   * are told apart by where the fingers are, not by a mode.
+   *
+   * The crop is scaled by moving its edges relative to its centre rather than by growing one of them, so a pinch
+   * keeps the part of the picture the reader kept and only changes how much around it is taken. `setCrop` holds it
+   * inside the picture, so a pinch can neither collapse the box nor push it past the frame's own edges.
+   */
+  const pinchByWheel = (event: React.WheelEvent<HTMLElement>) => {
+    if (!event.ctrlKey || event.deltaY === 0) return
+    // Taken before the speed wheel can read it: a pinch is not a scrub, and the two share the stage.
+    event.preventDefault()
+    event.stopPropagation()
+    const factor = Math.max(0.5, Math.min(2, Math.exp(-event.deltaY / 200)))
+    const insideFrame = Boolean((event.target as HTMLElement | null)?.closest?.('.editor-frame-window'))
+    // A clip with no crop recorded IS the whole picture, so a pinch in from there starts a crop rather than doing
+    // nothing: `draft.preset.crop` is absent on every untouched job.
+    const base = crop ?? { left: 0, top: 0, right: 0, bottom: 0 }
+    if (insideFrame) {
+      const width = Math.max(0.001, 1 - base.left - base.right)
+      const height = Math.max(0.001, 1 - base.top - base.bottom)
+      const centreX = base.left + width / 2
+      const centreY = base.top + height / 2
+      const halfWidth = Math.min(0.5, Math.max(0.01, (width * factor) / 2))
+      const halfHeight = Math.min(0.5, Math.max(0.01, (height * factor) / 2))
+      setCrop({
+        left: centreX - halfWidth,
+        top: centreY - halfHeight,
+        right: 1 - (centreX + halfWidth),
+        bottom: 1 - (centreY + halfHeight),
+      })
+      return
+    }
+    // The viewer's own scale, from whatever it is showing now: a fit has no percentage of its own, so the drawn
+    // frame against the output frame is what a pinch starts from.
+    const shown = frameRect && outputFrame && outputFrame.width > 0 ? (frameRect.width / outputFrame.width) * 100 : 100
+    const current = previewZoom.kind === 'percent' ? previewZoom.percent : clampPreviewZoom(shown)
+    setPreviewZoom({ kind: 'percent', percent: clampPreviewZoom(current * factor) })
+  }
+
   const speedByWheel = (event: React.WheelEvent<HTMLElement>) => {
     if (event.deltaY === 0) return
     // One rung per a DELIBERATE amount of scroll, with the remainder carried, so a trackpad's stream of tiny
@@ -4529,7 +4573,7 @@ export const EditJobApp: React.FC = () => {
       <main className="editor-main">
         <section className="editor-preview">
           <div className="panel-kicker">PREVIEW // ASSEMBLED OUTPUT{outputFrame ? ` (${outputFrame.width}x${outputFrame.height})` : ''}</div>
-          <div className="editor-screen" onWheel={speedByWheel}>
+          <div className="editor-screen" onWheelCapture={pinchByWheel} onWheel={speedByWheel}>
             {/* The media sits in its own measured stage, so the output frame outline can
                 be drawn around the picture rather than around the panel. The stage is also the
                 pan surface: everything drawn lives in one layer inside it and moves together

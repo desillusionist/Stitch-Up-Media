@@ -91,6 +91,14 @@ export interface IElectronAPI {
   }) => Promise<string[]>
   /** A file's audio as peaks for the timeline's waveform, or null when it has none. */
   waveformFor: (filePath: string) => Promise<number[] | null>
+  /**
+   * A multi-channel sound's channels, as one mono file each — the EXTRACT STEMS action.
+   *
+   * Empty where the source has fewer than two channels, and empty where the extraction failed: the caller shows that
+   * as "nothing to split" rather than as a crash, because a file whose sound cannot be read is not an error state the
+   * queue has a place for.
+   */
+  extractStems: (filePath: string) => Promise<string[]>
   selectOutputDir: () => Promise<string | null>
   startTask: (task: QueueTask) => Promise<{ success: boolean; error?: string }>
   startSelectedTasks: (tasks: QueueTask[]) => Promise<{ success: boolean; error?: string }>
@@ -197,6 +205,7 @@ const api: IElectronAPI = {
   pathExists: (filePath: string) => ipcRenderer.invoke('path-exists', filePath),
   framesAt: (filePath: string, options?: { times?: number[]; fps?: number; signature?: string; cacheId?: string; frame?: { width: number; height: number }; source?: { width: number; height: number }; fit?: SourceFit; crop?: { left: number; top: number; right: number; bottom: number } }) => ipcRenderer.invoke('frames-at', filePath, options),
   waveformFor: (filePath: string) => ipcRenderer.invoke('waveform-for', filePath),
+  extractStems: (filePath: string) => ipcRenderer.invoke('extract-stems', filePath),
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   startTask: (task: QueueTask) => ipcRenderer.invoke('start-task', task),
   startSelectedTasks: (tasks: QueueTask[]) => ipcRenderer.invoke('start-selected-tasks', tasks),

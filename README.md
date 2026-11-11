@@ -38,6 +38,10 @@ Needs Node, and `ffmpeg` and `ffprobe` on `PATH`.
 - `npm run dev` — the window, with hot reload.
 - `npm run build` — typecheck and build the renderer and the main process.
 - `npm run dist` — package the macOS DMG and zip into `release/`.
+- `npm run publish:release` — publish that build as a GitHub Release. The release is created as a **draft**,
+  the assets are uploaded, and it becomes public only once all four are there: a published release with no
+  disk image would be offered by every copy's update check and could not be downloaded. Re-running it is the
+  retry — it uploads only what is missing. Notes come from `.release-notes.md` (gitignored), or `-- --notes <file>`.
 
 The suite is a set of harnesses rather than one test runner. Each prints what it checked and exits non-zero
 when something failed: `typecheck`, `verify` (the arithmetic behind the

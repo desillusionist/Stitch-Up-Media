@@ -2,6 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { TaskCard } from '../src/components/TaskCard'
 import { SettingsModal } from '../src/components/SettingsModal'
+import { Header } from '../src/components/Header'
 import { QueueTask } from '../src/types'
 
 /**
@@ -191,6 +192,28 @@ const drive = async () => {
   colourProbe.remove()
   const rangeInput = panelHost.querySelector('input[type="range"]') as HTMLElement | null
   const boxInput = panelHost.querySelector('input[type="checkbox"]') as HTMLElement | null
+  // START QUEUE AND ITS SCOPE. One press starts at the choice; the caret offers the two answers, and every press is
+  // reported with the scope it carried so the reading is what the button DID rather than what it says.
+  const headerHost = document.createElement('div')
+  document.body.appendChild(headerHost)
+  const headerRoot = createRoot(headerHost)
+  const starts: string[] = []
+  headerRoot.render(<Header isQueueRunning={false} onToggleQueue={(scope) => starts.push(String(scope))} taskCount={2} canStartQueue />)
+  await wait(150)
+  const startButton = () => [...headerHost.querySelectorAll('button')].find((button) => /START QUEUE/.test(button.textContent || '')) as HTMLButtonElement | undefined
+  const caretButton = () => headerHost.querySelector('.queue-titlebar-start-caret') as HTMLButtonElement | null
+  startButton()?.click()
+  await wait(80)
+  caretButton()?.click()
+  await wait(80)
+  const offered = [...headerHost.querySelectorAll('.queue-start-menu button')].map((button) => (button.textContent || '').trim())
+  const selectedOnly = [...headerHost.querySelectorAll('.queue-start-menu button')].find((button) => /SELECTED ONLY/.test(button.textContent || '')) as HTMLButtonElement | undefined
+  selectedOnly?.click()
+  await wait(80)
+  startButton()?.click()
+  await wait(80)
+  result.startScope = { offered, starts: [...starts] }
+
   result.settings = {
     accentColor: {
       palette: paletteGreen,

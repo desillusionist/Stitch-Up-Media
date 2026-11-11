@@ -133,7 +133,15 @@ app.whenReady().then(async () => {
       if (settings.closedNodes !== 0) problems.push(`a CLOSED settings panel drew ${settings.closedNodes} nodes`)
       if (!settings.opened) problems.push('opening SETTINGS drew no panel: the window blanked instead')
       if (!settings.showsVersion) problems.push(`SETTINGS did not show the running version: ${JSON.stringify(settings.text)}`)
-      // THE CONTROLS THE PLATFORM PAINTS ARE TINTED. A checkbox and a range slider are drawn by the system, so
+      // START QUEUE CARRIES A SCOPE, and the caret offers exactly the two answers.
+    const scope = result.startScope
+    if (!scope) problems.push('the start-scope drive reported nothing')
+    else {
+      if (!scope.offered.includes("MARKED 'READY'")) problems.push(`the scope menu offers ${JSON.stringify(scope.offered)} rather than MARKED 'READY' and SELECTED ONLY`)
+      if (!scope.offered.includes('SELECTED ONLY')) problems.push(`the scope menu offers ${JSON.stringify(scope.offered)} rather than MARKED 'READY' and SELECTED ONLY`)
+      if (JSON.stringify(scope.starts) !== JSON.stringify(['ready', 'selected'])) problems.push(`START QUEUE started with ${JSON.stringify(scope.starts)} rather than a default start then the chosen SELECTED ONLY`)
+    }
+    // THE CONTROLS THE PLATFORM PAINTS ARE TINTED. A checkbox and a range slider are drawn by the system, so
       // `accent-color` is the only thing that reaches them — and it was still the modern palette's Apple blue.
       const accent = settings.accentColor || {}
       if (!accent.palette) problems.push('the panel reported no palette colour to compare its native controls against')

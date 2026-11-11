@@ -1164,6 +1164,16 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
 .queue-titlebar { justify-content: space-between; }
 .queue-titlebar-start { height: 30px; min-height: 30px; padding: 0 12px; border: 1px solid var(--ui-accent); color: var(--ui-canvas); background: var(--ui-accent); font-family: "Doto", sans-serif; font-size: 10px; letter-spacing: .08em; }
 .queue-titlebar-start:hover { color: var(--ui-accent); background: var(--ui-canvas); }
+/* START QUEUE and the scope it starts with. The caret is the same button's edge rather than a separate control: one
+   press starts the queue, the other opens the two answers, and neither is a mode the reader has to find. */
+.queue-start-split { position: relative; display: inline-flex; align-items: stretch; }
+.queue-start-split .queue-titlebar-start { border-right: 0; }
+.queue-titlebar-start-caret { min-width: 22px; padding: 0 4px; border: 1px solid var(--ui-accent); color: var(--ui-canvas); background: var(--ui-accent); font-size: 9px; line-height: 1; }
+.queue-titlebar-start-caret:hover { color: var(--ui-accent); background: var(--ui-canvas); }
+.queue-start-menu { position: absolute; top: calc(100% + 3px); right: 0; z-index: 60; display: flex; flex-direction: column; min-width: 168px; padding: 3px; color: var(--ui-foreground); background: var(--ui-panel); border: 1px solid var(--ui-border); box-shadow: 0 8px 24px rgba(0,0,0,.6); }
+.queue-start-menu button { padding: 6px 8px; text-align: left; color: var(--ui-muted); background: transparent; border: 1px solid transparent; font-size: 10px; letter-spacing: .06em; }
+.queue-start-menu button:hover { color: var(--ui-foreground); border-color: var(--ui-border); }
+.queue-start-menu button.is-on { color: var(--ui-accent); border-color: var(--ui-accent); }
 .command-bar { display: flex; align-items: center; gap: 10px; }
 .command-bar > button { display: inline-flex; align-items: center; gap: 6px; }
 

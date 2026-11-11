@@ -172,6 +172,8 @@ export const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const editJobTaskIdRef = useRef<string | null>(null)
+  /** Every job the EDIT JOB window was opened over, so what is applied there lands on all of them. */
+  const editJobBatchRef = useRef<string[]>([])
   const editJobSignatureRef = useRef('')
   const lastDeletedTasksRef = useRef<QueueTask[]>([])
   const taskHistoryPastRef = useRef<QueueTask[][]>([])
@@ -278,8 +280,17 @@ export const App: React.FC = () => {
     return () => window.clearInterval(timer)
   }, [tasks])
 
+  /**
+   * Open the EDIT JOB window — over ONE job, or over every selected one.
+   *
+   * The window shows the job that was right-clicked; what APPLY writes is a patch, and a patch is not about one job.
+   * So the set it was opened over is remembered here and the patch goes to all of them: editing five identical jobs
+   * one at a time was five identical edits. Per-clip records in the patch are keyed by clip id or source path, which
+   * belong to the job they came from, so a record written for one job leaves the others' records untouched.
+   */
   const handleOpenEditJob = (task: QueueTask) => {
     editJobTaskIdRef.current = task.id
+    editJobBatchRef.current = selectedTaskIds.includes(task.id) && selectedTaskIds.length > 1 ? [...selectedTaskIds] : [task.id]
     editJobSignatureRef.current = editJobSignature(task)
     void window.electronAPI?.openEditJob(task)
   }
@@ -314,7 +325,9 @@ export const App: React.FC = () => {
       })
 
       const unsubscribeEditor = window.electronAPI.onEditJobApplied((patch) => {
-        setTasks((prev) => prev.map((task) => task.id === patch.id ? applyEditJobPatch(task, patch) : task))
+        // THE WHOLE SELECTION, when that is what the window was opened over — one edit, applied to every job in it.
+        const batch = editJobBatchRef.current.includes(patch.id) ? editJobBatchRef.current : [patch.id]
+        setTasks((prev) => prev.map((task) => batch.includes(task.id) ? applyEditJobPatch(task, patch) : task))
       })
 
       const unsubscribeProgress = window.electronAPI.onProgress((taskId, progressData) => {
@@ -538,10 +551,16 @@ export const App: React.FC = () => {
     event.target.value = ''
   }
 
-  const handleToggleQueue = () => {
+  /**
+   * Start the queue, or pause it.
+   *
+   * The SCOPE is which jobs a start covers: every job marked READY, or only the selected ones. It is the choice beside
+   * START QUEUE, and it only ever narrows a start — a pause is a pause whatever was chosen.
+   */
+  const handleToggleQueue = (scope: 'ready' | 'selected' = 'ready') => {
     if (!isQueueRunning) {
-      // Start processing pending tasks
-      const pendingTasks = tasks.filter((t) => t.status === 'pending')
+      // Start processing pending tasks — all of them, or only those in the selection.
+      const pendingTasks = tasks.filter((t) => t.status === 'pending' && (scope === 'ready' || selectedTaskIds.includes(t.id)))
       const incompatible = pendingTasks.filter((t) => Boolean(validateModeSources(t.type, t.sourcePaths, t.additionalAudioTracks || [])))
       const encodable = pendingTasks.filter((t) => !incompatible.includes(t))
       encodable.forEach((t) => { window.electronAPI?.startTask(t) })
@@ -617,6 +636,25 @@ export const App: React.FC = () => {
 
   const handleClearDone = () => {
   }
+  /**
+   * A MULTI-CHANNEL SOUND SPLIT INTO ITS CHANNELS.
+   *
+   * Each channel becomes its own file and its own CONVERT job, because a CONVERT writes ONE output: six channels are
+   * six jobs, and calling them one job would be a job whose other five outputs are never written. The new jobs are
+   * put in the clicked job's output folder, not the cache the stems were cut into, so a reader who starts them gets
+   * the files where the rest of that job's work goes.
+   */
+  const handleExtractStems = async (task: QueueTask, sourcePath: string) => {
+    const stems = await window.electronAPI?.extractStems(sourcePath) ?? []
+    if (!stems.length) {
+      window.alert('Nothing to split: this file has fewer than two channels, or its sound could not be read.')
+      return
+    }
+    const before = tasksRef.current.length
+    for (const stem of stems) await addFilesToQueue([stem], 'transcode', true)
+    setTasks((current) => current.map((candidate, index) => (index < before ? candidate : { ...candidate, outputDirectory: task.outputDirectory })))
+  }
+
   const handleDuplicateTask = (task: QueueTask) => {
     const duplicate = { ...task, id: Math.random().toString(36).substring(7), status: 'pending' as const, progress: 0, errorMessage: undefined }
     setTasks((prev) => [...prev, duplicate])
@@ -1056,6 +1094,7 @@ export const App: React.FC = () => {
         onChangeSourceTiming={handleChangeSourceTiming}
         onChangeOutputName={handleChangeOutputName}
         onDuplicateTask={handleDuplicateTask}
+        onExtractStems={handleExtractStems}
         onSkipTask={handleSkipTask}
         onSelectAll={handleSelectAll}
         onExpandAll={handleExpandAll}

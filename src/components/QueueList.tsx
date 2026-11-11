@@ -26,6 +26,7 @@ interface QueueListProps {
   onChangeSourceTiming: (task: QueueTask, sourceKey: string, override: { fps?: number; seconds?: number }) => void
   onChangeOutputName: (task: QueueTask) => void
   onDuplicateTask: (task: QueueTask) => void
+  onExtractStems?: (task: QueueTask, sourcePath: string) => void
   onSkipTask: (task: QueueTask) => void
   onSelectAll: () => void
   onExpandAll: () => void
@@ -58,6 +59,7 @@ export const QueueList: React.FC<QueueListProps> = ({
   onChangeSourceTiming,
   onChangeOutputName,
   onDuplicateTask,
+  onExtractStems,
   onSkipTask,
   onSelectAll,
   onExpandAll,
@@ -184,6 +186,7 @@ export const QueueList: React.FC<QueueListProps> = ({
               onChangeSourceTiming={onChangeSourceTiming}
               onChangeOutputName={onChangeOutputName}
               onDuplicateTask={onDuplicateTask}
+              onExtractStems={onExtractStems}
               onSkipTask={onSkipTask}
               onSelectAll={onSelectAll}
               onExpandAll={onExpandAll}
