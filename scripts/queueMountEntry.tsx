@@ -247,7 +247,7 @@ const drive = async () => {
   document.body.appendChild(dialogHost)
   const dialogRoot = createRoot(dialogHost)
   dialogRoot.render(<YouTubeDialog
-    state={{ open: true, url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', directory: '/Users/thai-nitai/Downloads', busy: false, percent: null, error: null, height: 1080, previewSafe: true }}
+    state={{ open: true, url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', directory: '/Users/thai-nitai/Downloads', busy: false, percent: null, error: null, quality: '1080', previewSafe: true }}
     onChange={() => undefined}
     onChooseDirectory={() => undefined}
     onDownload={() => undefined}

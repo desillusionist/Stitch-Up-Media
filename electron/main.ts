@@ -17,7 +17,7 @@ import { runFfmpeg } from './ffmpeg/run'
 import { previewProxyFor, PreviewProxyDeps } from './previewProxy'
 import { createOpenFileBuffer, OPEN_WITH_EXTENSIONS } from './openFiles'
 import { downloadDestination, downloadRelease, fetchLatestRelease, isNewerVersion, mountRelease, releaseNotesFrom, UpdateProgress, LatestRelease } from './updater'
-import { downloadYouTube, YTDLP_BINARY } from './youtube'
+import { downloadYouTube, specSuffix, uniquePath, withSpecSuffix, YTDLP_BINARY } from './youtube'
 import { UPDATE_RELEASES_PAGE } from './updater'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -1125,7 +1125,7 @@ app.whenReady().then(() => {
    * must not take it. Progress is pushed to the window as a percentage, because the download is the slow part and the
    * window is where it was asked for.
    */
-  ipcMain.handle('download-youtube', async (_, options: { url?: string; directory?: string; height?: number; previewSafe?: boolean }) => {
+  ipcMain.handle('download-youtube', async (_, options: { url?: string; directory?: string; quality?: string; previewSafe?: boolean }) => {
     const url = String(options?.url || '').trim()
     const directory = options?.directory || app.getPath('downloads')
     if (!/^https?:\/\//i.test(url)) return { files: [] as string[], error: 'That is not a link.' }
@@ -1135,14 +1135,30 @@ app.whenReady().then(() => {
         url,
         directory,
         ffmpegDirectory: path.dirname(FFMPEG_BINARY),
-        // A HEIGHT is a ceiling, and the preview-safe codec request is what makes the result play in Finder's Quick
-        // Look and in this app's own helper — see `formatSelector`.
-        height: Number(options?.height) || 0,
+        // What was asked for — a ceiling for the picture, or a sound on its own — and the preview-safe codec request,
+        // which is what makes the result play in Finder's Quick Look and in this app's own helper.
+        quality: options?.quality || 'best',
         previewSafe: options?.previewSafe !== false,
         onProgress: (percent) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('youtube-progress', { percent }) },
       })
-      logEvent('youtube', 'download finished', { files: files.length })
-      return { files }
+      // NAMED FOR WHAT THEY ARE. The probe's own figures go into the name — `Title [1920x1080].mp4`, `Title [48kHz
+      // 128k].m4a` — so two downloads of one link are two files that can be told apart, and so a file says its size
+      // without being opened. A name already taken gets a copy number rather than overwriting something.
+      const named: string[] = []
+      for (const file of files) {
+        try {
+          const suffix = specSuffix(await probeFile(file))
+          if (!suffix) { named.push(file); continue }
+          const target = uniquePath(withSpecSuffix(file, suffix), fs.existsSync)
+          if (target !== file) fs.renameSync(file, target)
+          named.push(target)
+        } catch (error) {
+          logEvent('youtube', 'could not name a download', { file, error: String(error) })
+          named.push(file)
+        }
+      }
+      logEvent('youtube', 'download finished', { files: named.length })
+      return { files: named }
     } catch (error) {
       logEvent('youtube', 'download failed', { error: String(error) })
       return { files: [] as string[], error: String(error) }

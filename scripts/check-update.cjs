@@ -8,7 +8,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { UPDATE_RELEASES_API, UPDATE_RELEASES_PAGE, isNewerVersion, versionSegments, releaseFromPayload, fetchLatestRelease, downloadDestination, downloadRelease, releaseNotesFrom } = require('./.updater.cjs')
-const { YTDLP_BINARY, downloadPercent, finishedFile, formatSelector, YOUTUBE_HEIGHTS } = require('./.youtube.cjs')
+const { YTDLP_BINARY, downloadPercent, finishedFile, formatSelector, YOUTUBE_QUALITIES, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath } = require('./.youtube.cjs')
 
 const problems = []
 const check = (label, ok, detail) => {
@@ -139,7 +139,30 @@ const main = async () => {
   check('the preview-safe request is tried first, the plain best is the last resort', safeBest.startsWith('bv*[vcodec^=avc1]+ba[acodec^=mp4a]') && safeBest.endsWith('bv*+ba/b'), safeBest)
   check('turning the preview off asks for the best codecs at that ceiling', formatSelector({ height: 720, previewSafe: false }) === 'bv*[height<=720]+ba/b[height<=720]', formatSelector({ height: 720, previewSafe: false }))
   check('and with no ceiling at all', formatSelector({ previewSafe: false }) === 'bv*+ba/b', formatSelector({ previewSafe: false }))
-  check('the dialog offers a best entry and real heights', [YOUTUBE_HEIGHTS[0], YOUTUBE_HEIGHTS.includes(1080), YOUTUBE_HEIGHTS.includes(360)], [0, true, true])
+  check('the dialog offers a best entry and real heights', YOUTUBE_QUALITIES.some((entry) => entry.value === 'best') && YOUTUBE_QUALITIES.some((entry) => entry.value === '1080') && YOUTUBE_QUALITIES.some((entry) => entry.value === '360'), JSON.stringify(YOUTUBE_QUALITIES.map((entry) => entry.value)))
+
+  // A SOUND IS ITS OWN CHOICE, not the video list with the picture thrown away.
+  check('the list offers sound on its own, in two formats', ['audio-m4a', 'audio-mp3'].every((value) => YOUTUBE_QUALITIES.some((entry) => entry.value === value)), JSON.stringify(YOUTUBE_QUALITIES.map((entry) => entry.value)))
+  check('a sound choice parses as a sound', [parseQuality('audio-m4a').kind, parseQuality('audio-mp3').format], ['audio', 'mp3'])
+  check('a height choice parses as a ceiling', [parseQuality('best'), parseQuality('720').height], [{ kind: 'video', height: 0 }, 720])
+  check('an unknown choice is the best picture rather than an error', parseQuality('nonsense').height === 0, JSON.stringify(parseQuality('nonsense')))
+
+  const audioArgs = downloadArguments(parseQuality('audio-mp3'), true)
+  check('an mp3 download extracts sound and asks for its bitrate', audioArgs.extra.join(' '), '--extract-audio --audio-format mp3 --audio-quality 320K')
+  check('and takes the sound stream rather than the whole video', audioArgs.format, 'ba/b')
+  const m4aArgs = downloadArguments(parseQuality('audio-m4a'), true)
+  check('an m4a download asks for AAC first', m4aArgs.format.startsWith('ba[acodec^=mp4a]') && m4aArgs.extra.includes('m4a'), `${m4aArgs.format} ${m4aArgs.extra.join(' ')}`)
+  check('a picture download keeps the preview-safe selector', downloadArguments(parseQuality('1080'), true).format.includes('[vcodec^=avc1]') && downloadArguments(parseQuality('1080'), false).format === 'bv*[height<=1080]+ba/b[height<=1080]', downloadArguments(parseQuality('1080'), false).format)
+
+  // THE NAME CARRIES THE SPECS, which is also what stops a second quality landing on the first file.
+  check('a picture is named for its own size', specSuffix({ videoStreams: [{ resolution: '1920x1080' }], audioStreams: [{ sampleRate: 48000, bitrate: '128k' }] }), '[1920x1080]')
+  check('a sound is named for its rate and bitrate', specSuffix({ videoStreams: [], audioStreams: [{ sampleRate: 44100, bitrate: '320k' }] }), '[44kHz 320k]')
+  check('and a stream with nothing to say adds nothing', specSuffix({ videoStreams: [], audioStreams: [] }) === null, String(specSuffix({ videoStreams: [], audioStreams: [] })))
+  check('the suffix goes before the extension, not after it', withSpecSuffix('/Users/x/Downloads/A video [dQw4].mp4', '[1920x1080]'), '/Users/x/Downloads/A video [dQw4] [1920x1080].mp4')
+  check('and a name with no extension still takes one', withSpecSuffix('/Users/x/Downloads/A video', '[48kHz 128k]'), '/Users/x/Downloads/A video [48kHz 128k]')
+  const taken = new Set(['/d/Title [1920x1080].mp4', '/d/Title [1920x1080] (2).mp4'])
+  check('a name already taken gets a copy number rather than overwriting', uniquePath('/d/Title [1920x1080].mp4', (candidate) => taken.has(candidate)), '/d/Title [1920x1080] (3).mp4')
+  check('and a free name is left exactly as it is', uniquePath('/d/Free.mp4', () => false), '/d/Free.mp4')
 
   fs.rmSync(root, { recursive: true, force: true })
   // The real endpoint, when asked for: `UPDATE_LIVE=1` runs the same call against THE APP'S OWN releases, which is

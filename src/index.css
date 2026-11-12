@@ -1295,6 +1295,7 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
 .youtube-quality { flex: 1 1 auto; min-width: 0; margin-bottom: 8px; }
 .youtube-switch { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-bottom: 12px; color: var(--ui-muted); font-size: 9px; letter-spacing: .1em; white-space: nowrap; }
 .youtube-switch input { width: 14px; height: 14px; }
+.youtube-switch.is-off { opacity: .4; }
 .youtube-hint { margin: 0 0 12px; color: var(--ui-muted); font-size: 9px; line-height: 1.55; }
 .youtube-choose { flex: 0 0 auto; min-height: 30px; padding: 0 12px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-accent); white-space: nowrap; }
 .youtube-choose:hover:not(:disabled) { color: var(--ui-canvas); background: var(--ui-accent); }

@@ -1,6 +1,6 @@
 import React from 'react'
 import { EditorSelect } from './EditorSelect'
-import { YOUTUBE_HEIGHTS } from '../lib/youtubeOptions'
+import { YOUTUBE_QUALITIES, parseQuality } from '../lib/youtubeOptions'
 
 /**
  * The link dialog, drawn in the window's own language.
@@ -20,8 +20,8 @@ export interface YouTubeState {
   busy: boolean
   percent: number | null
   error: string | null
-  /** The largest height to take, or 0 for the best there is. */
-  height: number
+  /** What to fetch: a picture at a ceiling (`'best'`, `'1080'`…), or a sound (`'audio-m4a'`, `'audio-mp3'`). */
+  quality: string
   /** Ask for H.264 + AAC, which is what macOS can preview. On by default — see `formatSelector`. */
   previewSafe: boolean
 }
@@ -56,22 +56,32 @@ export const YouTubeDialog: React.FC<{
           <div className="youtube-field youtube-quality">
             <span>QUALITY</span>
             <EditorSelect
-              value={String(state.height)}
-              options={YOUTUBE_HEIGHTS.map((height) => ({ value: String(height), label: height === 0 ? 'BEST AVAILABLE' : `${height}P` }))}
+              value={state.quality}
+              options={YOUTUBE_QUALITIES}
               disabled={state.busy}
               ariaLabel="Download quality"
-              onChange={(next) => onChange({ height: Number(next) || 0 })}
+              onChange={(next) => onChange({ quality: next })}
             />
           </div>
-          <label className="youtube-switch">
-            <input type="checkbox" checked={state.previewSafe} disabled={state.busy} onChange={(event) => onChange({ previewSafe: event.target.checked })} />
+          {/* The switch is about VIDEO codecs, so a sound export has nothing for it to say. */}
+          <label className={`youtube-switch${parseQuality(state.quality).kind === 'audio' ? ' is-off' : ''}`}>
+            <input
+              type="checkbox"
+              checked={state.previewSafe}
+              disabled={state.busy || parseQuality(state.quality).kind === 'audio'}
+              onChange={(event) => onChange({ previewSafe: event.target.checked })}
+            />
             <span>MACOS PREVIEW</span>
           </label>
         </div>
         <p className="youtube-hint">
-          {state.previewSafe
-            ? 'H.264 + AAC, which Finder’s Quick Look and this app’s own preview can play. YouTube only offers H.264 up to 1080p; above that the best available is taken.'
-            : 'The best codecs YouTube has — usually VP9 or AV1, which play in this app’s monitor but NOT in Finder’s Quick Look.'}
+          {parseQuality(state.quality).kind === 'audio'
+            ? (state.quality === 'audio-mp3'
+              ? 'MP3 at a fixed 320k. Named after its own rate and bitrate once it is downloaded.'
+              : 'AAC in M4A, which Finder’s Quick Look and this app’s own preview can play. Named after its rate and bitrate once it is downloaded.')
+            : state.previewSafe
+              ? 'H.264 + AAC, which Finder’s Quick Look and this app’s own preview can play. YouTube only offers H.264 up to 1080p; above that the best available is taken.'
+              : 'The best codecs YouTube has — usually VP9 or AV1, which play in this app’s monitor but NOT in Finder’s Quick Look.'}
         </p>
         <div className="youtube-field">
           <span>DOWNLOAD TO</span>

@@ -50,16 +50,16 @@ export const finishedFile = (line: string): string | null => {
   return trimmed
 }
 
-export { YOUTUBE_HEIGHTS, formatSelector } from '../src/lib/youtubeOptions'
-import { formatSelector } from '../src/lib/youtubeOptions'
+export { YOUTUBE_QUALITIES, formatSelector, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath } from '../src/lib/youtubeOptions'
+import { downloadArguments, parseQuality } from '../src/lib/youtubeOptions'
 
 export interface YouTubeDownload {
   url: string
   directory: string
   /** Where ffmpeg lives, so yt-dlp can merge a separate picture and sound without one on PATH. */
   ffmpegDirectory?: string
-  /** The largest height to take, or 0 for the best there is. */
-  height?: number
+  /** What was asked for: a picture at a ceiling, or a sound on its own. */
+  quality?: string
   /** Whether to ask for H.264 + AAC, which macOS can preview. On unless the reader turns it off. */
   previewSafe?: boolean
   onProgress?: (percent: number | null) => void
@@ -72,15 +72,20 @@ export interface YouTubeDownload {
  * the whole list into the reader's Downloads folder. The format request takes the best picture and sound and merges
  * them to mp4 when they are separate, and falls back to a single file when they are not.
  */
-export const downloadYouTube = ({ url, directory, ffmpegDirectory, height, previewSafe, onProgress }: YouTubeDownload): Promise<string[]> => new Promise((resolve, reject) => {
+export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, previewSafe, onProgress }: YouTubeDownload): Promise<string[]> => new Promise((resolve, reject) => {
   fs.mkdirSync(directory, { recursive: true })
+  const requested = downloadArguments(parseQuality(quality ?? 'best'), previewSafe !== false)
   const args = [
     '--no-playlist',
     '--newline',
     '--no-simulate',
     '--print', 'after_move:filepath',
-    '-f', formatSelector({ height, previewSafe }),
-    '--merge-output-format', 'mp4',
+    // FORCED, because yt-dlp's default is to REUSE a file whose name it recognises and report it as the result: a
+    // second download at another quality answered with the first file, and the app added a job for a file it had made
+    // before. A download that was asked for is performed.
+    '--force-overwrites',
+    '-f', requested.format,
+    ...requested.extra,
     '-o', path.join(directory, '%(title)s.%(ext)s'),
     ...(ffmpegDirectory ? ['--ffmpeg-location', ffmpegDirectory] : []),
     url,
