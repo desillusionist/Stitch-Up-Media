@@ -26,6 +26,21 @@ const notesArgument = process.argv.indexOf('--notes')
 const notesFile = notesArgument >= 0 ? process.argv[notesArgument + 1] : path.join(root, '.release-notes.md')
 const notes = notesFile && fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf8') : ''
 
+/**
+ * The version the notes SAY they are for, which has to be the version being published.
+ *
+ * MEASURED THE HARD WAY: the notes are a scratch file beside the commit message, and one was left over from an
+ * earlier release — so v1.0.16 went out carrying 1.0.12's description, and nothing said a word. The notes now name
+ * their version in a heading, and a mismatch stops the publish BEFORE anything is uploaded. Silence is the fault this
+ * exists to prevent, so a notes file with no heading in it is refused too rather than published as prose.
+ */
+const notesVersion = (notes.match(/^##\s+(\S+)/m) || [])[1] || ''
+if (notesFile && fs.existsSync(notesFile) && notesVersion !== version) {
+  console.error(`The notes in ${path.basename(notesFile)} are for ${notesVersion || 'no version at all'}, and this is ${version}.`)
+  console.error('Put the release\'s own notes in that file — starting with a `## ' + version + '` heading — and run this again.')
+  process.exit(1)
+}
+
 const token = (execFileSync('git', ['credential', 'fill'], {
   input: 'protocol=https\nhost=github.com\n\n',
   env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
@@ -88,6 +103,7 @@ const main = async () => {
   }
   const record = await release.json()
   console.log(`${tag} (id ${record.id}) is ${record.draft ? 'a draft' : 'published'} with ${record.assets.length} asset(s)`)
+  console.log(`  notes: ${notesVersion || 'none'}${notes ? `, ${notes.length} characters` : ''}`)
 
   // A draft is the only state this script leaves a release in until the set is complete, including one that was
   // already published by hand: a published release missing its disk image is the failure this exists to prevent.
