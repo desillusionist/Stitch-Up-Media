@@ -16,7 +16,8 @@ import { peaksForFile } from './audioPeaks'
 import { runFfmpeg } from './ffmpeg/run'
 import { previewProxyFor, PreviewProxyDeps } from './previewProxy'
 import { createOpenFileBuffer, OPEN_WITH_EXTENSIONS } from './openFiles'
-import { downloadDestination, downloadRelease, fetchLatestRelease, isNewerVersion, mountRelease, UpdateProgress, LatestRelease } from './updater'
+import { downloadDestination, downloadRelease, fetchLatestRelease, isNewerVersion, mountRelease, releaseNotesFrom, UpdateProgress, LatestRelease } from './updater'
+import { downloadYouTube, YTDLP_BINARY } from './youtube'
 import { UPDATE_RELEASES_PAGE } from './updater'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -1113,6 +1114,55 @@ app.whenReady().then(() => {
   // it, and otherwise a built-and-remembered H.264 proxy. `null` means a proxy was needed and could not be
   // built, which is the one answer the window has to say out loud rather than play a black frame about.
   ipcMain.handle('preview-proxy-for', async (_, filePath: string) => previewProxyFor(filePath, previewProxyDeps()))
+
+  /** Where a download goes when the reader does not choose: the system's own Downloads folder. */
+  ipcMain.handle('downloads-directory', () => app.getPath('downloads'))
+
+  /**
+   * A link, downloaded into a folder the reader chose, and answered with the files it wrote.
+   *
+   * The result is NOT registered with the preview cache: a downloaded video belongs to the reader, and CLEAR CACHE
+   * must not take it. Progress is pushed to the window as a percentage, because the download is the slow part and the
+   * window is where it was asked for.
+   */
+  ipcMain.handle('download-youtube', async (_, options: { url?: string; directory?: string }) => {
+    const url = String(options?.url || '').trim()
+    const directory = options?.directory || app.getPath('downloads')
+    if (!/^https?:\/\//i.test(url)) return { files: [] as string[], error: 'That is not a link.' }
+    logEvent('youtube', 'download requested', { url, directory, binary: YTDLP_BINARY })
+    try {
+      const files = await downloadYouTube({
+        url,
+        directory,
+        ffmpegDirectory: path.dirname(FFMPEG_BINARY),
+        onProgress: (percent) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('youtube-progress', { percent }) },
+      })
+      logEvent('youtube', 'download finished', { files: files.length })
+      return { files }
+    } catch (error) {
+      logEvent('youtube', 'download failed', { error: String(error) })
+      return { files: [] as string[], error: String(error) }
+    }
+  })
+
+  /**
+   * The published releases' notes, for WHAT'S NEW.
+   *
+   * Read from the releases API rather than kept in the app: the notes already live on the release, and a second copy
+   * in the bundle is a second thing to keep in step. Offline, the page says so and the app goes on.
+   */
+  ipcMain.handle('release-notes', async () => {
+    try {
+      const response = await net.fetch(`https://api.github.com/repos/desillusionist/Stitch-Up-Media/releases?per_page=10`, {
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': `stitch-up-media/${app.getVersion()}` },
+      })
+      if (!response.ok) throw new Error(`GitHub answered ${response.status}`)
+      return releaseNotesFrom(await response.json())
+    } catch (error) {
+      logEvent('update', 'release notes failed', { error: String(error) })
+      return []
+    }
+  })
 
   ipcMain.handle('open-path', async (_, targetPath: string) => {
     shell.openPath(targetPath)

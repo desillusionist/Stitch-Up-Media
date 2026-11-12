@@ -135,6 +135,18 @@ export interface IElectronAPI {
   showItemInFolder: (path: string) => Promise<void>
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
+  /** Where a download goes when the reader does not choose: the system's Downloads folder. */
+  downloadsDirectory: () => Promise<string>
+  /**
+   * Download a link into a folder, answering with the files written — empty with an `error` where it failed.
+   *
+   * The file is written by yt-dlp on this machine, so what arrives is real media the queue can probe.
+   */
+  downloadYouTube: (options: { url: string; directory?: string }) => Promise<{ files: string[]; error?: string }>
+  /** How a download is going: a percentage, or null while it is between phases. */
+  onYouTubeProgress: (callback: (progress: { percent: number | null }) => void) => () => void
+  /** The published releases' notes, newest first, for WHAT'S NEW. Empty where GitHub could not be reached. */
+  releaseNotes: () => Promise<Array<{ version: string; notes: string; publishedAt: string }>>
   /** This app's own version, as the bundle carries it. */
   appVersion: () => Promise<string>
   /**
@@ -260,8 +272,16 @@ const api: IElectronAPI = {
   showItemInFolder: (path: string) => ipcRenderer.invoke('show-item-in-folder', path),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: AppSettings) => ipcRenderer.invoke('save-settings', settings),
+  downloadsDirectory: () => ipcRenderer.invoke('downloads-directory'),
+  downloadYouTube: (options: { url: string; directory?: string }) => ipcRenderer.invoke('download-youtube', options),
+  releaseNotes: () => ipcRenderer.invoke('release-notes'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: () => ipcRenderer.invoke('check-for-update'),
+  onYouTubeProgress: (callback) => {
+    const handler = (_: any, progress: { percent: number | null }) => callback(progress)
+    ipcRenderer.on('youtube-progress', handler)
+    return () => ipcRenderer.removeListener('youtube-progress', handler)
+  },
   onUpdateProgress: (callback) => {
     const handler = (_: any, progress: { phase: 'downloading' | 'mounting' | 'done' | 'error'; version?: string; received?: number; total?: number; mountPath?: string; error?: string }) => callback(progress)
     ipcRenderer.on('update-progress', handler)

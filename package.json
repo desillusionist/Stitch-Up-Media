@@ -1,7 +1,7 @@
 {
   "name": "stitch-up-media",
   "productName": "Stitch Up Media",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Minimalist macOS media encoder & stitcher powered by FFmpeg",
   "author": "Nitai Das <kiddow.san@gmail.com>",
   "main": "dist-electron/main.js",
@@ -22,7 +22,7 @@
     "check-proxy": "esbuild electron/previewProxy.ts --bundle --platform=node --format=cjs --outfile=scripts/.previewProxy.cjs --log-level=warning && node scripts/check-preview-proxy.cjs",
     "check-open-files": "esbuild electron/openFiles.ts --bundle --platform=node --format=cjs --outfile=scripts/.openFiles.cjs --log-level=warning && node scripts/check-open-files.cjs",
     "check-audio-peaks": "esbuild electron/audioPeaks.ts --bundle --platform=node --format=cjs --outfile=scripts/.audioPeaks.cjs --log-level=warning && esbuild electron/ffmpeg/probe.ts --bundle --platform=node --format=cjs --outfile=scripts/.probe.cjs --log-level=warning && esbuild src/lib/waveform.ts --bundle --platform=node --format=cjs --outfile=scripts/.waveform.cjs --log-level=warning && node scripts/check-audio-peaks.cjs",
-    "check-update": "esbuild electron/updater.ts --bundle --platform=node --format=cjs --outfile=scripts/.updater.cjs --log-level=warning && node scripts/check-update.cjs",
+    "check-update": "esbuild electron/updater.ts --bundle --platform=node --format=cjs --outfile=scripts/.updater.cjs --log-level=warning && esbuild electron/youtube.ts --bundle --platform=node --format=cjs --outfile=scripts/.youtube.cjs --log-level=warning && node scripts/check-update.cjs",
     "check-app-menu": "electron scripts/check-app-menu.cjs",
     "check-mount": "npm run build && electron scripts/check-editor-mount.cjs",
     "check-queue": "npm run build && electron scripts/check-queue-mount.cjs",

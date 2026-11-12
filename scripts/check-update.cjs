@@ -7,7 +7,8 @@
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { UPDATE_RELEASES_API, UPDATE_RELEASES_PAGE, isNewerVersion, versionSegments, releaseFromPayload, fetchLatestRelease, downloadDestination, downloadRelease } = require('./.updater.cjs')
+const { UPDATE_RELEASES_API, UPDATE_RELEASES_PAGE, isNewerVersion, versionSegments, releaseFromPayload, fetchLatestRelease, downloadDestination, downloadRelease, releaseNotesFrom } = require('./.updater.cjs')
+const { YTDLP_BINARY, downloadPercent, finishedFile } = require('./.youtube.cjs')
 
 const problems = []
 const check = (label, ok, detail) => {
@@ -107,6 +108,26 @@ const main = async () => {
   let noDmg = ''
   await downloadRelease({ fetchImpl: async () => streamed(chunks), release: { version: '1.0.8', pageUrl: 'x', dmg: null }, destination: path.join(root, 'none.dmg') }).catch((error) => { noDmg = String(error) })
   check('a release without a disk image cannot be installed', /no disk image/.test(noDmg), noDmg)
+
+  console.log('\n== the notes WHAT\'S NEW shows ==')
+  const notes = releaseNotesFrom([
+    { tag_name: 'v1.0.12', body: 'Fixed a thing.', published_at: '2026-11-12T00:00:00Z', draft: false },
+    { tag_name: 'v1.0.13', body: 'Not yet published.', draft: true },
+    { body: 'no tag at all' },
+    { tag_name: 'v1.0.11', body: null },
+  ])
+  check('published releases are read, newest first as given', same(notes.map((entry) => entry.version), ['1.0.12', '1.0.11']), JSON.stringify(notes))
+  check('a draft is not a release the reader has', !notes.some((entry) => entry.version === '1.0.13'), JSON.stringify(notes.map((entry) => entry.version)))
+  check('a body that is not text reads as empty rather than as null', notes[1].notes === '', JSON.stringify(notes[1]))
+  check('and a payload that is not a list is no notes at all', same(releaseNotesFrom({ message: 'Not Found' }), []), JSON.stringify(releaseNotesFrom({ message: 'Not Found' })))
+
+  console.log('\n== the downloader ==')
+  check('yt-dlp is named outright, not looked up on PATH', path.isAbsolute(YTDLP_BINARY), YTDLP_BINARY)
+  check('a progress line gives its percentage', downloadPercent('[download]  12.3% of ~ 123.45MiB at 1.23MiB/s') === 12.3, String(downloadPercent('[download]  12.3% of ~ 123.45MiB at 1.23MiB/s')))
+  check('the last one gives a hundred', downloadPercent('[download] 100% of 123.45MiB') === 100, String(downloadPercent('[download] 100% of 123.45MiB')))
+  check('a line that is not progress gives nothing', downloadPercent('[info] Downloading 1 format(s)') === null, String(downloadPercent('[info] Downloading 1 format(s)')))
+  check('a finished file is read off its own line', finishedFile('/Users/x/Downloads/A video [dQw4].mp4'), '/Users/x/Downloads/A video [dQw4].mp4')
+  check('and something that is not a media path is not a file', [finishedFile('not a path'), finishedFile('/tmp/notes.txt')], [null, null])
 
   fs.rmSync(root, { recursive: true, force: true })
   // The real endpoint, when asked for: `UPDATE_LIVE=1` runs the same call against THE APP'S OWN releases, which is

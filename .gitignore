@@ -30,6 +30,7 @@ scripts/.openFiles.cjs
 scripts/.audioPeaks.cjs
 # The update check harness (see `npm run check-update`)
 scripts/.updater.cjs
+scripts/.youtube.cjs
 # The compact scale's arithmetic harness (see `npm run check-scale`)
 scripts/.check-scale
 # The strip's runtime harness (see `npm run check-sync`)

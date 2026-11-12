@@ -5,6 +5,7 @@ import { PresetModal } from './components/PresetModal'
 import { StitchModal } from './components/StitchModal'
 import { MultiAudioModal } from './components/MultiAudioModal'
 import { SettingsModal } from './components/SettingsModal'
+import { WhatsNew, ReleaseNotes } from './components/WhatsNew'
 import { CommandBar } from './components/CommandBar'
 import { QueueTask, EncodingPreset, AppSettings, EditJobPatch } from './types'
 import { withSourceTiming } from './lib/sourceTiming'
@@ -153,6 +154,9 @@ const editJobSignature = (task: QueueTask) => JSON.stringify([
   task.embeddedAudio,
 ])
 
+/** The release the WHAT'S NEW page was last shown for, per window. */
+const SEEN_VERSION_KEY = 'stitch-up-media:seen-version'
+
 export const App: React.FC = () => {
   const [tasks, setTasks] = useState<QueueTask[]>([])
   const [selectedTaskId, setSelectedTaskId] = useState<string>()
@@ -161,6 +165,12 @@ export const App: React.FC = () => {
   const [pendingFiles, setPendingFiles] = useState<string[] | null>(null)
   /** The release download, while there is one — see `onUpdateProgress` below. */
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
+  /** WHAT'S NEW: the running release's notes, opened once after an update. */
+  const [whatsNew, setWhatsNew] = useState<{ open: boolean; loading: boolean; entries: ReleaseNotes[]; version: string }>({ open: false, loading: false, entries: [], version: '' })
+  /** WHERE FROM, for ADD MEDIA: a local file, or a link. */
+  const [addMediaMenu, setAddMediaMenu] = useState(false)
+  /** The YouTube download, while its dialog is open. */
+  const [youtube, setYoutube] = useState<{ open: boolean; url: string; directory: string; busy: boolean; percent: number | null; error: string | null }>({ open: false, url: '', directory: '', busy: false, percent: null, error: null })
   const [sequenceChoice, setSequenceChoice] = useState<{ frames: number; resolve: (whole: boolean) => void } | null>(null)
   const [notice, setNotice] = useState<{ title: string; message: string } | null>(null)
   const [theme, setTheme] = useState<'retro' | 'modern'>('retro')
@@ -423,6 +433,33 @@ export const App: React.FC = () => {
     return () => unsubscribe?.()
   }, [])
 
+  // THE NOTES OF THE RELEASE THAT IS RUNNING, shown once. `localStorage` holds the last version the reader was shown,
+  // and the page opens when that is not the running one — which is the definition of "an update happened", including
+  // the first launch after installing a build. The version is recorded when the page is CLOSED, so a page that could
+  // not read GitHub is offered again rather than silently marked as read.
+  useEffect(() => {
+    if (!window.electronAPI) return
+    let cancelled = false
+    void window.electronAPI.appVersion().then(async (version) => {
+      if (cancelled || !version) return
+      let seen: string | null = null
+      try { seen = window.localStorage.getItem(SEEN_VERSION_KEY) } catch { /* storage can be unavailable; then it is always new */ }
+      if (seen === version) return
+      setWhatsNew({ open: true, loading: true, entries: [], version })
+      const entries = await window.electronAPI?.releaseNotes?.() ?? []
+      if (!cancelled) setWhatsNew({ open: true, loading: false, entries, version })
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  // A download's percentage, pushed from the shell while it runs.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onYouTubeProgress(({ percent }) => {
+      setYoutube((current) => (current.open ? { ...current, percent } : current))
+    })
+    return () => unsubscribe?.()
+  }, [])
+
   // Files opened with the app from Finder's "Open With…" list — or forwarded from a second launch — come in
   // through the SAME confirmation a hand-picked set gets: what a file should become is still the reader's call.
   // Pulled on mount because the hand-off can happen before this window exists to be pushed to, and the pull
@@ -527,6 +564,31 @@ export const App: React.FC = () => {
     }
     setTasks((prev) => [...prev, task])
     setSelectedTaskId(task.id)
+  }
+
+  /**
+   * WHERE FROM: the ADD MEDIA question.
+   *
+   * Two sources, because the app reads both: a file on this Mac, or a link to fetch first — and a download is not
+   * a queue job until the file exists, which is why it comes back through the same job-type confirmation a local
+   * pick gets.
+   */
+  const openYouTube = async () => {
+    const directory = await window.electronAPI?.downloadsDirectory() ?? ''
+    setYoutube({ open: true, url: '', directory, busy: false, percent: null, error: null })
+  }
+
+  const startYouTubeDownload = async () => {
+    if (!youtube.url.trim() || youtube.busy) return
+    setYoutube((current) => ({ ...current, busy: true, percent: null, error: null }))
+    const result = await window.electronAPI?.downloadYouTube({ url: youtube.url.trim(), directory: youtube.directory || undefined })
+    if (!result || result.error || !result.files.length) {
+      setYoutube((current) => ({ ...current, busy: false, error: result?.error || 'Nothing was downloaded.' }))
+      return
+    }
+    setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null })
+    // The files go through the question a local pick gets: what a video should BECOME is still the reader's call.
+    setPendingFiles(result.files)
   }
 
   const handlePickFiles = async () => {
@@ -1105,6 +1167,66 @@ export const App: React.FC = () => {
         />
         </div>
       {sequenceChoice && <div className="drop-chooser sequence-choice-dialog" role="dialog" aria-label="Choose image import mode"><div className="drop-chooser-box"><span className="panel-kicker">IMPORT // IMAGE INTERPRETATION</span><h2>WHAT SHOULD THIS BECOME?</h2><div className="drop-chooser-grid"><button onClick={() => { sequenceChoice.resolve(true); setSequenceChoice(null) }}><span>SEQUENCE</span><small>{sequenceChoice.frames} FRAMES / TIMELINE SOURCE</small></button><button onClick={() => { sequenceChoice.resolve(false); setSequenceChoice(null) }}><span>IMAGE</span><small>IMPORT ONLY THE SELECTED IMAGE(S)</small></button></div><button className="chooser-cancel" onClick={() => { sequenceChoice.resolve(false); setSequenceChoice(null) }}>CANCEL</button></div></div>}
+      {/* WHERE FROM. ADD MEDIA asks before it opens a picker: a file on this Mac, or a link to fetch first. */}
+      {addMediaMenu && <div className="drop-chooser" role="dialog" aria-label="Where is the media from">
+        <div className="drop-chooser-box">
+          <span className="panel-kicker">ADD MEDIA // SOURCE</span>
+          <h2>WHERE IS IT?</h2>
+          <div className="drop-chooser-grid">
+            <button onClick={() => { setAddMediaMenu(false); void handlePickFiles() }}><span>ADD A LOCAL SOURCE</span><small>FILES ON THIS MAC</small></button>
+            <button onClick={() => { setAddMediaMenu(false); void openYouTube() }}><span>DOWNLOAD YOUTUBE VIDEO</span><small>PASTE A LINK</small></button>
+          </div>
+          <button className="chooser-cancel" onClick={() => setAddMediaMenu(false)}>CANCEL</button>
+        </div>
+      </div>}
+      {youtube.open && <div className="drop-chooser" role="dialog" aria-modal="true" aria-label="Download a YouTube video">
+        <div className="drop-chooser-box">
+          <span className="panel-kicker">ADD MEDIA // DOWNLOAD</span>
+          <h2>FETCH A VIDEO</h2>
+          <label className="youtube-field"><span>LINK</span>
+            <input
+              type="url"
+              autoFocus
+              className="editor-input"
+              placeholder="https://www.youtube.com/watch?v=…"
+              value={youtube.url}
+              disabled={youtube.busy}
+              onChange={(event) => setYoutube((current) => ({ ...current, url: event.target.value, error: null }))}
+              onKeyDown={(event) => { if (event.key === 'Enter') void startYouTubeDownload() }}
+            />
+          </label>
+          <label className="youtube-field"><span>DOWNLOAD TO</span>
+            <div className="youtube-destination">
+              <span className="youtube-path" title={youtube.directory}>{youtube.directory || 'Downloads'}</span>
+              <button disabled={youtube.busy} onClick={async () => {
+                const chosen = await window.electronAPI?.selectOutputDir()
+                if (chosen) setYoutube((current) => ({ ...current, directory: chosen }))
+              }}>CHOOSE…</button>
+            </div>
+          </label>
+          {youtube.busy && <div className="youtube-progress">
+            <span>{youtube.percent == null ? 'STARTING…' : `DOWNLOADING ${Math.round(youtube.percent)}%`}</span>
+            <div className="youtube-progress-bar"><div className="youtube-progress-fill" style={{ width: `${youtube.percent ?? 0}%` }} /></div>
+          </div>}
+          {youtube.error && <p className="youtube-error">{youtube.error}</p>}
+          <div className="youtube-actions">
+            <button className="chooser-cancel" disabled={youtube.busy} onClick={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null })}>CANCEL</button>
+            <button disabled={youtube.busy || !youtube.url.trim()} onClick={() => void startYouTubeDownload()}>{youtube.busy ? 'DOWNLOADING…' : 'DOWNLOAD'}</button>
+          </div>
+        </div>
+      </div>}
+      <WhatsNew
+        isOpen={whatsNew.open}
+        version={whatsNew.version}
+        entries={whatsNew.entries}
+        loading={whatsNew.loading}
+        onClose={() => {
+          // Recorded on CLOSE, so a page that could not read the notes is shown again next launch rather than marked
+          // as already read.
+          try { window.localStorage.setItem(SEEN_VERSION_KEY, whatsNew.version) } catch { /* storage unavailable: the page simply opens again */ }
+          setWhatsNew((current) => ({ ...current, open: false }))
+        }}
+      />
       {pendingFiles && <div className="drop-chooser" role="dialog" aria-label="Choose job type"><div className="drop-chooser-box"><span className="panel-kicker">ADD MEDIA // SELECT JOB TYPE</span><h2>WHAT SHOULD THIS BECOME?</h2><div className="drop-chooser-grid"><button onClick={() => { addFilesToQueue(pendingFiles, 'transcode'); setPendingFiles(null) }}><span>CONVERT</span><small>ONE SOURCE / TRANSCODE</small></button><button onClick={() => { addFilesToQueue(pendingFiles, 'stitch'); setPendingFiles(null) }}><span>STITCH UP</span><small>{pendingFiles.length} CLIP(S) IN ORDER</small></button><button onClick={() => { addFilesToQueue(pendingFiles, 'multitrack'); setPendingFiles(null) }}><span>MULTI-TRACK</span><small>VIDEO + AUDIO TRACKS</small></button><button onClick={() => { addFilesToQueue(pendingFiles, 'combo'); setPendingFiles(null) }}><span>COMBO</span><small>VIDEO + AUDIO IN ONE JOB</small></button></div><button className="chooser-cancel" onClick={() => setPendingFiles(null)}>CANCEL</button></div></div>}
       {/* Preset Modal */}
       {activeTaskForPreset && (
@@ -1156,7 +1278,7 @@ export const App: React.FC = () => {
       </div>}
       {notice && <div className="retro-notice-overlay" role="alertdialog" aria-modal="true"><div className="retro-notice"><span className="panel-kicker">STITCH UP MEDIA // NOTICE</span><h2>{notice.title}</h2><p>{notice.message.split('\n').map((line, index) => <React.Fragment key={`${line}-${index}`}>{index > 0 && <br />}{line}</React.Fragment>)}</p><button onClick={() => setNotice(null)}>OK</button></div></div>}
       {/* Settings Modal */}
-      <CommandBar statusFilters={statusFilters} onToggleStatus={(status) => setStatusFilters((current) => ({ ...current, [status]: !current[status] }))} stats={{ ready: tasks.filter((task) => task.status === 'pending').length, skip: tasks.filter((task) => task.skipped || task.status === 'paused').length, done: tasks.filter((task) => task.status === 'done').length }} canStartQueue={tasks.some((task) => task.status === 'pending')} onOpen={handlePickFiles} onConvert={handleToggleQueue} onAdvanced={() => setIsSettingsOpen(true)} onToggleTheme={() => setTheme((current) => current === 'retro' ? 'modern' : 'retro')} theme={theme} isQueueRunning={isQueueRunning} />
+      <CommandBar statusFilters={statusFilters} onToggleStatus={(status) => setStatusFilters((current) => ({ ...current, [status]: !current[status] }))} stats={{ ready: tasks.filter((task) => task.status === 'pending').length, skip: tasks.filter((task) => task.skipped || task.status === 'paused').length, done: tasks.filter((task) => task.status === 'done').length }} canStartQueue={tasks.some((task) => task.status === 'pending')} onOpen={() => setAddMediaMenu(true)} onConvert={handleToggleQueue} onAdvanced={() => setIsSettingsOpen(true)} onToggleTheme={() => setTheme((current) => current === 'retro' ? 'modern' : 'retro')} theme={theme} isQueueRunning={isQueueRunning} />
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

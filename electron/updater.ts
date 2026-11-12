@@ -97,6 +97,36 @@ export const releaseFromPayload = (payload: unknown): LatestRelease => {
   return { version: tag.replace(/^v/i, ''), pageUrl: page, dmg }
 }
 
+/** A release's notes, as the WHAT'S NEW page reads them. */
+export interface ReleaseNotes {
+  version: string
+  notes: string
+  publishedAt: string
+}
+
+/**
+ * The published releases' notes, newest first — the WHAT'S NEW page's only source.
+ *
+ * Read from the same public endpoint family the update check uses, because the notes ALREADY live there: writing a
+ * second copy into the app would be a second thing to keep in step with every release, and the one that goes stale
+ * unnoticed. A payload that is not a list, or an entry with no tag, is skipped rather than shown as an empty page.
+ */
+export const releaseNotesFrom = (payload: unknown): ReleaseNotes[] => {
+  if (!Array.isArray(payload)) return []
+  return payload
+    .map((entry) => {
+      const record = entry as { tag_name?: unknown; body?: unknown; published_at?: unknown; draft?: unknown } | null
+      const version = typeof record?.tag_name === 'string' ? record.tag_name.trim().replace(/^v/i, '') : ''
+      if (!version || record?.draft === true) return null
+      return {
+        version,
+        notes: typeof record?.body === 'string' ? record.body : '',
+        publishedAt: typeof record?.published_at === 'string' ? record.published_at : '',
+      }
+    })
+    .filter((entry): entry is ReleaseNotes => Boolean(entry))
+}
+
 /** The newest published release, from GitHub. Named for what it is, and bounded so a silent network ends it. */
 export const fetchLatestRelease = async (fetchImpl: FetchLike, currentVersion: string, api: string = UPDATE_RELEASES_API): Promise<LatestRelease> => {
   const response = await fetchImpl(api, {

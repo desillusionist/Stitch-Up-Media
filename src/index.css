@@ -1258,6 +1258,35 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
 .retro-notice p { margin: 0 0 18px; color: #d6ffd0; font-size: 11px; line-height: 1.7; white-space: pre-wrap; }
 .retro-notice button { min-width: 92px; padding: 7px 18px; color: var(--crt-black); background: var(--crt-green); border: 1px solid var(--crt-green); }
 .retro-notice button:hover { color: var(--crt-black); background: var(--crt-amber); box-shadow: none; }
+/* WHAT'S NEW: the release's own notes, drawn in the same box the dialogs use. The notes arrive as Markdown, so the
+   headings and bullets are drawn rather than parsed into a tree: what a reader needs is readable text. */
+.whats-new .drop-chooser-box { width: min(560px, calc(100vw - 36px)); max-height: min(78vh, 660px); overflow-y: auto; }
+.whats-new-release + .whats-new-release { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--crt-line); }
+.whats-new-version { margin: 0 0 6px; color: var(--crt-amber) !important; font-size: 11px; letter-spacing: .1em; }
+.whats-new-notes h3 { margin: 10px 0 4px; font-size: 11px; letter-spacing: .06em; }
+.whats-new-notes h4 { margin: 8px 0 3px; color: var(--crt-amber); font-size: 10px; letter-spacing: .06em; }
+.whats-new-notes p { margin: 0 0 6px; color: #d6ffd0; font-size: 10.5px; line-height: 1.65; }
+.whats-new-notes code { padding: 0 3px; color: var(--crt-cyan); background: rgba(125,255,117,.08); font-size: 10px; }
+.whats-new-notes strong { color: var(--crt-green); font-weight: 600; }
+.whats-new-notes .whats-new-bullet { padding-left: 10px; position: relative; }
+.whats-new-notes .whats-new-bullet::before { content: '\00b7'; position: absolute; left: 0; color: var(--crt-green-dim); }
+.whats-new-empty { margin: 6px 0 10px; color: var(--ui-muted); font-size: 10px; letter-spacing: .06em; }
+.whats-new-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+.whats-new-actions .chooser-cancel { min-width: 92px; }
+
+/* The link dialog. Two fields and a bar: the download is the slow part, so the bar is the part that moves. */
+.youtube-field { display: block; margin: 0 0 10px; }
+.youtube-field > span { display: block; margin-bottom: 4px; color: var(--ui-muted); font-size: 9px; letter-spacing: .1em; }
+.youtube-field input { width: 100%; padding: 7px 8px; }
+.youtube-destination { display: flex; align-items: center; gap: 6px; }
+.youtube-path { flex: 1 1 auto; min-width: 0; padding: 6px 8px; color: var(--ui-foreground); background: rgba(60,155,80,.1); border: 1px solid var(--crt-line); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.youtube-progress { margin: 4px 0 8px; }
+.youtube-progress span { display: block; margin-bottom: 4px; color: var(--crt-green); font-size: 9px; letter-spacing: .08em; }
+.youtube-progress-bar { height: 4px; background: rgba(125,255,117,.16); overflow: hidden; }
+.youtube-progress-fill { height: 100%; background: var(--crt-green); transition: width .2s linear; }
+.youtube-error { margin: 0 0 8px; color: var(--crt-red); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.youtube-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
 /* The update panel: the one place a release download can be watched, since the dialog that offered it is a
    modal sheet in front of the window. Bottom-right, above the scanlines, in the same language as the notices. */
 .update-toast { position: fixed; right: 16px; bottom: 16px; z-index: 1100; display: flex; flex-direction: column; gap: 3px; min-width: 220px; max-width: min(360px, calc(100vw - 32px)); padding: 10px 12px; color: var(--crt-green); background: var(--crt-panel-2); border: 1px solid var(--crt-green-dim); box-shadow: 0 0 0 1px #050806, 0 12px 30px rgba(0,0,0,.7), 0 0 18px rgba(125,255,117,.12); pointer-events: none; }
