@@ -8,7 +8,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { UPDATE_RELEASES_API, UPDATE_RELEASES_PAGE, isNewerVersion, versionSegments, releaseFromPayload, fetchLatestRelease, downloadDestination, downloadRelease, releaseNotesFrom } = require('./.updater.cjs')
-const { YTDLP_BINARY, downloadPercent, finishedFile } = require('./.youtube.cjs')
+const { YTDLP_BINARY, downloadPercent, finishedFile, formatSelector, YOUTUBE_HEIGHTS } = require('./.youtube.cjs')
 
 const problems = []
 const check = (label, ok, detail) => {
@@ -128,6 +128,18 @@ const main = async () => {
   check('a line that is not progress gives nothing', downloadPercent('[info] Downloading 1 format(s)') === null, String(downloadPercent('[info] Downloading 1 format(s)')))
   check('a finished file is read off its own line', finishedFile('/Users/x/Downloads/A video [dQw4].mp4'), '/Users/x/Downloads/A video [dQw4].mp4')
   check('and something that is not a media path is not a file', [finishedFile('not a path'), finishedFile('/tmp/notes.txt')], [null, null])
+
+  // THE SELECTOR IS WHERE BOTH REPORTED FAULTS ARE ANSWERED: a resolution ceiling, and H.264 + AAC first so the result
+  // plays in Finder's Quick Look and in the app's own AVFoundation helper. Measured on the strings themselves.
+  const safeBest = formatSelector()
+  check('the default asks for H.264', /bv\*\[vcodec\^=avc1\]/.test(safeBest), safeBest)
+  check('and for AAC beside it', /ba\[acodec\^=mp4a\]/.test(safeBest), safeBest)
+  check('and names no ceiling when none was chosen', !/height<=/.test(safeBest), safeBest)
+  check('a chosen height becomes a ceiling', /\[height<=1080\]\[vcodec\^=avc1\]/.test(formatSelector({ height: 1080 })), formatSelector({ height: 1080 }))
+  check('the preview-safe request is tried first, the plain best is the last resort', safeBest.startsWith('bv*[vcodec^=avc1]+ba[acodec^=mp4a]') && safeBest.endsWith('bv*+ba/b'), safeBest)
+  check('turning the preview off asks for the best codecs at that ceiling', formatSelector({ height: 720, previewSafe: false }) === 'bv*[height<=720]+ba/b[height<=720]', formatSelector({ height: 720, previewSafe: false }))
+  check('and with no ceiling at all', formatSelector({ previewSafe: false }) === 'bv*+ba/b', formatSelector({ previewSafe: false }))
+  check('the dialog offers a best entry and real heights', [YOUTUBE_HEIGHTS[0], YOUTUBE_HEIGHTS.includes(1080), YOUTUBE_HEIGHTS.includes(360)], [0, true, true])
 
   fs.rmSync(root, { recursive: true, force: true })
   // The real endpoint, when asked for: `UPDATE_LIVE=1` runs the same call against THE APP'S OWN releases, which is

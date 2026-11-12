@@ -50,11 +50,18 @@ export const finishedFile = (line: string): string | null => {
   return trimmed
 }
 
+export { YOUTUBE_HEIGHTS, formatSelector } from '../src/lib/youtubeOptions'
+import { formatSelector } from '../src/lib/youtubeOptions'
+
 export interface YouTubeDownload {
   url: string
   directory: string
   /** Where ffmpeg lives, so yt-dlp can merge a separate picture and sound without one on PATH. */
   ffmpegDirectory?: string
+  /** The largest height to take, or 0 for the best there is. */
+  height?: number
+  /** Whether to ask for H.264 + AAC, which macOS can preview. On unless the reader turns it off. */
+  previewSafe?: boolean
   onProgress?: (percent: number | null) => void
 }
 
@@ -65,14 +72,14 @@ export interface YouTubeDownload {
  * the whole list into the reader's Downloads folder. The format request takes the best picture and sound and merges
  * them to mp4 when they are separate, and falls back to a single file when they are not.
  */
-export const downloadYouTube = ({ url, directory, ffmpegDirectory, onProgress }: YouTubeDownload): Promise<string[]> => new Promise((resolve, reject) => {
+export const downloadYouTube = ({ url, directory, ffmpegDirectory, height, previewSafe, onProgress }: YouTubeDownload): Promise<string[]> => new Promise((resolve, reject) => {
   fs.mkdirSync(directory, { recursive: true })
   const args = [
     '--no-playlist',
     '--newline',
     '--no-simulate',
     '--print', 'after_move:filepath',
-    '-f', 'bv*+ba/b',
+    '-f', formatSelector({ height, previewSafe }),
     '--merge-output-format', 'mp4',
     '-o', path.join(directory, '%(title)s.%(ext)s'),
     ...(ffmpegDirectory ? ['--ffmpeg-location', ffmpegDirectory] : []),

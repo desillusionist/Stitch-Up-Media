@@ -1290,6 +1290,12 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
 .youtube-input { width: 100%; box-sizing: border-box; padding: 8px 9px; color: var(--crt-green) !important; background: var(--ui-panel-inset) !important; border: 1px solid var(--ui-border); font-family: inherit; font-size: 11px; letter-spacing: .02em; }
 .youtube-destination { display: flex; align-items: stretch; gap: 6px; }
 .youtube-path { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; padding: 0 9px; min-height: 30px; color: var(--ui-foreground); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* QUALITY and the preview switch share one row: two choices about the same download, read together. */
+.youtube-row { display: flex; align-items: flex-end; gap: 12px; margin-bottom: 4px; }
+.youtube-quality { flex: 1 1 auto; min-width: 0; margin-bottom: 8px; }
+.youtube-switch { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-bottom: 12px; color: var(--ui-muted); font-size: 9px; letter-spacing: .1em; white-space: nowrap; }
+.youtube-switch input { width: 14px; height: 14px; }
+.youtube-hint { margin: 0 0 12px; color: var(--ui-muted); font-size: 9px; line-height: 1.55; }
 .youtube-choose { flex: 0 0 auto; min-height: 30px; padding: 0 12px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-accent); white-space: nowrap; }
 .youtube-choose:hover:not(:disabled) { color: var(--ui-canvas); background: var(--ui-accent); }
 .youtube-progress { margin: 2px 0 10px; }

@@ -1125,7 +1125,7 @@ app.whenReady().then(() => {
    * must not take it. Progress is pushed to the window as a percentage, because the download is the slow part and the
    * window is where it was asked for.
    */
-  ipcMain.handle('download-youtube', async (_, options: { url?: string; directory?: string }) => {
+  ipcMain.handle('download-youtube', async (_, options: { url?: string; directory?: string; height?: number; previewSafe?: boolean }) => {
     const url = String(options?.url || '').trim()
     const directory = options?.directory || app.getPath('downloads')
     if (!/^https?:\/\//i.test(url)) return { files: [] as string[], error: 'That is not a link.' }
@@ -1135,6 +1135,10 @@ app.whenReady().then(() => {
         url,
         directory,
         ffmpegDirectory: path.dirname(FFMPEG_BINARY),
+        // A HEIGHT is a ceiling, and the preview-safe codec request is what makes the result play in Finder's Quick
+        // Look and in this app's own helper — see `formatSelector`.
+        height: Number(options?.height) || 0,
+        previewSafe: options?.previewSafe !== false,
         onProgress: (percent) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('youtube-progress', { percent }) },
       })
       logEvent('youtube', 'download finished', { files: files.length })

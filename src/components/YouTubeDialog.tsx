@@ -1,4 +1,6 @@
 import React from 'react'
+import { EditorSelect } from './EditorSelect'
+import { YOUTUBE_HEIGHTS } from '../lib/youtubeOptions'
 
 /**
  * The link dialog, drawn in the window's own language.
@@ -18,6 +20,10 @@ export interface YouTubeState {
   busy: boolean
   percent: number | null
   error: string | null
+  /** The largest height to take, or 0 for the best there is. */
+  height: number
+  /** Ask for H.264 + AAC, which is what macOS can preview. On by default — see `formatSelector`. */
+  previewSafe: boolean
 }
 
 export const YouTubeDialog: React.FC<{
@@ -46,6 +52,27 @@ export const YouTubeDialog: React.FC<{
             onKeyDown={(event) => { if (event.key === 'Enter') onDownload() }}
           />
         </label>
+        <div className="youtube-row">
+          <div className="youtube-field youtube-quality">
+            <span>QUALITY</span>
+            <EditorSelect
+              value={String(state.height)}
+              options={YOUTUBE_HEIGHTS.map((height) => ({ value: String(height), label: height === 0 ? 'BEST AVAILABLE' : `${height}P` }))}
+              disabled={state.busy}
+              ariaLabel="Download quality"
+              onChange={(next) => onChange({ height: Number(next) || 0 })}
+            />
+          </div>
+          <label className="youtube-switch">
+            <input type="checkbox" checked={state.previewSafe} disabled={state.busy} onChange={(event) => onChange({ previewSafe: event.target.checked })} />
+            <span>MACOS PREVIEW</span>
+          </label>
+        </div>
+        <p className="youtube-hint">
+          {state.previewSafe
+            ? 'H.264 + AAC, which Finder’s Quick Look and this app’s own preview can play. YouTube only offers H.264 up to 1080p; above that the best available is taken.'
+            : 'The best codecs YouTube has — usually VP9 or AV1, which play in this app’s monitor but NOT in Finder’s Quick Look.'}
+        </p>
         <div className="youtube-field">
           <span>DOWNLOAD TO</span>
           <div className="youtube-destination">

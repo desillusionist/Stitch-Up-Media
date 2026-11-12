@@ -171,7 +171,7 @@ export const App: React.FC = () => {
   /** WHERE FROM, for ADD MEDIA: a local file, or a link. */
   const [addMediaMenu, setAddMediaMenu] = useState(false)
   /** The YouTube download, while its dialog is open. */
-  const [youtube, setYoutube] = useState<{ open: boolean; url: string; directory: string; busy: boolean; percent: number | null; error: string | null }>({ open: false, url: '', directory: '', busy: false, percent: null, error: null })
+  const [youtube, setYoutube] = useState<{ open: boolean; url: string; directory: string; busy: boolean; percent: number | null; error: string | null; height: number; previewSafe: boolean }>({ open: false, url: '', directory: '', busy: false, percent: null, error: null, height: 0, previewSafe: true })
   const [sequenceChoice, setSequenceChoice] = useState<{ frames: number; resolve: (whole: boolean) => void } | null>(null)
   const [notice, setNotice] = useState<{ title: string; message: string } | null>(null)
   const [theme, setTheme] = useState<'retro' | 'modern'>('retro')
@@ -576,18 +576,18 @@ export const App: React.FC = () => {
    */
   const openYouTube = async () => {
     const directory = await window.electronAPI?.downloadsDirectory() ?? ''
-    setYoutube({ open: true, url: '', directory, busy: false, percent: null, error: null })
+    setYoutube({ open: true, url: '', directory, busy: false, percent: null, error: null, height: 0, previewSafe: true })
   }
 
   const startYouTubeDownload = async () => {
     if (!youtube.url.trim() || youtube.busy) return
     setYoutube((current) => ({ ...current, busy: true, percent: null, error: null }))
-    const result = await window.electronAPI?.downloadYouTube({ url: youtube.url.trim(), directory: youtube.directory || undefined })
+    const result = await window.electronAPI?.downloadYouTube({ url: youtube.url.trim(), directory: youtube.directory || undefined, height: youtube.height, previewSafe: youtube.previewSafe })
     if (!result || result.error || !result.files.length) {
       setYoutube((current) => ({ ...current, busy: false, error: result?.error || 'Nothing was downloaded.' }))
       return
     }
-    setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null })
+    setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, height: 0, previewSafe: true })
     // The files go through the question a local pick gets: what a video should BECOME is still the reader's call.
     setPendingFiles(result.files)
   }
@@ -1188,7 +1188,7 @@ export const App: React.FC = () => {
           if (chosen) setYoutube((current) => ({ ...current, directory: chosen }))
         }}
         onDownload={() => void startYouTubeDownload()}
-        onCancel={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null })}
+        onCancel={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, height: 0, previewSafe: true })}
       />
       <WhatsNew
         isOpen={whatsNew.open}
