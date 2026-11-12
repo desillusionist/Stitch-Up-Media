@@ -133,7 +133,30 @@ app.whenReady().then(async () => {
       if (settings.closedNodes !== 0) problems.push(`a CLOSED settings panel drew ${settings.closedNodes} nodes`)
       if (!settings.opened) problems.push('opening SETTINGS drew no panel: the window blanked instead')
       if (!settings.showsVersion) problems.push(`SETTINGS did not show the running version: ${JSON.stringify(settings.text)}`)
-      // START QUEUE CARRIES A SCOPE, and the caret offers exactly the two answers.
+      // THE SCOPE MENU IS DRAWN LIKE THE APP'S OTHER MENUS, and its entries fit.
+    const menu = result.startMenu
+    if (!menu) problems.push('the start-menu drive reported nothing')
+    else {
+      if (menu.below !== true) problems.push('the scope menu is not drawn below the button it belongs to')
+      if (menu.onScreen !== true) problems.push('the scope menu runs off the window')
+      if (!menu.textFits) problems.push('a scope entry\u2019s text does not fit its own box')
+      if (!menu.chosenColour || menu.chosenColour !== menu.accent) problems.push(`the chosen scope reads ${JSON.stringify(menu.chosenColour)} rather than the app accent ${JSON.stringify(menu.accent)}`)
+      if (!/^"> "?/.test(String(menu.chosenMarked))) problems.push(`the chosen scope carries no mark: ${JSON.stringify(menu.chosenMarked)}`)
+    }
+
+    // THE LINK DIALOG: text inside its buttons, one baseline for the pair, and a destination row that does not collide.
+    const dialog = result.youtubeDialog
+    if (!dialog) problems.push('the link dialog drive reported nothing')
+    else {
+      if (!dialog.drawn) problems.push('the link dialog drew no box')
+      if (dialog.withinViewport !== true) problems.push('the link dialog is wider than the window')
+      if (dialog.actionsFit !== true) problems.push('a link-dialog button\u2019s text hangs over its own border')
+      if (dialog.actionsAligned !== true) problems.push('the link dialog\u2019s two actions are not on one baseline')
+      if (dialog.destinationApart !== true) problems.push('the download path and its CHOOSE button overlap')
+      if (dialog.destinationInside !== true) problems.push('the CHOOSE button reaches outside the dialog')
+    }
+
+    // START QUEUE CARRIES A SCOPE, and the caret offers exactly the two answers.
     const scope = result.startScope
     if (!scope) problems.push('the start-scope drive reported nothing')
     else {

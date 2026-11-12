@@ -6,6 +6,7 @@ import { StitchModal } from './components/StitchModal'
 import { MultiAudioModal } from './components/MultiAudioModal'
 import { SettingsModal } from './components/SettingsModal'
 import { WhatsNew, ReleaseNotes } from './components/WhatsNew'
+import { YouTubeDialog } from './components/YouTubeDialog'
 import { CommandBar } from './components/CommandBar'
 import { QueueTask, EncodingPreset, AppSettings, EditJobPatch } from './types'
 import { withSourceTiming } from './lib/sourceTiming'
@@ -1179,42 +1180,16 @@ export const App: React.FC = () => {
           <button className="chooser-cancel" onClick={() => setAddMediaMenu(false)}>CANCEL</button>
         </div>
       </div>}
-      {youtube.open && <div className="drop-chooser" role="dialog" aria-modal="true" aria-label="Download a YouTube video">
-        <div className="drop-chooser-box">
-          <span className="panel-kicker">ADD MEDIA // DOWNLOAD</span>
-          <h2>FETCH A VIDEO</h2>
-          <label className="youtube-field"><span>LINK</span>
-            <input
-              type="url"
-              autoFocus
-              className="editor-input"
-              placeholder="https://www.youtube.com/watch?v=…"
-              value={youtube.url}
-              disabled={youtube.busy}
-              onChange={(event) => setYoutube((current) => ({ ...current, url: event.target.value, error: null }))}
-              onKeyDown={(event) => { if (event.key === 'Enter') void startYouTubeDownload() }}
-            />
-          </label>
-          <label className="youtube-field"><span>DOWNLOAD TO</span>
-            <div className="youtube-destination">
-              <span className="youtube-path" title={youtube.directory}>{youtube.directory || 'Downloads'}</span>
-              <button disabled={youtube.busy} onClick={async () => {
-                const chosen = await window.electronAPI?.selectOutputDir()
-                if (chosen) setYoutube((current) => ({ ...current, directory: chosen }))
-              }}>CHOOSE…</button>
-            </div>
-          </label>
-          {youtube.busy && <div className="youtube-progress">
-            <span>{youtube.percent == null ? 'STARTING…' : `DOWNLOADING ${Math.round(youtube.percent)}%`}</span>
-            <div className="youtube-progress-bar"><div className="youtube-progress-fill" style={{ width: `${youtube.percent ?? 0}%` }} /></div>
-          </div>}
-          {youtube.error && <p className="youtube-error">{youtube.error}</p>}
-          <div className="youtube-actions">
-            <button className="chooser-cancel" disabled={youtube.busy} onClick={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null })}>CANCEL</button>
-            <button disabled={youtube.busy || !youtube.url.trim()} onClick={() => void startYouTubeDownload()}>{youtube.busy ? 'DOWNLOADING…' : 'DOWNLOAD'}</button>
-          </div>
-        </div>
-      </div>}
+      <YouTubeDialog
+        state={youtube}
+        onChange={(next) => setYoutube((current) => ({ ...current, ...next }))}
+        onChooseDirectory={async () => {
+          const chosen = await window.electronAPI?.selectOutputDir()
+          if (chosen) setYoutube((current) => ({ ...current, directory: chosen }))
+        }}
+        onDownload={() => void startYouTubeDownload()}
+        onCancel={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null })}
+      />
       <WhatsNew
         isOpen={whatsNew.open}
         version={whatsNew.version}

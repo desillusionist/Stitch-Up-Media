@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { TaskCard } from '../src/components/TaskCard'
 import { SettingsModal } from '../src/components/SettingsModal'
 import { Header } from '../src/components/Header'
+import { YouTubeDialog } from '../src/components/YouTubeDialog'
 import { QueueTask } from '../src/types'
 
 /**
@@ -213,6 +214,59 @@ const drive = async () => {
   startButton()?.click()
   await wait(80)
   result.startScope = { offered, starts: [...starts] }
+  // THE LINK DIALOG'S BOXES. A button whose text hangs over its own border, or a footer whose two buttons sit on two
+  // baselines, is a drawing fault rather than a behaviour one — so it is measured in pixels, off the element it is.
+  const paletteOf = (variable: string) => {
+    const probe = document.createElement('span')
+    probe.style.color = `var(${variable})`
+    document.body.appendChild(probe)
+    const colour = getComputedStyle(probe).color
+    probe.remove()
+    return colour
+  }
+  const accent = paletteOf('--ui-accent')
+  // Re-opened to be measured: the press before this one closed it, and a menu can only be measured while it is drawn.
+  caretButton()?.click()
+  await wait(100)
+  const menuBox = headerHost.querySelector('.queue-start-menu') as HTMLElement | null
+  const triggerBox = headerHost.querySelector('.queue-titlebar-start') as HTMLElement | null
+  const menuEntries = [...(menuBox?.querySelectorAll('button') ?? [])] as HTMLElement[]
+  const chosen = menuEntries.find((entry) => entry.classList.contains('is-on')) ?? null
+  result.startMenu = {
+    accent,
+    below: menuBox && triggerBox ? menuBox.getBoundingClientRect().top >= triggerBox.getBoundingClientRect().bottom - 0.5 : null,
+    onScreen: menuBox ? menuBox.getBoundingClientRect().right <= window.innerWidth + 0.5 && menuBox.getBoundingClientRect().left >= -0.5 : null,
+    textFits: menuEntries.every((entry) => entry.scrollWidth <= entry.clientWidth + 1),
+    chosenColour: chosen ? getComputedStyle(chosen).color : null,
+    // The chosen entry is the one marked with the timeline's `>`, which is what `.is-on::before` draws: read through the
+    // pseudo-element rather than assumed from the class alone.
+    chosenMarked: chosen ? getComputedStyle(chosen, '::before').content : null,
+  }
+
+  const dialogHost = document.createElement('div')
+  document.body.appendChild(dialogHost)
+  const dialogRoot = createRoot(dialogHost)
+  dialogRoot.render(<YouTubeDialog
+    state={{ open: true, url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', directory: '/Users/thai-nitai/Downloads', busy: false, percent: null, error: null }}
+    onChange={() => undefined}
+    onChooseDirectory={() => undefined}
+    onDownload={() => undefined}
+    onCancel={() => undefined}
+  />)
+  await wait(200)
+  const dialogBox = dialogHost.querySelector('.youtube-dialog') as HTMLElement | null
+  const actionBoxes = [...dialogHost.querySelectorAll('.youtube-actions button')] as HTMLElement[]
+  const pathBox = dialogHost.querySelector('.youtube-path') as HTMLElement | null
+  const chooseBox = dialogHost.querySelector('.youtube-choose') as HTMLElement | null
+  result.youtubeDialog = {
+    drawn: Boolean(dialogBox),
+    withinViewport: dialogBox ? dialogBox.getBoundingClientRect().width <= window.innerWidth : null,
+    actionsFit: actionBoxes.length === 2 && actionBoxes.every((button) => button.scrollWidth <= button.clientWidth + 1),
+    actionsAligned: actionBoxes.length === 2 && Math.abs(actionBoxes[0].getBoundingClientRect().top - actionBoxes[1].getBoundingClientRect().top) < 0.5 && Math.abs(actionBoxes[0].getBoundingClientRect().height - actionBoxes[1].getBoundingClientRect().height) < 0.5,
+    // The path field and its button must not overlap, and both must sit inside the dialog's own box.
+    destinationApart: pathBox && chooseBox ? pathBox.getBoundingClientRect().right <= chooseBox.getBoundingClientRect().left + 0.5 : null,
+    destinationInside: Boolean(dialogBox && pathBox && chooseBox) && chooseBox!.getBoundingClientRect().right <= dialogBox!.getBoundingClientRect().right + 0.5,
+  }
 
   result.settings = {
     accentColor: {

@@ -1170,10 +1170,15 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
 .queue-start-split .queue-titlebar-start { border-right: 0; }
 .queue-titlebar-start-caret { min-width: 22px; padding: 0 4px; border: 1px solid var(--ui-accent); color: var(--ui-canvas); background: var(--ui-accent); font-size: 9px; line-height: 1; }
 .queue-titlebar-start-caret:hover { color: var(--ui-accent); background: var(--ui-canvas); }
-.queue-start-menu { position: absolute; top: calc(100% + 3px); right: 0; z-index: 60; display: flex; flex-direction: column; min-width: 168px; padding: 3px; color: var(--ui-foreground); background: var(--ui-panel); border: 1px solid var(--ui-border); box-shadow: 0 8px 24px rgba(0,0,0,.6); }
-.queue-start-menu button { padding: 6px 8px; text-align: left; color: var(--ui-muted); background: transparent; border: 1px solid transparent; font-size: 10px; letter-spacing: .06em; }
-.queue-start-menu button:hover { color: var(--ui-foreground); border-color: var(--ui-border); }
-.queue-start-menu button.is-on { color: var(--ui-accent); border-color: var(--ui-accent); }
+/* The scope menu is the same menu the timeline draws, because it is the same kind of menu: inset panel, one accent
+   border, entries in the mute ink that take the accent and a tint when pointed at, and the chosen one marked with the
+   `> ` the timeline uses. The first attempt outlined each entry instead, which read as three fields rather than as a
+   list, and had no hover treatment of its own. */
+.queue-start-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 60; display: flex; flex-direction: column; min-width: 100%; width: max-content; padding: 4px; background: var(--ui-panel-inset); border: 1px solid var(--ui-accent); box-shadow: 0 10px 28px rgba(3, 9, 16, .72); }
+.queue-start-menu button { padding: 7px 9px; text-align: left; color: var(--ui-muted); background: transparent; border: 0; font-size: 10px; letter-spacing: .06em; white-space: nowrap; }
+.queue-start-menu button:hover, .queue-start-menu button:focus-visible { color: var(--ui-accent); background: rgba(159, 191, 154, .08); }
+.queue-start-menu button.is-on { color: var(--ui-accent); }
+.queue-start-menu button.is-on::before { content: '> '; }
 .command-bar { display: flex; align-items: center; gap: 10px; }
 .command-bar > button { display: inline-flex; align-items: center; gap: 6px; }
 
@@ -1274,18 +1279,32 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
 .whats-new-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
 .whats-new-actions .chooser-cancel { min-width: 92px; }
 
-/* The link dialog. Two fields and a bar: the download is the slow part, so the bar is the part that moves. */
-.youtube-field { display: block; margin: 0 0 10px; }
-.youtube-field > span { display: block; margin-bottom: 4px; color: var(--ui-muted); font-size: 9px; letter-spacing: .1em; }
-.youtube-field input { width: 100%; padding: 7px 8px; }
-.youtube-destination { display: flex; align-items: center; gap: 6px; }
-.youtube-path { flex: 1 1 auto; min-width: 0; padding: 6px 8px; color: var(--ui-foreground); background: rgba(60,155,80,.1); border: 1px solid var(--crt-line); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.youtube-progress { margin: 4px 0 8px; }
-.youtube-progress span { display: block; margin-bottom: 4px; color: var(--crt-green); font-size: 9px; letter-spacing: .08em; }
-.youtube-progress-bar { height: 4px; background: rgba(125,255,117,.16); overflow: hidden; }
-.youtube-progress-fill { height: 100%; background: var(--crt-green); transition: width .2s linear; }
-.youtube-error { margin: 0 0 8px; color: var(--crt-red); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
-.youtube-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+/* THE LINK DIALOG. Two labelled rows and a footer, in the same language as the rest of the window: a field is an
+   inset box with a dotted rule under a mute label, and a primary action is FILLED with the accent the way START
+   QUEUE is. The first attempt put a `.chooser-cancel` (which carries its own top margin) beside a plain button, so
+   the pair sat on two baselines, and its buttons were left to size themselves in a flex row that could squeeze them
+   until the word DOWNLOAD hung over its own border. */
+.youtube-dialog { width: min(460px, calc(100vw - 32px)); }
+.youtube-field { display: block; margin: 0 0 12px; }
+.youtube-field > span { display: block; margin-bottom: 5px; color: var(--ui-muted); font-size: 9px; letter-spacing: .12em; }
+.youtube-input { width: 100%; box-sizing: border-box; padding: 8px 9px; color: var(--crt-green) !important; background: var(--ui-panel-inset) !important; border: 1px solid var(--ui-border); font-family: inherit; font-size: 11px; letter-spacing: .02em; }
+.youtube-destination { display: flex; align-items: stretch; gap: 6px; }
+.youtube-path { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; padding: 0 9px; min-height: 30px; color: var(--ui-foreground); background: var(--ui-panel-inset); border: 1px solid var(--ui-border); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.youtube-choose { flex: 0 0 auto; min-height: 30px; padding: 0 12px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-accent); white-space: nowrap; }
+.youtube-choose:hover:not(:disabled) { color: var(--ui-canvas); background: var(--ui-accent); }
+.youtube-progress { margin: 2px 0 10px; }
+.youtube-progress span { display: block; margin-bottom: 5px; color: var(--crt-green); font-size: 9px; letter-spacing: .1em; }
+.youtube-progress-bar { height: 4px; background: rgba(159, 191, 154, .18); overflow: hidden; }
+.youtube-progress-fill { height: 100%; background: var(--ui-accent); transition: width .2s linear; }
+.youtube-error { margin: 0 0 10px; color: var(--ui-error); font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.youtube-actions { display: flex; justify-content: flex-end; align-items: stretch; gap: 8px; margin-top: 16px; }
+.youtube-actions button { flex: 0 0 auto; min-height: 30px; padding: 0 14px; white-space: nowrap; }
+/* One baseline: the cancel keeps no margin of its own inside a row that already spaces it. */
+.youtube-cancel { margin: 0 !important; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); }
+.youtube-cancel:hover:not(:disabled) { color: var(--ui-foreground); border-color: var(--ui-accent); }
+.youtube-download { color: var(--ui-canvas); background: var(--ui-accent); border: 1px solid var(--ui-accent); }
+.youtube-download:hover:not(:disabled) { background: transparent; color: var(--ui-accent); }
+.youtube-actions button:disabled { opacity: .45; cursor: not-allowed; }
 
 /* The update panel: the one place a release download can be watched, since the dialog that offered it is a
    modal sheet in front of the window. Bottom-right, above the scanlines, in the same language as the notices. */
