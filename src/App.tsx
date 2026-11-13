@@ -168,10 +168,15 @@ export const App: React.FC = () => {
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
   /** WHAT'S NEW: the running release's notes, opened once after an update. */
   const [whatsNew, setWhatsNew] = useState<{ open: boolean; loading: boolean; entries: ReleaseNotes[]; version: string }>({ open: false, loading: false, entries: [], version: '' })
-  /** WHERE FROM, for ADD MEDIA: a local file, or a link. */
-  const [addMediaMenu, setAddMediaMenu] = useState(false)
+  /**
+   * WHERE FROM, for ADD MEDIA — and for a card's own [+].
+   *
+   * The `task` is what the media is FOR: null adds new jobs, a job adds sources to that job. The two entries are the
+   * same question either way, so the [+] opens the same page rather than a second, differently-shaped one.
+   */
+  const [addMediaMenu, setAddMediaMenu] = useState<{ task: QueueTask | null } | null>(null)
   /** The YouTube download, while its dialog is open. */
-  const [youtube, setYoutube] = useState<{ open: boolean; url: string; directory: string; busy: boolean; percent: number | null; error: string | null; quality: string; previewSafe: boolean }>({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true })
+  const [youtube, setYoutube] = useState<{ open: boolean; url: string; directory: string; busy: boolean; percent: number | null; error: string | null; quality: string; previewSafe: boolean; target: QueueTask | null; item?: number; total?: number }>({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, target: null })
   const [sequenceChoice, setSequenceChoice] = useState<{ frames: number; resolve: (whole: boolean) => void } | null>(null)
   const [notice, setNotice] = useState<{ title: string; message: string } | null>(null)
   const [theme, setTheme] = useState<'retro' | 'modern'>('retro')
@@ -455,8 +460,8 @@ export const App: React.FC = () => {
 
   // A download's percentage, pushed from the shell while it runs.
   useEffect(() => {
-    const unsubscribe = window.electronAPI?.onYouTubeProgress(({ percent }) => {
-      setYoutube((current) => (current.open ? { ...current, percent } : current))
+    const unsubscribe = window.electronAPI?.onYouTubeProgress((progress) => {
+      setYoutube((current) => (current.open ? { ...current, percent: progress.percent, item: progress.item, total: progress.total } : current))
     })
     return () => unsubscribe?.()
   }, [])
@@ -574,9 +579,9 @@ export const App: React.FC = () => {
    * a queue job until the file exists, which is why it comes back through the same job-type confirmation a local
    * pick gets.
    */
-  const openYouTube = async () => {
+  const openYouTube = async (target: QueueTask | null = null) => {
     const directory = await window.electronAPI?.downloadsDirectory() ?? ''
-    setYoutube({ open: true, url: '', directory, busy: false, percent: null, error: null, quality: 'best', previewSafe: true })
+    setYoutube({ open: true, url: '', directory, busy: false, percent: null, error: null, quality: 'best', previewSafe: true, target })
   }
 
   const startYouTubeDownload = async () => {
@@ -587,9 +592,12 @@ export const App: React.FC = () => {
       setYoutube((current) => ({ ...current, busy: false, error: result?.error || 'Nothing was downloaded.' }))
       return
     }
-    setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true })
-    // The files go through the question a local pick gets: what a video should BECOME is still the reader's call.
-    setPendingFiles(result.files)
+    const target = youtube.target
+    setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, target: null })
+    // A download opened from a card's [+] joins THAT job; one opened from ADD MEDIA asks what the new files should
+    // become, which is what a local pick gets too.
+    if (target) void handleAddToExisting(target, result.files)
+    else setPendingFiles(result.files)
   }
 
   const handlePickFiles = async () => {
@@ -1137,7 +1145,7 @@ export const App: React.FC = () => {
         onSelectTask={handleSelectTask}
         onOpenEditor={handleOpenEditJob}
         onAddToExisting={handleAddToExisting}
-        onAddSource={handleAddSource}
+        onAddSource={(task) => setAddMediaMenu({ task })}
         onRemoveSource={handleRemoveSource}
         onReorderSources={handleReorderSources}
         onReorderTracks={handleReorderTracks}
@@ -1174,10 +1182,10 @@ export const App: React.FC = () => {
           <span className="panel-kicker">ADD MEDIA // SOURCE</span>
           <h2>WHERE IS IT?</h2>
           <div className="drop-chooser-grid">
-            <button onClick={() => { setAddMediaMenu(false); void handlePickFiles() }}><span>ADD A LOCAL SOURCE</span><small>FILES ON THIS MAC</small></button>
-            <button onClick={() => { setAddMediaMenu(false); void openYouTube() }}><span>DOWNLOAD YOUTUBE VIDEO</span><small>PASTE A LINK</small></button>
+            <button onClick={() => { const target = addMediaMenu.task; setAddMediaMenu(null); void (target ? handleAddSource(target) : handlePickFiles()) }}><span>ADD LOCAL SOURCE(s)</span><small>FILES ON THIS MAC</small></button>
+            <button onClick={() => { const target = addMediaMenu.task; setAddMediaMenu(null); void openYouTube(target) }}><span>DOWNLOAD FROM YOUTUBE</span><small>A LINK, OR A WHOLE PLAYLIST</small></button>
           </div>
-          <button className="chooser-cancel" onClick={() => setAddMediaMenu(false)}>CANCEL</button>
+          <button className="chooser-cancel" onClick={() => setAddMediaMenu(null)}>CANCEL</button>
         </div>
       </div>}
       <YouTubeDialog
@@ -1188,7 +1196,7 @@ export const App: React.FC = () => {
           if (chosen) setYoutube((current) => ({ ...current, directory: chosen }))
         }}
         onDownload={() => void startYouTubeDownload()}
-        onCancel={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true })}
+        onCancel={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, target: null })}
       />
       <WhatsNew
         isOpen={whatsNew.open}
@@ -1253,7 +1261,7 @@ export const App: React.FC = () => {
       </div>}
       {notice && <div className="retro-notice-overlay" role="alertdialog" aria-modal="true"><div className="retro-notice"><span className="panel-kicker">STITCH UP MEDIA // NOTICE</span><h2>{notice.title}</h2><p>{notice.message.split('\n').map((line, index) => <React.Fragment key={`${line}-${index}`}>{index > 0 && <br />}{line}</React.Fragment>)}</p><button onClick={() => setNotice(null)}>OK</button></div></div>}
       {/* Settings Modal */}
-      <CommandBar statusFilters={statusFilters} onToggleStatus={(status) => setStatusFilters((current) => ({ ...current, [status]: !current[status] }))} stats={{ ready: tasks.filter((task) => task.status === 'pending').length, skip: tasks.filter((task) => task.skipped || task.status === 'paused').length, done: tasks.filter((task) => task.status === 'done').length }} canStartQueue={tasks.some((task) => task.status === 'pending')} onOpen={() => setAddMediaMenu(true)} onConvert={handleToggleQueue} onAdvanced={() => setIsSettingsOpen(true)} onToggleTheme={() => setTheme((current) => current === 'retro' ? 'modern' : 'retro')} theme={theme} isQueueRunning={isQueueRunning} />
+      <CommandBar statusFilters={statusFilters} onToggleStatus={(status) => setStatusFilters((current) => ({ ...current, [status]: !current[status] }))} stats={{ ready: tasks.filter((task) => task.status === 'pending').length, skip: tasks.filter((task) => task.skipped || task.status === 'paused').length, done: tasks.filter((task) => task.status === 'done').length }} canStartQueue={tasks.some((task) => task.status === 'pending')} onOpen={() => setAddMediaMenu({ task: null })} onConvert={handleToggleQueue} onAdvanced={() => setIsSettingsOpen(true)} onToggleTheme={() => setTheme((current) => current === 'retro' ? 'modern' : 'retro')} theme={theme} isQueueRunning={isQueueRunning} />
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

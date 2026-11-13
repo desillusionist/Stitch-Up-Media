@@ -19,6 +19,9 @@ export interface YouTubeState {
   directory: string
   busy: boolean
   percent: number | null
+  /** Which item of a playlist is being fetched, and how many there are. */
+  item?: number
+  total?: number
   error: string | null
   /** What to fetch: a picture at a ceiling (`'best'`, `'1080'`…), or a sound (`'audio-m4a'`, `'audio-mp3'`). */
   quality: string
@@ -92,7 +95,10 @@ export const YouTubeDialog: React.FC<{
         </div>
         {state.busy && (
           <div className="youtube-progress">
-            <span>{state.percent == null ? 'STARTING…' : `DOWNLOADING ${Math.round(state.percent)}%`}</span>
+            <span>
+              {state.total && state.total > 1 ? `ITEM ${state.item ?? 1} OF ${state.total} — ` : ''}
+              {state.percent == null ? 'STARTING…' : `DOWNLOADING ${Math.round(state.percent)}%`}
+            </span>
             <div className="youtube-progress-bar"><div className="youtube-progress-fill" style={{ width: `${state.percent ?? 0}%` }} /></div>
           </div>
         )}

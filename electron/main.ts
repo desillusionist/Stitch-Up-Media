@@ -1139,7 +1139,7 @@ app.whenReady().then(() => {
         // which is what makes the result play in Finder's Quick Look and in this app's own helper.
         quality: options?.quality || 'best',
         previewSafe: options?.previewSafe !== false,
-        onProgress: (percent) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('youtube-progress', { percent }) },
+        onProgress: (progress) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('youtube-progress', progress) },
       })
       // NAMED FOR WHAT THEY ARE. The probe's own figures go into the name — `Title [1920x1080].mp4`, `Title [48kHz
       // 128k].m4a` — so two downloads of one link are two files that can be told apart, and so a file says its size

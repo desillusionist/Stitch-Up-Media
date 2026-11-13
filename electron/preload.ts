@@ -143,8 +143,12 @@ export interface IElectronAPI {
    * The file is written by yt-dlp on this machine, so what arrives is real media the queue can probe.
    */
   downloadYouTube: (options: { url: string; directory?: string; quality?: string; previewSafe?: boolean }) => Promise<{ files: string[]; error?: string }>
-  /** How a download is going: a percentage, or null while it is between phases. */
-  onYouTubeProgress: (callback: (progress: { percent: number | null }) => void) => () => void
+  /**
+   * How a download is going: one file's percentage, and — in a playlist — which item of how many.
+   *
+   * `percent: null` means it is between phases, which is not the same as zero.
+   */
+  onYouTubeProgress: (callback: (progress: { percent: number | null; item?: number; total?: number }) => void) => () => void
   /** The published releases' notes, newest first, for WHAT'S NEW. Empty where GitHub could not be reached. */
   releaseNotes: () => Promise<Array<{ version: string; notes: string; publishedAt: string }>>
   /** This app's own version, as the bundle carries it. */
@@ -278,7 +282,7 @@ const api: IElectronAPI = {
   appVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: () => ipcRenderer.invoke('check-for-update'),
   onYouTubeProgress: (callback) => {
-    const handler = (_: any, progress: { percent: number | null }) => callback(progress)
+    const handler = (_: any, progress: { percent: number | null; item?: number; total?: number }) => callback(progress)
     ipcRenderer.on('youtube-progress', handler)
     return () => ipcRenderer.removeListener('youtube-progress', handler)
   },

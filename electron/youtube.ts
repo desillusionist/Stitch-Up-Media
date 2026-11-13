@@ -50,8 +50,8 @@ export const finishedFile = (line: string): string | null => {
   return trimmed
 }
 
-export { YOUTUBE_QUALITIES, formatSelector, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath } from '../src/lib/youtubeOptions'
-import { downloadArguments, parseQuality } from '../src/lib/youtubeOptions'
+export { YOUTUBE_QUALITIES, formatSelector, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath, isPlaylistUrl, outputTemplate, playlistItem } from '../src/lib/youtubeOptions'
+import { downloadArguments, isPlaylistUrl, outputTemplate, parseQuality, playlistItem } from '../src/lib/youtubeOptions'
 
 export interface YouTubeDownload {
   url: string
@@ -62,7 +62,7 @@ export interface YouTubeDownload {
   quality?: string
   /** Whether to ask for H.264 + AAC, which macOS can preview. On unless the reader turns it off. */
   previewSafe?: boolean
-  onProgress?: (percent: number | null) => void
+  onProgress?: (progress: { percent: number | null; item?: number; total?: number }) => void
 }
 
 /**
@@ -75,8 +75,11 @@ export interface YouTubeDownload {
 export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, previewSafe, onProgress }: YouTubeDownload): Promise<string[]> => new Promise((resolve, reject) => {
   fs.mkdirSync(directory, { recursive: true })
   const requested = downloadArguments(parseQuality(quality ?? 'best'), previewSafe !== false)
+  // A PLAYLIST LINK IS A BATCH: every item in it, in order, numbered on disk. A single video is one file, and a watch
+  // link that happens to carry a list stays one file — see `isPlaylistUrl`.
+  const playlist = isPlaylistUrl(url)
   const args = [
-    '--no-playlist',
+    playlist ? '--yes-playlist' : '--no-playlist',
     '--newline',
     '--no-simulate',
     '--print', 'after_move:filepath',
@@ -86,7 +89,7 @@ export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, prev
     '--force-overwrites',
     '-f', requested.format,
     ...requested.extra,
-    '-o', path.join(directory, '%(title)s.%(ext)s'),
+    '-o', path.join(directory, outputTemplate(playlist)),
     ...(ffmpegDirectory ? ['--ffmpeg-location', ffmpegDirectory] : []),
     url,
   ]
@@ -95,10 +98,14 @@ export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, prev
   let stderr = ''
   let settled = false
 
+  let place: { item: number; total: number } | null = null
   child.stdout?.on('data', (chunk: Buffer) => {
     for (const line of String(chunk).split('\n')) {
+      // A playlist says where it is before each item; the percentage that follows is that item's own.
+      const item = playlistItem(line)
+      if (item) { place = item; onProgress?.({ percent: 0, ...item }); continue }
       const percent = downloadPercent(line)
-      if (percent != null) onProgress?.(percent)
+      if (percent != null) onProgress?.({ percent, ...(place ?? {}) })
       const file = finishedFile(line)
       if (file) files.add(file)
     }
@@ -107,14 +114,14 @@ export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, prev
   child.on('error', (error) => {
     if (settled) return
     settled = true
-    onProgress?.(null)
+    onProgress?.({ percent: null })
     reject(error)
   })
   child.on('close', (code) => {
     if (settled) return
     settled = true
     if (code !== 0) { reject(new Error(stderr.trim().slice(-400) || `yt-dlp exited with ${code}`)); return }
-    onProgress?.(100)
+    onProgress?.({ percent: 100, ...(place ?? {}) })
     resolve([...files])
   })
 })

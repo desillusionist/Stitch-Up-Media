@@ -8,7 +8,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { UPDATE_RELEASES_API, UPDATE_RELEASES_PAGE, isNewerVersion, versionSegments, releaseFromPayload, fetchLatestRelease, downloadDestination, downloadRelease, releaseNotesFrom } = require('./.updater.cjs')
-const { YTDLP_BINARY, downloadPercent, finishedFile, formatSelector, YOUTUBE_QUALITIES, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath } = require('./.youtube.cjs')
+const { YTDLP_BINARY, downloadPercent, finishedFile, formatSelector, YOUTUBE_QUALITIES, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath, isPlaylistUrl, outputTemplate, playlistItem } = require('./.youtube.cjs')
 
 const problems = []
 const check = (label, ok, detail) => {
@@ -160,6 +160,16 @@ const main = async () => {
   check('and a stream with nothing to say adds nothing', specSuffix({ videoStreams: [], audioStreams: [] }) === null, String(specSuffix({ videoStreams: [], audioStreams: [] })))
   check('the suffix goes before the extension, not after it', withSpecSuffix('/Users/x/Downloads/A video [dQw4].mp4', '[1920x1080]'), '/Users/x/Downloads/A video [dQw4] [1920x1080].mp4')
   check('and a name with no extension still takes one', withSpecSuffix('/Users/x/Downloads/A video', '[48kHz 128k]'), '/Users/x/Downloads/A video [48kHz 128k]')
+  // A PLAYLIST IS A BATCH, AND A WATCH LINK THAT NAMES ONE IS STILL ONE VIDEO.
+  check('a playlist page is a playlist', isPlaylistUrl('https://www.youtube.com/playlist?list=PLabc123'), true)
+  check('a list with no video is a playlist', isPlaylistUrl('https://www.youtube.com/?list=PLabc123'), true)
+  check('a video inside a list is ONE video', isPlaylistUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc123') === false, 'it was read as a playlist')
+  check('a plain video is one video', isPlaylistUrl('https://youtu.be/dQw4w9WgXcQ') === false, 'it was read as a playlist')
+  check('and a link that is not a link is nothing', isPlaylistUrl('not a link') === false, 'it was read as a playlist')
+  check('a playlist numbers its files, a video does not', same([outputTemplate(true), outputTemplate(false)], ['%(playlist_index)02d - %(title)s.%(ext)s', '%(title)s.%(ext)s']), JSON.stringify([outputTemplate(true), outputTemplate(false)]))
+  check('the item counter is read off its own line', same(playlistItem('[download] Downloading item 3 of 12: A title'), { item: 3, total: 12 }), JSON.stringify(playlistItem('[download] Downloading item 3 of 12: A title')))
+  check('and an ordinary progress line is not one', playlistItem('[download]  42.0% of 10MiB') === null, String(playlistItem('[download]  42.0% of 10MiB')))
+
   const taken = new Set(['/d/Title [1920x1080].mp4', '/d/Title [1920x1080] (2).mp4'])
   check('a name already taken gets a copy number rather than overwriting', uniquePath('/d/Title [1920x1080].mp4', (candidate) => taken.has(candidate)), '/d/Title [1920x1080] (3).mp4')
   check('and a free name is left exactly as it is', uniquePath('/d/Free.mp4', () => false), '/d/Free.mp4')

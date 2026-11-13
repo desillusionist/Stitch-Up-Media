@@ -58,6 +58,43 @@ export const parseQuality = (value: string): YouTubeQuality => {
   return { kind: 'video', height: Number.isFinite(height) && height > 0 ? height : 0 }
 }
 
+/**
+ * Whether a link names a PLAYLIST rather than one video.
+ *
+ * A `watch?v=…&list=…` link is one video that happens to sit in a list, and a reader pasting it means the video — so
+ * the presence of `list=` is not enough. The list itself is `/playlist?…`, or a link that names a list and no video.
+ * Measured on the strings; `check-update` asserts all three shapes.
+ */
+export const isPlaylistUrl = (url: string): boolean => {
+  const value = String(url || '').trim()
+  if (!/^https?:\/\//i.test(value)) return false
+  if (/\/playlist\b/i.test(value)) return true
+  return /[?&]list=/.test(value) && !/[?&]v=/.test(value)
+}
+
+/**
+ * Where a download writes. A playlist numbers its files, because two videos in one list may share a title and the
+ * order they were fetched in is worth having on disk.
+ */
+export const outputTemplate = (playlist: boolean): string =>
+  playlist ? '%(playlist_index)02d - %(title)s.%(ext)s' : '%(title)s.%(ext)s'
+
+/** `[download] Downloading item 3 of 12`, which is the only place a playlist's own progress is said. */
+export const playlistItem = (line: string): { item: number; total: number } | null => {
+  const match = /\[download\]\s+Downloading item (\d+) of (\d+)/.exec(line)
+  if (!match) return null
+  const item = Number(match[1])
+  const total = Number(match[2])
+  return Number.isFinite(item) && Number.isFinite(total) ? { item, total } : null
+}
+
+/** What a download reports as it runs: one file's percentage, and a playlist's place in itself. */
+export interface YouTubeProgress {
+  percent: number | null
+  item?: number
+  total?: number
+}
+
 /** What yt-dlp is asked for: a format expression, and the switches that go with it. */
 export interface DownloadArguments {
   format: string
