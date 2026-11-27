@@ -165,6 +165,91 @@ export const cueAt = (cues: SubtitleCue[], seconds: number): SubtitleCue | null 
   cues.find((cue) => seconds >= cue.start && seconds <= cue.end) ?? null
 
 /**
+ * What a typed figure in a caption's own time field means, or nothing where it is not a time at all.
+ *
+ * `parseSubtitleTime` answers zero for nonsense, which is right when reading a file — a malformed line should
+ * not take the whole read down — and wrong for a field: a typo there would move the caption to the start of
+ * the film. So this refuses what it cannot read, and the field then keeps the figure it had. A bare number is
+ * SECONDS, because that is the shortest way to nudge a caption and the one every good subtitle editor takes.
+ */
+export const readSubtitleTime = (value: string): number | null => {
+  const text = value.trim()
+  if (!text) return null
+  const bare = Number(text)
+  if (Number.isFinite(bare)) return Math.max(0, bare)
+  return /(\d+):(\d{1,2}):(\d{1,2})[.,](\d{1,3})/.test(text) ? parseSubtitleTime(text) : null
+}
+
+/**
+ * Where one clip sits on the assembled timeline, in the terms a cue has to be moved by.
+ *
+ * A cue's times are SOURCE seconds — they are the file's own, which is why a trim can cut a caption in half —
+ * and the timeline's are its own. The two are related by the clip's window into its source and the rate it is
+ * played at, which is `sourceUsedSeconds / duration` rather than the speed field: that ratio is what the
+ * timeline and the encoder both folded the clip's speed AND its interpreted rate into, so a caption follows
+ * a retimed clip by the same figure the picture does.
+ */
+export interface CueWindow {
+  sourcePath: string
+  /** Where the clip begins on the assembled timeline, in seconds. */
+  start: number
+  /** Where in the source it begins. */
+  sourceIn: number
+  /** How much of the source it keeps, in source seconds. Zero where the length is not known yet. */
+  sourceUsedSeconds: number
+  /** Its length on the timeline, in seconds. */
+  duration: number
+}
+
+/** A cue as it falls on the assembled timeline, and which cue of which track it came from. */
+export interface PlacedCue extends SubtitleCue {
+  sourcePath: string
+  /** Its place in its own track's list, which is what the editor's own selection is keyed by. */
+  index: number
+}
+
+/**
+ * One cue moved onto the timeline, or nothing where the clip's window does not reach it.
+ *
+ * A caption that straddles the clip's in point is CUT rather than dropped: its words are still on screen for
+ * the part of it that was kept, which is what a player does with a trimmed clip too. A caption wholly outside
+ * the window belongs to footage this job does not use, so it is not drawn and not written.
+ */
+export const placeCue = (cue: SubtitleCue, window: CueWindow): SubtitleCue | null => {
+  const kept = window.sourceUsedSeconds > 0 ? window.sourceUsedSeconds : Number.MAX_SAFE_INTEGER
+  const rate = window.sourceUsedSeconds > 0 && window.duration > 0 ? window.sourceUsedSeconds / window.duration : 1
+  const from = Math.max(cue.start, window.sourceIn)
+  const to = Math.min(cue.end, window.sourceIn + kept)
+  if (!(to > from) || rate <= 0) return null
+  return {
+    start: window.start + (from - window.sourceIn) / rate,
+    end: window.start + (to - window.sourceIn) / rate,
+    text: cue.text,
+  }
+}
+
+/**
+ * Every cue of every track, placed on the timeline the clips build.
+ *
+ * One function for the lane that draws them and the encoder that writes them, so what the editor shows is
+ * what the file contains. A source that appears twice contributes its captions to both its places, because
+ * the two clips really do show it twice; a clip the job does not use contributes nothing at all.
+ */
+export const cuesOnTimeline = (subtitles: Record<string, SubtitleTrack> | undefined, windows: CueWindow[]): PlacedCue[] => {
+  if (!subtitles) return []
+  const placed: PlacedCue[] = []
+  windows.forEach((window) => {
+    const track = subtitles[window.sourcePath]
+    if (!track) return
+    track.cues.forEach((cue, index) => {
+      const onTimeline = placeCue(cue, window)
+      if (onTimeline) placed.push({ ...onTimeline, sourcePath: window.sourcePath, index })
+    })
+  })
+  return placed.sort((a, b) => a.start - b.start || a.end - b.end)
+}
+
+/**
  * The subtitle codec a container takes, or null where it takes none.
  *
  * MEASURED BY MARKET, not by taste: mp4 and mov take `mov_text` (the only subtitle codec MP4 has ever had), mkv takes

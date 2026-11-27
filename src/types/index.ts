@@ -662,6 +662,13 @@ export interface EditJobPatch {
    */
   sourceTiming?: Record<string, { fps?: number; seconds?: number }>
   /**
+   * Per-source caption tracks, carried whole like the trims.
+   *
+   * A caption is held PARSED rather than as a path, so editing one in the CAPTIONS tab is a change this
+   * window owns: leaving it out of the patch would make an edited caption vanish the moment APPLY was pressed.
+   */
+  subtitles?: QueueTask['subtitles']
+  /**
    * The job's sources, sent only when the WINDOW changed the list.
    *
    * A removal is the one edit that moves every other clip's place, so the queue does the removing and

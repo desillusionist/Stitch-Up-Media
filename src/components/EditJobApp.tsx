@@ -22,6 +22,8 @@ import { webviewPlaysVideo } from '../lib/previewCodec'
 import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
 import { ZoomIcon } from './ZoomIcon'
+import { CaptionIcon } from './CaptionIcon'
+import { CueWindow, PlacedCue, SubtitleCue, cuesOnTimeline, formatSubtitleTime, normaliseCue, readSubtitleTime, subtitleCodecFor } from '../lib/subtitles'
 import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRateFor, clipSummary, clipsConcatenate, CROSSFADE, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
 import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamCount, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
@@ -155,6 +157,10 @@ const editableSlice = (task: QueueTask) => ({
   embeddedAudio: task.embeddedAudio,
   // Per-source timing is editable from PROPERTIES, so the window owns it too.
   sourceMetadata: task.sourceMetadata,
+  // The captions are this window's: a cue edited or deleted in the CAPTIONS tab is a change like any
+  // other, and leaving them out of the slice made the window call itself clean the moment a caption was
+  // the first thing touched — so APPLY stayed disabled and the edit could not be committed at all.
+  subtitles: task.subtitles,
   sequenceInput: task.sequenceInput,
   sequenceInputs: task.sequenceInputs,
 })
@@ -552,6 +558,14 @@ export const EditJobApp: React.FC = () => {
    * selected changes what is described.
    */
   const [selected, setSelected] = useState<{ laneId: string; clipKey: string } | null>(null)
+  /**
+   * The caption cue the CC lane and the CAPTIONS tab agree is in hand, by its source and its place in that
+   * source's list.
+   *
+   * A cue belongs to a SOURCE rather than to a clip, which is why the source's path is half of the key: the
+   * same file can be on two clips, and selecting one of its cues must not select the other's.
+   */
+  const [selectedCue, setSelectedCue] = useState<{ sourcePath: string; index: number } | null>(null)
   /**
    * The clips in hand TOGETHER, by their own keys — the anchor plus whatever Shift has added.
    *
@@ -1017,6 +1031,44 @@ export const EditJobApp: React.FC = () => {
     () => (draft ? buildTimeline(draft, { resolveTiming, sourceHasPicture: sourceVideo, sourceHasAudio: sourceAudio }) : null),
     [timelineSignature, probedTiming, sourceVideo, sourceAudio],
   )
+  /**
+   * What each clip's window into its source amounts to, on the assembled timeline.
+   *
+   * A caption's own times are SOURCE seconds and the timeline's are its own, so the two are related through
+   * the clip: where it starts, where its window opens in the file, how much of the file it keeps, and how long
+   * that runs once its speed and interpreted rate are folded in.
+   */
+  const captionWindows: CueWindow[] = useMemo(
+    () => model
+      ? model.lanes.flatMap((lane) => lane.segments.map((segment) => ({
+        sourcePath: segment.sourcePath,
+        start: segment.start,
+        sourceIn: segment.sourceIn,
+        sourceUsedSeconds: segment.sourceUsedSeconds,
+        duration: segment.duration,
+      })))
+      : [],
+    [model],
+  )
+  /**
+   * Every caption cue the job has, placed on the assembled timeline.
+   *
+   * The LANE draws these blocks and the ENCODER writes the same list, so what the editor shows and what the
+   * file contains cannot be two different sets of times. A cue whose clip has been trimmed past it is cut
+   * with its clip rather than left on screen, exactly as a player treats a trimmed film.
+   */
+  const placedCues: PlacedCue[] = useMemo(() => cuesOnTimeline(draft?.subtitles, captionWindows), [draft?.subtitles, captionWindows])
+  /**
+   * Brings the cue a reader picked into view in the CAPTIONS tab.
+   *
+   * A block clicked on the lane can sit thousands of pixels above a cue list's row, and a long list would leave
+   * the reader hunting for the row the lane just selected. `nearest` rather than `center`, so a row already on
+   * screen is not scrolled out from under the pointer that clicked it.
+   */
+  useEffect(() => {
+    if (tab !== 'CAPTIONS' || !selectedCue) return
+    document.querySelector('.caption-row.is-active')?.scrollIntoView({ block: 'nearest' })
+  }, [tab, selectedCue])
   /**
    * What each placeholder is CALLED, numbered among its own kind.
    *
@@ -3613,6 +3665,99 @@ export const EditJobApp: React.FC = () => {
   }
 
   /**
+   * The job's caption tracks, in the order its sources are in.
+   *
+   * Read off the SOURCE LIST rather than off the map's own keys, so the CAPTIONS tab lists the clips in the
+   * order the timeline draws them, and a track left behind by a source the job no longer has is not offered
+   * for editing: it belongs to footage this job will not write.
+   */
+  const captionTracks = (() => {
+    const subtitles = draft.subtitles
+    if (!subtitles) return [] as Array<{ sourcePath: string; track: NonNullable<QueueTask['subtitles']>[string] }>
+    const order = [...draft.sourcePaths, ...(draft.additionalAudioTracks || []).map((track) => track.path)]
+    const seen = new Set<string>()
+    return order.flatMap((sourcePath) => {
+      const track = subtitles[sourcePath]
+      if (!track || seen.has(sourcePath)) return []
+      seen.add(sourcePath)
+      return [{ sourcePath, track }]
+    })
+  })()
+  /**
+   * Whether the export will carry the captions, and in what — the one answer the EXPORT tab states.
+   *
+   * Asked of the CONTAINER rather than of a toggle, because a toggle would be a second place to say what the
+   * file already decides: mp4 and mov write `mov_text`, mkv writes its own `srt`, webm writes `webvtt`, and the
+   * rest carry no subtitle stream at all. A still or a run of frames has no timeline to time one against.
+   */
+  const captionCodec = subtitleCodecFor(draft.preset.container)
+  const captionsExportable = captionTracks.length > 0 && Boolean(captionCodec) && outputCarriesPicture(draft.preset.container) && !draft.preset.imageOutputMode
+  const captionExportReason = captionTracks.length === 0
+    ? 'THIS JOB HAS NO SUBTITLE. A CLIP TAKES THE SRT, VTT, ASS OR SSA FILE NAMED FOR IT IN ITS OWN FOLDER, OR ONE ADDED THROUGH ADD MEDIA.'
+    : draft.preset.imageOutputMode
+      ? 'A STILL OR A RUN OF FRAMES HAS NO TIMELINE, SO THERE IS NOTHING TO TIME A CAPTION AGAINST.'
+      : !captionCodec || !outputCarriesPicture(draft.preset.container)
+        ? 'THIS FORMAT CARRIES NO SUBTITLE STREAM. MP4, MOV, MKV AND WEBM DO.'
+        : `WRITTEN AS A SOFT ${String(captionCodec).toUpperCase()} STREAM, WHICH A PLAYER TURNS ON AND OFF. THE PICTURE IS NOT RE-ENCODED TO BURN THEM IN.`
+  /**
+   * Writes one cue back into its own track, held inside the SOURCE it belongs to.
+   *
+   * A cue is edited in source seconds, so the rule that holds it is asked of the source's own length — the
+   * job's length would let a two-second clip carry a caption an hour in, which no player would ever show.
+   */
+  const writeCue = (sourcePath: string, index: number, cue: SubtitleCue) => {
+    const current = latest()
+    const track = current.subtitles?.[sourcePath]
+    if (!track) return
+    const sourceLength = sourceDuration(current, sourcePath, undefined, resolveTiming)
+    const cues = track.cues.map((candidate, place) => (place === index ? normaliseCue(cue, sourceLength) : candidate))
+    updateDraft({ subtitles: { ...(current.subtitles || {}), [sourcePath]: { ...track, cues } } })
+  }
+  /** Takes a cue out of its track. The track itself stays, because its file is still the clip's subtitle. */
+  const removeCue = (sourcePath: string, index: number) => {
+    const current = latest()
+    const track = current.subtitles?.[sourcePath]
+    if (!track) return
+    const cues = track.cues.filter((_candidate, place) => place !== index)
+    updateDraft({ subtitles: { ...(current.subtitles || {}), [sourcePath]: { ...track, cues } } })
+    if (selectedCue?.sourcePath === sourcePath && selectedCue.index === index) setSelectedCue(null)
+    else if (selectedCue?.sourcePath === sourcePath && selectedCue.index > index) setSelectedCue({ sourcePath, index: selectedCue.index - 1 })
+  }
+  /**
+   * The playhead read back into a source's own time, through the clip under it.
+   *
+   * This is `placeCue`'s arithmetic run the other way: the playhead is a timeline instant, and a new cue has
+   * to be written in the source's seconds. When the playhead is not over a clip of that source there is no
+   * instant to read, so the cue goes at the first second of that source the job actually uses rather than at
+   * a guess — a cue written at zero on a clip trimmed from ten seconds would be invisible the moment it was made.
+   */
+  const sourceTimeAtPlayhead = (sourcePath: string): number => {
+    const segments = model.lanes.flatMap((lane) => lane.segments).filter((candidate) => candidate.sourcePath === sourcePath)
+    const segment = segments.find((candidate) => playback.position >= candidate.start && playback.position <= candidate.start + candidate.duration)
+    if (!segment) return segments[0]?.sourceIn ?? 0
+    const rate = segment.duration > 0 ? segment.sourceUsedSeconds / segment.duration : 1
+    return segment.sourceIn + Math.max(0, playback.position - segment.start) * rate
+  }
+  /** Adds a caption at the skimmer, two seconds long, and takes the reader to it. */
+  const addCue = (sourcePath: string) => {
+    const current = latest()
+    const track = current.subtitles?.[sourcePath]
+    if (!track) return
+    const sourceLength = sourceDuration(current, sourcePath, undefined, resolveTiming)
+    const start = sourceTimeAtPlayhead(sourcePath)
+    const cue = normaliseCue({ start, end: start + 2, text: '' }, sourceLength)
+    updateDraft({ subtitles: { ...(current.subtitles || {}), [sourcePath]: { ...track, cues: [...track.cues, cue] } } })
+    setSelectedCue({ sourcePath, index: track.cues.length })
+    setTab('CAPTIONS')
+  }
+  /** Selects a cue and puts the skimmer on it, from the lane or from the tab's own GO. */
+  const focusCue = (sourcePath: string, index: number) => {
+    setSelectedCue({ sourcePath, index })
+    const placed = placedCues.find((candidate) => candidate.sourcePath === sourcePath && candidate.index === index)
+    if (placed) playback.seek(placed.start)
+  }
+
+  /**
    * Drags the skimmer.
    *
    * The playhead is a hairline, so it carries a wider transparent grab area of its own; the
@@ -3743,6 +3888,9 @@ export const EditJobApp: React.FC = () => {
       // The clip's own embedded-sound controls, whole like the trims: which streams reach the export, and
       // at what level, is a decision this window owns, so an emptied map is a decision about the job.
       embeddedAudio: latest().embeddedAudio,
+      // The caption tracks, whole: a cue edited or deleted in the CAPTIONS tab is a decision about the job,
+      // so an emptied list is one too rather than a field left out of the patch.
+      subtitles: latest().subtitles,
       sourceTiming: sourceTimingOverrides(latest()),
       // The tracks' own mode, sent so the ask that decides it in this window reaches the queue; the queue's
       // own switcher writes the same field and pushes it back, so the two never disagree about it.
@@ -5128,6 +5276,15 @@ export const EditJobApp: React.FC = () => {
                 </div>
                 )
               })}
+              {/* THE CAPTION LANE'S HEAD, drawn only when the job has captions. It is not one of `model.lanes`:
+                  those are the job's CLIPS, and a caption belongs to a clip rather than being one. Its mark is
+                  the same one the queue's source rows use, so the two read as the same thing. */}
+              {placedCues.length > 0 && (
+                <div className="timeline-lane-head is-captions" title={`${placedCues.length} caption cue(s) across this job`}>
+                  <CaptionIcon />
+                  <span>CAPTIONS</span>
+                </div>
+              )}
             </div>
             <div className="timeline-scroll" ref={attachLanes}>
               {/* The lane area's own width, with nothing in it but lane: the label column is not a
@@ -5344,6 +5501,30 @@ export const EditJobApp: React.FC = () => {
                   </div>
                 </div>
               ))}
+              {/* THE CAPTION LANE. One row across the whole job rather than one per clip: the cues of every clip
+                  are already placed on the assembled timeline by `placeCue`, so a block sits under the picture
+                  it captions without the lane having to know which clip that is. Clicking one seeks to it and
+                  selects it for the CAPTIONS tab, which is the only place the words are changed. */}
+              {placedCues.length > 0 && (
+                <div className="timeline-lane">
+                  <div className="timeline-lane-track is-captions" onClick={seekFraction} title="Click to jump to this point">
+                    {placedCues.map((cue) => {
+                      const active = selectedCue?.sourcePath === cue.sourcePath && selectedCue.index === cue.index
+                      return (
+                        <button
+                          key={`${cue.sourcePath}#${cue.index}@${cue.start}`}
+                          className={`timeline-cue${active ? ' is-active' : ''}`}
+                          style={{ left: `${laneWidthFor(cue.start, zoom)}px`, width: `${Math.max(2, laneWidthFor(cue.end - cue.start, zoom))}px` }}
+                          onClick={(event) => { event.stopPropagation(); focusCue(cue.sourcePath, cue.index) }}
+                          title={`${stamp(cue.start)} - ${cue.text.replace(/\n/g, ' ')}`}
+                        >
+                          <span>{cue.text.replace(/\n/g, ' ')}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               <div className="timeline-playhead" style={{ left: `${playheadFraction * laneWidthFor(duration, zoom)}px` }} onPointerDown={beginSkimmerDrag} title="Drag to move the skimmer" role="presentation" />
               </div>
             </div>
@@ -5525,7 +5706,7 @@ export const EditJobApp: React.FC = () => {
               onChange={audioOnly || soundNeverPossible || streamOff.video ? undefined : (checked) => updatePreset(checked ? { audioEnabled: undefined } : { audioEnabled: false, outputMode: undefined })}
               reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO IT IS ALWAYS WRITTEN.' : soundNeverPossible ? 'THIS FORMAT CARRIES NO AUDIO TRACK.' : streamOff.video ? 'THE SOUND IS THE ONLY STREAM LEFT, SO IT CANNOT BE SWITCHED OFF.' : undefined}
             />
-            <EditorToggle label="EXPORT CAPTIONS" checked={false} reason="CAPTION OUTPUT HAS NO BACKING FIELD YET." />
+            <EditorToggle label="EXPORT CAPTIONS" checked={captionsExportable} reason={captionExportReason} />
           </>}
 
               {/* Resolution Scaling */}
@@ -6133,8 +6314,73 @@ export const EditJobApp: React.FC = () => {
           </>}
 
           {activeTab === 'CAPTIONS' && <>
-            <EditorField label="MODE" reason="CAPTIONS ARE NOT WIRED TO THE ENCODER YET."><EditorSelect value="embedded" options={[{ value: 'embedded', label: 'EMBEDDED' }, { value: 'sidecar', label: 'SIDECAR SRT' }, { value: 'burn-in', label: 'BURN-IN' }]} disabled onChange={() => undefined} ariaLabel="Caption mode" /></EditorField>
-            <div className="editor-note">&gt; CAPTION MODE HAS NO BACKING FIELD YET, SO NOTHING IS SENT BACK ON APPLY.</div>
+            {captionTracks.length === 0 && (
+              <div className="editor-note">&gt; THIS JOB HAS NO SUBTITLE. A CLIP TAKES THE SRT, VTT, ASS OR SSA FILE NAMED FOR IT IN ITS OWN FOLDER, OR ONE ADDED WITH ADD MEDIA OR DROPPED ON THE QUEUE.</div>
+            )}
+            {captionTracks.map(({ sourcePath, track }) => {
+              const sourceLength = sourceDuration(draft, sourcePath, undefined, resolveTiming)
+              return (
+                <div className="caption-track" key={sourcePath}>
+                  <div className="caption-track-head">
+                    <span className="panel-kicker">{sourceName(sourcePath)}</span>
+                    <button className="source-cc" title={`Subtitle: ${sourceName(track.path)} - show in Finder`} aria-label="Show the subtitle in Finder" onClick={() => void window.electronAPI?.showItemInFolder?.(track.path)}><CaptionIcon /></button>
+                    <button className="caption-add" onClick={() => addCue(sourcePath)} title="Add a caption at the skimmer, two seconds long">[+]</button>
+                  </div>
+                  <div className="caption-track-facts">
+                    {track.format.toUpperCase()} | {track.cues.length} CUE(S){sourceLength > 0 ? ` OF ${stamp(sourceLength)}` : ''}
+                  </div>
+                  {track.cues.length === 0 && <div className="editor-note">&gt; THIS TRACK HAS NO CUES. [+] ADDS ONE AT THE SKIMMER.</div>}
+                  {track.cues.map((cue, index) => {
+                    const active = selectedCue?.sourcePath === sourcePath && selectedCue.index === index
+                    // A cue can be edited and still be off the timeline: its clip may be trimmed past it, or it
+                    // may belong to footage this job does not use. GO says so rather than seeking nowhere.
+                    const onTimeline = placedCues.some((candidate) => candidate.sourcePath === sourcePath && candidate.index === index)
+                    return (
+                      <div className={`caption-row${active ? ' is-active' : ''}`} key={`${sourcePath}#${index}`}>
+                        <div className="caption-row-head">
+                          <NumberField
+                            className="caption-time"
+                            value={cue.start}
+                            step={0.1}
+                            min={0}
+                            format={formatSubtitleTime}
+                            parse={readSubtitleTime}
+                            onValue={(value) => writeCue(sourcePath, index, { ...cue, start: value })}
+                            ariaLabel={`Caption ${index + 1} start`}
+                            title="When this caption appears, in the source's own time"
+                          />
+                          <span className="caption-arrow" aria-hidden="true">-&gt;</span>
+                          <NumberField
+                            className="caption-time"
+                            value={cue.end}
+                            step={0.1}
+                            min={0}
+                            format={formatSubtitleTime}
+                            parse={readSubtitleTime}
+                            onValue={(value) => writeCue(sourcePath, index, { ...cue, end: value })}
+                            ariaLabel={`Caption ${index + 1} end`}
+                            title="When it goes away"
+                          />
+                          <button className="caption-go" onClick={() => focusCue(sourcePath, index)} disabled={!onTimeline} title={onTimeline ? 'Move the skimmer to this caption' : 'THIS CLIP IS TRIMMED PAST THIS CAPTION, SO IT IS NOT ON THE TIMELINE.'}>GO</button>
+                          <button className="caption-remove" onClick={() => removeCue(sourcePath, index)} aria-label={`Delete caption ${index + 1}`} title="Delete this caption">x</button>
+                        </div>
+                        <textarea
+                          className="caption-text"
+                          rows={2}
+                          value={cue.text}
+                          placeholder="CAPTION TEXT"
+                          aria-label={`Caption ${index + 1} text`}
+                          onChange={(event) => writeCue(sourcePath, index, { ...cue, text: event.target.value })}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
+            <div className="editor-note">&gt; {captionTracks.length > 0
+              ? `CAPTIONS ARE WRITTEN AS A SOFT SUBTITLE STREAM (${String(captionCodec).toUpperCase()}) WHEN THE FORMAT TAKES ONE; NOTHING IS BURNED INTO THE PICTURE. THE FILE ON DISK IS NOT CHANGED UNTIL THE JOB IS EXPORTED, AND WHAT IS EXPORTED IS WHAT IS EDITED HERE.`
+              : 'A SUBTITLE IS NOT A SOURCE: IT NEVER APPEARS ON THE TIMELINE AS A CLIP. THE QUEUE\u2019S SOURCE ROW SHOWS ITS CC MARK, WHICH REVEALS THE FILE IN FINDER.'}</div>
           </>}
         </div>
 

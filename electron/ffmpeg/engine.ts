@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { logEvent } from '../logger'
 import { QueueTask, EncodingPreset } from '../../src/types'
-import { ClipFade, MAIN_LANE_ID, clipRateFor, clipsConcatenate, crossfadeAt, edgeFade, effectiveCropFor, jobExportsPicture, joinedTimeline, laneIsMuted, nativeRateFor, resolveCrossfades, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, trackEdgeFade, tracksConcatenate, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
+import { ClipFade, MAIN_LANE_ID, buildTimeline, clipRateFor, clipsConcatenate, crossfadeAt, edgeFade, effectiveCropFor, jobExportsPicture, joinedTimeline, laneIsMuted, nativeRateFor, resolveCrossfades, resolveFades, segmentTiming, sourceDuration, sourceFitFor, stillSecondsFor, trackEdgeFade, tracksConcatenate, transitionDuration, usesClipFraming } from '../../src/lib/timelineModel'
 import { DEFAULT_CLIP_SPEED, clampClipSpeed, clipDurationFor, clipRetime, speedAudioFilters, speedFor, speedVideoFilters } from '../../src/lib/clipSpeed'
 import { rateValue } from '../../src/lib/frameRate'
 import { mediaKind } from '../../src/lib/mediaKind'
@@ -20,6 +20,7 @@ import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
 import { channelLayoutFor, resolvedAudioChannels } from '../../src/lib/audioFacts'
+import { cuesOnTimeline, languageOfSubtitle, subtitleCodecFor, toSrt } from '../../src/lib/subtitles'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -352,14 +353,97 @@ export class FFmpegEngine {
     const outputPath = path.join(outputDirectory, outputFilename)
     logEvent('ffmpeg', 'resolved output path', { taskId: task.id, outputPath })
 
+    // THE CAPTIONS ARE MUXED AFTER THE FILE IS WRITTEN, in a second pass that copies every stream it did not
+    // add. Adding a subtitle input to each of the four encode paths would have made every one of them count its
+    // own inputs — a concat, a still, a drawing's background, each added track — and a single wrong index there
+    // writes the wrong stream without saying so. Here the finished file is input 0 and is mapped WHOLE, so no
+    // stream can be left out by an index nobody counted; the only stream the second pass decides is the subtitle.
+    // A caption that cannot be written leaves the export standing: the picture and sound are already correct.
+    const finish = () => {
+      void this.muxCaptions(task, outputPath)
+        .catch((error) => logEvent('ffmpeg', 'captions could not be written; the export stands without them', { taskId: task.id, error: String(error) }))
+        .then(() => onComplete())
+    }
+
     if (task.type === 'stitch') {
-      void this.executeStitch(task, outputPath, onProgress, onComplete, onError)
+      void this.executeStitch(task, outputPath, onProgress, finish, onError)
     } else if (task.type === 'combo' && task.sourcePaths.length > 1) {
-      void this.executeCombo(task, outputPath, onProgress, onComplete, onError)
+      void this.executeCombo(task, outputPath, onProgress, finish, onError)
     } else if (task.type === 'multitrack' || task.type === 'combo') {
-      void this.executeMultiTrack(task, outputPath, onProgress, onComplete, onError)
+      void this.executeMultiTrack(task, outputPath, onProgress, finish, onError)
     } else {
-      void this.executeTranscode(task, outputPath, onProgress, onComplete, onError)
+      void this.executeTranscode(task, outputPath, onProgress, finish, onError)
+    }
+  }
+
+  /**
+   * Writes the job's captions into the file the encoder has just produced, as a SOFT subtitle stream.
+   *
+   * Soft rather than burned in: burning re-encodes the picture, decides for the reader whether the words are
+   * on, and cannot be undone from the finished file. A subtitle stream is the thing a player already knows how
+   * to turn on and off, and it is the only kind an mp4, an mkv or a webm carries without touching a frame.
+   *
+   * The cues are placed by the SAME rule the editor draws the CC lane with (`cuesOnTimeline`), so a caption a
+   * reader saw under a clip is the caption that lands under it. The durations that placement needs are probed
+   * here rather than trusted from a stored record, because a source can be replaced by one of another length.
+   *
+   * A container that carries no subtitle stream, a still, a run of frames, or a job with no cues is a quiet
+   * no-op rather than a failure: there is simply nothing to add.
+   */
+  private async muxCaptions(task: QueueTask, outputPath: string): Promise<void> {
+    const subtitles = task.subtitles
+    if (!subtitles || !Object.keys(subtitles).length) return
+    if (task.preset.imageOutputMode) return
+    if (!outputCarriesPicture(task.preset.container)) return
+    const codec = subtitleCodecFor(task.preset.container)
+    if (!codec) return
+    const trackPaths = (task.additionalAudioTracks || []).map((track) => track.path)
+    const carried = Object.keys(subtitles).filter((source) => task.sourcePaths.includes(source) || trackPaths.includes(source))
+    if (!carried.length) return
+    const timing = new Map<string, { duration: number }>()
+    await Promise.all(carried.map(async (source) => {
+      if (placeholderKind(source)) return
+      try {
+        const probe = await probeFile(source)
+        timing.set(source, { duration: Number(probe.duration || 0) })
+      } catch { /* the job's own stored metadata is the fallback the timeline already uses */ }
+    }))
+    const model = buildTimeline(task, { resolveTiming: (source) => timing.get(source) })
+    const windows = model.lanes.flatMap((lane) => lane.segments.map((segment) => ({
+      sourcePath: segment.sourcePath,
+      start: segment.start,
+      sourceIn: segment.sourceIn,
+      sourceUsedSeconds: segment.sourceUsedSeconds,
+      duration: segment.duration,
+    })))
+    const cues = cuesOnTimeline(subtitles, windows)
+    if (!cues.length) return
+    const srtPath = path.join(os.tmpdir(), `stitch_${task.id}_captions.srt`)
+    // The muxed file is written BESIDE the export and renamed over it, so the two are on one volume — a rename
+    // from the system's temporary directory to an external drive is a copy, and one that can run out of room.
+    const muxedPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.captions${path.extname(outputPath)}`)
+    fs.writeFileSync(srtPath, toSrt(cues), 'utf-8')
+    try {
+      const languages = [...new Set(carried
+        .filter((source) => cues.some((cue) => cue.sourcePath === source))
+        .map((source) => subtitles[source].language || languageOfSubtitle(subtitles[source].path))
+        .filter((language): language is string => Boolean(language)))]
+      const options = ['-map 0', '-map 1:s:0', '-c copy', `-c:s ${codec}`]
+      if (languages.length === 1) options.push(`-metadata:s:s:0 language=${languages[0]}`)
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(outputPath)
+          .input(srtPath)
+          .outputOptions(options)
+          .on('start', (commandLine: string) => logEvent('ffmpeg', 'caption mux started', { taskId: task.id, commandLine }))
+          .on('end', () => resolve())
+          .on('error', reject)
+          .save(muxedPath)
+      })
+      fs.renameSync(muxedPath, outputPath)
+      logEvent('ffmpeg', 'captions written', { taskId: task.id, cues: cues.length, codec, container: task.preset.container })
+    } finally {
+      try { fs.unlinkSync(srtPath) } catch { /* already gone */ }
+      try { fs.unlinkSync(muxedPath) } catch { /* renamed, or never written */ }
     }
   }
 

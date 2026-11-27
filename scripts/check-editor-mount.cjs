@@ -1211,6 +1211,29 @@ app.whenReady().then(async () => {
       if (split.after !== 2) problems.push(`pressing C made ${split.after} clips rather than two (key gave ${split.afterKey}, menu disabled ${JSON.stringify(split.menuDisabled)}, skimmer ${JSON.stringify(split.readout)} of ${JSON.stringify(split.clipText)})`)
       if (split.paths !== 2 || split.halves !== 2 || split.idCount !== 2) problems.push(`the split\u2019s lists do not line up: paths ${split.paths}, halves ${split.halves}, ids ${split.idCount} (${JSON.stringify(split.trims)})`)
     }
+    // THE CAPTIONS: a lane of cue blocks under the clips they caption, a click that seeks, and a tab whose
+    // edits reach the queue. The lane is read on a job with none first, because a lane drawn for every job would
+    // pass every check below while telling a reader their job has captions it does not have.
+    const captions = result.captions
+    if (!captions) problems.push('the captions drive reported nothing')
+    else {
+      if (captions.headsBefore !== 0 || captions.blocksBefore !== 0) problems.push(`a job with no subtitle drew ${captions.headsBefore} caption head(s) and ${captions.blocksBefore} cue block(s)`)
+      if (captions.heads !== 1) problems.push(`a job with captions drew ${captions.heads} caption lane head(s) rather than one`)
+      if (captions.clips !== 1) problems.push(`the captioned job drew ${captions.clips} clips rather than the one it has \u2014 a subtitle must never become a clip`)
+      if (captions.blocks !== 2) problems.push(`the lane drew ${captions.blocks} cue block(s) rather than the two on the job: ${JSON.stringify(captions.blockTexts)}`)
+      if (!captions.blockTexts.includes('FIRST CAPTION')) problems.push(`the cue blocks carry ${JSON.stringify(captions.blockTexts)} rather than the caption's own words`)
+      // The cue's block and the skimmer are two readings of the SAME figure, so a click that seeks has to leave the
+      // skimmer exactly on the block's own left edge. Read as a string comparison rather than an inequality: a
+      // skimmer left where it was, or moved to a nearby cue, both pass an inequality and neither is the rule.
+      if (String(captions.playheadOnCue) !== String(captions.secondCueLeft)) problems.push(`clicking a cue left the skimmer at ${JSON.stringify(captions.playheadOnCue)} rather than on the block at ${JSON.stringify(captions.secondCueLeft)} (was ${JSON.stringify(captions.playheadAtRest)})`)
+      if (captions.toggle && !captions.toggle.checked) problems.push('EXPORT CAPTIONS reads off for an mp4 job that has captions')
+      if (captions.toggle && !captions.toggle.disabled) problems.push('EXPORT CAPTIONS is offered as a switch, though the container is what decides it')
+      if (captions.rows !== 2) problems.push(`the CAPTIONS tab drew ${captions.rows} cue row(s) rather than the two on the job`)
+      if (JSON.stringify(captions.times) !== JSON.stringify(['00:00:01,000', '00:00:03,000', '00:00:05,000', '00:00:07,000'])) problems.push(`the cue times read ${JSON.stringify(captions.times)} rather than SRT's own spelling`)
+      if (captions.firstText !== 'FIRST CAPTION') problems.push(`the first cue's words read ${JSON.stringify(captions.firstText)}`)
+      if (captions.appliedText !== 'EDITED CAPTION') problems.push(`an edited caption did not reach the queue: ${JSON.stringify(captions.appliedText)}`)
+      if (captions.appliedCues !== 2) problems.push(`the applied job carries ${captions.appliedCues} cues rather than two`)
+    }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
   console.log(JSON.stringify(result, null, 2))

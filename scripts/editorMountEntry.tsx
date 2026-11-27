@@ -108,6 +108,28 @@ const task = {
 }
 
 /**
+ * A job carrying captions, for the CC lane and the CAPTIONS tab.
+ *
+ * The cues are held PARSED on the task — that is what the editor edits and what the encoder writes — so the
+ * window can draw a lane from a job with no subtitle file on disk, which is also the shape a job has after a
+ * cue was edited. The file path rides along because it is what the queue's CC mark reveals in Finder.
+ */
+const subtitleTask = {
+  ...task,
+  id: 'mount-subtitles',
+  subtitles: {
+    [CLIP_FIXTURE]: {
+      path: CLIP_FIXTURE.replace(/\.[^.]+$/, '') + '.srt',
+      format: 'srt',
+      cues: [
+        { start: 1, end: 3, text: 'FIRST CAPTION' },
+        { start: 5, end: 7, text: 'SECOND CAPTION' },
+      ],
+    },
+  },
+}
+
+/**
  * The job the picture settings are FOR: nothing but sound, exported into a container that carries a
  * picture. Its section is gated on exactly that, and a gate whose inputs are not what they look like is
  * how a section goes missing without anything being wrong with the render — so the harness reports both
@@ -202,7 +224,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; pinch?: unknown; customFrame?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; pinch?: unknown; customFrame?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; captions?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -2498,6 +2520,63 @@ const drive = async () => {
   const splitPatch = applied[applied.length - 1] as { sourcePaths?: string[]; trimPoints?: Record<string, { in: number; out: number }>; clipIds?: string[] } | undefined
   const splitTrims = splitPatch?.trimPoints ? Object.values(splitPatch.trimPoints) : []
   result.splitClip = { before: splitClipsBefore, afterKey, after: splitClipsAfter, menuDisabled: splitMenuDisabled, paths: splitPatch?.sourcePaths?.length ?? null, halves: splitTrims.length, idCount: splitPatch?.clipIds?.length ?? null, readout: splitReadout, clipText: splitClipText, trims: splitTrims }
+
+  // THE CAPTIONS. A subtitle is not a source, so no clip may appear for one: the job gets a LANE of cue blocks
+  // beneath the clips they caption, and a tab that edits the words the lane was drawn from. The lane exists only
+  // when the job has captions, which is read first on the split job, which has none.
+  const captionHeadsBefore = document.querySelectorAll('.timeline-lane-head.is-captions').length
+  const captionBlocksBefore = document.querySelectorAll('.timeline-cue').length
+  arrive(subtitleTask, 'subtitles')
+  await wait(900)
+  const captionHeads = document.querySelectorAll('.timeline-lane-head.is-captions').length
+  const captionClips = document.querySelectorAll('.timeline-clip').length
+  const cueBlocks = [...document.querySelectorAll('.timeline-cue')] as HTMLElement[]
+  const cueTexts = cueBlocks.map((block) => block.textContent ?? '')
+  // The EXPORT tab's own readout of what the file will carry. The window keeps its tab across a job arriving,
+  // so the tab is put back deliberately rather than assumed.
+  clickTab('EXPORT')
+  await wait(120)
+  const captionsToggle = toggleStates()['EXPORT CAPTIONS'] ?? null
+  const playheadAtRest = (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
+  const secondCueLeft = cueBlocks[1]?.style.left ?? null
+  cueBlocks[1]?.click()
+  await wait(250)
+  const playheadOnCue = (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
+  clickTab('CAPTIONS')
+  await wait(150)
+  const captionRows = document.querySelectorAll('.caption-row').length
+  const captionTimes = [...document.querySelectorAll('.caption-time')].map((field) => (field as HTMLInputElement).value)
+  const firstCaptionText = (document.querySelector('.caption-text') as HTMLTextAreaElement | null)?.value ?? null
+  // EDITED THROUGH THE FIELD, as a reader would: the words are a controlled value, so a native-setter write plus
+  // an input event is what React sees. The patch the window sends back is the only proof the edit survives APPLY.
+  const captionField = document.querySelector('.caption-text') as HTMLTextAreaElement | null
+  if (captionField) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+    setter?.call(captionField, 'EDITED CAPTION')
+    captionField.dispatchEvent(new Event('input', { bubbles: true }))
+    await wait(250)
+  }
+  const applyCaptions = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyCaptions?.click()
+  await wait(300)
+  const captionPatch = applied[applied.length - 1] as { subtitles?: Record<string, { cues: Array<{ text: string; start: number; end: number }> }> } | undefined
+  result.captions = {
+    headsBefore: captionHeadsBefore,
+    blocksBefore: captionBlocksBefore,
+    heads: captionHeads,
+    clips: captionClips,
+    blocks: cueBlocks.length,
+    blockTexts: cueTexts,
+    playheadAtRest,
+    playheadOnCue,
+    secondCueLeft,
+    rows: captionRows,
+    times: captionTimes,
+    firstText: firstCaptionText,
+    toggle: captionsToggle,
+    appliedText: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.[0]?.text ?? null,
+    appliedCues: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.length ?? null,
+  }
 
   // THE ZOOM PANEL ITSELF, read last so changing the zoom for the CUSTOM field disturbs nothing before it. The
   // list has to be wide enough to READ, the CUSTOM field compact rather than a browser-sized number box, and the

@@ -124,6 +124,9 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     // A clip's own embedded-sound controls, whole like the trims: the window owns which streams and
     // levels the export carries, so an emptied map is a decision about the job rather than a field left out.
     embeddedAudio: patch.embeddedAudio,
+    // The caption tracks, whole for the same reason: a cue edited or deleted in the CAPTIONS tab is a
+    // change this window made, and a patch that left the field out would put the old words back.
+    ...(patch.subtitles !== undefined ? { subtitles: patch.subtitles } : {}),
     // The ids come with the list when the window reordered it, because only they can say which of two
     // copies of one file moved where. The numbers come with them, so `CLIP n` stays on its clip too. A list
     // that is not the length of the sources is REJECTED rather than stored: a short array is worse than none,

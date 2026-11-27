@@ -37,7 +37,7 @@ import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 import { mediaKind } from '../src/lib/mediaKind'
 import { EXPORT_SUFFIX, deriveOutputFilename, exportName, stableBaseName, withExtension, withoutExtension } from '../src/lib/outputNaming'
-import { cueAt, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, normaliseCue, parseSubtitleTime, parseSubtitles, subtitleCodecFor, subtitleFormatOf, subtitlesForSource, toSrt } from '../src/lib/subtitles'
+import { cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, subtitleCodecFor, subtitleFormatOf, subtitlesForSource, toSrt } from '../src/lib/subtitles'
 import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, filePathsOnly, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
@@ -3214,6 +3214,33 @@ void (async () => {
   check('the caption showing at an instant is found', cueAt(parsed, 4.5)?.text, 'Second line\nof the caption')
   check('and none is found between captions', cueAt(parsed, 3.8), null)
   check('each container gets the subtitle codec it really takes', [subtitleCodecFor('mp4'), subtitleCodecFor('mov'), subtitleCodecFor('mkv'), subtitleCodecFor('webm'), subtitleCodecFor('mp3')], ['mov_text', 'mov_text', 'srt', 'webvtt', null])
+
+  // THE CUE HAS TO FOLLOW ITS CLIP. A caption's own times are SOURCE seconds and the timeline's are its own, so
+  // the trip between them is through the clip: where it starts, where its window opens, how much it keeps and
+  // how fast it runs. Each of those is checked on its own below, because a wrong one moves every caption in the
+  // job by a different amount and only a real export would show it.
+  const plainClip = { sourcePath: '/a/film.mp4', start: 10, sourceIn: 0, sourceUsedSeconds: 20, duration: 20 }
+  check('a cue on an untouched clip keeps its own times, shifted by the clip', placeCue({ start: 2, end: 4, text: 'x' }, plainClip), { start: 12, end: 14, text: 'x' })
+  check('a trim moves the cue and cuts the part it kept', placeCue({ start: 4, end: 8, text: 'x' }, { ...plainClip, sourceIn: 5, sourceUsedSeconds: 10, duration: 10 }), { start: 10, end: 13, text: 'x' })
+  check('a cue wholly before the kept window is not placed at all', placeCue({ start: 1, end: 3, text: 'x' }, { ...plainClip, sourceIn: 5 }), null)
+  check('a cue ending where the window opens has no length to draw', placeCue({ start: 3, end: 5, text: 'x' }, { ...plainClip, sourceIn: 5 }), null)
+  check('twice the speed halves a cue\u2019s place and its length', placeCue({ start: 2, end: 6, text: 'x' }, { ...plainClip, sourceUsedSeconds: 20, duration: 10 }), { start: 11, end: 13, text: 'x' })
+  const tracks = {
+    '/a/red.mp4': { path: '/a/red.srt', format: 'srt' as const, cues: [{ start: 0.5, end: 1.5, text: 'red line' }] },
+    '/a/green.mp4': { path: '/a/green.srt', format: 'srt' as const, cues: [{ start: 0.2, end: 0.8, text: 'green line' }] },
+    '/a/unused.mp4': { path: '/a/unused.srt', format: 'srt' as const, cues: [{ start: 0, end: 1, text: 'never shown' }] },
+  }
+  const stitched = cuesOnTimeline(tracks, [
+    { sourcePath: '/a/red.mp4', start: 0, sourceIn: 0, sourceUsedSeconds: 2, duration: 2 },
+    { sourcePath: '/a/green.mp4', start: 2, sourceIn: 0, sourceUsedSeconds: 1, duration: 1 },
+  ])
+  check('a stitch places each clip\u2019s captions after that clip', stitched.map((cue) => [cue.text, cue.start, cue.end]), [['red line', 0.5, 1.5], ['green line', 2.2, 2.8]])
+  check('a source the job does not use contributes nothing', stitched.some((cue) => cue.text === 'never shown'), false)
+  check('and a repeated clip captions both of its places', cuesOnTimeline(tracks, [
+    { sourcePath: '/a/red.mp4', start: 0, sourceIn: 0, sourceUsedSeconds: 2, duration: 2 },
+    { sourcePath: '/a/red.mp4', start: 2, sourceIn: 0, sourceUsedSeconds: 2, duration: 2 },
+  ]).map((cue) => cue.start), [0.5, 2.5])
+  check('a typed caption time is read, or refused rather than zeroed', [readSubtitleTime('00:00:02,500'), readSubtitleTime('3.25'), readSubtitleTime('nonsense')], [2.5, 3.25, null])
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
   process.exit(failures === 0 ? 0 : 1)

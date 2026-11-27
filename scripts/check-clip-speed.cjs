@@ -67,15 +67,31 @@ const check = (label, actual, expected) => {
   console.log(`${same ? 'ok  ' : 'FAIL'} ${label}${same ? '' : `\n       got      ${JSON.stringify(actual)}\n       expected ${JSON.stringify(expected)}`}`)
 }
 
+/**
+ * The subtitle stream's own text, as SRT, or nothing where the file carries no subtitle stream.
+ *
+ * Read back through ffmpeg rather than off the file's bytes: what matters is what a PLAYER can pull out of
+ * the container — an mp4's `mov_text` and an mkv's `subrip` are not the SRT that was fed in, they are the
+ * cue list stored in the container's own way — and this is the same reader a player would use.
+ */
+const captionsOf = async (file) => {
+  try {
+    return String(await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', file, '-map', '0:s:0', '-f', 'srt', '-']))
+  } catch { return '' }
+}
+const subtitleCodecOf = async (file) => String(await run('ffprobe', ['-v', 'error', '-select_streams', 's', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', file])).trim()
+/** The `start --> end` lines of an SRT, which is the whole of what a caption's TIME is. */
+const cueTimes = (srt) => [...srt.matchAll(/(\d\d:\d\d:\d\d,\d{3}) --> (\d\d:\d\d:\d\d,\d{3})/g)].map((match) => [match[1], match[2]])
+
 /** Runs one stitch to completion and hands back the file it wrote. */
-const stitch = (sources, outputFilename, sourceSpeed, sourceFps) => new Promise((resolve, reject) => {
+const stitch = (sources, outputFilename, sourceSpeed, sourceFps, extra) => new Promise((resolve, reject) => {
   const engine = new FFmpegEngine()
   const directory = path.join(work, `${outputFilename}-dir`)
   fs.mkdirSync(directory, { recursive: true })
   const task = {
     id: `job-${outputFilename}`, type: 'stitch', status: 'pending', progress: 0,
     sourcePaths: sources, outputDirectory: directory, outputFilename,
-    preset, ...(sourceSpeed ? { sourceSpeed } : {}), ...(sourceFps ? { sourceFps } : {}),
+    preset, ...(sourceSpeed ? { sourceSpeed } : {}), ...(sourceFps ? { sourceFps } : {}), ...(extra || {}),
   }
   engine.runTask(task, () => {}, () => resolve(path.join(directory, outputFilename)), (error) => reject(error))
 })
@@ -126,6 +142,46 @@ const stitch = (sources, outputFilename, sourceSpeed, sourceFps) => new Promise(
   const composed = await stitch([red, green], 'composed.mp4', { [`${red}#0`]: { speed: 2, interpolation: 'sampling' } }, { [`${red}#0`]: { num: 15, den: 1 } })
   check('half a rate and double a speed come back to the source length', Math.abs(await secondsOf(composed) - 3) < 0.25, true)
   check('so the cut is where it always was', await colourAt(composed, 1.4), 'red')
+
+  console.log('\n== a caption reaches the finished file ==')
+  // THE CAPTIONS ARE THE JOB'S, not a sidecar: the engine writes them into the file it just encoded. The two
+  // clips' cues are in their own SOURCE seconds — 0.5 to 1.5 in the red one, 0.2 to 0.8 in the green one —
+  // and on the joined timeline the green caption therefore has to be 2.2 to 2.8, which is what says the cue
+  // followed its clip rather than staying where it was in its own file.
+  const tracks = {
+    [red]: { path: `${red}.srt`, format: 'srt', cues: [{ start: 0.5, end: 1.5, text: 'red line' }] },
+    [green]: { path: `${green}.srt`, format: 'srt', cues: [{ start: 0.2, end: 0.8, text: 'green line' }] },
+  }
+  const captioned = await stitch([red, green], 'captioned.mp4', undefined, undefined, { subtitles: tracks })
+  check('an mp4 carries its captions as mov_text', await subtitleCodecOf(captioned), 'mov_text')
+  check('each clip\u2019s caption sits under that clip in the join', cueTimes(await captionsOf(captioned)), [['00:00:00,500', '00:00:01,500'], ['00:00:02,200', '00:00:02,800']])
+  const captionedText = await captionsOf(captioned)
+  check('and the words are the words', [captionedText.includes('red line'), captionedText.includes('green line')], [true, true])
+  check('the picture is still there beside them', await colourAt(captioned, 0.4), 'red')
+  check('and so is the sound', await hasAudio(captioned), true)
+
+  console.log('\n== a caption follows its clip\u2019s TRIM ==')
+  // The red clip is trimmed to its second second, so a caption that was 0.5 to 1.5 in the source reaches the
+  // timeline as 0 to 0.5: the part of it before the in point is CUT with the picture, not shown over it.
+  const trimmedCaption = await stitch([red, green], 'captioned-trim.mp4', undefined, undefined, {
+    subtitles: { [red]: tracks[red] },
+    trimPoints: { [`${red}#0`]: { in: 1, out: 2 } },
+  })
+  check('a cue straddling the in point is cut to the part kept', cueTimes(await captionsOf(trimmedCaption)), [['00:00:00,000', '00:00:00,500']])
+
+  console.log('\n== each container gets its own subtitle codec ==')
+  const mkvCaptioned = await stitch([red, green], 'captioned.mkv', undefined, undefined, { subtitles: tracks, preset: { ...preset, container: 'mkv' } })
+  check('an mkv writes srt as its own subrip', await subtitleCodecOf(mkvCaptioned), 'subrip')
+  check('with the same times', cueTimes(await captionsOf(mkvCaptioned)), [['00:00:00,500', '00:00:01,500'], ['00:00:02,200', '00:00:02,800']])
+  const webmCaptioned = await stitch([red, green], 'captioned.webm', undefined, undefined, { subtitles: tracks, preset: { ...preset, container: 'webm', videoCodec: 'vp9', audioCodec: 'opus' } })
+  check('a webm writes webvtt', await subtitleCodecOf(webmCaptioned), 'webvtt')
+  check('and reads back as the same cues', cueTimes(await captionsOf(webmCaptioned)), [['00:00:00,500', '00:00:01,500'], ['00:00:02,200', '00:00:02,800']])
+
+  console.log('\n== and a container that takes none says nothing ==')
+  const soundOnly = await stitch([red, green], 'captioned.mp3', undefined, undefined, { subtitles: tracks, preset: { ...preset, container: 'mp3', outputMode: 'audio', videoCodec: 'copy', audioCodec: 'mp3' } })
+  check('an mp3 carries no subtitle stream rather than failing', await subtitleCodecOf(soundOnly), '')
+  const captionless = await stitch([red, green], 'no-captions.mp4', undefined, undefined, {})
+  check('a job with no captions is the file it always was', [await subtitleCodecOf(captionless), await colourAt(captionless, 1.4)], ['', 'red'])
 
   console.log(failures === 0 ? '\nCLIP SPEED MATCHES THE EXPORT\n' : `\n${failures} CLIP SPEED CHECK(S) FAILED\n`)
   fs.rmSync(work, { recursive: true, force: true })
