@@ -37,7 +37,7 @@ import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 import { mediaKind } from '../src/lib/mediaKind'
 import { EXPORT_SUFFIX, deriveOutputFilename, exportName, stableBaseName, withExtension, withoutExtension } from '../src/lib/outputNaming'
-import { cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, subtitleCodecFor, subtitleFormatOf, subtitleSidecarsFor, subtitlesForSource, toSrt } from '../src/lib/subtitles'
+import { CAPTION_COLORS, CAPTION_FONTS, DEFAULT_CAPTION_STYLE, captionColorValue, captionFontStack, clampCaptionSize, cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, moveCueEdge, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, subtitleCodecFor, subtitleFormatOf, subtitleSidecarsFor, subtitlesForSource, toSrt } from '../src/lib/subtitles'
 import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, filePathsOnly, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
@@ -3259,6 +3259,26 @@ void (async () => {
     { sourcePath: '/a/red.mp4', start: 2, sourceIn: 0, sourceUsedSeconds: 2, duration: 2 },
   ]).map((cue) => cue.start), [0.5, 2.5])
   check('a typed caption time is read, or refused rather than zeroed', [readSubtitleTime('00:00:02,500'), readSubtitleTime('3.25'), readSubtitleTime('nonsense')], [2.5, 3.25, null])
+
+  // A DRAGGED EDGE MOVES ONE END AND NOT THE OTHER, which is the whole difference between resizing a cue and
+  // sliding it. The other edge holds, the cue cannot be turned inside out, and the file's own length is the limit.
+  check('dragging a cue\u2019s end moves only its end', moveCueEdge({ start: 1, end: 3, text: 'x' }, 'end', 4.5, 12), { start: 1, end: 4.5, text: 'x' })
+  check('dragging its start moves only its start', moveCueEdge({ start: 1, end: 3, text: 'x' }, 'start', 2, 12), { start: 2, end: 3, text: 'x' })
+  check('an end dragged before the start stops on it', moveCueEdge({ start: 4, end: 6, text: 'x' }, 'end', 2, 12), { start: 4, end: 4, text: 'x' })
+  check('a start dragged past the end stops on it', moveCueEdge({ start: 4, end: 6, text: 'x' }, 'start', 9, 12), { start: 6, end: 6, text: 'x' })
+  check('and neither edge can leave the file', [moveCueEdge({ start: 1, end: 3, text: 'x' }, 'end', 99, 12).end, moveCueEdge({ start: 1, end: 3, text: 'x' }, 'start', -5, 12).start], [12, 0])
+
+  // THE MONITOR'S CAPTION APPEARANCE, and what it does when a saved job names something this build lost.
+  check('the default caption style is the app\u2019s own', DEFAULT_CAPTION_STYLE, { font: 'sans', size: 6, color: 'white', background: true, bold: false })
+  check('a size is held where the monitor can read it', [clampCaptionSize(1), clampCaptionSize(60), clampCaptionSize(Number.NaN)], [2, 20, 6])
+  check('a font falls back to sans rather than to nothing', [captionFontStack('sans').startsWith('system-ui'), captionFontStack('nonsense' as never) === captionFontStack('sans')], [true, true])
+  check('a colour falls back to white', [captionColorValue('white'), captionColorValue('nonsense' as never)], ['#ffffff', '#ffffff'])
+  check('every offered colour and font is labelled', [CAPTION_COLORS.length, CAPTION_FONTS.length], [4, 4])
+
+  // A PLACED CUE CARRIES THE CLIP IT CAME THROUGH, which is what a dragged edge is turned back by: the window's
+  // start, its in point, and SOURCE seconds per TIMELINE second.
+  const placedOnSped = cuesOnTimeline(tracks, [{ sourcePath: '/a/red.mp4', start: 3, sourceIn: 1, sourceUsedSeconds: 2, duration: 1 }])
+  check('a placed cue knows the clip it is drawn on', placedOnSped.map((cue) => [cue.windowStart, cue.sourceIn, cue.speed]), [[3, 1, 2]])
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
   process.exit(failures === 0 ? 0 : 1)

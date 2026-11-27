@@ -23,7 +23,7 @@ import { mediaUrl } from '../lib/mediaUrl'
 import { EditorSelect } from './EditorSelect'
 import { ZoomIcon } from './ZoomIcon'
 import { CaptionIcon } from './CaptionIcon'
-import { CueWindow, PlacedCue, SubtitleCue, cuesOnTimeline, formatSubtitleTime, normaliseCue, readSubtitleTime, subtitleCodecFor } from '../lib/subtitles'
+import { CAPTION_COLORS, CAPTION_FONTS, CaptionStyle, CueWindow, DEFAULT_CAPTION_STYLE, PlacedCue, SubtitleCue, captionColorValue, captionFontStack, clampCaptionSize, cueAt, cuesOnTimeline, formatSubtitleTime, moveCueEdge, normaliseCue, readSubtitleTime, subtitleCodecFor } from '../lib/subtitles'
 import { audioSlaveKey, buildTimeline, canApplyClipFit, canApplyClipSpeed, clipIndexOf, clipRateFor, clipSummary, clipsConcatenate, CROSSFADE, edgeFade, effectiveCropFor, EMPTY_AUDIO_LANE_ID, firstVisualSource, frameNumber, frameStamp, HEAD_FADE_KEY, isStillFrameJob, MAIN_LANE_ID, laneNeedsOwnAudio, matchSourceSource, maxCrossfade, maxEdgeFade, maxFadeAtBoundary, nativeRateFor, nearestInsertPosition, nothingToTime, secondsFromTimecode, sequenceFor, sourceDuration, sourceFitFor, sourceFps, SourceTiming, stampPair, stillSecondsFor, STITCHED_AUDIO_LANE_ID, TAIL_FADE_KEY, taskHasFootage, timecode, TimelineLane, TimelineModel, TimelineSegment, trackEdgeFade, trackEdgeFadeKey, tracksConcatenate, usesAllSource } from '../lib/timelineModel'
 import { removeSourceFromTask, inferredMode } from '../lib/sourceRemoval'
 import { clipAudioDropped, embeddedAudioEditable, embeddedGainDb, embeddedStreamCount, embeddedStreamEnabled, embeddedStreamsFor, extractedBy, gainForDb } from '../lib/embeddedAudio'
@@ -161,6 +161,8 @@ const editableSlice = (task: QueueTask) => ({
   // other, and leaving them out of the slice made the window call itself clean the moment a caption was
   // the first thing touched — so APPLY stayed disabled and the edit could not be committed at all.
   subtitles: task.subtitles,
+  // And how those captions look in the monitor: a font or a size is a change like any other.
+  captionStyle: task.captionStyle,
   sequenceInput: task.sequenceInput,
   sequenceInputs: task.sequenceInputs,
 })
@@ -1817,6 +1819,14 @@ export const EditJobApp: React.FC = () => {
   const heldKeysRef = useRef({ k: false })
   const slowMotionRef = useRef(false)
   const tapTimerRef = useRef<number | null>(null)
+  /**
+   * Whether the caption drag that is ending actually moved a cue.
+   *
+   * A handle lives inside the cue's own block, so the `click` that follows a drag would also SELECT the cue and
+   * move the skimmer to it — which, after dragging an edge, is a second jump nobody asked for. The flag is set
+   * by the first pointer move and read once by that click.
+   */
+  const cueDragMovedRef = useRef(false)
 
   const jumpToClipEdge = (direction: 1 | -1) => {
     const edges = clipEdgesRef.current
@@ -3756,6 +3766,64 @@ export const EditJobApp: React.FC = () => {
     const placed = placedCues.find((candidate) => candidate.sourcePath === sourcePath && candidate.index === index)
     if (placed) playback.seek(placed.start)
   }
+  /**
+   * How the captions look in the monitor: the job's own record over the app's default.
+   *
+   * Merged rather than replaced, so a job saved before a control existed reads that control at its default
+   * instead of at `undefined`, and a size that somehow fell out of range is held where the monitor can read it.
+   */
+  const captionStyle: CaptionStyle = { ...DEFAULT_CAPTION_STYLE, ...(draft.captionStyle ?? {}) }
+  const setCaptionStyle = (changes: Partial<CaptionStyle>) => updateDraft({ captionStyle: { ...captionStyle, ...changes } })
+  /**
+   * The caption showing in the monitor at the playhead, if the clip under it has one.
+   *
+   * Read through `sourceTimeAt` — the same inverse the monitor's own element is driven by — because a cue's
+   * times are SOURCE seconds: a clip run at twice its speed shows its captions for half as long, exactly as a
+   * player does with a cut that was sped up. Nothing is drawn for a cue whose clip is not the one on screen.
+   */
+  const monitorCue = (() => {
+    const segment = playback.segment
+    if (!segment) return null
+    const track = draft.subtitles?.[segment.sourcePath]
+    if (!track) return null
+    return cueAt(track.cues, sourceTimeAt(playback.position, segment))
+  })()
+  /**
+   * Drags one edge of a caption on the CC lane.
+   *
+   * The cue is written live, so the block and the monitor follow the pointer rather than waiting for the release,
+   * and the whole drag is ONE undo step because it is opened and closed as a gesture. The pointer's position is a
+   * TIMELINE instant and a cue is stored in SOURCE seconds, so it is turned back through the clip the block was
+   * placed on — the same figures `placeCue` used to put it there.
+   */
+  const beginCueDrag = (event: React.PointerEvent, cue: PlacedCue, edge: 'start' | 'end') => {
+    event.preventDefault()
+    event.stopPropagation()
+    const inner = timelineInnerRef.current
+    const current = latest()
+    const editing = current.subtitles?.[cue.sourcePath]?.cues[cue.index]
+    if (!inner || !editing) return
+    const sourceLength = sourceDuration(current, cue.sourcePath, undefined, resolveTiming)
+    beginGesture()
+    cueDragMovedRef.current = false
+    const writeAt = (clientX: number) => {
+      const seconds = secondsAt(clientX - inner.getBoundingClientRect().left, zoom)
+      const sourceSeconds = cue.sourceIn + (seconds - cue.windowStart) * cue.speed
+      writeCue(cue.sourcePath, cue.index, moveCueEdge(editing, edge, sourceSeconds, sourceLength))
+      cueDragMovedRef.current = true
+    }
+    // The first write happens on the press as well as on the moves, so a click that does not travel still snaps the
+    // edge to the pointer rather than doing nothing at all.
+    writeAt(event.clientX)
+    const move = (moveEvent: PointerEvent) => writeAt(moveEvent.clientX)
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      finishGesture()
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
 
   /**
    * Drags the skimmer.
@@ -3891,6 +3959,7 @@ export const EditJobApp: React.FC = () => {
       // The caption tracks, whole: a cue edited or deleted in the CAPTIONS tab is a decision about the job,
       // so an emptied list is one too rather than a field left out of the patch.
       subtitles: latest().subtitles,
+      captionStyle: latest().captionStyle,
       sourceTiming: sourceTimingOverrides(latest()),
       // The tracks' own mode, sent so the ask that decides it in this window reaches the queue; the queue's
       // own switcher writes the same field and pushes it back, so the two never disagree about it.
@@ -4805,6 +4874,27 @@ export const EditJobApp: React.FC = () => {
                               {crossfadeOverlay}
                             </>
                             : <span className="editor-screen-message">{screenMessage}</span>}
+                  {/* THE CAPTION AT THE PLAYHEAD, drawn where a player would draw it: along the bottom of the PICTURE,
+                      not of the frame, so a letterboxed clip does not put its words on the black bar. Sized as a share
+                      of the picture's height, so the monitor's own zoom scales it with the image rather than against it.
+                      Nothing here is written into the file — the export is a soft stream — and none of it takes a
+                      pointer, because the picture under it is still what is being watched and clicked. */}
+                  {monitorCue && (
+                    <div
+                      className={`monitor-caption${captionStyle.background ? ' has-box' : ''}`}
+                      style={{
+                        ...(pictureBox && frameOrigin
+                          ? { left: pictureBox.left - frameOrigin.x, top: pictureBox.top - frameOrigin.y, width: pictureBox.width, height: pictureBox.height }
+                          : { inset: 0 }),
+                        fontFamily: captionFontStack(captionStyle.font),
+                        fontSize: `${Math.max(9, (pictureBox?.height ?? 320) * clampCaptionSize(captionStyle.size) / 100)}px`,
+                        color: captionColorValue(captionStyle.color),
+                        fontWeight: captionStyle.bold ? 700 : 400,
+                      }}
+                    >
+                      <span>{monitorCue.text}</span>
+                    </div>
+                  )}
                 </div>
                 {frameRect && <div className="editor-frame" style={{ width: frameRect.width, height: frameRect.height }} aria-hidden="true" />}
                 {/* The box the clip's own margins leave inside the frame. The background the export
@@ -5515,10 +5605,20 @@ export const EditJobApp: React.FC = () => {
                           key={`${cue.sourcePath}#${cue.index}@${cue.start}`}
                           className={`timeline-cue${active ? ' is-active' : ''}`}
                           style={{ left: `${laneWidthFor(cue.start, zoom)}px`, width: `${Math.max(2, laneWidthFor(cue.end - cue.start, zoom))}px` }}
-                          onClick={(event) => { event.stopPropagation(); focusCue(cue.sourcePath, cue.index) }}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            // A drag that moved an edge ends with a click too; it has already done what it meant to.
+                            if (cueDragMovedRef.current) { cueDragMovedRef.current = false; return }
+                            focusCue(cue.sourcePath, cue.index)
+                          }}
                           title={`${stamp(cue.start)} - ${cue.text.replace(/\n/g, ' ')}`}
                         >
-                          <span>{cue.text.replace(/\n/g, ' ')}</span>
+                          {/* The two edges, dragged to change WHEN the caption is said. They are handles rather than
+                              the block's own edges because a click on the block MEANS something else — move the
+                              skimmer here — so the two gestures cannot share a target. */}
+                          <span className="timeline-cue-handle is-start" onPointerDown={(event) => beginCueDrag(event, cue, 'start')} role="presentation" title="Drag to move this caption's start" />
+                          <span className="timeline-cue-text">{cue.text.replace(/\n/g, ' ')}</span>
+                          <span className="timeline-cue-handle is-end" onPointerDown={(event) => beginCueDrag(event, cue, 'end')} role="presentation" title="Drag to move this caption's end" />
                         </button>
                       )
                     })}
@@ -6317,6 +6417,33 @@ export const EditJobApp: React.FC = () => {
             {captionTracks.length === 0 && (
               <div className="editor-note">&gt; THIS JOB HAS NO SUBTITLE. A CLIP TAKES THE SRT, VTT, ASS OR SSA FILE NAMED FOR IT IN ITS OWN FOLDER, OR ONE ADDED WITH ADD MEDIA OR DROPPED ON THE QUEUE.</div>
             )}
+            {/* THE SETTINGS COME FIRST, folded away when they are not being used. A job can carry thousands of cues,
+                and a panel whose only content is that list has nowhere to put how the captions LOOK — which is the
+                question the old layout left no room for. Two groups rather than one run of controls: what the words
+                look like is a decision about the job, and which words are there is a decision about each cue. */}
+            {captionTracks.length > 0 && <EditorGroup
+              id="caption-style"
+              label="STYLE"
+              hint="THE MONITOR'S"
+              reason="How the captions look while you watch the job here. The export is a SOFT subtitle stream, so a player chooses its own type, size and colour; these settings never reach the file."
+              collapsed={collapsedSections.includes('caption-style')}
+              onToggle={toggleSection}
+            >
+              <EditorField label="FONT"><EditorSelect value={captionStyle.font} options={CAPTION_FONTS.map((choice) => ({ value: choice.value, label: choice.label }))} onChange={(next) => setCaptionStyle({ font: next as CaptionStyle['font'] })} ariaLabel="Caption font" /></EditorField>
+              <EditorField label="SIZE" hint="% OF PICTURE HEIGHT"><NumberField min={2} max={20} step={0.5} value={clampCaptionSize(captionStyle.size)} onValue={(value) => setCaptionStyle({ size: clampCaptionSize(value) })} ariaLabel="Caption size, as a percentage of the picture's height" /></EditorField>
+              <EditorField label="COLOUR"><EditorSelect value={captionStyle.color} options={CAPTION_COLORS.map((choice) => ({ value: choice.value, label: choice.label }))} onChange={(next) => setCaptionStyle({ color: next as CaptionStyle['color'] })} ariaLabel="Caption colour" /></EditorField>
+              <EditorToggle label="BACKGROUND" checked={captionStyle.background} onChange={(checked) => setCaptionStyle({ background: checked })} reason="A dark box behind the words, so they read over a bright picture." />
+              <EditorToggle label="BOLD" checked={captionStyle.bold} onChange={(checked) => setCaptionStyle({ bold: checked })} reason="Heavier strokes, for a picture with a lot of detail behind the words." />
+              <div className="editor-note">&gt; THESE STYLE THE MONITOR ONLY. THE EXPORT IS A SOFT SUBTITLE STREAM, SO ITS TYPE AND COLOUR ARE THE PLAYER&apos;S TO CHOOSE.</div>
+            </EditorGroup>}
+            {captionTracks.length > 0 && <EditorGroup
+              id="caption-cues"
+              label="CUES"
+              hint={`${placedCues.length} ON THE TIMELINE`}
+              reason="Every cue of every clip, in the source's own time. A caption whose clip is trimmed past it can still be edited, but it is not on the timeline and its GO is disabled."
+              collapsed={collapsedSections.includes('caption-cues')}
+              onToggle={toggleSection}
+            >
             {captionTracks.map(({ sourcePath, track }) => {
               const sourceLength = sourceDuration(draft, sourcePath, undefined, resolveTiming)
               return (
@@ -6378,6 +6505,7 @@ export const EditJobApp: React.FC = () => {
                 </div>
               )
             })}
+            </EditorGroup>}
             <div className="editor-note">&gt; {captionTracks.length > 0
               ? `CAPTIONS ARE WRITTEN AS A SOFT SUBTITLE STREAM (${String(captionCodec).toUpperCase()}) WHEN THE FORMAT TAKES ONE; NOTHING IS BURNED INTO THE PICTURE. THE FILE ON DISK IS NOT CHANGED UNTIL THE JOB IS EXPORTED, AND WHAT IS EXPORTED IS WHAT IS EDITED HERE.`
               : 'A SUBTITLE IS NOT A SOURCE: IT NEVER APPEARS ON THE TIMELINE AS A CLIP. THE QUEUE\u2019S SOURCE ROW SHOWS ITS CC MARK, WHICH REVEALS THE FILE IN FINDER.'}</div>

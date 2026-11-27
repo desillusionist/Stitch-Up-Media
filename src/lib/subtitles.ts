@@ -238,6 +238,66 @@ export const readSubtitleTime = (value: string): number | null => {
   return /(\d+):(\d{1,2}):(\d{1,2})[.,](\d{1,3})/.test(text) ? parseSubtitleTime(text) : null
 }
 
+/** A cue with one edge moved. The other edge holds, and the cue cannot be turned inside out. */
+export const moveCueEdge = (cue: SubtitleCue, edge: 'start' | 'end', seconds: number, duration: number): SubtitleCue =>
+  normaliseCue(
+    edge === 'start'
+      ? { ...cue, start: Math.min(seconds, cue.end) }
+      : { ...cue, end: Math.max(seconds, cue.start) },
+    duration,
+  )
+
+/**
+ * How a caption looks in the MONITOR.
+ *
+ * Held on the job rather than in the app's settings because it is a decision about what is being edited, and
+ * because a burn-in would use the same record one day. It is NOT written into the file: the export is a soft
+ * subtitle stream, so its type and colour belong to the player. The editor says so where the controls are.
+ *
+ * The size is a PERCENTAGE of the picture's height rather than a pixel count, so a caption keeps its place and
+ * its proportion when the preview is zoomed and when the same job is watched in a different window — a fixed
+ * number of pixels would grow against a zoomed-out picture and shrink against a zoomed-in one.
+ */
+export interface CaptionStyle {
+  font: 'sans' | 'serif' | 'mono' | 'crt'
+  /** Per cent of the picture's height. */
+  size: number
+  color: 'white' | 'amber' | 'green' | 'cyan'
+  /** Whether the words sit on a dark box rather than straight on the picture. */
+  background: boolean
+  bold: boolean
+}
+
+export const DEFAULT_CAPTION_STYLE: CaptionStyle = { font: 'sans', size: 6, color: 'white', background: true, bold: false }
+
+/** The fonts offered, as the stacks the monitor draws with. A choice is a name, not a font file. */
+export const CAPTION_FONTS: Array<{ value: CaptionStyle['font']; label: string; stack: string }> = [
+  { value: 'sans', label: 'SANS', stack: 'system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif' },
+  { value: 'serif', label: 'SERIF', stack: 'Georgia, "Times New Roman", serif' },
+  { value: 'mono', label: 'MONO', stack: '"SF Mono", Menlo, Consolas, monospace' },
+  { value: 'crt', label: 'TERMINAL', stack: '"Doto", monospace' },
+]
+
+/** The colours offered, in the app's own palette so the monitor cannot pick a shade the rest of it never uses. */
+export const CAPTION_COLORS: Array<{ value: CaptionStyle['color']; label: string; css: string }> = [
+  { value: 'white', label: 'WHITE', css: '#ffffff' },
+  { value: 'amber', label: 'AMBER', css: '#ffb84d' },
+  { value: 'green', label: 'GREEN', css: '#7dff75' },
+  { value: 'cyan', label: 'CYAN', css: '#63e6e2' },
+]
+
+/** The size held to what the monitor can read: below two per cent is a smudge, above twenty is a headline. */
+export const clampCaptionSize = (value: number): number =>
+  Math.max(2, Math.min(20, Number.isFinite(value) ? value : DEFAULT_CAPTION_STYLE.size))
+
+/** A font choice's stack, falling back to sans for a record that names one this build no longer offers. */
+export const captionFontStack = (font: CaptionStyle['font']): string =>
+  (CAPTION_FONTS.find((choice) => choice.value === font) ?? CAPTION_FONTS[0]).stack
+
+/** A colour choice's CSS value, falling back to white for the same reason. */
+export const captionColorValue = (color: CaptionStyle['color']): string =>
+  (CAPTION_COLORS.find((choice) => choice.value === color) ?? CAPTION_COLORS[0]).css
+
 /**
  * Where one clip sits on the assembled timeline, in the terms a cue has to be moved by.
  *
@@ -264,6 +324,12 @@ export interface PlacedCue extends SubtitleCue {
   sourcePath: string
   /** Its place in its own track's list, which is what the editor's own selection is keyed by. */
   index: number
+  /** Where the clip it was placed on begins on the timeline. */
+  windowStart: number
+  /** Where that clip's window opens in the source. */
+  sourceIn: number
+  /** SOURCE seconds per TIMELINE second — what turns a dragged edge's instant back into a cue's own time. */
+  speed: number
 }
 
 /**
@@ -299,9 +365,10 @@ export const cuesOnTimeline = (subtitles: Record<string, SubtitleTrack> | undefi
   windows.forEach((window) => {
     const track = subtitles[window.sourcePath]
     if (!track) return
+    const speed = window.sourceUsedSeconds > 0 && window.duration > 0 ? window.sourceUsedSeconds / window.duration : 1
     track.cues.forEach((cue, index) => {
       const onTimeline = placeCue(cue, window)
-      if (onTimeline) placed.push({ ...onTimeline, sourcePath: window.sourcePath, index })
+      if (onTimeline) placed.push({ ...onTimeline, sourcePath: window.sourcePath, index, windowStart: window.start, sourceIn: window.sourceIn, speed })
     })
   })
   return placed.sort((a, b) => a.start - b.start || a.end - b.end)

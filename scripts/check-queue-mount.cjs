@@ -52,6 +52,17 @@ app.whenReady().then(async () => {
 
     // THE OUTPUT LABEL, uppercased.
     if (result.labels?.output !== 'OUTPUT:') problems.push(`the output row is labelled ${JSON.stringify(result.labels?.output)} rather than OUTPUT:`)
+    // THE CC MARK IS PART OF THE METADATA: same line as the FPS, after it, and no longer a stray button in the row.
+    const cc = result.ccMark
+    if (!cc) problems.push('the card reported nothing about its CC mark')
+    else {
+      if (cc.strayButtons !== 0) problems.push(`${cc.strayButtons} CC button(s) are still drawn as a row control rather than in the metadata line`)
+      if (!cc.inMetadata) problems.push(`a source with a subtitle drew no CC mark in its metadata line (${JSON.stringify(cc.text)})`)
+      if (!cc.afterText) problems.push('the CC mark is not the last thing on the metadata line, so it does not follow the FPS')
+      if (!/FPS$/.test(String(cc.text))) problems.push(`the metadata line before the CC mark reads ${JSON.stringify(cc.text)} rather than ending in an FPS figure`)
+      if (cc.separator !== '\u00b7') problems.push(`the CC mark is separated by ${JSON.stringify(cc.separator)} rather than the line's own \u00b7`)
+      if (!/subtitle/i.test(String(cc.title))) problems.push(`the CC mark's title reads ${JSON.stringify(cc.title)} rather than naming the subtitle`)
+    }
 
     // THE TYPE the filename is set in. The row sits OUTSIDE the box that set the source rows' size, so a name
     // left to inherit is set at the card's own — which is the whole of the fault.

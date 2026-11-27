@@ -1229,8 +1229,37 @@ app.whenReady().then(async () => {
       if (captions.toggle && !captions.toggle.checked) problems.push('EXPORT CAPTIONS reads off for an mp4 job that has captions')
       if (captions.toggle && !captions.toggle.disabled) problems.push('EXPORT CAPTIONS is offered as a switch, though the container is what decides it')
       if (captions.rows !== 2) problems.push(`the CAPTIONS tab drew ${captions.rows} cue row(s) rather than the two on the job`)
+      // THE PANE FITS ITS ROWS. Measured before this pass: the pane was 329 wide with 357 of content, every row overran
+      // it, and focusing a field scrolled the hidden overflow sideways so the track's own name was cut off on the left.
+      const overflow = captions.overflow
+      if (!overflow) problems.push('the CAPTIONS pane reported nothing about its width')
+      else {
+        if (!(overflow.scrollWidth <= overflow.clientWidth + 1)) problems.push(`the CAPTIONS pane's content is ${JSON.stringify(overflow.scrollWidth)} wide in a ${JSON.stringify(overflow.clientWidth)} pane, so it still overflows sideways`)
+        if (overflow.rowsWiderThanPane !== 0) problems.push(`${overflow.rowsWiderThanPane} cue row(s) are wider than the CAPTIONS pane (row ${JSON.stringify(overflow.rowWidth)})`)
+        if (overflow.scrollLeft !== 0) problems.push(`the CAPTIONS pane is scrolled sideways by ${JSON.stringify(overflow.scrollLeft)}px, which is what crops its left edge`)
+        if (!(overflow.rowLefts || []).every((left) => Math.abs(left - 14) < 1.5)) problems.push(`the cue rows begin at ${JSON.stringify(overflow.rowLefts)} rather than at the pane's own padding`)
+      }
+      if (JSON.stringify(captions.groups) !== JSON.stringify(['STYLE', 'CUES'])) problems.push(`the CAPTIONS tab groups read ${JSON.stringify(captions.groups)} rather than STYLE then CUES`)
       if (JSON.stringify(captions.times) !== JSON.stringify(['00:00:01,000', '00:00:03,000', '00:00:05,000', '00:00:07,000'])) problems.push(`the cue times read ${JSON.stringify(captions.times)} rather than SRT's own spelling`)
-      if (captions.firstText !== 'FIRST CAPTION') problems.push(`the first cue's words read ${JSON.stringify(captions.firstText)}`)
+      // THE CAPTION IN THE MONITOR, on the cue the lane was clicked on, with the style it was given.
+      const overlay = captions.overlay
+      if (!overlay) problems.push('the monitor reported no caption overlay')
+      else {
+        if (overlay.text !== 'SECOND CAPTION') problems.push(`the monitor shows ${JSON.stringify(overlay.text)} rather than the cue under the skimmer`)
+        if (!overlay.inside) problems.push('the caption is drawn outside the frame window rather than over the picture')
+        if (overlay.pointer !== 'none') problems.push(`the caption overlay takes pointer events (${JSON.stringify(overlay.pointer)}), so it steals the picture's own drags`)
+      }
+      const after = captions.overlayAfter
+      if (!after || after.colour !== 'rgb(255, 184, 77)') problems.push(`choosing AMBER left the monitor's caption at ${JSON.stringify(after && after.colour)}`)
+      if (!after || !(parseFloat(String(after.size)) > parseFloat(String(captions.overlay && captions.overlay.size)))) problems.push(`raising SIZE did not grow the monitor's caption: ${JSON.stringify(captions.overlay && captions.overlay.size)} to ${JSON.stringify(after && after.size)}`)
+      // THE EDGE DRAG: the end moved, the start held, and both reached the queue.
+      const before = captions.times || []
+      const dragged = captions.draggedTimes || []
+      if (dragged[0] !== before[0]) problems.push(`dragging a cue's END moved its START too: ${JSON.stringify(before[0])} to ${JSON.stringify(dragged[0])}`)
+      if (!(parseFloat(String(captions.appliedEnd)) > 3)) problems.push(`dragging the cue's end did not reach the queue: end is ${JSON.stringify(captions.appliedEnd)}`)
+      if (String(dragged[1]) === String(before[1])) problems.push(`the lane drag left the cue's end at ${JSON.stringify(dragged[1])}`)
+      const style = captions.appliedStyle
+      if (!style || style.color !== 'amber' || style.size !== 9) problems.push(`the caption's appearance did not reach the queue: ${JSON.stringify(style)}`)
       if (captions.appliedText !== 'EDITED CAPTION') problems.push(`an edited caption did not reach the queue: ${JSON.stringify(captions.appliedText)}`)
       if (captions.appliedCues !== 2) problems.push(`the applied job carries ${captions.appliedCues} cues rather than two`)
     }

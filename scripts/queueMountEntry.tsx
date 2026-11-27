@@ -43,6 +43,10 @@ const LONG_TRACK = 'The_Hidden_Heart_of_Bhagavad_gita_Chapter_10_a_very_long_tra
 const task = {
   id: 'queue-card-check', type: 'multitrack', status: 'pending', progress: 0,
   sourcePaths: ['/media/JapaneseFashionVlogger.mp4'],
+  // A source WITH a subtitle, and the metadata line that CC mark must sit in, so the row can be read as one line
+  // of facts ending in the mark rather than as a control wedged between the file and its duration.
+  sourceMetadata: { '/media/JapaneseFashionVlogger.mp4': { duration: 12, fps: 29.97, resolution: '1920x1080', format: 'mp4' } },
+  subtitles: { '/media/JapaneseFashionVlogger.mp4': { path: '/media/JapaneseFashionVlogger.en.srt', format: 'srt', language: 'en', cues: [{ start: 0.5, end: 1.5, text: 'A caption' }] } },
   additionalAudioTracks: [
     { id: 'track-a', path: `/media/${LONG_TRACK}`, language: 'und' },
     { id: 'track-b', path: '/media/score.wav', language: 'und' },
@@ -107,6 +111,17 @@ const drive = async () => {
     brief: outputBrief?.textContent?.trim() ?? null,
     status: status?.textContent?.trim() ?? null,
     preset: preset?.textContent?.trim() ?? null,
+  }
+  // THE CC MARK IN THE METADATA LINE: after the FPS it belongs beside, not a button of its own beside the name.
+  const sourceBrief = document.querySelector('.queue-sources .source-row .source-brief-details') as HTMLElement | null
+  const ccMark = sourceBrief?.querySelector('.source-cc') as HTMLElement | null
+  result.ccMark = {
+    strayButtons: document.querySelectorAll('.source-row > .source-cc').length,
+    inMetadata: Boolean(ccMark),
+    afterText: sourceBrief && ccMark ? sourceBrief.lastElementChild === ccMark : null,
+    text: (sourceBrief?.querySelector('.source-brief-text')?.textContent ?? '').trim(),
+    separator: sourceBrief?.querySelector('.source-brief-sep')?.textContent ?? null,
+    title: ccMark?.getAttribute('title') ?? null,
   }
   result.type = { output: size(outputName), source: size(sourceName), track: size(trackName) }
   result.crawling = {

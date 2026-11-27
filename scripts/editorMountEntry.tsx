@@ -2544,9 +2544,80 @@ const drive = async () => {
   const playheadOnCue = (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
   clickTab('CAPTIONS')
   await wait(150)
+  const content = document.querySelector('.export-content') as HTMLElement | null
   const captionRows = document.querySelectorAll('.caption-row').length
+  // THE PANE'S OWN WIDTH, and whether a cue row fits inside it. A caption row that is wider than the pane does
+  // not merely clip its own right edge: focusing a field scrolls the hidden overflow sideways, which cuts the
+  // TRACK'S NAME off at the left as well. Both are read, because both are what a reader sees.
+  const contentBox = content?.getBoundingClientRect()
+  const overflow = {
+    clientWidth: content?.clientWidth ?? null,
+    scrollWidth: content?.scrollWidth ?? null,
+    scrollLeft: content?.scrollLeft ?? null,
+    rowsWiderThanPane: contentBox
+      ? [...document.querySelectorAll('.caption-row')].filter((row) => row.getBoundingClientRect().right > contentBox.right + 1).length
+      : null,
+    rowLefts: contentBox
+      ? [...document.querySelectorAll('.caption-row')].map((row) => +(row.getBoundingClientRect().left - contentBox.left).toFixed(1))
+      : null,
+    rowWidth: (() => { const row = document.querySelector('.caption-row'); return row ? +row.getBoundingClientRect().width.toFixed(1) : null })(),
+  }
   const captionTimes = [...document.querySelectorAll('.caption-time')].map((field) => (field as HTMLInputElement).value)
   const firstCaptionText = (document.querySelector('.caption-text') as HTMLTextAreaElement | null)?.value ?? null
+
+  // THE CAPTION IN THE MONITOR. The skimmer was just put on the second cue, so the monitor has to be showing that
+  // cue's words — over the PICTURE, inside its box, and taking none of the pointer that the picture's own drags need.
+  const overlayBox = (() => {
+    const overlay = document.querySelector('.monitor-caption') as HTMLElement | null
+    const frame = document.querySelector('.editor-frame-window') as HTMLElement | null
+    if (!overlay || !frame) return { text: null, inside: null, colour: null, size: null, pointer: null }
+    const o = overlay.getBoundingClientRect()
+    const f = frame.getBoundingClientRect()
+    const style = getComputedStyle(overlay)
+    return {
+      text: overlay.textContent?.trim() ?? null,
+      inside: o.left >= f.left - 1 && o.right <= f.right + 1 && o.top >= f.top - 1 && o.bottom <= f.bottom + 1,
+      colour: style.color,
+      size: style.fontSize,
+      pointer: style.pointerEvents,
+    }
+  })()
+
+  // THE STYLE GROUPS, and the monitor following a change to them: a colour is chosen and a size typed, and the
+  // overlay is read again. A setting that reaches the patch but not the picture would look like it did nothing.
+  const captionGroups = [...document.querySelectorAll('.editor-group-label')].map((name) => name.textContent?.trim() ?? '').filter((name) => /STYLE|CUES/.test(name))
+  const overlayBefore = overlayBox
+  chooseOption(selectIn('COLOUR'), 'amber')
+  await wait(150)
+  const sizeField = fieldFor('SIZE')?.querySelector('input') as HTMLInputElement | null
+  if (sizeField) {
+    setNativeValue(sizeField, '9')
+    await wait(200)
+  }
+  const overlayAfter = (() => {
+    const overlay = document.querySelector('.monitor-caption') as HTMLElement | null
+    if (!overlay) return { colour: null, size: null }
+    const style = getComputedStyle(overlay)
+    return { colour: style.color, size: style.fontSize }
+  })()
+
+  // THE CUE'S OWN EDGE, dragged on the lane. The right handle of the first cue is pressed and moved 40px right, which
+  // at this zoom is over a second; the cue's END in the tab is what says the drag reached the words rather than only
+  // the box. The start must not move with it, which is the whole difference between resizing and sliding.
+  const dragHandle = document.querySelector('.timeline-cue .timeline-cue-handle.is-end') as HTMLElement | null
+  const dragRect = dragHandle?.getBoundingClientRect()
+  if (dragHandle && dragRect) {
+    const x = dragRect.left + dragRect.width / 2
+    const y = dragRect.top + dragRect.height / 2
+    dragHandle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1 }))
+    await wait(60)
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x + 40, clientY: y, pointerId: 1 }))
+    await wait(120)
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: x + 40, clientY: y, pointerId: 1 }))
+    await wait(200)
+  }
+  const draggedTimes = [...document.querySelectorAll('.caption-time')].map((field) => (field as HTMLInputElement).value)
+
   // EDITED THROUGH THE FIELD, as a reader would: the words are a controlled value, so a native-setter write plus
   // an input event is what React sees. The patch the window sends back is the only proof the edit survives APPLY.
   const captionField = document.querySelector('.caption-text') as HTMLTextAreaElement | null
@@ -2559,7 +2630,10 @@ const drive = async () => {
   const applyCaptions = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
   applyCaptions?.click()
   await wait(300)
-  const captionPatch = applied[applied.length - 1] as { subtitles?: Record<string, { cues: Array<{ text: string; start: number; end: number }> }> } | undefined
+  const captionPatch = applied[applied.length - 1] as {
+    subtitles?: Record<string, { cues: Array<{ text: string; start: number; end: number }> }>
+    captionStyle?: { color?: string; size?: number; font?: string; background?: boolean; bold?: boolean }
+  } | undefined
   result.captions = {
     headsBefore: captionHeadsBefore,
     blocksBefore: captionBlocksBefore,
@@ -2571,11 +2645,18 @@ const drive = async () => {
     playheadOnCue,
     secondCueLeft,
     rows: captionRows,
+    overflow,
     times: captionTimes,
     firstText: firstCaptionText,
     toggle: captionsToggle,
+    groups: captionGroups,
+    overlay: overlayBefore,
+    overlayAfter,
+    draggedTimes,
     appliedText: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.[0]?.text ?? null,
     appliedCues: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.length ?? null,
+    appliedEnd: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.[0]?.end ?? null,
+    appliedStyle: captionPatch?.captionStyle ?? null,
   }
 
   // THE ZOOM PANEL ITSELF, read last so changing the zoom for the CUSTOM field disturbs nothing before it. The

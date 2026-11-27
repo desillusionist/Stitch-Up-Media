@@ -513,7 +513,7 @@ export interface SourceMetadata {
   duration?: number
   format?: string
 }
-import type { SubtitleTrack } from '../lib/subtitles'
+import type { CaptionStyle, SubtitleTrack } from '../lib/subtitles'
 
 export interface QueueTask {
   id: string
@@ -571,6 +571,13 @@ export interface QueueTask {
    * which is what keeps an untouched job byte-identical.
    */
   subtitles?: Record<string, SubtitleTrack>
+  /**
+   * How this job's captions look in the MONITOR — font, size, colour, box.
+   *
+   * Not written into the file: the export is a soft subtitle stream, so its type and colour are the player's. Absent
+   * means the app's own default, which is what keeps a job saved before this control looking exactly as it did.
+   */
+  captionStyle?: CaptionStyle
   quickLookSourceIndex?: number
   stillImageDuration?: number
   /**
@@ -668,6 +675,8 @@ export interface EditJobPatch {
    * window owns: leaving it out of the patch would make an edited caption vanish the moment APPLY was pressed.
    */
   subtitles?: QueueTask['subtitles']
+  /** Per-job caption appearance, for the monitor. Carried whole like the caption tracks. */
+  captionStyle?: QueueTask['captionStyle']
   /**
    * The job's sources, sent only when the WINDOW changed the list.
    *

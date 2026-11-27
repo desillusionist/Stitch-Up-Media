@@ -127,6 +127,9 @@ const applyEditJobPatch = (task: QueueTask, patch: EditJobPatch): QueueTask => {
     // The caption tracks, whole for the same reason: a cue edited or deleted in the CAPTIONS tab is a
     // change this window made, and a patch that left the field out would put the old words back.
     ...(patch.subtitles !== undefined ? { subtitles: patch.subtitles } : {}),
+    // The caption appearance, carried only when the window names it: a window that never opened CAPTIONS
+    // cannot erase a style set somewhere else.
+    ...(patch.captionStyle !== undefined ? { captionStyle: patch.captionStyle } : {}),
     // The ids come with the list when the window reordered it, because only they can say which of two
     // copies of one file moved where. The numbers come with them, so `CLIP n` stays on its clip too. A list
     // that is not the length of the sources is REJECTED rather than stored: a short array is worse than none,
