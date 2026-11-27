@@ -37,6 +37,7 @@ import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 import { mediaKind } from '../src/lib/mediaKind'
 import { EXPORT_SUFFIX, deriveOutputFilename, exportName, stableBaseName, withExtension, withoutExtension } from '../src/lib/outputNaming'
+import { cueAt, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, normaliseCue, parseSubtitleTime, parseSubtitles, subtitleCodecFor, subtitleFormatOf, subtitlesForSource, toSrt } from '../src/lib/subtitles'
 import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, filePathsOnly, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
@@ -3184,6 +3185,35 @@ void (async () => {
   check('and there is one spelling of the suffix', EXPORT_SUFFIX, '_export')
   check('the shape every caller composes is the same one', [exportName('Shoot Day 3', 'mp4'), exportName('Shoot Day 3', 'wav')], ['Shoot Day 3_export.mp4', 'Shoot Day 3_export.wav'])
   check('the extension helpers only touch the extension', [withoutExtension('a.b.c'), withExtension('a.b.c', 'mkv')], ['a.b', 'a.b.mkv'])
+
+  // == SUBTITLES ==
+  // A SUBTITLE BELONGS TO A SOURCE, and the rules are the ones every player already teaches: same folder, same base
+  // name, a language tag still counts as the same name, and SRT wins over the rest when a clip has several.
+  check('a caption file is recognised by its extension', [subtitleFormatOf('/a/film.srt'), subtitleFormatOf('/a/film.vtt'), subtitleFormatOf('/a/film.mp4')], ['srt', 'vtt', null])
+  check('and it is not media', [isSubtitlePath('/a/film.SRT'), isSubtitlePath('/a/film.mkv')], [true, false])
+  const beside = '/Users/x/Films/'
+  const picked = subtitlesForSource(`${beside}film.mp4`, [`${beside}film.vtt`, `${beside}film.srt`, '/elsewhere/film.srt', `${beside}film.en.srt`, `${beside}other.srt`])
+  check('a clip takes the files named for it, SRT first', picked, [`${beside}film.srt`, `${beside}film.vtt`, `${beside}film.en.srt`])
+  check('a subtitle in another folder belongs to another copy', picked.includes('/elsewhere/film.srt'), false)
+  check('a language tag is part of the name it belongs to', languageOfSubtitle(`${beside}film.en.srt`), 'en')
+  check('and a plain name carries none', languageOfSubtitle(`${beside}film.srt`), undefined)
+
+  const srtText = '1\n00:00:01,000 --> 00:00:03,500\nHello there\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond line\nof the caption\n'
+  const parsed = parseSubtitles(srtText, 'srt')
+  check('an SRT reads as cues', parsed.length, 2)
+  check('with its own times', [parsed[0].start, parsed[0].end], [1, 3.5])
+  check('and a caption keeps its own line break', parsed[1].text, 'Second line\nof the caption')
+  check('a cue can be written back as SRT', toSrt([{ start: 1, end: 3.5, text: 'Hello' }]), '1\n00:00:01,000 --> 00:00:03,500\nHello\n')
+  const vtt = parseSubtitles('WEBVTT\n\n00:00:02.000 --> 00:00:04.000\nFrom a vtt\n', 'vtt')
+  check('a VTT reads through the same reader', [vtt.length, vtt[0].start, vtt[0].text], [1, 2, 'From a vtt'])
+  const ass = parseSubtitles('Dialogue: 0,0:00:05.00,0:00:07.00,Default,,0,0,0,,A line\\Nand another', 'ass')
+  check('an ASS dialogue is read too', [ass.length, ass[0].start, ass[0].text], [1, 5, 'A line\nand another'])
+  check('a time round-trips through its own spelling', [formatSubtitleTime(3725.5), parseSubtitleTime('01:02:05,500')], ['01:02:05,500', 3725.5])
+  check('a cue is held inside the file and after itself', normaliseCue({ start: -2, end: 99, text: 'x' }, 10), { start: 0, end: 10, text: 'x' })
+  check('and an end before its start becomes its start', normaliseCue({ start: 4, end: 2, text: 'x' }, 10), { start: 4, end: 4, text: 'x' })
+  check('the caption showing at an instant is found', cueAt(parsed, 4.5)?.text, 'Second line\nof the caption')
+  check('and none is found between captions', cueAt(parsed, 3.8), null)
+  check('each container gets the subtitle codec it really takes', [subtitleCodecFor('mp4'), subtitleCodecFor('mov'), subtitleCodecFor('mkv'), subtitleCodecFor('webm'), subtitleCodecFor('mp3')], ['mov_text', 'mov_text', 'srt', 'webvtt', null])
 
   console.log(failures === 0 ? '\nALL CHECKS PASSED\n' : `\n${failures} CHECK(S) FAILED\n`)
   process.exit(failures === 0 ? 0 : 1)

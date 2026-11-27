@@ -513,6 +513,8 @@ export interface SourceMetadata {
   duration?: number
   format?: string
 }
+import type { SubtitleTrack } from '../lib/subtitles'
+
 export interface QueueTask {
   id: string
   type: 'transcode' | 'stitch' | 'multitrack' | 'combo'
@@ -561,6 +563,14 @@ export interface QueueTask {
   sequenceInput?: SequenceInput
   sequenceInputs?: Record<string, SequenceInput>
   sourceMetadata?: Record<string, SourceMetadata>
+  /**
+   * The subtitle attached to each SOURCE, by source path — the file it came from and its cues.
+   *
+   * Keyed by source rather than by job because a STITCH can carry one per clip, and a cue list with nowhere to say
+   * which clip it belongs to cannot be drawn on a lane or written into an export. Absent on every job that has none,
+   * which is what keeps an untouched job byte-identical.
+   */
+  subtitles?: Record<string, SubtitleTrack>
   quickLookSourceIndex?: number
   stillImageDuration?: number
   /**

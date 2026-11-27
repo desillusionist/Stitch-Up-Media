@@ -27,6 +27,8 @@ export interface YouTubeState {
   quality: string
   /** Ask for H.264 + AAC, which is what macOS can preview. On by default — see `formatSelector`. */
   previewSafe: boolean
+  /** Fetch the video's subtitles as SRT beside it, which the import then attaches to the clip. */
+  subtitles: boolean
 }
 
 export const YouTubeDialog: React.FC<{
@@ -67,6 +69,15 @@ export const YouTubeDialog: React.FC<{
             />
           </div>
           {/* The switch is about VIDEO codecs, so a sound export has nothing for it to say. */}
+          <label className="youtube-switch">
+            <input
+              type="checkbox"
+              checked={state.subtitles}
+              disabled={state.busy}
+              onChange={(event) => onChange({ subtitles: event.target.checked })}
+            />
+            <span>SUBTITLES (SRT)</span>
+          </label>
           <label className={`youtube-switch${parseQuality(state.quality).kind === 'audio' ? ' is-off' : ''}`}>
             <input
               type="checkbox"

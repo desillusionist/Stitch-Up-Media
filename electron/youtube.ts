@@ -62,6 +62,8 @@ export interface YouTubeDownload {
   quality?: string
   /** Whether to ask for H.264 + AAC, which macOS can preview. On unless the reader turns it off. */
   previewSafe?: boolean
+  /** Whether to fetch the video's subtitles as SRT beside it. Off unless the reader asks. */
+  subtitles?: boolean
   onProgress?: (progress: { percent: number | null; item?: number; total?: number }) => void
 }
 
@@ -72,7 +74,7 @@ export interface YouTubeDownload {
  * the whole list into the reader's Downloads folder. The format request takes the best picture and sound and merges
  * them to mp4 when they are separate, and falls back to a single file when they are not.
  */
-export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, previewSafe, onProgress }: YouTubeDownload): Promise<string[]> => new Promise((resolve, reject) => {
+export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, previewSafe, subtitles, onProgress }: YouTubeDownload): Promise<string[]> => new Promise((resolve, reject) => {
   fs.mkdirSync(directory, { recursive: true })
   const requested = downloadArguments(parseQuality(quality ?? 'best'), previewSafe !== false)
   // A PLAYLIST LINK IS A BATCH: every item in it, in order, numbered on disk. A single video is one file, and a watch
@@ -90,6 +92,10 @@ export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, prev
     '-f', requested.format,
     ...requested.extra,
     '-o', path.join(directory, outputTemplate(playlist)),
+    // SUBTITLES, as SRT beside the media. Both kinds are asked for — uploaded and auto-generated — because a reader
+    // asking for subtitles wants the ones that exist, and English is the language this app's own UI is in; yt-dlp skips
+    // any item that has none rather than failing the download.
+    ...(subtitles ? ['--write-subs', '--write-auto-subs', '--sub-langs', 'en.*,en', '--convert-subs', 'srt'] : []),
     ...(ffmpegDirectory ? ['--ffmpeg-location', ffmpegDirectory] : []),
     url,
   ]

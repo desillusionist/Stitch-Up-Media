@@ -18,6 +18,7 @@ import { removeSourceFromTask, clipRecordsFor, withSourceList } from './lib/sour
 import { resolveQuickLookRequest, dropPreviewsFor, sequencePreviewKey, sourceOfPreview, sourceOfPreviewKey } from './lib/quickLookTarget'
 import { clipKey, legacyClipId, matchClipIdsToPaths, matchClipNumbersToPaths, materializeClipIds, materializeClipNumbers, moveAlong, moveClipIds, newClipId, newTrackId, nextClipNumber } from './lib/clipIds'
 import { filePathsOnly } from './lib/placeholder'
+import { SubtitleTrack, isSubtitlePath, languageOfSubtitle, parseSubtitles, subtitleFormatOf, subtitlesForSource } from './lib/subtitles'
 import { sizeLabel } from './lib/outputSize'
 
 /**
@@ -176,7 +177,7 @@ export const App: React.FC = () => {
    */
   const [addMediaMenu, setAddMediaMenu] = useState<{ task: QueueTask | null } | null>(null)
   /** The YouTube download, while its dialog is open. */
-  const [youtube, setYoutube] = useState<{ open: boolean; url: string; directory: string; busy: boolean; percent: number | null; error: string | null; quality: string; previewSafe: boolean; target: QueueTask | null; item?: number; total?: number }>({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, target: null })
+  const [youtube, setYoutube] = useState<{ open: boolean; url: string; directory: string; busy: boolean; percent: number | null; error: string | null; quality: string; previewSafe: boolean; subtitles: boolean; target: QueueTask | null; item?: number; total?: number }>({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, subtitles: false, target: null })
   const [sequenceChoice, setSequenceChoice] = useState<{ frames: number; resolve: (whole: boolean) => void } | null>(null)
   const [notice, setNotice] = useState<{ title: string; message: string } | null>(null)
   const [theme, setTheme] = useState<'retro' | 'modern'>('retro')
@@ -499,7 +500,14 @@ export const App: React.FC = () => {
       window.alert('No compatible media files were found in the dropped item.')
       return
     }
-    filePaths = expandedPaths
+    // A SUBTITLE IS NOT A SOURCE. It is taken out here, before anything is counted or fanned out, and attached to the
+    // media it names below.
+    const picked = splitPickedFiles(expandedPaths)
+    if (!picked.media.length) {
+      window.alert('That is a subtitle on its own — add the media it belongs to as well, and it will be attached.')
+      return
+    }
+    filePaths = picked.media
     const droppedPath = filePaths[0]
     const originallySinglePath = filePaths.length === 1
     const droppedName = droppedPath.split(/[\\/]/).pop() || ''
@@ -552,6 +560,9 @@ export const App: React.FC = () => {
     const originalName = first.split('/').pop() || 'media'
     const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName
     const preset = DEFAULT_PRESETS[0]
+    // Read before the task is built: the cues live in the window, so the CC lane, the card and the export all read the
+    // same thing rather than each opening the file.
+    const subtitles = await collectSubtitles(filePaths, picked.subtitles)
     const task: QueueTask = {
       id: Math.random().toString(36).substring(7), type: effectiveType, sourcePaths: detectedSequence && sequenceFps ? [detectedSequence.firstFrame] : effectiveType === 'stitch' && videoCount === 0 ? filePaths : effectiveType === 'stitch' || effectiveType === 'combo' || jobType === 'multitrack' ? filePaths.filter((path) => mediaKind(path) !== 'audio') : [first],
       // `ORIGINALNAME_export.<ext>`, whatever the mode and whoever's preset it starts on. See `EXPORT_SUFFIX`.
@@ -564,6 +575,7 @@ export const App: React.FC = () => {
         // every open rebuilt the whole sequence.
         ? { [sequencePreviewKey(detectedSequence.firstFrame, sequenceFps, detectedSequence.frameCount)]: imageSequencePreview }
         : undefined,
+      subtitles: Object.keys(subtitles).length ? subtitles : undefined,
       sourceMetadata: stillFpsMetadata(filePaths, detectedSequence?.firstFrame, settings),
       sequenceInput: detectedSequence && sequenceFps ? { ...detectedSequence, fps: sequenceFps, duration: detectedSequence.frameCount / sequenceFps, totalSize: sequenceTotalSize } : undefined,
       sequenceInputs: detectedSequence && sequenceFps ? { [detectedSequence.firstFrame]: { ...detectedSequence, fps: sequenceFps, duration: detectedSequence.frameCount / sequenceFps } } : undefined,
@@ -581,23 +593,61 @@ export const App: React.FC = () => {
    */
   const openYouTube = async (target: QueueTask | null = null) => {
     const directory = await window.electronAPI?.downloadsDirectory() ?? ''
-    setYoutube({ open: true, url: '', directory, busy: false, percent: null, error: null, quality: 'best', previewSafe: true, target })
+    setYoutube({ open: true, url: '', directory, busy: false, percent: null, error: null, quality: 'best', previewSafe: true, subtitles: false, target })
   }
 
   const startYouTubeDownload = async () => {
     if (!youtube.url.trim() || youtube.busy) return
     setYoutube((current) => ({ ...current, busy: true, percent: null, error: null }))
-    const result = await window.electronAPI?.downloadYouTube({ url: youtube.url.trim(), directory: youtube.directory || undefined, quality: youtube.quality, previewSafe: youtube.previewSafe })
+    const result = await window.electronAPI?.downloadYouTube({ url: youtube.url.trim(), directory: youtube.directory || undefined, quality: youtube.quality, previewSafe: youtube.previewSafe, subtitles: youtube.subtitles })
     if (!result || result.error || !result.files.length) {
       setYoutube((current) => ({ ...current, busy: false, error: result?.error || 'Nothing was downloaded.' }))
       return
     }
     const target = youtube.target
-    setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, target: null })
+    setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, subtitles: false, target: null })
     // A download opened from a card's [+] joins THAT job; one opened from ADD MEDIA asks what the new files should
     // become, which is what a local pick gets too.
     if (target) void handleAddToExisting(target, result.files)
     else setPendingFiles(result.files)
+  }
+
+  /**
+   * SUBTITLES ARE NOT SOURCES.
+   *
+   * A picked or dropped set is split before anything is counted, because a `.srt` fed to the media path would be
+   * rejected by the importer at best and queued as a sound at worst. The media list is what becomes jobs; the
+   * subtitle list is what gets ATTACHED to them.
+   */
+  const splitPickedFiles = (filePaths: string[]) => ({
+    media: filePaths.filter((filePath) => !isSubtitlePath(filePath)),
+    subtitles: filePaths.filter((filePath) => isSubtitlePath(filePath)),
+  })
+
+  /**
+   * The subtitle each source gets, with its cues.
+   *
+   * BOTH WAYS IN ARE ONE RULE: a file picked BESIDE the media in the same operation, and a file already sitting next to
+   * it in the folder — because that is what a reader means by "the subtitles for this film", and it is what every player
+   * already assumes. `subtitlesForSource` decides which wins when there are several: same folder, same base name, SRT
+   * before the rest, and a language tag (`film.en.srt`) counts as the same name.
+   */
+  const collectSubtitles = async (sources: string[], picked: string[]): Promise<Record<string, SubtitleTrack>> => {
+    const attached: Record<string, SubtitleTrack> = {}
+    for (const source of sources) {
+      let siblings: string[] = []
+      try { siblings = await window.electronAPI?.listSiblingFiles?.(source) ?? [] } catch { /* a folder that cannot be read simply has none */ }
+      const chosen = subtitlesForSource(source, [...picked, ...siblings])[0]
+      if (!chosen) continue
+      const text = await window.electronAPI?.readTextFile?.(chosen) ?? ''
+      const format = subtitleFormatOf(chosen) ?? 'srt'
+      const cues = parseSubtitles(text, format)
+      // A file that parses to nothing is not a subtitle: attaching it would draw an empty CC lane and write an empty
+      // stream, so it is left alone rather than pretending.
+      if (!cues.length) continue
+      attached[source] = { path: chosen, format, language: languageOfSubtitle(chosen), cues }
+    }
+    return attached
   }
 
   const handlePickFiles = async () => {
@@ -966,7 +1016,12 @@ export const App: React.FC = () => {
       window.alert('No compatible media files were found in the dropped item.')
       return
     }
-    filePaths = expandedPaths
+    const pickedExisting = splitPickedFiles(expandedPaths)
+    if (!pickedExisting.media.length) {
+      window.alert('That is a subtitle on its own — drop it with the media it belongs to, or pick the media first.')
+      return
+    }
+    filePaths = pickedExisting.media
     const originallySelectedExistingPath = filePaths[0]
     const originallySingleExistingSource = filePaths.length === 1
     if (originallySingleExistingSource && isImagePath(filePaths[0]) && /\d+\D*\.[^.]+$/.test(filePaths[0].split(/[\\/]/).pop() || '') && window.electronAPI?.listSiblingFiles) {
@@ -994,6 +1049,8 @@ export const App: React.FC = () => {
         filePaths = [originallySelectedExistingPath]
       }
     }
+    // The subtitles that came with these files, or that already sit beside them, are attached to the job they joined.
+    const incomingSubtitles = await collectSubtitles(filePaths, pickedExisting.subtitles)
     setTasks((prev) => prev.map((item) => {
       if (item.id !== task.id || item.status === 'encoding') return item
       const incomingVideos = filePaths.filter((filePath) => mediaKind(filePath) !== 'audio')
@@ -1010,7 +1067,7 @@ export const App: React.FC = () => {
       const sourceMetadata = incomingStillFps ? { ...(item.sourceMetadata || {}), ...incomingStillFps } : item.sourceMetadata
       const resetCompleted = item.status === 'done' || item.skipped
       const nextPaths = videoSources.length ? videoSources : allAudioSources
-      return { ...item, type: stableNextType, comboMode: stableNextType === 'combo' ? (item.comboMode || 'multitrack') : undefined, sourcePaths: nextPaths, clipIds: matchClipIdsToPaths(item.sourcePaths, materializeClipIds(item), nextPaths), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, materializeClipNumbers(item), nextPaths), additionalAudioTracks: videoSources.length && tracks.length ? tracks : undefined, imageSequencePreviews: incomingSequencePreview && sequenceKey && incomingSequenceInput ? { ...(item.imageSequencePreviews || {}), [sequencePreviewKey(sequenceKey, incomingSequenceInput.fps, incomingSequenceInput.frameCount)]: incomingSequencePreview } : item.imageSequencePreviews, sequenceInput: item.sequenceInput || incomingSequenceInput, sequenceInputs: incomingSequenceInput && sequenceKey ? { ...(item.sequenceInputs || {}), [sequenceKey]: incomingSequenceInput } : item.sequenceInputs, sourceMetadata, status: resetCompleted ? 'pending' : item.status, skipped: resetCompleted ? false : item.skipped, progress: 0 }
+      return { ...item, type: stableNextType, comboMode: stableNextType === 'combo' ? (item.comboMode || 'multitrack') : undefined, sourcePaths: nextPaths, clipIds: matchClipIdsToPaths(item.sourcePaths, materializeClipIds(item), nextPaths), clipNumbers: matchClipNumbersToPaths(item.sourcePaths, materializeClipNumbers(item), nextPaths), additionalAudioTracks: videoSources.length && tracks.length ? tracks : undefined, imageSequencePreviews: incomingSequencePreview && sequenceKey && incomingSequenceInput ? { ...(item.imageSequencePreviews || {}), [sequencePreviewKey(sequenceKey, incomingSequenceInput.fps, incomingSequenceInput.frameCount)]: incomingSequencePreview } : item.imageSequencePreviews, sequenceInput: item.sequenceInput || incomingSequenceInput, sequenceInputs: incomingSequenceInput && sequenceKey ? { ...(item.sequenceInputs || {}), [sequenceKey]: incomingSequenceInput } : item.sequenceInputs, sourceMetadata, subtitles: Object.keys(incomingSubtitles).length ? { ...(item.subtitles || {}), ...incomingSubtitles } : item.subtitles, status: resetCompleted ? 'pending' : item.status, skipped: resetCompleted ? false : item.skipped, progress: 0 }
     }))
   }
   const handleAddSource = async (task: QueueTask) => {
@@ -1196,7 +1253,7 @@ export const App: React.FC = () => {
           if (chosen) setYoutube((current) => ({ ...current, directory: chosen }))
         }}
         onDownload={() => void startYouTubeDownload()}
-        onCancel={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, target: null })}
+        onCancel={() => setYoutube({ open: false, url: '', directory: '', busy: false, percent: null, error: null, quality: 'best', previewSafe: true, subtitles: false, target: null })}
       />
       <WhatsNew
         isOpen={whatsNew.open}

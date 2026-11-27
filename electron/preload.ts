@@ -135,6 +135,8 @@ export interface IElectronAPI {
   showItemInFolder: (path: string) => Promise<void>
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
+  /** A subtitle's own text, for the cues the card's CC icon and the CAPTIONS editor read. Null where it cannot be read. */
+  readTextFile: (filePath: string) => Promise<string | null>
   /** Where a download goes when the reader does not choose: the system's Downloads folder. */
   downloadsDirectory: () => Promise<string>
   /**
@@ -142,7 +144,7 @@ export interface IElectronAPI {
    *
    * The file is written by yt-dlp on this machine, so what arrives is real media the queue can probe.
    */
-  downloadYouTube: (options: { url: string; directory?: string; quality?: string; previewSafe?: boolean }) => Promise<{ files: string[]; error?: string }>
+  downloadYouTube: (options: { url: string; directory?: string; quality?: string; previewSafe?: boolean; subtitles?: boolean }) => Promise<{ files: string[]; error?: string }>
   /**
    * How a download is going: one file's percentage, and — in a playlist — which item of how many.
    *
@@ -276,8 +278,9 @@ const api: IElectronAPI = {
   showItemInFolder: (path: string) => ipcRenderer.invoke('show-item-in-folder', path),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: AppSettings) => ipcRenderer.invoke('save-settings', settings),
+  readTextFile: (filePath: string) => ipcRenderer.invoke('read-text-file', filePath),
   downloadsDirectory: () => ipcRenderer.invoke('downloads-directory'),
-  downloadYouTube: (options: { url: string; directory?: string; quality?: string; previewSafe?: boolean }) => ipcRenderer.invoke('download-youtube', options),
+  downloadYouTube: (options: { url: string; directory?: string; quality?: string; previewSafe?: boolean; subtitles?: boolean }) => ipcRenderer.invoke('download-youtube', options),
   releaseNotes: () => ipcRenderer.invoke('release-notes'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: () => ipcRenderer.invoke('check-for-update'),

@@ -1115,6 +1115,23 @@ app.whenReady().then(() => {
   // built, which is the one answer the window has to say out loud rather than play a black frame about.
   ipcMain.handle('preview-proxy-for', async (_, filePath: string) => previewProxyFor(filePath, previewProxyDeps()))
 
+  /**
+   * A text file's contents — a subtitle, for the cues the editor shows and the card reveals.
+   *
+   * Bounded, because this is a file a reader picked rather than one this app wrote: a caption file of more than a few
+   * megabytes is not a caption file, and reading it into the window would be a way to hang it.
+   */
+  ipcMain.handle('read-text-file', async (_, filePath: string) => {
+    try {
+      const stats = fs.statSync(filePath)
+      if (!stats.isFile() || stats.size > 8 * 1024 * 1024) return null
+      return fs.readFileSync(filePath, 'utf8')
+    } catch (error) {
+      logEvent('ipc', 'text read failed', { filePath, error: String(error) })
+      return null
+    }
+  })
+
   /** Where a download goes when the reader does not choose: the system's own Downloads folder. */
   ipcMain.handle('downloads-directory', () => app.getPath('downloads'))
 
@@ -1125,7 +1142,7 @@ app.whenReady().then(() => {
    * must not take it. Progress is pushed to the window as a percentage, because the download is the slow part and the
    * window is where it was asked for.
    */
-  ipcMain.handle('download-youtube', async (_, options: { url?: string; directory?: string; quality?: string; previewSafe?: boolean }) => {
+  ipcMain.handle('download-youtube', async (_, options: { url?: string; directory?: string; quality?: string; previewSafe?: boolean; subtitles?: boolean }) => {
     const url = String(options?.url || '').trim()
     const directory = options?.directory || app.getPath('downloads')
     if (!/^https?:\/\//i.test(url)) return { files: [] as string[], error: 'That is not a link.' }
@@ -1139,6 +1156,7 @@ app.whenReady().then(() => {
         // which is what makes the result play in Finder's Quick Look and in this app's own helper.
         quality: options?.quality || 'best',
         previewSafe: options?.previewSafe !== false,
+        subtitles: options?.subtitles === true,
         onProgress: (progress) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('youtube-progress', progress) },
       })
       // NAMED FOR WHAT THEY ARE. The probe's own figures go into the name — `Title [1920x1080].mp4`, `Title [48kHz
