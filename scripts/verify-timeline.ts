@@ -37,7 +37,7 @@ import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 import { mediaKind } from '../src/lib/mediaKind'
 import { EXPORT_SUFFIX, deriveOutputFilename, exportName, stableBaseName, withExtension, withoutExtension } from '../src/lib/outputNaming'
-import { cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, subtitleCodecFor, subtitleFormatOf, subtitlesForSource, toSrt } from '../src/lib/subtitles'
+import { cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, subtitleCodecFor, subtitleFormatOf, subtitleSidecarsFor, subtitlesForSource, toSrt } from '../src/lib/subtitles'
 import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, filePathsOnly, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
@@ -3195,8 +3195,26 @@ void (async () => {
   const picked = subtitlesForSource(`${beside}film.mp4`, [`${beside}film.vtt`, `${beside}film.srt`, '/elsewhere/film.srt', `${beside}film.en.srt`, `${beside}other.srt`])
   check('a clip takes the files named for it, SRT first', picked, [`${beside}film.srt`, `${beside}film.vtt`, `${beside}film.en.srt`])
   check('a subtitle in another folder belongs to another copy', picked.includes('/elsewhere/film.srt'), false)
+  // A DOWNLOAD IS RENAMED FOR ITS SPECS, and a subtitle written before that rename is still the same clip's. This
+  // is the bug a real download hit: `Title [640x360].mp4` beside `Title.en.srt` attached nothing at all.
+  check('the spec a download is renamed for does not orphan its caption', subtitlesForSource(`${beside}Me at the zoo [640x360].mp4`, [`${beside}Me at the zoo.en.srt`]), [`${beside}Me at the zoo.en.srt`])
+  check('nor does a copy number on top of that spec', subtitlesForSource(`${beside}Me at the zoo [640x360] (2).mp4`, [`${beside}Me at the zoo.en.srt`]), [`${beside}Me at the zoo.en.srt`])
+  check('and a caption renamed with its clip still matches it', subtitlesForSource(`${beside}Me at the zoo [48kHz 128k].m4a`, [`${beside}Me at the zoo [48kHz 128k].en.srt`]), [`${beside}Me at the zoo [48kHz 128k].en.srt`])
+  check('a bracket that is not a spec is part of the name', subtitlesForSource(`${beside}Holiday [2019].mp4`, [`${beside}Holiday.srt`]), [])
+  const sidecars = subtitleSidecarsFor(`${beside}Title.mp4`, `${beside}Title [1920x1080].mp4`, [
+    `${beside}Title.srt`, `${beside}Title.en.srt`, `${beside}Title.en.vtt`, `${beside}Title 2.en.srt`, `${beside}Other.en.srt`, `${beside}Title.mp4`,
+  ])
+  check('a rename carries exactly the sidecars named for the old base', sidecars.map((pair) => pair.to), [
+    `${beside}Title [1920x1080].srt`, `${beside}Title [1920x1080].en.srt`, `${beside}Title [1920x1080].en.vtt`,
+  ])
+  check('and leaves another copy\u2019s caption and another film\u2019s where they are', sidecars.length, 3)
+  check('a rename across folders carries nothing', subtitleSidecarsFor('/a/Title.mp4', '/b/Title [1080p].mp4', ['/a/Title.en.srt']), [])
   check('a language tag is part of the name it belongs to', languageOfSubtitle(`${beside}film.en.srt`), 'en')
   check('and a plain name carries none', languageOfSubtitle(`${beside}film.srt`), undefined)
+  check('a translated track reports the language, not the locale', languageOfSubtitle(`${beside}film.en-de.srt`), 'en')
+  // YOUTUBE WRITES BOTH the original auto track (`en`) and its own translation (`en-en`, "English from English").
+  // The original is the one a reader means, so it is the one the app attaches.
+  check('the original track wins over a translation of it', subtitlesForSource(`${beside}film.mp4`, [`${beside}film.en-en.srt`, `${beside}film.en.srt`]), [`${beside}film.en.srt`, `${beside}film.en-en.srt`])
 
   const srtText = '1\n00:00:01,000 --> 00:00:03,500\nHello there\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond line\nof the caption\n'
   const parsed = parseSubtitles(srtText, 'srt')

@@ -18,6 +18,7 @@ import { previewProxyFor, PreviewProxyDeps } from './previewProxy'
 import { createOpenFileBuffer, OPEN_WITH_EXTENSIONS } from './openFiles'
 import { downloadDestination, downloadRelease, fetchLatestRelease, isNewerVersion, mountRelease, releaseNotesFrom, UpdateProgress, LatestRelease } from './updater'
 import { downloadYouTube, specSuffix, uniquePath, withSpecSuffix, YTDLP_BINARY } from './youtube'
+import { subtitleSidecarsFor } from '../src/lib/subtitles'
 import { UPDATE_RELEASES_PAGE } from './updater'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -1168,7 +1169,28 @@ app.whenReady().then(() => {
           const suffix = specSuffix(await probeFile(file))
           if (!suffix) { named.push(file); continue }
           const target = uniquePath(withSpecSuffix(file, suffix), fs.existsSync)
-          if (target !== file) fs.renameSync(file, target)
+          if (target !== file) {
+            // THE SUBTITLES WERE NAMED FOR THE FILE AS YT-DLP WROTE IT. Renaming only the media would orphan
+            // them: `Title.en.srt` stops belonging to `Title [1920x1080].mp4` for this app AND for every player
+            // that matches a subtitle by its name. They follow the file to its new base, before the window is
+            // told what arrived — and before it goes looking for a subtitle beside it.
+            let siblings: string[] = []
+            try {
+              const directory = path.dirname(file)
+              siblings = fs.readdirSync(directory).map((entry) => path.join(directory, entry))
+            } catch (error) {
+              logEvent('youtube', 'could not list the download folder for subtitles', { file, error: String(error) })
+            }
+            fs.renameSync(file, target)
+            subtitleSidecarsFor(file, target, siblings).forEach(({ from, to }) => {
+              try {
+                // A sidecar already sitting on the new name belongs to something else: never destroy it.
+                if (!fs.existsSync(to)) fs.renameSync(from, to)
+              } catch (error) {
+                logEvent('youtube', 'could not rename a subtitle beside a download', { from, to, error: String(error) })
+              }
+            })
+          }
           named.push(target)
         } catch (error) {
           logEvent('youtube', 'could not name a download', { file, error: String(error) })

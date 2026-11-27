@@ -79,6 +79,30 @@ export const isPlaylistUrl = (url: string): boolean => {
 export const outputTemplate = (playlist: boolean): string =>
   playlist ? '%(playlist_index)02d - %(title)s.%(ext)s' : '%(title)s.%(ext)s'
 
+/**
+ * The arguments that fetch a video's captions as SRT beside it.
+ *
+ * BOTH KINDS are asked for, because a reader asking for subtitles wants the ones that exist: YouTube's uploaded
+ * tracks and its auto-generated ones (which are what most videos have, and which yt-dlp fetches only when asked
+ * for by `--write-auto-subs`). `en.*` is a LANGUAGE REGEX, so it also matches the auto-translated English track
+ * of a video spoken in another language (`en-de`, `en-es`) as well as the ordinary `en` — which is why it is
+ * used rather than a fixed list, and why two English sidecars can land for one video. The app attaches the best
+ * one; the folder keeps the rest.
+ *
+ * `--ignore-errors` IS NOT A CONVENIENCE. Measured against a video with only auto-generated captions: one of
+ * the matched subtitle requests answered `HTTP Error 429: Too Many Requests`, and yt-dlp aborted the run before
+ * the MEDIA was fetched at all — the reader lost the video because a caption failed. With this flag the video
+ * downloads and the captions that answered are written (measured: the 429 fell through, `en` and `en-en` arrived
+ * as SRT, exit 0). A video that really is unavailable still exits non-zero, so a genuine failure is still a
+ * failure.
+ */
+export const subtitleArguments = (): string[] => [
+  '--write-subs', '--write-auto-subs',
+  '--sub-langs', 'en.*',
+  '--convert-subs', 'srt',
+  '--ignore-errors',
+]
+
 /** `[download] Downloading item 3 of 12`, which is the only place a playlist's own progress is said. */
 export const playlistItem = (line: string): { item: number; total: number } | null => {
   const match = /\[download\]\s+Downloading item (\d+) of (\d+)/.exec(line)

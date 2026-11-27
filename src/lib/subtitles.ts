@@ -38,10 +38,32 @@ export const subtitleBaseName = (filePath: string): string => {
 export const languageOfSubtitle = (filePath: string): string | undefined => {
   const name = (filePath.split('/').pop() || '').replace(/\.[^.]+$/, '')
   const tag = /\.[a-z]{2,3}(?:[-_][A-Za-z]{2,4})?$/i.exec(name)?.[0]?.slice(1)
-  return tag ? tag.toLowerCase() : undefined
+  // The PRIMARY subtag, because a stream's language is a language rather than a locale: `en-en` and `pt-BR` are how
+  // yt-dlp names YouTube's translated tracks, and `en-en` is not a tag any player reads as English.
+  return tag ? tag.split(/[-_]/)[0].toLowerCase() : undefined
 }
 
 export const mediaBaseName = (filePath: string): string => (filePath.split('/').pop() || filePath).replace(/\.[^.]+$/, '')
+
+/**
+ * A media base with THIS APP'S OWN additions taken off: `Me at the zoo [640x360]` → `Me at the zoo`, and
+ * `Me at the zoo [1920x1080] (2)` → `Me at the zoo`.
+ *
+ * A download is renamed for the specs it turned out to have, and a re-download of the same specs gets a copy
+ * number. Both are things this app adds to a name, so both are things a reader's subtitle — `Me at the zoo.en.srt`,
+ * which yt-dlp wrote before the rename — must be allowed to ignore. Measured: without this, a download with
+ * captions attached none at all, because `Title [640x360].mp4` and `Title.en.srt` share no base name.
+ *
+ * The bracket must hold a SPEC rather than any word, so a film really called `Holiday [2019].mp4` does not take
+ * `Holiday.srt` from a different film beside it.
+ */
+const withoutSpecSuffix = (base: string): string => base
+  .replace(/\s\(\d+\)$/, '')
+  .replace(/\s\[\d+x\d+\]$/i, '')
+  .replace(/\s\[\d+kHz(?:\s[\d.]+k)?\]$/i, '')
+
+/** The base name a subtitle is matched against, from either side of the pair and in one spelling. */
+const matchBase = (base: string): string => withoutSpecSuffix(base).toLowerCase()
 
 /**
  * The subtitle files that belong to a media file, best first.
@@ -53,20 +75,56 @@ export const mediaBaseName = (filePath: string): string => (filePath.split('/').
  */
 export const subtitlesForSource = (sourcePath: string, candidates: string[]): string[] => {
   const directory = sourcePath.slice(0, sourcePath.lastIndexOf('/') + 1)
-  const base = mediaBaseName(sourcePath).toLowerCase()
+  const base = matchBase(mediaBaseName(sourcePath))
   const matches = candidates.filter((candidate) => {
     if (!isSubtitlePath(candidate)) return false
     if (!candidate.startsWith(directory)) return false
-    return subtitleBaseName(candidate).toLowerCase() === base
+    return matchBase(subtitleBaseName(candidate)) === base
   })
   const rank = (filePath: string) => {
     const format = subtitleFormatOf(filePath) || 'srt'
     const byFormat = SUBTITLE_PRIORITY.indexOf(format)
     // A file named exactly for the clip wins over one with a language tag, and the tag itself orders the rest.
     const exact = subtitleBaseName(filePath).toLowerCase() === (filePath.split('/').pop() || '').replace(/\.[^.]+$/, '').toLowerCase() ? 0 : 1
-    return exact * 10 + (byFormat < 0 ? 9 : byFormat)
+    // A COMPOUND tag is a translation rather than the track the video speaks. `en` is the original auto-generating
+    // English track; `en-en` ("English from English") and `en-de` ("English from German") are YouTube's own
+    // translations, and the original is what a reader means when both arrive beside one download. Read off the
+    // NAME rather than off `languageOfSubtitle`, which answers a stream's primary subtag and so cannot tell them apart.
+    const rawName = (filePath.split('/').pop() || '').replace(/\.[^.]+$/, '')
+    const compound = /\.[a-z]{2,3}[-_][A-Za-z]{2,4}$/i.test(rawName) ? 1 : 0
+    return exact * 100 + (byFormat < 0 ? 9 : byFormat) * 10 + compound
   }
   return [...new Set(matches)].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+}
+
+/**
+ * The subtitle files that have to FOLLOW a media file when it is renamed, as `from`/`to` pairs.
+ *
+ * Renaming a media file without its sidecars is not a cosmetic change: a subtitle is found by its name, by this
+ * app and by every player, so `Title.en.srt` stops belonging to `Title [1920x1080].mp4` the moment the video
+ * is renamed. The pairs are worked out here rather than where the rename happens because the rule is about
+ * SUBTITLE NAMES, and it is the same rule `subtitlesForSource` matches them with.
+ *
+ * Only files that begin with the old base and a dot are moved, so a second copy's sidecar (`Title 2.srt`) and an
+ * unrelated film's (`Holiday.srt`) are left exactly where they are. The caller owns the filesystem: an existing
+ * destination is not overwritten here.
+ */
+export const subtitleSidecarsFor = (oldMedia: string, newMedia: string, candidates: string[]): Array<{ from: string; to: string }> => {
+  const oldSlash = oldMedia.lastIndexOf('/')
+  const newSlash = newMedia.lastIndexOf('/')
+  const directory = oldMedia.slice(0, oldSlash + 1)
+  // A rename that crosses directories is not this rule's business.
+  if (!directory || directory !== newMedia.slice(0, newSlash + 1)) return []
+  const oldBase = mediaBaseName(oldMedia)
+  const newBase = mediaBaseName(newMedia)
+  if (!oldBase || !newBase || oldBase === newBase) return []
+  return candidates.flatMap((candidate) => {
+    if (!isSubtitlePath(candidate) || !candidate.startsWith(directory)) return []
+    const name = candidate.slice(directory.length)
+    // `.` and not any prefix: `Title 2.en.srt` is another copy's subtitle, not this one's.
+    if (!name.startsWith(`${oldBase}.`)) return []
+    return [{ from: candidate, to: `${directory}${newBase}${name.slice(oldBase.length)}` }]
+  })
 }
 
 /** One caption. Times are SECONDS, the same unit the timeline and the monitor work in. */

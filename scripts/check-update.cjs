@@ -8,7 +8,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { UPDATE_RELEASES_API, UPDATE_RELEASES_PAGE, isNewerVersion, versionSegments, releaseFromPayload, fetchLatestRelease, downloadDestination, downloadRelease, releaseNotesFrom } = require('./.updater.cjs')
-const { YTDLP_BINARY, downloadPercent, finishedFile, formatSelector, YOUTUBE_QUALITIES, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath, isPlaylistUrl, outputTemplate, playlistItem } = require('./.youtube.cjs')
+const { YTDLP_BINARY, downloadPercent, finishedFile, formatSelector, YOUTUBE_QUALITIES, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath, isPlaylistUrl, outputTemplate, playlistItem, subtitleArguments } = require('./.youtube.cjs')
 
 const problems = []
 const check = (label, ok, detail) => {
@@ -153,6 +153,12 @@ const main = async () => {
   const m4aArgs = downloadArguments(parseQuality('audio-m4a'), true)
   check('an m4a download asks for AAC first', m4aArgs.format.startsWith('ba[acodec^=mp4a]') && m4aArgs.extra.includes('m4a'), `${m4aArgs.format} ${m4aArgs.extra.join(' ')}`)
   check('a picture download keeps the preview-safe selector', downloadArguments(parseQuality('1080'), true).format.includes('[vcodec^=avc1]') && downloadArguments(parseQuality('1080'), false).format === 'bv*[height<=1080]+ba/b[height<=1080]', downloadArguments(parseQuality('1080'), false).format)
+  // THE CAPTION REQUEST, asserted because it is the one place a rate-limited track can cost the whole download:
+  // measured, without `--ignore-errors` a 429 on one matched subtitle aborted before the video was fetched.
+  const subtitleArgs = subtitleArguments().join(' ')
+  check('a subtitle request asks for BOTH uploaded and auto-generated captions', ['--write-subs', '--write-auto-subs'].every((flag) => subtitleArgs.includes(flag)), subtitleArgs)
+  check('and for SRT rather than a webvtt sidecar', subtitleArgs.includes('--convert-subs srt'), subtitleArgs)
+  check('and a caption that fails may not take the video with it', subtitleArgs.includes('--ignore-errors'), subtitleArgs)
 
   // THE NAME CARRIES THE SPECS, which is also what stops a second quality landing on the first file.
   check('a picture is named for its own size', specSuffix({ videoStreams: [{ resolution: '1920x1080' }], audioStreams: [{ sampleRate: 48000, bitrate: '128k' }] }), '[1920x1080]')

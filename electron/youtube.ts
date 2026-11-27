@@ -50,8 +50,8 @@ export const finishedFile = (line: string): string | null => {
   return trimmed
 }
 
-export { YOUTUBE_QUALITIES, formatSelector, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath, isPlaylistUrl, outputTemplate, playlistItem } from '../src/lib/youtubeOptions'
-import { downloadArguments, isPlaylistUrl, outputTemplate, parseQuality, playlistItem } from '../src/lib/youtubeOptions'
+export { YOUTUBE_QUALITIES, formatSelector, parseQuality, downloadArguments, specSuffix, withSpecSuffix, uniquePath, isPlaylistUrl, outputTemplate, playlistItem, subtitleArguments } from '../src/lib/youtubeOptions'
+import { downloadArguments, isPlaylistUrl, outputTemplate, parseQuality, playlistItem, subtitleArguments } from '../src/lib/youtubeOptions'
 
 export interface YouTubeDownload {
   url: string
@@ -92,10 +92,9 @@ export const downloadYouTube = ({ url, directory, ffmpegDirectory, quality, prev
     '-f', requested.format,
     ...requested.extra,
     '-o', path.join(directory, outputTemplate(playlist)),
-    // SUBTITLES, as SRT beside the media. Both kinds are asked for — uploaded and auto-generated — because a reader
-    // asking for subtitles wants the ones that exist, and English is the language this app's own UI is in; yt-dlp skips
-    // any item that has none rather than failing the download.
-    ...(subtitles ? ['--write-subs', '--write-auto-subs', '--sub-langs', 'en.*,en', '--convert-subs', 'srt'] : []),
+    // SUBTITLES, as SRT beside the media. See `subtitleArguments` — both kinds are asked for, and a caption that
+    // cannot be fetched must never cost the video.
+    ...(subtitles ? subtitleArguments() : []),
     ...(ffmpegDirectory ? ['--ffmpeg-location', ffmpegDirectory] : []),
     url,
   ]
