@@ -1221,13 +1221,32 @@ app.whenReady().then(async () => {
       if (captions.heads !== 1) problems.push(`a job with captions drew ${captions.heads} caption lane head(s) rather than one`)
       if (captions.clips !== 1) problems.push(`the captioned job drew ${captions.clips} clips rather than the one it has \u2014 a subtitle must never become a clip`)
       if (captions.blocks !== 2) problems.push(`the lane drew ${captions.blocks} cue block(s) rather than the two on the job: ${JSON.stringify(captions.blockTexts)}`)
-      if (!captions.blockTexts.includes('FIRST CAPTION')) problems.push(`the cue blocks carry ${JSON.stringify(captions.blockTexts)} rather than the caption's own words`)
+      if (!String(captions.blockTexts).includes('FIRST CAPTION')) problems.push(`the cue blocks carry ${JSON.stringify(captions.blockTexts)} rather than the caption's own words`)
+      if (captions.toggle && captions.toggle.checked) problems.push('BURN-IN CAPTIONS starts checked, though this job has not asked to burn anything')
+      if (captions.toggle && captions.toggle.disabled) problems.push('BURN-IN CAPTIONS is locked for a job that has a subtitle and an encoded picture')
+      if (!captions.burnIn || captions.burnIn.checked !== true || captions.burnIn.disabled !== false) problems.push(`turning BURN-IN CAPTIONS on left it ${JSON.stringify(captions.burnIn)}`)
+      if (captions.appliedBurnIn !== true) problems.push(`BURN-IN CAPTIONS did not reach the preset: ${JSON.stringify(captions.appliedBurnIn)}`)
+      // THE LANE'S MARK IS THE PREVIEW SWITCH.
+      const head = captions.ccHead
+      if (!head || head.shown !== true) problems.push(`the caption lane's mark starts ${JSON.stringify(head && head.shown)} rather than shown`)
+      else {
+        if (head.hidden !== true) problems.push('clicking the caption lane\u2019s mark did not invert it to hidden')
+        if (!head.overlayHidden) problems.push('the caption is still drawn over the monitor after it was hidden')
+        if (!head.overlayShownAgain) problems.push('the caption did not come back when the mark was clicked again')
+      }
+      // THE CUE'S OWN MENU, with the one command it must carry.
+      const menu = captions.cueMenu
+      if (!menu) problems.push('the caption block reported no context menu')
+      else {
+        if (String(menu.head) !== 'CAPTION 1') problems.push(`the caption menu is headed ${JSON.stringify(menu.head)} rather than CAPTION 1`)
+        if (!(menu.items || []).includes('REMOVE CAPTION')) problems.push(`the caption menu offers ${JSON.stringify(menu.items)} rather than REMOVE CAPTION`)
+        if (menu.rowsAfterRemove !== 1 || menu.blocksAfterRemove !== 1) problems.push(`REMOVE CAPTION left ${JSON.stringify(menu.rowsAfterRemove)} row(s) and ${JSON.stringify(menu.blocksAfterRemove)} block(s)`)
+        if (menu.cuesAfterRemove !== 1) problems.push(`REMOVE CAPTION did not reach the queue: the job still carries ${JSON.stringify(menu.cuesAfterRemove)} cues`)
+      }
       // The cue's block and the skimmer are two readings of the SAME figure, so a click that seeks has to leave the
       // skimmer exactly on the block's own left edge. Read as a string comparison rather than an inequality: a
       // skimmer left where it was, or moved to a nearby cue, both pass an inequality and neither is the rule.
       if (String(captions.playheadOnCue) !== String(captions.secondCueLeft)) problems.push(`clicking a cue left the skimmer at ${JSON.stringify(captions.playheadOnCue)} rather than on the block at ${JSON.stringify(captions.secondCueLeft)} (was ${JSON.stringify(captions.playheadAtRest)})`)
-      if (captions.toggle && !captions.toggle.checked) problems.push('EXPORT CAPTIONS reads off for an mp4 job that has captions')
-      if (captions.toggle && !captions.toggle.disabled) problems.push('EXPORT CAPTIONS is offered as a switch, though the container is what decides it')
       if (captions.rows !== 2) problems.push(`the CAPTIONS tab drew ${captions.rows} cue row(s) rather than the two on the job`)
       // THE PANE FITS ITS ROWS. Measured before this pass: the pane was 329 wide with 357 of content, every row overran
       // it, and focusing a field scrolled the hidden overflow sideways so the track's own name was cut off on the left.
@@ -1262,6 +1281,16 @@ app.whenReady().then(async () => {
       if (!style || style.color !== 'amber' || style.size !== 9) problems.push(`the caption's appearance did not reach the queue: ${JSON.stringify(style)}`)
       if (captions.appliedText !== 'EDITED CAPTION') problems.push(`an edited caption did not reach the queue: ${JSON.stringify(captions.appliedText)}`)
       if (captions.appliedCues !== 2) problems.push(`the applied job carries ${captions.appliedCues} cues rather than two`)
+    }
+    // A VOICE TAKE: armed green, recorded red, and landed as a track.
+    const take = result.take
+    if (!take) problems.push('the take drive reported nothing')
+    else {
+      if (!take.armed?.offered) problems.push('the empty audio lane\u2019s panel offered no REC AUDIO')
+      if (!take.armed?.present || !String(take.armed.state).includes('is-standby')) problems.push(`REC AUDIO left no armed dot: ${JSON.stringify(take.armed)}`)
+      if (!String(take.recording?.state).includes('is-recording') || take.recording?.pressed !== 'true') problems.push(`SHIFT+SPACE did not start the take: ${JSON.stringify(take.recording)}`)
+      if (!take.dotGone) problems.push('the dot is still drawn after the take was stopped and saved')
+      if (take.patchTracks !== 1 || take.patchPath !== '/tmp/take.wav') problems.push(`the take did not reach the job as a track: ${JSON.stringify(take.patchTracks)} ${JSON.stringify(take.patchPath)}`)
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }

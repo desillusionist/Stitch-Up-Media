@@ -37,7 +37,7 @@ import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 import { mediaKind } from '../src/lib/mediaKind'
 import { EXPORT_SUFFIX, deriveOutputFilename, exportName, stableBaseName, withExtension, withoutExtension } from '../src/lib/outputNaming'
-import { CAPTION_COLORS, CAPTION_FONTS, DEFAULT_CAPTION_STYLE, captionColorValue, captionFontStack, clampCaptionSize, cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, moveCueEdge, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, subtitleCodecFor, subtitleFormatOf, subtitleSidecarsFor, subtitlesForSource, toSrt } from '../src/lib/subtitles'
+import { CAPTION_COLORS, CAPTION_FONTS, DEFAULT_CAPTION_STYLE, burnInFilter, burnInStyle, captionColorValue, captionFontStack, clampCaptionSize, cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, moveCueEdge, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, subtitleCodecFor, subtitleFormatOf, subtitleSidecarsFor, subtitlesForSource, toSrt } from '../src/lib/subtitles'
 import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, filePathsOnly, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
@@ -3274,6 +3274,12 @@ void (async () => {
   check('a font falls back to sans rather than to nothing', [captionFontStack('sans').startsWith('system-ui'), captionFontStack('nonsense' as never) === captionFontStack('sans')], [true, true])
   check('a colour falls back to white', [captionColorValue('white'), captionColorValue('nonsense' as never)], ['#ffffff', '#ffffff'])
   check('every offered colour and font is labelled', [CAPTION_COLORS.length, CAPTION_FONTS.length], [4, 4])
+  // A BURNED CAPTION IS DRAWN BY LIBASS, not by the window's CSS, so the look has to be translated: a size that is a
+  // share of the picture becomes a figure on libass's 288-line script, and the colours become ASS's `&HBBGGRR&`.
+  check('a burned caption asks libass for the same look', burnInStyle(DEFAULT_CAPTION_STYLE), 'FontName=Arial,FontSize=17,Bold=0,PrimaryColour=&H00FFFFFF&,BorderStyle=4,Outline=1,Shadow=0,Alignment=2,MarginV=18,BackColour=&H80000000&')
+  check('bold, amber and no box are written as libass reads them', burnInStyle({ ...DEFAULT_CAPTION_STYLE, bold: true, color: 'amber', background: false, size: 10 }), 'FontName=Arial,FontSize=29,Bold=1,PrimaryColour=&H004DB8FF&,BorderStyle=1,Outline=1,Shadow=0,Alignment=2,MarginV=18')
+  check('the burn filter names its own file and style', burnInFilter('/tmp/a.srt', DEFAULT_CAPTION_STYLE), `subtitles=filename='/tmp/a.srt':force_style='FontName=Arial,FontSize=17,Bold=0,PrimaryColour=&H00FFFFFF&,BorderStyle=4,Outline=1,Shadow=0,Alignment=2,MarginV=18,BackColour=&H80000000&'`)
+  check('and the whole filter carries no spaces for the option parser to split on', /\s/.test(burnInFilter('/tmp/a.srt', { ...DEFAULT_CAPTION_STYLE, font: 'crt' })), false)
 
   // A PLACED CUE CARRIES THE CLIP IT CAME THROUGH, which is what a dragged edge is turned back by: the window's
   // start, its in point, and SOURCE seconds per TIMELINE second.

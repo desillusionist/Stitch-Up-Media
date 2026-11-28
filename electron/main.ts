@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol, Menu, MenuItem, net } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, Menu, MenuItem, net, systemPreferences } from 'electron'
 import type { MessageBoxOptions } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1135,6 +1135,53 @@ app.whenReady().then(() => {
 
   /** Where a download goes when the reader does not choose: the system's own Downloads folder. */
   ipcMain.handle('downloads-directory', () => app.getPath('downloads'))
+
+  /**
+   * The microphone, asked for before a take rather than at the moment the first sample arrives.
+   *
+   * macOS answers this itself, and an app that has never asked cannot capture: `askForMediaAccess` is what puts
+   * the system's own dialog up and records the answer, and asking it here (in the main process, where Electron's
+   * TCC bridge lives) means the window knows whether it may open a capture before it builds one.
+   */
+  ipcMain.handle('request-microphone', async () => {
+    if (process.platform !== 'darwin') return true
+    try {
+      if (systemPreferences.getMediaAccessStatus('microphone') === 'granted') return true
+      return await systemPreferences.askForMediaAccess('microphone')
+    } catch (error) {
+      logEvent('recording', 'microphone permission failed', { error: String(error) })
+      return false
+    }
+  })
+
+  /**
+   * A recorded take, written as a WAV in the app's own recordings folder.
+   *
+   * Chromium's recorder writes WebM/Opus, which is a PICTURE container to this app's own media rules — a file with
+   * no frame in it would be filed as a source with no picture and drawn as a broken video. One conversion, with the
+   * app's own ffmpeg, gives a take every reader already speaks: 48 kHz, stereo, 16-bit. The take is kept under
+   * `userData`, not the preview cache, because it is the reader's material and CLEAR CACHE must never take it.
+   */
+  ipcMain.handle('save-recording', async (_, taskId: string, data: ArrayBuffer, mimeType: string) => {
+    const id = String(taskId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || 'take'
+    const directory = path.join(app.getPath('userData'), 'recordings')
+    const extension = /ogg/i.test(String(mimeType || '')) ? 'ogg' : 'webm'
+    const input = path.join(os.tmpdir(), `stitch_take_${id}_${Date.now()}.${extension}`)
+    try {
+      fs.mkdirSync(directory, { recursive: true })
+      fs.writeFileSync(input, Buffer.from(data))
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-').replace(' ', '-')
+      const output = uniquePath(path.join(directory, `Take ${stamp}.wav`), fs.existsSync)
+      await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-vn', '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le', output], 120000, FFMPEG_BINARY)
+      logEvent('recording', 'take saved', { taskId: id, path: output })
+      return { path: output }
+    } catch (error) {
+      logEvent('recording', 'take could not be saved', { taskId: id, error: String(error) })
+      return { path: null, error: String(error) }
+    } finally {
+      try { fs.unlinkSync(input) } catch { /* never written, or already gone */ }
+    }
+  })
 
   /**
    * A link, downloaded into a folder the reader chose, and answered with the files it wrote.

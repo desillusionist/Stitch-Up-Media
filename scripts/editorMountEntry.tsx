@@ -57,7 +57,9 @@ const bridge = {
   onSourceTiming: () => () => undefined,
   onSequencePreviewReady: () => () => undefined,
   onQueueFinished: () => () => undefined,
-  probeMedia: async (path: string) => (/[.](png|jpe?g|gif|tiff?|bmp|webp|heic|heif|avif)$/i.test(String(path))
+  probeMedia: async (path: string) => (String(path) === '/tmp/take.wav'
+    ? { format: 'wav', duration: 3, size: 0, bitrate: 0, videoStreams: [], audioStreams: [{ codec: 'pcm_s16le', channels: 2, sampleRate: 48000 }] }
+    : /[.](png|jpe?g|gif|tiff?|bmp|webp|heic|heif|avif)$/i.test(String(path))
     ? { format: 'png', duration: 0, size: 0, bitrate: 0, videoStreams: [], audioStreams: [] }
     : {
       format: 'mp4', duration: 12, size: 0, bitrate: 0,
@@ -79,6 +81,10 @@ const bridge = {
   // what answer that.
   visualizationStill: async (options: unknown) => { stillRequests.push(options); return 'data:image/jpeg;base64,DRAWING-SENTINEL' },
   selectImage: async () => '/tmp/chosen.png',
+  // THE MICROPHONE. The system's own consent is not this harness's business: the answer is yes, and the capture
+  // itself is stubbed so a take can be driven without a device.
+  requestMicrophone: async () => true,
+  saveRecording: async (_taskId: string, _data: ArrayBuffer, _mimeType: string) => ({ path: '/tmp/take.wav' }),
 }
 // A cast through `unknown`, because the project declares `window.electronAPI` globally as the real
 // bridge and a stub is deliberately not that: it answers the calls the editor makes on mount and
@@ -97,6 +103,25 @@ const bridge = {
 const CLIP_FIXTURE = (window as unknown as { __clipFixture?: string }).__clipFixture || '/tmp/clip.mp4'
 /** A clip that CARRIES a soundtrack, for the embedded-audio controls, which a silent fixture cannot drive. */
 const CLIP_AUDIO = (window as unknown as { __clipAudioFixture?: string }).__clipAudioFixture || '/tmp/clip-audio.mp4'
+
+/**
+ * A RECORDER THAT BEHAVES LIKE CHROMIUM'S for the length of one take: a chunk while it runs, then `stop`.
+ *
+ * `getUserMedia` and `MediaRecorder` are the two things a take needs and the two this page cannot really have — a
+ * headless window has no device, and a permission prompt would stop the drive. The state machine above them is the
+ * window's own and is what is being checked: armed, recording, saved, added.
+ */
+class StubRecorder {
+  static isTypeSupported = () => true
+  mimeType = 'audio/webm'
+  ondataavailable: ((event: { data: Blob }) => void) | null = null
+  onstop: (() => void) | null = null
+  constructor(_stream: unknown, _options?: unknown) { /* the same shape; nothing to open */ }
+  start() { window.setTimeout(() => this.ondataavailable?.({ data: new Blob([new Uint8Array(8)]) }), 10) }
+  stop() { window.setTimeout(() => this.onstop?.(), 10) }
+}
+Object.defineProperty(window, 'MediaRecorder', { value: StubRecorder, configurable: true })
+Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => undefined }] }) }, configurable: true })
 /** A plain sound file, for the per-clip LEVEL the inspector offers on an audio source. */
 const SOUND_FIXTURE = (window as unknown as { __soundFixture?: string }).__soundFixture || '/tmp/sound.wav'
 
@@ -224,7 +249,7 @@ const host = document.createElement('div')
 document.body.appendChild(host)
 createRoot(host).render(React.createElement(EditJobApp))
 
-const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; pinch?: unknown; customFrame?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; captions?: unknown; blankPreview?: unknown } = { errors }
+const result: { errors: string[]; waiting?: unknown; rendered?: unknown; audio?: unknown; stitch?: unknown; cover?: unknown; reentry?: unknown; imageOutput?: unknown; depth?: unknown; videoToAudio?: unknown; scrub?: unknown; preview?: unknown; previewChrome?: unknown; speedWheel?: unknown; scrubReadout?: unknown; zoomPanel?: unknown; stampEditor?: unknown; transportIcons?: unknown; scrubWheel?: unknown; imageSource?: unknown; imageSequence?: unknown; duplicate?: unknown; copyFraming?: unknown; timelineGestures?: unknown; timelineSourceCommands?: unknown; timelineDuplicate?: unknown; copyNumbers?: unknown; splitView?: unknown; audioLane?: unknown; quickLookMerge?: unknown; clipRepairs?: unknown; replaceBlank?: unknown; replaceSilence?: unknown; replaceMixed?: unknown; stampMenu?: unknown; modeChange?: unknown; emptyLane?: unknown; audioAsk?: unknown; soundStitchAdd?: unknown; trackDelete?: unknown; keepIt?: unknown; audioFadePreview?: unknown; pinch?: unknown; customFrame?: unknown; clipMute?: unknown; soundClipMute?: unknown; comboMute?: unknown; videoAdd?: unknown; stitchMute?: unknown; seqMute?: unknown; comboMode?: unknown; trackOutput?: unknown; embeddedAudio?: unknown; soundLevel?: unknown; trackGain?: unknown; timelineGroups?: unknown; splitClip?: unknown; captions?: unknown; take?: unknown; blankPreview?: unknown } = { errors }
 const carries = window as unknown as Record<string, unknown>
 carries.__MOUNT_RESULT = result
 carries.__MOUNT_DONE = false
@@ -2536,12 +2561,27 @@ const drive = async () => {
   // so the tab is put back deliberately rather than assumed.
   clickTab('EXPORT')
   await wait(120)
-  const captionsToggle = toggleStates()['EXPORT CAPTIONS'] ?? null
+  const captionsToggle = toggleStates()['BURN-IN CAPTIONS'] ?? null
+  // THE SWITCH IS A SWITCH NOW. This job has a subtitle and an encoded picture, so BURN-IN CAPTIONS has to be a
+  // real control rather than the locked readout it was, and turning it on has to reach the preset.
+  toggleInput('BURN-IN CAPTIONS')?.click()
+  await wait(150)
+  const burnIn = { checked: Boolean(toggleInput('BURN-IN CAPTIONS')?.checked), disabled: Boolean(toggleInput('BURN-IN CAPTIONS')?.disabled) }
   const playheadAtRest = (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
   const secondCueLeft = cueBlocks[1]?.style.left ?? null
   cueBlocks[1]?.click()
   await wait(250)
   const playheadOnCue = (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
+  // THE LANE'S CC MARK IS THE PREVIEW SWITCH: inverting it hides the words, and inverting it back shows them.
+  const ccHead = document.querySelector('.timeline-lane-head.is-captions') as HTMLElement | null
+  const ccHeadShown = ccHead?.classList.contains('is-shown') ?? null
+  ccHead?.click()
+  await wait(150)
+  const ccHeadHidden = ccHead?.classList.contains('is-hidden') ?? null
+  const overlayHidden = !document.querySelector('.monitor-caption')
+  ccHead?.click()
+  await wait(150)
+  const overlayShownAgain = Boolean(document.querySelector('.monitor-caption'))
   clickTab('CAPTIONS')
   await wait(150)
   const content = document.querySelector('.export-content') as HTMLElement | null
@@ -2633,7 +2673,23 @@ const drive = async () => {
   const captionPatch = applied[applied.length - 1] as {
     subtitles?: Record<string, { cues: Array<{ text: string; start: number; end: number }> }>
     captionStyle?: { color?: string; size?: number; font?: string; background?: boolean; bold?: boolean }
+    preset?: { captionBurnIn?: boolean }
   } | undefined
+  // THE CUE'S OWN MENU, on the block it belongs to. REMOVE CAPTION is the command a reader looks for where the cue
+  // is drawn, and it has to reach the job like the tab's own delete.
+  ;(document.querySelector('.timeline-cue') as HTMLElement | null)?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 90, clientY: 320 }))
+  await wait(150)
+  const cueMenuHead = (document.querySelector('.timeline-menu .timeline-menu-head') as HTMLElement | null)?.textContent ?? null
+  const cueMenuItems = [...document.querySelectorAll('.timeline-menu button')].map((button) => button.textContent?.trim() ?? '')
+  const removeCaption = [...document.querySelectorAll('.timeline-menu button')].find((button) => button.textContent?.trim() === 'REMOVE CAPTION') as HTMLButtonElement | undefined
+  removeCaption?.click()
+  await wait(300)
+  const rowsAfterRemove = document.querySelectorAll('.caption-row').length
+  const blocksAfterRemove = document.querySelectorAll('.timeline-cue').length
+  const applyRemoved = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyRemoved?.click()
+  await wait(300)
+  const removedPatch = applied[applied.length - 1] as { subtitles?: Record<string, { cues: unknown[] }> } | undefined
   result.captions = {
     headsBefore: captionHeadsBefore,
     blocksBefore: captionBlocksBefore,
@@ -2649,14 +2705,18 @@ const drive = async () => {
     times: captionTimes,
     firstText: firstCaptionText,
     toggle: captionsToggle,
+    burnIn,
+    ccHead: { shown: ccHeadShown, hidden: ccHeadHidden, overlayHidden, overlayShownAgain },
     groups: captionGroups,
     overlay: overlayBefore,
     overlayAfter,
     draggedTimes,
+    cueMenu: { head: cueMenuHead, items: cueMenuItems, rowsAfterRemove, blocksAfterRemove, cuesAfterRemove: removedPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.length ?? null },
     appliedText: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.[0]?.text ?? null,
     appliedCues: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.length ?? null,
     appliedEnd: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.[0]?.end ?? null,
     appliedStyle: captionPatch?.captionStyle ?? null,
+    appliedBurnIn: captionPatch?.preset?.captionBurnIn ?? null,
   }
 
   // THE ZOOM PANEL ITSELF, read last so changing the zoom for the CUSTOM field disturbs nothing before it. The
@@ -2735,6 +2795,40 @@ const drive = async () => {
       fieldOnFocus,
       fieldFocusedAfterEnter,
     }
+  }
+
+  // A VOICE TAKE. The dot IS the state: pulsing green while the microphone is armed and nothing is being written,
+  // solid red while it is. The keyboard drives it the way the tooltip says — SHIFT+SPACE to start, SPACE to stop —
+  // and what comes out is a track on the job rather than a source spliced into it.
+  flushEdits()
+  await wait(200)
+  arrive(task, 'take')
+  await wait(900)
+  const takeLaneBodies = [...document.querySelectorAll('.timeline-lane')] as HTMLElement[]
+  const emptyAudioLane = takeLaneBodies[1]
+  ;(emptyAudioLane?.querySelector('.boundary-add.is-lane-empty') as HTMLElement | null)?.click()
+  await wait(200)
+  const recButton = [...document.querySelectorAll('.boundary-editor button')].find((button) => button.textContent?.trim() === 'REC AUDIO') as HTMLButtonElement | undefined
+  recButton?.click()
+  await wait(350)
+  const dot = () => document.querySelector('.lane-rec') as HTMLElement | null
+  const armed = { offered: Boolean(recButton), present: Boolean(dot()), state: dot()?.className ?? null, label: dot()?.getAttribute('aria-label') ?? null }
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', shiftKey: true, bubbles: true, cancelable: true }))
+  await wait(250)
+  const recording = { state: dot()?.className ?? null, pressed: dot()?.getAttribute('aria-pressed') ?? null }
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true }))
+  await wait(800)
+  const dotGone = !dot()
+  const applyTake = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyTake?.click()
+  await wait(300)
+  const takePatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ path?: string }> } | undefined
+  result.take = {
+    armed,
+    recording,
+    dotGone,
+    patchTracks: takePatch?.additionalAudioTracks?.length ?? null,
+    patchPath: takePatch?.additionalAudioTracks?.[0]?.path ?? null,
   }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true

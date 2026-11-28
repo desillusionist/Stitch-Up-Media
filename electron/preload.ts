@@ -151,6 +151,21 @@ export interface IElectronAPI {
    * `percent: null` means it is between phases, which is not the same as zero.
    */
   onYouTubeProgress: (callback: (progress: { percent: number | null; item?: number; total?: number }) => void) => () => void
+  /**
+   * Asks macOS for the microphone, answering whether it may be opened.
+   *
+   * The question is the system's, not the app's: the renderer cannot ask for a take until TCC has an answer, and a
+   * refused answer must be a clean "no" rather than a capture that silently records nothing.
+   */
+  requestMicrophone: () => Promise<boolean>
+  /**
+   * Saves a recorded take as a 48 kHz stereo WAV in the app's own recordings folder, answering its path.
+   *
+   * The take arrives as the recorder's own bytes — WebM/Opus, which is what Chromium writes — and is CONVERTED
+   * here, because a `.webm` is a picture container to this app's own media rules and a microphone recorded no
+   * picture. A failure answers with an error rather than a path, so the window can say what went wrong.
+   */
+  saveRecording: (taskId: string, data: ArrayBuffer, mimeType: string) => Promise<{ path: string | null; error?: string }>
   /** The published releases' notes, newest first, for WHAT'S NEW. Empty where GitHub could not be reached. */
   releaseNotes: () => Promise<Array<{ version: string; notes: string; publishedAt: string }>>
   /** This app's own version, as the bundle carries it. */
@@ -281,6 +296,8 @@ const api: IElectronAPI = {
   readTextFile: (filePath: string) => ipcRenderer.invoke('read-text-file', filePath),
   downloadsDirectory: () => ipcRenderer.invoke('downloads-directory'),
   downloadYouTube: (options: { url: string; directory?: string; quality?: string; previewSafe?: boolean; subtitles?: boolean }) => ipcRenderer.invoke('download-youtube', options),
+  requestMicrophone: () => ipcRenderer.invoke('request-microphone'),
+  saveRecording: (taskId: string, data: ArrayBuffer, mimeType: string) => ipcRenderer.invoke('save-recording', taskId, data, mimeType),
   releaseNotes: () => ipcRenderer.invoke('release-notes'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: () => ipcRenderer.invoke('check-for-update'),

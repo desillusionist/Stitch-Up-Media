@@ -83,6 +83,27 @@ const subtitleCodecOf = async (file) => String(await run('ffprobe', ['-v', 'erro
 /** The `start --> end` lines of an SRT, which is the whole of what a caption's TIME is. */
 const cueTimes = (srt) => [...srt.matchAll(/(\d\d:\d\d:\d\d,\d{3}) --> (\d\d:\d\d:\d\d,\d{3})/g)].map((match) => [match[1], match[2]])
 
+/**
+ * How many pale pixels are in the bottom part of a frame, which is where a burned caption sits.
+ *
+ * The fixture is RED, so a whitish pixel cannot be the picture: only the caption's own ink is pale. It is read from
+ * the finished file rather than from the filter string, because a filter that was built and then not applied — the
+ * fault this whole check exists for — leaves a perfectly red frame.
+ */
+const whiteBottomPixels = async (file, time) => {
+  const width = 320
+  const height = 240
+  const raw = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-ss', String(time), '-i', file, '-frames:v', '1', '-vf', `scale=${width}:${height}`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { encoding: 'buffer' })
+  let count = 0
+  for (let y = Math.floor(height * 0.55); y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const at = (y * width + x) * 3
+      if (raw[at] > 140 && raw[at + 1] > 140 && raw[at + 2] > 140) count++
+    }
+  }
+  return count
+}
+
 /** Runs one stitch to completion and hands back the file it wrote. */
 const stitch = (sources, outputFilename, sourceSpeed, sourceFps, extra) => new Promise((resolve, reject) => {
   const engine = new FFmpegEngine()
@@ -182,6 +203,22 @@ const stitch = (sources, outputFilename, sourceSpeed, sourceFps, extra) => new P
   check('an mp3 carries no subtitle stream rather than failing', await subtitleCodecOf(soundOnly), '')
   const captionless = await stitch([red, green], 'no-captions.mp4', undefined, undefined, {})
   check('a job with no captions is the file it always was', [await subtitleCodecOf(captionless), await colourAt(captionless, 1.4)], ['', 'red'])
+
+  console.log('\n== a caption BURNED into the picture ==')
+  // BURN-IN is a filter on the video chain, and the only proof of it is the frame: a red clip carries no pale pixel
+  // unless the words are drawn into it. The pair of runs is the distinction that matters — the same job without the
+  // switch writes a subtitle stream and leaves every frame red.
+  const burning = { [red]: { path: `${red}.srt`, format: 'srt', cues: [{ start: 0, end: 2, text: 'BURNED CAPTION' }] } }
+  const burned = await stitch([red], 'burned.mp4', undefined, undefined, { subtitles: burning, preset: { ...preset, captionBurnIn: true } })
+  check('a burned job writes NO soft subtitle stream', await subtitleCodecOf(burned), '')
+  check('and the words are lit into the picture', (await whiteBottomPixels(burned, 1)) > 50, true)
+  const notBurned = await stitch([red], 'not-burned.mp4', undefined, undefined, { subtitles: burning })
+  check('the same job without burn-in writes the stream instead', await subtitleCodecOf(notBurned), 'mov_text')
+  check('and leaves the picture red', (await whiteBottomPixels(notBurned, 1)) < 5, true)
+  // A COPIED picture has no frames to draw into, so the burn is refused and the soft stream is the fallback rather
+  // than a job that fails or a caption that vanishes. The window disables the switch for the same reason.
+  const copied = await stitch([red], 'copy-captioned.mp4', undefined, undefined, { subtitles: burning, preset: { ...preset, videoCodec: 'copy', captionBurnIn: true } })
+  check('a copied picture falls back to the soft stream rather than losing the caption', await subtitleCodecOf(copied), 'mov_text')
 
   console.log(failures === 0 ? '\nCLIP SPEED MATCHES THE EXPORT\n' : `\n${failures} CLIP SPEED CHECK(S) FAILED\n`)
   fs.rmSync(work, { recursive: true, force: true })

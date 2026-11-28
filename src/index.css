@@ -543,6 +543,14 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
 .lane-mute { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; display: grid; place-items: center; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border-dim); font-size: 9px; line-height: 1; }
 .lane-mute:hover { color: var(--ui-accent); border-color: var(--ui-accent); }
 .lane-mute.is-muted { color: var(--ui-error); border-color: var(--ui-error); background: rgba(201, 133, 133, .12); }
+/* THE TAKE'S DOT. Standby pulses green — the microphone is open and nothing is being written — and recording is a
+   steady red, which is the one state a reader must be able to read from across the room. Saving and arming pulse
+   amber because they are neither. */
+.lane-rec { flex: 0 0 auto; width: 9px; height: 9px; margin-left: 2px; padding: 0; border: 0; border-radius: 50%; background: var(--crt-green); box-shadow: 0 0 6px rgba(125, 255, 117, .5); animation: lane-rec-pulse 1.6s ease-in-out infinite; }
+.lane-rec.is-recording { background: var(--crt-red); box-shadow: 0 0 8px rgba(255, 101, 101, .6); animation: none; }
+.lane-rec.is-arming, .lane-rec.is-saving { background: var(--crt-amber); box-shadow: 0 0 6px rgba(255, 184, 77, .5); animation: lane-rec-pulse .9s ease-in-out infinite; }
+.lane-rec:disabled { cursor: default; }
+@keyframes lane-rec-pulse { 0%, 100% { opacity: .3; transform: scale(.82); } 50% { opacity: 1; transform: scale(1); } }
 /* A track's own LEVEL, beside its mute. Compact, because the lane label column is a fixed width and the
    name beside it still has to read; the field is the one instrument that turns a track's gain. */
 .lane-gain { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; color: var(--ui-muted); font-size: 8px; }
@@ -1005,8 +1013,14 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
 /* THE CAPTION LANE. A cue is a block at its own time, so the row's children are positioned in a relative
    lane rather than laid out as a flex row of clips: cues may overlap, and a gap between them is time with
    nothing said. Its head carries the same mark as the queue's source rows, so the two read as one thing. */
-.timeline-lane-head.is-captions { color: var(--ui-accent); }
-.timeline-lane-head.is-captions svg { flex: 0 0 auto; }
+.timeline-lane-head.is-captions { color: var(--ui-accent); cursor: pointer; text-align: left; text-transform: uppercase; font-family: inherit; font-size: 9px !important; letter-spacing: .04em; }
+.timeline-lane-head.is-captions:hover { color: var(--crt-amber); }
+/* The mark IS the switch: a filled chip while the captions are shown over the preview, a dim one while they are
+   hidden. The glyph is knocked out of the shape, so the two readings are the same two colours inverted. */
+.lane-cc { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 19px; height: 15px; border-radius: 2px; }
+.lane-cc svg { display: block; width: 17px; height: 14px; }
+.timeline-lane-head.is-captions.is-shown .lane-cc { color: var(--ui-canvas); background: var(--ui-accent); }
+.timeline-lane-head.is-captions.is-hidden .lane-cc { color: var(--ui-muted); background: transparent; }
 .timeline-cue { position: absolute; top: 5px; bottom: 5px; min-width: 2px; padding: 0 4px; display: block; overflow: hidden; color: var(--ui-foreground); background: rgba(159, 191, 154, .22); border: 1px solid var(--ui-accent); outline: 0; font-family: inherit; font-size: 9px; letter-spacing: 0; line-height: 1.4; text-align: left; text-transform: none; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
 .timeline-cue:hover { background: rgba(159, 191, 154, .34); }
 .timeline-cue.is-active { border-color: var(--crt-amber); background: rgba(197, 184, 121, .3); }

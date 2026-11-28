@@ -1,7 +1,7 @@
 {
   "name": "stitch-up-media",
   "productName": "Stitch Up Media",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "description": "Minimalist macOS media encoder & stitcher powered by FFmpeg",
   "author": "Nitai Das <kiddow.san@gmail.com>",
   "main": "dist-electron/main.js",
@@ -116,7 +116,8 @@
         }
       ],
       "extendInfo": {
-        "CFBundleIconName": "AppIcon"
+        "CFBundleIconName": "AppIcon",
+        "NSMicrophoneUsageDescription": "Stitch Up Media records a take from your microphone and adds it to the job you are editing as an audio track."
       },
       "extraResources": [
         {

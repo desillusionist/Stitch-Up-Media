@@ -236,6 +236,8 @@ const windowDirty = (draft: QueueTask, baseline: QueueTask) => isDirty(draft, ba
 type TimelineMenu =
   | { kind: 'clip'; x: number; y: number; sourceIndex: number | null; mainIndex: number | null; laneId: string; segmentIndex: number; sourcePath: string; label: string; fitKey: string; visual: boolean; fitReason?: string; confirming?: boolean; duplicating?: boolean; extracting?: boolean; multi?: boolean }
   | { kind: 'lane'; x: number; y: number; laneId: string; label: string }
+  /** A CAPTION BLOCK on the CC lane: one cue of one track, named by its source and its place in that list. */
+  | { kind: 'cue'; x: number; y: number; sourcePath: string; index: number; text: string }
   /** The TIMELINE kicker's own menu: which unit the window shows lengths in. */
   | { kind: 'stamp'; x: number; y: number }
 
@@ -544,6 +546,21 @@ export const EditJobApp: React.FC = () => {
   /** Set when a still could not be turned into a clip, so the monitor is not lying. */
   const [previewNotice, setPreviewNotice] = useState<string | null>(null)
   /**
+   * A VOICE TAKE, from the microphone, on its way to becoming an audio track.
+   *
+   * The states are the dot's colours: ARMING while the system is asked, STANDBY while the microphone is open and
+   * nothing is being written (a pulsing green dot), RECORDING while it is (a red one), SAVING while the take is
+   * converted. The stream and the recorder live in refs because the recorder outlives the render that started it.
+   */
+  const [take, setTake] = useState<{ state: 'idle' | 'arming' | 'standby' | 'recording' | 'saving' }>({ state: 'idle' })
+  const micStreamRef = useRef<MediaStream | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const takeChunksRef = useRef<Blob[]>([])
+  /** Set when a take is to be thrown away — a window closing mid-recording must not add one to the job. */
+  const takeDiscardRef = useRef(false)
+  /** The recording shortcuts, read by the key handler that is bound once — see `takeKeysRef.current` below. */
+  const takeKeysRef = useRef<((event: KeyboardEvent) => boolean) | null>(null)
+  /**
    * The clip whose PROPERTIES inspector is open, by the lane it is on and its place in that lane.
    *
    * Not an index into `sourcePaths`: an audio track is not one of those, so a menu opened on one could
@@ -568,6 +585,14 @@ export const EditJobApp: React.FC = () => {
    * same file can be on two clips, and selecting one of its cues must not select the other's.
    */
   const [selectedCue, setSelectedCue] = useState<{ sourcePath: string; index: number } | null>(null)
+  /**
+   * Whether the captions are drawn over the picture in the preview.
+   *
+   * A way of LOOKING at the job rather than a decision about it, so it is not in the draft, not in the patch and
+   * not undone: it never reaches the export. The CC mark on the lane's own head is the switch, and it inverts to
+   * say which way round it is.
+   */
+  const [captionsVisible, setCaptionsVisible] = useState(true)
   /**
    * The clips in hand TOGETHER, by their own keys — the anchor plus whatever Shift has added.
    *
@@ -1071,6 +1096,20 @@ export const EditJobApp: React.FC = () => {
     if (tab !== 'CAPTIONS' || !selectedCue) return
     document.querySelector('.caption-row.is-active')?.scrollIntoView({ block: 'nearest' })
   }, [tab, selectedCue])
+  /**
+   * A window that closes mid-take throws it away and lets the microphone go.
+   *
+   * The discard flag is set BEFORE the recorder is stopped, so the `stop` that the cleanup provokes cannot save a
+   * take into a job whose window is already going away — and the tracks are stopped whether or not a recorder was
+   * ever started, because an ARMED microphone is an open device.
+   */
+  useEffect(() => () => {
+    takeDiscardRef.current = true
+    try { recorderRef.current?.stop() } catch { /* not running */ }
+    micStreamRef.current?.getTracks().forEach((track) => track.stop())
+    micStreamRef.current = null
+    takeKeysRef.current = null
+  }, [])
   /**
    * What each placeholder is CALLED, numbered among its own kind.
    *
@@ -1867,6 +1906,9 @@ export const EditJobApp: React.FC = () => {
         return
       }
       if (isTyping(event.target)) return
+      // A TAKE'S OWN KEYS, ahead of the transport: while a take is armed or running, SPACE belongs to it rather
+      // than to play/pause. The handler is a ref because this effect is bound once and the take moves on.
+      if (takeKeysRef.current?.(event)) return
       // DELETE removes the selected MAIN-LANE clip, after asking. It asks in the SAME question the clip's own
       // REMOVE SOURCE shows, at the clip's own box — one confirmation for both ways of asking rather than two
       // that say different things. A selection on an added audio lane is left to its own menu.
@@ -3701,14 +3743,31 @@ export const EditJobApp: React.FC = () => {
    * rest carry no subtitle stream at all. A still or a run of frames has no timeline to time one against.
    */
   const captionCodec = subtitleCodecFor(draft.preset.container)
-  const captionsExportable = captionTracks.length > 0 && Boolean(captionCodec) && outputCarriesPicture(draft.preset.container) && !draft.preset.imageOutputMode
+  // BURN-IN is a question about the PICTURE, not about the subtitle codec: it draws the words into the frames, so
+  // a container that writes no subtitle stream can still carry them. It needs a picture that is actually encoded
+  // (not copied), a timeline to time them against, and a picture chain the app owns.
+  const soundOnlyJob = draft.sourcePaths.length > 0 && draft.sourcePaths.every((path) => mediaKind(path) === 'audio')
+  // The DRAWING is the picture for a job of nothing but sound, and for a STILL playing under its tracks; both build
+  // it in a graph the burn filter cannot join. A sequence of frames is NOT one of them — it is encoded like footage,
+  // so it takes the filter.
+  const firstSource = draft.sourcePaths[0]
+  const stillCoverJob = Boolean(firstSource && mediaKind(firstSource) === 'image' && !sequenceFor(draft, firstSource))
+  const drawingOwnsPicture = draft.preset.audioPicture === 'visualization' && draft.preset.audioEnabled !== false && (soundOnlyJob || stillCoverJob)
+  const burnPossible = captionTracks.length > 0 && outputCarriesPicture(draft.preset.container) && !draft.preset.imageOutputMode && draft.preset.videoCodec !== 'copy' && !drawingOwnsPicture
+  const burnOn = burnPossible && draft.preset.captionBurnIn === true
   const captionExportReason = captionTracks.length === 0
     ? 'THIS JOB HAS NO SUBTITLE. A CLIP TAKES THE SRT, VTT, ASS OR SSA FILE NAMED FOR IT IN ITS OWN FOLDER, OR ONE ADDED THROUGH ADD MEDIA.'
     : draft.preset.imageOutputMode
       ? 'A STILL OR A RUN OF FRAMES HAS NO TIMELINE, SO THERE IS NOTHING TO TIME A CAPTION AGAINST.'
-      : !captionCodec || !outputCarriesPicture(draft.preset.container)
-        ? 'THIS FORMAT CARRIES NO SUBTITLE STREAM. MP4, MOV, MKV AND WEBM DO.'
-        : `WRITTEN AS A SOFT ${String(captionCodec).toUpperCase()} STREAM, WHICH A PLAYER TURNS ON AND OFF. THE PICTURE IS NOT RE-ENCODED TO BURN THEM IN.`
+      : !outputCarriesPicture(draft.preset.container)
+        ? 'THIS FORMAT CARRIES NO PICTURE, SO A CAPTION HAS NOWHERE TO BE DRAWN.'
+        : draft.preset.videoCodec === 'copy'
+          ? 'A COPIED PICTURE CANNOT BE BURNED INTO. CHOOSE AN ENCODER FOR THE PICTURE, OR LEAVE THIS OFF FOR A SOFT STREAM.'
+          : drawingOwnsPicture
+            ? 'THE SOUND\u2019S OWN DRAWING BUILDS THE PICTURE, SO A CAPTION CANNOT BE DRAWN INTO IT.'
+            : burnOn
+              ? 'THE WORDS ARE DRAWN INTO THE PICTURE WITH THE CAPTION STYLE. NO SOFT SUBTITLE STREAM IS WRITTEN, SO A PLAYER CANNOT TURN THEM OFF.'
+              : `CAPTIONS ARE WRITTEN AS A SOFT ${String(captionCodec ?? '').toUpperCase()} STREAM WHEN THE FORMAT TAKES ONE. TURN THIS ON TO DRAW THEM INTO THE PICTURE INSTEAD.`
   /**
    * Writes one cue back into its own track, held inside the SOURCE it belongs to.
    *
@@ -3765,6 +3824,125 @@ export const EditJobApp: React.FC = () => {
     setSelectedCue({ sourcePath, index })
     const placed = placedCues.find((candidate) => candidate.sourcePath === sourcePath && candidate.index === index)
     if (placed) playback.seek(placed.start)
+  }
+  /** A right-click on a CAPTION BLOCK: the cue's own menu, anchored where it was pressed. */
+  const openCueMenu = (event: React.MouseEvent, cue: PlacedCue) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const point = menuPoint(event)
+    setSelectedCue({ sourcePath: cue.sourcePath, index: cue.index })
+    setTimelineMenu({ kind: 'cue', x: point.x, y: point.y, sourcePath: cue.sourcePath, index: cue.index, text: cue.text })
+  }
+
+  /**
+   * A VOICE TAKE: arm the microphone, record, and land the result as an audio track.
+   *
+   * WHY A TRACK: a take is made AGAINST the job that is open — it is that film's voiceover — so it joins the job's
+   * tracks rather than being spliced into its sources. Tracks play from zero, so recording starts at the head and
+   * the monitor plays from there: what was watched while speaking is what the take lines up with, and the rail is
+   * cut from 48 kHz stereo PCM whatever the recorder happened to write.
+   *
+   * ARM IS A STATE rather than a momentary press. The microphone is opened once, the dot pulses while nothing is
+   * being written, and that same dot starts and stops the take — a capture that ran only between two presses would
+   * have no moment at which the reader can see that the microphone is live.
+   */
+  const armTake = async () => {
+    if (take.state !== 'idle') return
+    setTake({ state: 'arming' })
+    const granted = await window.electronAPI?.requestMicrophone?.()
+    if (granted === false) {
+      setTake({ state: 'idle' })
+      setPreviewNotice('MICROPHONE ACCESS WAS REFUSED. ALLOW IT IN SYSTEM SETTINGS > PRIVACY & SECURITY > MICROPHONE, THEN ARM THE TAKE AGAIN.')
+      return
+    }
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('This window cannot open a microphone.')
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 2, echoCancellation: false, noiseSuppression: false, autoGainControl: false } })
+      micStreamRef.current = stream
+      setPreviewNotice(null)
+      setTake({ state: 'standby' })
+    } catch (error) {
+      setTake({ state: 'idle' })
+      setPreviewNotice(`NO MICROPHONE COULD BE OPENED: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  /** Runs the take that is armed, from the head, with the picture playing under it. */
+  const startTake = () => {
+    const stream = micStreamRef.current
+    if (!stream || take.state !== 'standby') return
+    try {
+      const mimeType = typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm'
+      const recorder = new MediaRecorder(stream, { mimeType })
+      takeChunksRef.current = []
+      takeDiscardRef.current = false
+      recorder.ondataavailable = (event) => { if (event.data?.size) takeChunksRef.current.push(event.data) }
+      recorder.onstop = () => { void finishTake(recorder.mimeType || mimeType) }
+      recorder.start()
+      recorderRef.current = recorder
+      setTake({ state: 'recording' })
+      setPreviewNotice(null)
+      playback.seek(0)
+      if (!playback.playing) playback.toggle()
+    } catch (error) {
+      setTake({ state: 'standby' })
+      setPreviewNotice(`THE RECORDER COULD NOT START: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  /** The take's end: the transport stops and the bytes are on their way to a file. */
+  const stopTake = () => {
+    const recorder = recorderRef.current
+    if (!recorder || take.state !== 'recording') return
+    playback.pause()
+    setTake({ state: 'saving' })
+    try { recorder.stop() } catch { setTake({ state: 'idle' }) }
+  }
+  /** Letting an armed microphone go without recording anything. */
+  const cancelTake = () => {
+    if (take.state !== 'standby') return
+    micStreamRef.current?.getTracks().forEach((track) => track.stop())
+    micStreamRef.current = null
+    setTake({ state: 'idle' })
+  }
+  /** Converts the take and adds it as a track, or puts the reason on screen when it cannot. */
+  const finishTake = async (mimeType: string) => {
+    const chunks = takeChunksRef.current
+    takeChunksRef.current = []
+    recorderRef.current = null
+    micStreamRef.current?.getTracks().forEach((track) => track.stop())
+    micStreamRef.current = null
+    if (takeDiscardRef.current) { setTake({ state: 'idle' }); return }
+    try {
+      const blob = new Blob(chunks, { type: mimeType })
+      const buffer = await blob.arrayBuffer()
+      const saved = await window.electronAPI?.saveRecording?.(latest().id, buffer, mimeType)
+      if (!saved?.path) throw new Error(saved?.error || 'the take could not be written')
+      const current = latest()
+      const tracks = [...(current.additionalAudioTracks || []), { id: newTrackId(), path: saved.path, language: 'und' }]
+      const probe = await window.electronAPI?.probeMedia?.(saved.path)
+      const duration = Number((probe as { duration?: number } | null | undefined)?.duration || 0)
+      updateDraft({
+        ...withListType(current, current.sourcePaths, tracks),
+        ...(duration > 0 ? { sourceMetadata: { ...(current.sourceMetadata || {}), [saved.path]: { duration } } } : {}),
+      })
+      setPreviewNotice(null)
+    } catch (error) {
+      setPreviewNotice(`THE TAKE COULD NOT BE SAVED: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setTake({ state: 'idle' })
+    }
+  }
+  /**
+   * The take's own keys, read by the key handler bound once.
+   *
+   * SHIFT+SPACE starts from standby and SPACE stops a running take — SPACE belongs to the take while it is running, so
+   * it does not also pause the picture under it. ESCAPE lets an armed microphone go. A dot on the lane does the same
+   * thing with a pointer, which is what makes the feature usable on a trackpad without a keyboard.
+   */
+  takeKeysRef.current = (event) => {
+    if (take.state === 'standby' && event.shiftKey && event.code === 'Space') { event.preventDefault(); startTake(); return true }
+    if (take.state === 'recording' && !event.shiftKey && event.code === 'Space') { event.preventDefault(); stopTake(); return true }
+    if (take.state === 'standby' && event.code === 'Escape') { event.preventDefault(); cancelTake(); return true }
+    return false
   }
   /**
    * How the captions look in the monitor: the job's own record over the app's default.
@@ -4879,7 +5057,7 @@ export const EditJobApp: React.FC = () => {
                       of the picture's height, so the monitor's own zoom scales it with the image rather than against it.
                       Nothing here is written into the file — the export is a soft stream — and none of it takes a
                       pointer, because the picture under it is still what is being watched and clicked. */}
-                  {monitorCue && (
+                  {monitorCue && captionsVisible && (
                     <div
                       className={`monitor-caption${captionStyle.background ? ' has-box' : ''}`}
                       style={{
@@ -5363,17 +5541,42 @@ export const EditJobApp: React.FC = () => {
                       here — the lane holds no single track to set it on. */}
                   {laneTrack && <label className="lane-gain"><NumberField className="lane-gain-input" min={-60} max={24} step={0.5} value={laneTrack.gainDb ?? 0} onValue={(value) => setTrackGain(laneTrack.id, value)} ariaLabel={`${lane.label} level in dB`} title="This track's level in dB. 0 dB is unity; the export writes it on this track's own stream and the monitor follows." /><span>dB</span></label>}
                   <span>{lane.label}</span>
+                  {/* THE TAKE'S DOT, on the empty audio lane's own head: pulsing green while the microphone is armed
+                      and nothing is being written, solid red while it is. It is the switch as well as the indicator —
+                      a click starts or stops the take, and SHIFT+SPACE / SPACE do the same from the keyboard. */}
+                  {lane.id === EMPTY_AUDIO_LANE_ID && take.state !== 'idle' && (
+                    <button
+                      type="button"
+                      className={`lane-rec is-${take.state}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        if (take.state === 'standby') startTake()
+                        else if (take.state === 'recording') stopTake()
+                      }}
+                      disabled={take.state === 'arming' || take.state === 'saving'}
+                      aria-pressed={take.state === 'recording'}
+                      aria-label={take.state === 'recording' ? 'Stop the take' : take.state === 'standby' ? 'Start a take from the microphone' : 'The microphone is being prepared'}
+                      title={take.state === 'arming' ? 'ASKING FOR THE MICROPHONE...' : take.state === 'standby' ? 'READY TO RECORD — CLICK (OR SHIFT+SPACE) TO START, ESCAPE TO PUT THE MICROPHONE DOWN' : take.state === 'recording' ? 'RECORDING — CLICK (OR SPACE) TO STOP' : 'SAVING THE TAKE...'}
+                    />
+                  )}
                 </div>
                 )
               })}
               {/* THE CAPTION LANE'S HEAD, drawn only when the job has captions. It is not one of `model.lanes`:
                   those are the job's CLIPS, and a caption belongs to a clip rather than being one. Its mark is
-                  the same one the queue's source rows use, so the two read as the same thing. */}
+                  the same one the queue's source rows use, and it is the switch that shows or hides the captions
+                  over the PREVIEW: inverted while they are shown, dimmed while they are not. */}
               {placedCues.length > 0 && (
-                <div className="timeline-lane-head is-captions" title={`${placedCues.length} caption cue(s) across this job`}>
-                  <CaptionIcon />
+                <button
+                  type="button"
+                  className={`timeline-lane-head is-captions${captionsVisible ? ' is-shown' : ' is-hidden'}`}
+                  onClick={() => setCaptionsVisible(!captionsVisible)}
+                  aria-pressed={captionsVisible}
+                  title={captionsVisible ? 'Captions are shown over the preview — click to hide them there' : 'Captions are hidden from the preview — click to show them'}
+                >
+                  <span className="lane-cc"><CaptionIcon /></span>
                   <span>CAPTIONS</span>
-                </div>
+                </button>
               )}
             </div>
             <div className="timeline-scroll" ref={attachLanes}>
@@ -5612,6 +5815,7 @@ export const EditJobApp: React.FC = () => {
                             focusCue(cue.sourcePath, cue.index)
                           }}
                           title={`${stamp(cue.start)} - ${cue.text.replace(/\n/g, ' ')}`}
+                          onContextMenu={(event) => openCueMenu(event, cue)}
                         >
                           {/* The two edges, dragged to change WHEN the caption is said. They are handles rather than
                               the block's own edges because a click on the block MEANS something else — move the
@@ -5637,6 +5841,7 @@ export const EditJobApp: React.FC = () => {
               <span className="boundary-divider" aria-hidden="true" />
               <button className="boundary-source" onClick={() => { setOpenBoundary(null); insertPlaceholder('audio', latest().sourcePaths.length, 0) }} title="Insert a length of silence, stretched to any length on the timeline">ADD SILENCE</button>
               <button className="boundary-source" onClick={() => { setOpenBoundary(null); void insertTrackSources(0) }} title="Add a source to this lane">ADD SOURCE</button>
+              <button className="boundary-source" onClick={() => { setOpenBoundary(null); void armTake() }} title="Record a take from the microphone. A take becomes a track on this lane and plays from zero, so recording starts at the head: arm it, then click the dot (or SHIFT+SPACE) to start and SPACE to stop.">REC AUDIO</button>
               <button className="boundary-close" onClick={() => setOpenBoundary(null)} aria-label="Close the add-source panel">x</button>
             </div>
           )}
@@ -5806,7 +6011,12 @@ export const EditJobApp: React.FC = () => {
               onChange={audioOnly || soundNeverPossible || streamOff.video ? undefined : (checked) => updatePreset(checked ? { audioEnabled: undefined } : { audioEnabled: false, outputMode: undefined })}
               reason={audioOnly ? 'THIS FORMAT CARRIES SOUND ONLY, SO IT IS ALWAYS WRITTEN.' : soundNeverPossible ? 'THIS FORMAT CARRIES NO AUDIO TRACK.' : streamOff.video ? 'THE SOUND IS THE ONLY STREAM LEFT, SO IT CANNOT BE SWITCHED OFF.' : undefined}
             />
-            <EditorToggle label="EXPORT CAPTIONS" checked={captionsExportable} reason={captionExportReason} />
+            <EditorToggle
+              label="BURN-IN CAPTIONS"
+              checked={burnOn}
+              onChange={burnPossible ? (checked) => updatePreset({ captionBurnIn: checked ? true : undefined }) : undefined}
+              reason={captionExportReason}
+            />
           </>}
 
               {/* Resolution Scaling */}
@@ -6434,7 +6644,7 @@ export const EditJobApp: React.FC = () => {
               <EditorField label="COLOUR"><EditorSelect value={captionStyle.color} options={CAPTION_COLORS.map((choice) => ({ value: choice.value, label: choice.label }))} onChange={(next) => setCaptionStyle({ color: next as CaptionStyle['color'] })} ariaLabel="Caption colour" /></EditorField>
               <EditorToggle label="BACKGROUND" checked={captionStyle.background} onChange={(checked) => setCaptionStyle({ background: checked })} reason="A dark box behind the words, so they read over a bright picture." />
               <EditorToggle label="BOLD" checked={captionStyle.bold} onChange={(checked) => setCaptionStyle({ bold: checked })} reason="Heavier strokes, for a picture with a lot of detail behind the words." />
-              <div className="editor-note">&gt; THESE STYLE THE MONITOR ONLY. THE EXPORT IS A SOFT SUBTITLE STREAM, SO ITS TYPE AND COLOUR ARE THE PLAYER&apos;S TO CHOOSE.</div>
+              <div className="editor-note">&gt; THESE STYLE THE MONITOR. WITH BURN-IN CAPTIONS ON THEY ALSO STYLE THE PICTURE, BUT A SOFT SUBTITLE STREAM CARRIES NO LOOK OF ITS OWN — ITS TYPE AND COLOUR ARE THE PLAYER&apos;S.</div>
             </EditorGroup>}
             {captionTracks.length > 0 && <EditorGroup
               id="caption-cues"
@@ -6507,7 +6717,9 @@ export const EditJobApp: React.FC = () => {
             })}
             </EditorGroup>}
             <div className="editor-note">&gt; {captionTracks.length > 0
-              ? `CAPTIONS ARE WRITTEN AS A SOFT SUBTITLE STREAM (${String(captionCodec).toUpperCase()}) WHEN THE FORMAT TAKES ONE; NOTHING IS BURNED INTO THE PICTURE. THE FILE ON DISK IS NOT CHANGED UNTIL THE JOB IS EXPORTED, AND WHAT IS EXPORTED IS WHAT IS EDITED HERE.`
+              ? burnOn
+                ? `CAPTIONS ARE DRAWN INTO THE PICTURE (${(captionStyle.font).toUpperCase()}, ${clampCaptionSize(captionStyle.size)}% OF ITS HEIGHT) AND NO SOFT STREAM IS WRITTEN. THE FILE ON DISK IS NOT CHANGED UNTIL THE JOB IS EXPORTED, AND WHAT IS EXPORTED IS WHAT IS EDITED HERE.`
+                : `CAPTIONS ARE WRITTEN AS A SOFT SUBTITLE STREAM (${String(captionCodec).toUpperCase()}) WHEN THE FORMAT TAKES ONE; NOTHING IS BURNED INTO THE PICTURE. THE FILE ON DISK IS NOT CHANGED UNTIL THE JOB IS EXPORTED, AND WHAT IS EXPORTED IS WHAT IS EDITED HERE.`
               : 'A SUBTITLE IS NOT A SOURCE: IT NEVER APPEARS ON THE TIMELINE AS A CLIP. THE QUEUE\u2019S SOURCE ROW SHOWS ITS CC MARK, WHICH REVEALS THE FILE IN FINDER.'}</div>
           </>}
         </div>
@@ -6547,13 +6759,22 @@ export const EditJobApp: React.FC = () => {
     {/* Fixed rather than positioned inside the timeline, so it is never clipped by the scroll
         area it was opened from. */}
     {timelineMenu && <div className="timeline-menu" ref={menuRef} style={{ left: menuAt.x, top: menuAt.y }} role="menu">
-      <span className="timeline-menu-head">{timelineMenu.kind === 'stamp' ? 'TIMELINE UNITS' : timelineMenu.label}</span>
+      <span className="timeline-menu-head">{timelineMenu.kind === 'stamp' ? 'TIMELINE UNITS' : timelineMenu.kind === 'cue' ? `CAPTION ${timelineMenu.index + 1}` : timelineMenu.label}</span>
       {timelineMenu.kind === 'stamp' ? <>
         {/* The unit the window shows lengths in, which is the app's setting rather than this job's: the
             ruler, the clip boxes, the monitor's line and the transport all read it, and so does the
             Quick Look helper. A radio rather than a checkbox, because exactly one of the two is on. */}
         <button role="menuitemradio" aria-checked={timestampMode === 'timestamp'} className={timestampMode === 'timestamp' ? 'is-on' : ''} onClick={() => { setTimelineMenu(null); setTimestampMode('timestamp') }}>TIMESTAMP</button>
         <button role="menuitemradio" aria-checked={timestampMode === 'framestamp'} className={timestampMode === 'framestamp' ? 'is-on' : ''} onClick={() => { setTimelineMenu(null); setTimestampMode('framestamp') }}>FRAMESTAMP</button>
+      </> : timelineMenu.kind === 'cue' ? <>
+        {/* A CAPTION'S OWN MENU. The one command that has to be here is REMOVE: a cue is a thing drawn on the
+            lane, so a reader looks for its removal where it is drawn rather than in the tab that lists it. The
+            two ways back into the words are here beside it. Removal is one undo away, like every other edit. */}
+        <p className="timeline-menu-note">{timelineMenu.text.trim() || '(EMPTY CAPTION)'}</p>
+        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); focusCue(target.sourcePath, target.index) }}>GO TO CAPTION</button>
+        <button role="menuitem" onClick={() => { const target = timelineMenu; setTimelineMenu(null); setTab('CAPTIONS'); focusCue(target.sourcePath, target.index) }}>EDIT IN CAPTIONS</button>
+        <span className="timeline-menu-divider" aria-hidden="true" />
+        <button role="menuitem" className="is-danger" onClick={() => { const target = timelineMenu; setTimelineMenu(null); removeCue(target.sourcePath, target.index) }}>REMOVE CAPTION</button>
       </> : timelineMenu.kind === 'clip' ? (timelineMenu.confirming ? <>
         {/* The removal is the one thing in here that cannot be taken back by the window, so it asks
             first. A source that is the job's last takes the job with it, and says so outright. */}

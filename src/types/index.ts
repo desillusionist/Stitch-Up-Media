@@ -103,6 +103,13 @@ export interface EncodingPreset {
   cropLockToOutput?: boolean
   aspectRatio?: 'source' | '1:1' | '4:3' | '16:9' | '9:16' | 'custom'
   audioEnabled?: boolean
+  /**
+   * Whether the job's captions are drawn INTO the picture rather than written as a soft subtitle stream.
+   *
+   * Absent means no — the app's behaviour before this control, so a job saved without it exports exactly as it did.
+   * A burned caption cannot be turned off in a player, which is why it is a choice and not the default.
+   */
+  captionBurnIn?: boolean
   frameRate?: number
   outputMode?: 'video' | 'audio'
   audioFormat?: 'aac' | 'mp3' | 'opus' | 'pcm' | 'flac'

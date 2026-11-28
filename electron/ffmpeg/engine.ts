@@ -20,7 +20,7 @@ import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
 import { channelLayoutFor, resolvedAudioChannels } from '../../src/lib/audioFacts'
-import { cuesOnTimeline, languageOfSubtitle, subtitleCodecFor, toSrt } from '../../src/lib/subtitles'
+import { DEFAULT_CAPTION_STYLE, burnInFilter, cuesOnTimeline, languageOfSubtitle, subtitleCodecFor, toSrt } from '../../src/lib/subtitles'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -108,6 +108,15 @@ const outputFpsOf = (preset: EncodingPreset): number =>
 
 export class FFmpegEngine {
   private activeProcesses = new Map<string, ffmpeg.FfmpegCommand>()
+  /**
+   * The caption file this task's export will use, worked out before the encode is built.
+   *
+   * A BURNED caption is a filter on the video, so its cue file has to exist when the command is assembled — the
+   * second-pass mux is too late for it. Preparing it up front also means the soft stream and the burn are placed
+   * by the same maths and read from the same file. Keyed by task id and removed on completion, failure and
+   * cancellation, because the file itself is a temporary one.
+   */
+  private captionsPrepared = new Map<string, { srt: string; burn: boolean; cues: number; sources: string[] }>()
   private sequenceFor(task: QueueTask, source: string) {
     return task.sequenceInputs?.[source] || (task.sequenceInput?.firstFrame === source ? task.sequenceInput : undefined)
   }
@@ -337,6 +346,7 @@ export class FFmpegEngine {
       }
       this.activeProcesses.delete(taskId)
     }
+    this.cleanupCaptions(taskId)
   }
 
   public runTask(
@@ -353,27 +363,122 @@ export class FFmpegEngine {
     const outputPath = path.join(outputDirectory, outputFilename)
     logEvent('ffmpeg', 'resolved output path', { taskId: task.id, outputPath })
 
-    // THE CAPTIONS ARE MUXED AFTER THE FILE IS WRITTEN, in a second pass that copies every stream it did not
-    // add. Adding a subtitle input to each of the four encode paths would have made every one of them count its
-    // own inputs — a concat, a still, a drawing's background, each added track — and a single wrong index there
-    // writes the wrong stream without saying so. Here the finished file is input 0 and is mapped WHOLE, so no
-    // stream can be left out by an index nobody counted; the only stream the second pass decides is the subtitle.
-    // A caption that cannot be written leaves the export standing: the picture and sound are already correct.
-    const finish = () => {
-      void this.muxCaptions(task, outputPath)
-        .catch((error) => logEvent('ffmpeg', 'captions could not be written; the export stands without them', { taskId: task.id, error: String(error) }))
-        .then(() => onComplete())
-    }
+    // THE CAPTIONS ARE PREPARED FIRST, because a BURNED one is a filter on the picture and the file has to exist
+    // before the command is built. Preparing here also means the cues are placed once — the same list feeds the
+    // burn and the soft stream — and probed once. A caption that cannot be prepared leaves the export standing.
+    void this.prepareCaptions(task)
+      .catch((error) => logEvent('ffmpeg', 'captions could not be prepared; the export goes on without them', { taskId: task.id, error: String(error) }))
+      .then(() => {
+        // THE SOFT STREAM IS MUXED AFTER THE FILE IS WRITTEN, in a second pass that copies every stream it did not
+        // add. Adding a subtitle input to each of the four encode paths would have made every one of them count its
+        // own inputs — a concat, a still, a drawing's background, each added track — and a single wrong index there
+        // writes the wrong stream without saying so. Here the finished file is input 0 and is mapped WHOLE, so no
+        // stream can be left out by an index nobody counted; the only stream the second pass decides is the subtitle.
+        // A caption that cannot be written leaves the export standing: the picture and sound are already correct.
+        const finish = () => {
+          void this.muxCaptions(task, outputPath)
+            .catch((error) => logEvent('ffmpeg', 'captions could not be written; the export stands without them', { taskId: task.id, error: String(error) }))
+            .then(() => { this.cleanupCaptions(task.id); onComplete() })
+        }
+        const fail = (error: Error) => { this.cleanupCaptions(task.id); onError(error) }
 
-    if (task.type === 'stitch') {
-      void this.executeStitch(task, outputPath, onProgress, finish, onError)
-    } else if (task.type === 'combo' && task.sourcePaths.length > 1) {
-      void this.executeCombo(task, outputPath, onProgress, finish, onError)
-    } else if (task.type === 'multitrack' || task.type === 'combo') {
-      void this.executeMultiTrack(task, outputPath, onProgress, finish, onError)
-    } else {
-      void this.executeTranscode(task, outputPath, onProgress, finish, onError)
-    }
+        if (task.type === 'stitch') {
+          void this.executeStitch(task, outputPath, onProgress, finish, fail)
+        } else if (task.type === 'combo' && task.sourcePaths.length > 1) {
+          void this.executeCombo(task, outputPath, onProgress, finish, fail)
+        } else if (task.type === 'multitrack' || task.type === 'combo') {
+          void this.executeMultiTrack(task, outputPath, onProgress, finish, fail)
+        } else {
+          void this.executeTranscode(task, outputPath, onProgress, finish, fail)
+        }
+      })
+  }
+
+  /**
+   * The job's cues placed on the assembled timeline, or none.
+   *
+   * The durations the placement needs are PROBED here rather than trusted from a stored record, because a source
+   * can be replaced by one of another length. Only the sources that carry captions are probed; anything that fails
+   * falls back to the job's own metadata, which is what the timeline already reads.
+   */
+  private async placeCaptionCues(task: QueueTask) {
+    const subtitles = task.subtitles
+    if (!subtitles) return []
+    const trackPaths = (task.additionalAudioTracks || []).map((track) => track.path)
+    const carried = Object.keys(subtitles).filter((source) => task.sourcePaths.includes(source) || trackPaths.includes(source))
+    if (!carried.length) return []
+    const timing = new Map<string, { duration: number }>()
+    await Promise.all(carried.map(async (source) => {
+      if (placeholderKind(source)) return
+      try {
+        const probe = await probeFile(source)
+        timing.set(source, { duration: Number(probe.duration || 0) })
+      } catch { /* the job's own stored metadata is the fallback the timeline already uses */ }
+    }))
+    const model = buildTimeline(task, { resolveTiming: (source) => timing.get(source) })
+    const windows = model.lanes.flatMap((lane) => lane.segments.map((segment) => ({
+      sourcePath: segment.sourcePath,
+      start: segment.start,
+      sourceIn: segment.sourceIn,
+      sourceUsedSeconds: segment.sourceUsedSeconds,
+      duration: segment.duration,
+    })))
+    return cuesOnTimeline(subtitles, windows)
+  }
+
+  /**
+   * Whether this job's captions can be DRAWN INTO the picture.
+   *
+   * The filter is part of the video chain, so a picture that is copied cannot take it (there is nothing to filter),
+   * a still or a run of frames has no timeline to draw against, and a sound job's own DRAWING builds its picture in
+   * a graph that owns the chain — in all three, the soft stream is still the answer rather than a silent failure.
+   */
+  private burnCaptions(task: QueueTask): boolean {
+    if (task.preset.captionBurnIn !== true) return false
+    if (task.preset.imageOutputMode) return false
+    if (!outputCarriesPicture(task.preset.container)) return false
+    if (task.preset.videoCodec === 'copy') return false
+    // A DRAWING builds the picture inside its own graph, where a `-vf` chain is never made: the sound's own drawing
+    // needs a job of nothing but sound, and a STILL cover over tracks is the same picture with the same graph. Both
+    // are asked about here, because a burn that is requested and then silently dropped would also suppress the soft
+    // stream — a caption that vanished from the file altogether.
+    const soundOnly = task.sourcePaths.length > 0 && task.sourcePaths.every((source) => mediaKind(source) === 'audio')
+    const firstSource = task.sourcePaths[0]
+    const stillCover = Boolean(firstSource && mediaKind(firstSource) === 'image' && !this.sequenceFor(task, firstSource))
+    const drawing = task.preset.audioPicture === 'visualization'
+      && task.preset.audioEnabled !== false
+      && (soundOnly || stillCover)
+    if (drawing) return false
+    return true
+  }
+
+  /** Place the cues, write them to one temp SRT, and remember whether this export burns them in. */
+  private async prepareCaptions(task: QueueTask): Promise<void> {
+    if (!task.subtitles || !Object.keys(task.subtitles).length) return
+    if (task.preset.imageOutputMode) return
+    const burn = this.burnCaptions(task)
+    const soft = outputCarriesPicture(task.preset.container) && Boolean(subtitleCodecFor(task.preset.container))
+    if (!burn && !soft) return
+    const cues = await this.placeCaptionCues(task)
+    if (!cues.length) return
+    const srt = path.join(os.tmpdir(), `stitch_${task.id}_captions.srt`)
+    fs.writeFileSync(srt, toSrt(cues), 'utf-8')
+    this.captionsPrepared.set(task.id, { srt, burn, cues: cues.length, sources: [...new Set(cues.map((cue) => cue.sourcePath))] })
+  }
+
+  /** The filter that draws this task's cues into the picture, or nothing when it is not burning them. */
+  private captionBurnFilter(task: QueueTask): string[] {
+    const prepared = this.captionsPrepared.get(task.id)
+    if (!prepared?.burn) return []
+    return [burnInFilter(prepared.srt, task.captionStyle ?? DEFAULT_CAPTION_STYLE)]
+  }
+
+  /** The temporary cue file goes with the job, whichever way the job ended. */
+  private cleanupCaptions(taskId: string): void {
+    const prepared = this.captionsPrepared.get(taskId)
+    if (!prepared) return
+    this.captionsPrepared.delete(taskId)
+    try { fs.unlinkSync(prepared.srt) } catch { /* already gone */ }
   }
 
   /**
@@ -393,40 +498,26 @@ export class FFmpegEngine {
   private async muxCaptions(task: QueueTask, outputPath: string): Promise<void> {
     const subtitles = task.subtitles
     if (!subtitles || !Object.keys(subtitles).length) return
+    // A BURNED caption is already in the picture; a soft stream beside it would be a second copy the reader could
+    // switch off, which is the one thing burning is for.
+    const prepared = this.captionsPrepared.get(task.id)
+    if (prepared?.burn) return
     if (task.preset.imageOutputMode) return
     if (!outputCarriesPicture(task.preset.container)) return
     const codec = subtitleCodecFor(task.preset.container)
     if (!codec) return
     const trackPaths = (task.additionalAudioTracks || []).map((track) => track.path)
     const carried = Object.keys(subtitles).filter((source) => task.sourcePaths.includes(source) || trackPaths.includes(source))
-    if (!carried.length) return
-    const timing = new Map<string, { duration: number }>()
-    await Promise.all(carried.map(async (source) => {
-      if (placeholderKind(source)) return
-      try {
-        const probe = await probeFile(source)
-        timing.set(source, { duration: Number(probe.duration || 0) })
-      } catch { /* the job's own stored metadata is the fallback the timeline already uses */ }
-    }))
-    const model = buildTimeline(task, { resolveTiming: (source) => timing.get(source) })
-    const windows = model.lanes.flatMap((lane) => lane.segments.map((segment) => ({
-      sourcePath: segment.sourcePath,
-      start: segment.start,
-      sourceIn: segment.sourceIn,
-      sourceUsedSeconds: segment.sourceUsedSeconds,
-      duration: segment.duration,
-    })))
-    const cues = cuesOnTimeline(subtitles, windows)
-    if (!cues.length) return
-    const srtPath = path.join(os.tmpdir(), `stitch_${task.id}_captions.srt`)
+    const srtPath = prepared?.srt
+    if (!carried.length || !srtPath) return
     // The muxed file is written BESIDE the export and renamed over it, so the two are on one volume — a rename
     // from the system's temporary directory to an external drive is a copy, and one that can run out of room.
     const muxedPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.captions${path.extname(outputPath)}`)
-    fs.writeFileSync(srtPath, toSrt(cues), 'utf-8')
     try {
-      const languages = [...new Set(carried
-        .filter((source) => cues.some((cue) => cue.sourcePath === source))
-        .map((source) => subtitles[source].language || languageOfSubtitle(subtitles[source].path))
+      // The stream's language tag is a fact about the TRACK the cues came from, so it is read from the preparation's
+      // own list of sources rather than guessed at from which files happen to sit beside the job.
+      const languages = [...new Set((prepared?.sources ?? [])
+        .map((source) => subtitles[source]?.language || languageOfSubtitle(subtitles[source]?.path ?? ''))
         .filter((language): language is string => Boolean(language)))]
       const options = ['-map 0', '-map 1:s:0', '-c copy', `-c:s ${codec}`]
       if (languages.length === 1) options.push(`-metadata:s:s:0 language=${languages[0]}`)
@@ -440,9 +531,8 @@ export class FFmpegEngine {
           .save(muxedPath)
       })
       fs.renameSync(muxedPath, outputPath)
-      logEvent('ffmpeg', 'captions written', { taskId: task.id, cues: cues.length, codec, container: task.preset.container })
+      logEvent('ffmpeg', 'captions written', { taskId: task.id, cues: prepared?.cues ?? 0, codec, container: task.preset.container })
     } finally {
-      try { fs.unlinkSync(srtPath) } catch { /* already gone */ }
       try { fs.unlinkSync(muxedPath) } catch { /* renamed, or never written */ }
     }
   }
@@ -572,7 +662,7 @@ export class FFmpegEngine {
       resolveFades([expectedSeconds], [], { head: edgeFade(task, 'head'), tail: edgeFade(task, 'tail') })[0],
       expectedSeconds,
     )
-    this.applyPresetToCommand(cmd, task.preset, [...pictureFilters, ...speedVideo, ...fades.video], {
+    this.applyPresetToCommand(cmd, task.preset, [...pictureFilters, ...speedVideo, ...fades.video, ...this.captionBurnFilter(task)], {
       ...(clipChain ? { clipChain } : { cropsPerClip: clipsConcatenate(task) }),
       ...(draws ? { graphOwnsPicture: true } : {}),
     })
@@ -787,7 +877,7 @@ export class FFmpegEngine {
     const stitchCustom = stitchDraws || !stitchPictured ? null : this.usablePicture(task.preset.audioPicture === 'custom' ? task.preset.audioPictureImage : undefined)
     const stitchPictureFilters = stitchCustom ? this.addStillPicture(cmd, task.preset, stitchCustom) : []
 
-    this.applyPresetToCommand(cmd, task.preset, stitchPictureFilters, {
+    this.applyPresetToCommand(cmd, task.preset, [...stitchPictureFilters, ...this.captionBurnFilter(task)], {
       cropsPerClip: clipsConcatenate(task),
       // The drawing's graph owns the picture and the audio, so the encoder is not handed a `-vf` for a
       // picture the graph is already making.
@@ -1232,7 +1322,7 @@ export class FFmpegEngine {
     const tailFilter = tailDuration > 0.01 && task.preset.videoCodec !== 'copy'
       ? [`tpad=stop_mode=add:color=black:stop_duration=${tailDuration.toFixed(3)}`]
       : []
-    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : [...tailFilter, ...pictureFilters, ...speedVideo, ...mainFades.video], {
+    this.applyPresetToCommand(cmd, task.preset, pictured ? [] : [...tailFilter, ...pictureFilters, ...speedVideo, ...mainFades.video, ...this.captionBurnFilter(task)], {
       ...(clipChain ? { clipChain } : {}),
       ...(pictured ? { graphOwnsPicture: true } : {}),
       ...(attachCover ? { keepsArtwork: true } : {}),

@@ -299,6 +299,60 @@ export const captionColorValue = (color: CaptionStyle['color']): string =>
   (CAPTION_COLORS.find((choice) => choice.value === color) ?? CAPTION_COLORS[0]).css
 
 /**
+ * A caption style as libass's `force_style` value, for a DRAWN-in caption.
+ *
+ * The monitor draws captions in CSS; the encoder draws them with libass, and the two do not share a units system.
+ * libass lays a converted SRT out on a 288-line script, so a size that is a percentage of the picture is that
+ * percentage of 288 here — six per cent is FontSize 17, which renders at six per cent of the frame's height. The
+ * colours are ASS's `&HAABBGGRR` (blue and red the way round the name says), and the box behind the words is
+ * `BorderStyle=4` with a half-transparent black back colour, which is the closest thing libass has to the
+ * monitor's own box. The font is a NAME libass has to resolve on this machine, which is why the app's terminal
+ * face is mapped to the system's monospace rather than to a webfont only the window can load.
+ */
+export const burnInStyle = (style: CaptionStyle): string => {
+  const colours: Record<CaptionStyle['color'], string> = {
+    white: '&H00FFFFFF&',
+    amber: '&H004DB8FF&',
+    green: '&H0075FF7D&',
+    cyan: '&H00E2E663&',
+  }
+  // libass resolves these by NAME on this machine, and a name with a SPACE cannot be passed through the `-vf`
+  // string without fluent-ffmpeg splitting it into two arguments — so the sans face is Arial rather than Helvetica
+  // Neue, and every value in this list is one word. Measured: the spaced name failed the whole export with
+  // "Unrecognized option 'vf scale=...'".
+  const fonts: Record<CaptionStyle['font'], string> = {
+    sans: 'Arial',
+    serif: 'Georgia',
+    mono: 'Menlo',
+    crt: 'Menlo',
+  }
+  const size = Math.max(6, Math.round(288 * clampCaptionSize(style.size) / 100))
+  return [
+    `FontName=${fonts[style.font] ?? fonts.sans}`,
+    `FontSize=${size}`,
+    style.bold ? 'Bold=1' : 'Bold=0',
+    `PrimaryColour=${colours[style.color] ?? colours.white}`,
+    style.background ? 'BorderStyle=4' : 'BorderStyle=1',
+    'Outline=1',
+    'Shadow=0',
+    'Alignment=2',
+    'MarginV=18',
+    ...(style.background ? ['BackColour=&H80000000&'] : []),
+  ].join(',')
+}
+
+/**
+ * The video filter that draws a cue file into the picture.
+ *
+ * `subtitles` reads the file ITSELF, which is what makes burning possible without a second input: the encoder's
+ * stream indices are the whole reason the soft stream is muxed in a second pass, and this filter steps around
+ * them entirely. The path is this app's own temp file, whose name is a task id — no quotes, commas or colons to
+ * escape — and the style is single-quoted because its commas are part of one value rather than filter separators.
+ */
+export const burnInFilter = (srtPath: string, style: CaptionStyle): string =>
+  `subtitles=filename='${srtPath}':force_style='${burnInStyle(style)}'`
+
+/**
  * Where one clip sits on the assembled timeline, in the terms a cue has to be moved by.
  *
  * A cue's times are SOURCE seconds — they are the file's own, which is why a trim can cut a caption in half —
