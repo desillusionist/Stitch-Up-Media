@@ -62,6 +62,8 @@ interface TaskCardProps {
   onExpandAll: () => void
   onCollapseAll: () => void
   onEncodeSelected: () => void
+  /** Stop THIS job if it is running. The job goes back to READY; the queue carries on with the others. */
+  onStopEncoding: (task: QueueTask) => void
   onJobDragStart: (event: React.DragEvent<HTMLDivElement>) => void
   onJobDrop: (event: React.DragEvent<HTMLDivElement>) => void
   missingSources?: string[]
@@ -94,6 +96,7 @@ export const TaskCard: React.FC<TaskCardProps> = ({
   onExpandAll,
   onCollapseAll,
   onEncodeSelected,
+  onStopEncoding,
   onJobDragStart,
   onJobDrop,
   missingSources = [],
@@ -496,7 +499,9 @@ export const TaskCard: React.FC<TaskCardProps> = ({
         if (item.info.videoStreams?.length > 0) return (<section><b>VIDEO DETAILS</b><span>Resolution: {vstream?.resolution || 'Unknown'}</span><span>Codec: {vstream?.codec || 'Unknown'}</span><span>Frame Rate: {vstream?.fps ? `${formatFps(vstream.fps)} fps` : 'Unknown'}</span><span>Data Rate: {vstream?.bitrate || 'Unknown'}</span></section>)
         return null
       })()}{item.info.audioStreams?.length > 0 && <section><b>AUDIO DETAILS</b><span>Codec: {item.info.audioStreams[0].codec || 'Unknown'}</span><span>Language: {item.info.audioStreams[0].language || 'Unknown'}</span><span>Channels: {item.info.audioStreams[0].channels || 'Unknown'}</span><span>Sample Rate: {item.info.audioStreams[0].sampleRate ? `${item.info.audioStreams[0].sampleRate} Hz` : 'Unknown'}</span><span>Data Rate: {item.info.audioStreams[0].bitrate || 'Unknown'}</span></section>}</div>, document.body))}
-      {contextMenu && <div ref={contextMenuRef} className="job-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><div className="context-menu-group"><button onClick={() => { onEncodeSelected(); setContextMenu(null) }}>ENCODE SELECTED</button></div><div className="context-menu-group"><span>EXPORT MODE</span><button onClick={() => { onChangeJobType(task, 'transcode'); setContextMenu(null) }}>CONVERT</button><button onClick={() => { onChangeJobType(task, 'stitch'); setContextMenu(null) }}>STITCH UP</button><button onClick={() => { onChangeJobType(task, 'multitrack'); setContextMenu(null) }}>MULTI-TRACK</button><button onClick={() => { onChangeJobType(task, 'combo'); setContextMenu(null) }}>COMBO</button></div><div className="context-menu-group"><span>JOB</span><button onClick={() => { onOpenEditor(task); setContextMenu(null) }}>JOB EDIT</button>{stemSource && <button onClick={() => { onExtractStems?.(task, stemSource); setContextMenu(null) }} title={`Split this file's ${channelCounts[stemSource]} channels into mono sources`}>EXTRACT STEMS</button>}<button onClick={() => { onDuplicateTask(task); setContextMenu(null) }}>DUPLICATE</button><button onClick={() => { onSkipTask(task); setContextMenu(null) }}>{task.skipped || task.status === 'done' || task.status === 'error' ? 'RESET STATUS' : 'SKIP'}</button><button onClick={() => { onRemoveTask(task.id); setContextMenu(null) }}>REMOVE</button></div><div className="context-menu-group"><span>SELECTION</span><button onClick={() => { onSelectAll(); setContextMenu(null) }}>SELECT ALL</button><button onClick={() => { onExpandAll(); setContextMenu(null) }}>EXPAND ALL</button><button onClick={() => { onCollapseAll(); setContextMenu(null) }}>COLLAPSE ALL</button></div></div>}
+      {contextMenu && <div ref={contextMenuRef} className="job-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}><div className="context-menu-group">{task.status === 'encoding'
+              ? <button onClick={() => { onStopEncoding(task); setContextMenu(null) }}>STOP ENCODING</button>
+              : <button onClick={() => { onEncodeSelected(); setContextMenu(null) }}>ENCODE SELECTED</button>}</div><div className="context-menu-group"><span>EXPORT MODE</span><button onClick={() => { onChangeJobType(task, 'transcode'); setContextMenu(null) }}>CONVERT</button><button onClick={() => { onChangeJobType(task, 'stitch'); setContextMenu(null) }}>STITCH UP</button><button onClick={() => { onChangeJobType(task, 'multitrack'); setContextMenu(null) }}>MULTI-TRACK</button><button onClick={() => { onChangeJobType(task, 'combo'); setContextMenu(null) }}>COMBO</button></div><div className="context-menu-group"><span>JOB</span><button onClick={() => { onOpenEditor(task); setContextMenu(null) }}>JOB EDIT</button>{stemSource && <button onClick={() => { onExtractStems?.(task, stemSource); setContextMenu(null) }} title={`Split this file's ${channelCounts[stemSource]} channels into mono sources`}>EXTRACT STEMS</button>}<button onClick={() => { onDuplicateTask(task); setContextMenu(null) }}>DUPLICATE</button><button onClick={() => { onSkipTask(task); setContextMenu(null) }}>{task.skipped || task.status === 'done' || task.status === 'error' ? 'RESET STATUS' : 'SKIP'}</button><button onClick={() => { onRemoveTask(task.id); setContextMenu(null) }}>REMOVE</button></div><div className="context-menu-group"><span>SELECTION</span><button onClick={() => { onSelectAll(); setContextMenu(null) }}>SELECT ALL</button><button onClick={() => { onExpandAll(); setContextMenu(null) }}>EXPAND ALL</button><button onClick={() => { onCollapseAll(); setContextMenu(null) }}>COLLAPSE ALL</button></div></div>}
     </div>
   )
 }

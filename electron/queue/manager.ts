@@ -117,7 +117,10 @@ export class QueueManager {
       },
       (err) => {
         this.activeCount--
-        if (task.status === 'pending' && !this.isProcessing) {
+        // A CANCELLED task is not a FAILED one. `cancel` marks the job PAUSED — the queue's own "do not pick this
+        // up again" — and killing ffmpeg is reported back to us as an error, so the report is ignored and the job
+        // is left where cancel put it. The queue still moves on to whatever else is ready.
+        if (task.status === 'paused' || (task.status === 'pending' && !this.isProcessing)) {
           this.processNext()
           return
         }

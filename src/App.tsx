@@ -708,6 +708,21 @@ export const App: React.FC = () => {
     if (incompatible.length) window.alert('Some selected jobs were not started because their current mode is incompatible with their sources.')
   }
 
+  /**
+   * STOPS ONE RUNNING JOB, from its own card's menu.
+   *
+   * The main process kills the encoder and marks the job PAUSED in its own queue, which is how a job stays out of
+   * the queue's next pick without being a failure; the card comes back to READY here, because a job that was
+   * stopped on purpose is one that can be started again. The OTHER jobs are untouched — this is the per-card
+   * command, not the queue's own pause.
+   */
+  const handleStopEncoding = (task: QueueTask) => {
+    void window.electronAPI?.cancelTask(task.id)
+    setTasks((prev) => prev.map((item) => item.id === task.id
+      ? { ...item, status: 'pending', progress: 0, currentTimemark: undefined, fps: undefined }
+      : item))
+  }
+
   const handleAddStitchTask = (partial: Partial<QueueTask>) => {
     const firstClip = partial.sourcePaths?.[0] || ''
     const dir = firstClip.substring(0, firstClip.lastIndexOf('/')) || '/tmp'
@@ -1234,6 +1249,7 @@ export const App: React.FC = () => {
         onExpandAll={handleExpandAll}
         onCollapseAll={handleCollapseAll}
         onEncodeSelected={handleEncodeSelected}
+        onStopEncoding={handleStopEncoding}
         onAddFiles={handlePickFiles}
         onFileDrop={addFilesToQueue}
         />

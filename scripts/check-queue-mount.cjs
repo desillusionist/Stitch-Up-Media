@@ -175,6 +175,16 @@ app.whenReady().then(async () => {
       if (!scope.offered.includes('SELECTED ONLY')) problems.push(`the scope menu offers ${JSON.stringify(scope.offered)} rather than MARKED 'READY' and SELECTED ONLY`)
       if (JSON.stringify(scope.starts) !== JSON.stringify(['ready', 'selected'])) problems.push(`START QUEUE started with ${JSON.stringify(scope.starts)} rather than a default start then the chosen SELECTED ONLY`)
     }
+    // THE CARD'S OWN MENU NAMES THE RIGHT ACTION: a waiting job is ENCODE SELECTED, a running one is STOP ENCODING,
+    // and the stop reaches the handler rather than the encode it replaced.
+    const stopMenu = result.stopEncoding
+    if (!stopMenu) problems.push('the job menu drive reported nothing')
+    else {
+      if (stopMenu.idleLabel !== 'ENCODE SELECTED') problems.push(`a waiting job's menu reads ${JSON.stringify(stopMenu.idleLabel)} rather than ENCODE SELECTED`)
+      if (!stopMenu.stopOffered) problems.push(`a running job's menu offers ${JSON.stringify(stopMenu.menuLabels)} rather than STOP ENCODING`)
+      if (JSON.stringify(stopMenu.calls) !== JSON.stringify(['stop:queue-card-check'])) problems.push(`STOP ENCODING called ${JSON.stringify(stopMenu.calls)} rather than the stop handler once`)
+      if (!stopMenu.menuClosed) problems.push('the job menu stayed open after STOP ENCODING was chosen')
+    }
     // THE CONTROLS THE PLATFORM PAINTS ARE TINTED. A checkbox and a range slider are drawn by the system, so
       // `accent-color` is the only thing that reaches them — and it was still the modern palette's Apple blue.
       const accent = settings.accentColor || {}

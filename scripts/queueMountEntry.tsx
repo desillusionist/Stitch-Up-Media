@@ -298,6 +298,40 @@ const drive = async () => {
     errorsWhileOpening: errors.slice(errorsBeforeOpen),
   }
 
+  // THE JOB CARD'S OWN MENU, in both states. A job that is WAITING is ENCODE SELECTED; the one being written is
+  // STOP ENCODING, and that has to call the stop handler rather than the encode command it replaced. The running
+  // card is its own root, so its menu cannot be confused with the first card's.
+  card?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }))
+  await wait(150)
+  const idleLabel = (document.querySelector('.job-context-menu .context-menu-group button') as HTMLButtonElement | null)?.textContent?.trim() ?? null
+  document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+  await wait(80)
+  const stopCalls: string[] = []
+  const runningHost = document.createElement('div')
+  document.body.appendChild(runningHost)
+  createRoot(runningHost).render(React.createElement(TaskCard, {
+    ...props,
+    task: { ...task, status: 'encoding', progress: 40 },
+    onStopEncoding: (stopped: QueueTask) => stopCalls.push(`stop:${stopped.id}`),
+    onEncodeSelected: () => stopCalls.push('encode'),
+  }))
+  await wait(180)
+  const runningCard = runningHost.querySelector('.queue-card') as HTMLElement | null
+  runningCard?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 }))
+  await wait(150)
+  const runningMenu = runningHost.querySelector('.job-context-menu') as HTMLElement | null
+  const menuLabels = [...(runningMenu?.querySelectorAll('.context-menu-group button') ?? [])].map((button) => button.textContent?.trim() ?? '')
+  const stopButton = [...(runningMenu?.querySelectorAll('.context-menu-group button') ?? [])].find((button) => button.textContent?.trim() === 'STOP ENCODING') as HTMLButtonElement | undefined
+  stopButton?.click()
+  await wait(100)
+  result.stopEncoding = {
+    idleLabel,
+    menuLabels,
+    stopOffered: Boolean(stopButton),
+    calls: stopCalls,
+    menuClosed: !runningHost.querySelector('.job-context-menu'),
+  }
+
   ;(window as unknown as Record<string, unknown>).__QUEUE_DONE = true
 }
 

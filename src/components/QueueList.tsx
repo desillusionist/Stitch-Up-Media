@@ -32,6 +32,8 @@ interface QueueListProps {
   onExpandAll: () => void
   onCollapseAll: () => void
   onEncodeSelected: () => void
+  /** Stop one running job, from its own card's menu. */
+  onStopEncoding: (task: QueueTask) => void
   onAddFiles: () => void
   onFileDrop: (filePaths: string[], type?: 'transcode' | 'stitch' | 'multitrack' | 'combo') => void
   missingSources?: string[]
@@ -65,6 +67,7 @@ export const QueueList: React.FC<QueueListProps> = ({
   onExpandAll,
   onCollapseAll,
   onEncodeSelected,
+  onStopEncoding,
   onAddFiles,
   onFileDrop,
   missingSources,
@@ -192,6 +195,7 @@ export const QueueList: React.FC<QueueListProps> = ({
               onExpandAll={onExpandAll}
               onCollapseAll={onCollapseAll}
               onEncodeSelected={onEncodeSelected}
+              onStopEncoding={onStopEncoding}
             />
           ))}
         </div>
