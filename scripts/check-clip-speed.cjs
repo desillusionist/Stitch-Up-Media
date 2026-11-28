@@ -117,6 +117,31 @@ const stitch = (sources, outputFilename, sourceSpeed, sourceFps, extra) => new P
   engine.runTask(task, () => {}, () => resolve(path.join(directory, outputFilename)), (error) => reject(error))
 })
 
+/** The same, for a job whose shape is not a plain stitch — a multi-track job with added tracks, for instance. */
+const runTask = (outputFilename, fields) => new Promise((resolve, reject) => {
+  const engine = new FFmpegEngine()
+  const directory = path.join(work, `${outputFilename}-dir`)
+  fs.mkdirSync(directory, { recursive: true })
+  engine.runTask({
+    id: `job-${outputFilename}`, status: 'pending', progress: 0, outputDirectory: directory, outputFilename, preset,
+    ...fields,
+  }, () => {}, () => resolve(path.join(directory, outputFilename)), (error) => reject(error))
+})
+
+/**
+ * The mean level of a short run of the finished file, in dBFS.
+ *
+ * `volumedetect` prints to stderr, which is why this does not go through `run`: the question is whether a
+ * track is HEARD at an instant, and silence reads `-inf`, which is returned as -Infinity rather than as NaN.
+ */
+const volumeAt = (file, at, length = 0.4, stream = 0) => new Promise((resolve, reject) => {
+  execFile('ffmpeg', ['-hide_banner', '-loglevel', 'info', '-ss', String(at), '-t', String(length), '-i', file, '-map', `0:a:${stream}`, '-af', 'volumedetect', '-f', 'null', '-'], { maxBuffer: 8 * 1024 * 1024 }, (error, _stdout, stderr) => {
+    if (error) return reject(new Error(String(stderr || error.message)))
+    const match = String(stderr).match(/mean_volume:\s*(-?[\d.]+) dB/)
+    resolve(match ? Number(match[1]) : -Infinity)
+  })
+})
+
 ;(async () => {
   const red = await makeClip('red', 'red', 2)
   const green = await makeClip('green', 'green', 1)
@@ -219,6 +244,22 @@ const stitch = (sources, outputFilename, sourceSpeed, sourceFps, extra) => new P
   // than a job that fails or a caption that vanishes. The window disables the switch for the same reason.
   const copied = await stitch([red], 'copy-captioned.mp4', undefined, undefined, { subtitles: burning, preset: { ...preset, videoCodec: 'copy', captionBurnIn: true } })
   check('a copied picture falls back to the soft stream rather than losing the caption', await subtitleCodecOf(copied), 'mov_text')
+
+  console.log('\n== a track moved along its lane ==')
+  // A STACKED track may begin anywhere, so the output has to run to the PLACE PLUS THE CLIP and the sound has to be
+  // heard from that instant. A one-second tone at four seconds under a two-second picture: the file runs to five, is
+  // silent at three, and carries the tone at four point two.
+  const tone = path.join(work, 'tone.wav')
+  await runFfmpeg(['-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=1', '-c:a', 'pcm_s16le', tone])
+  const moved = await runTask('moved.mp4', { type: 'multitrack', sourcePaths: [red], additionalAudioTracks: [{ id: 't1', path: tone, language: 'und', offset: 4 }] })
+  check('the export runs to the moved track\u2019s end', Math.abs(await secondsOf(moved) - 5) < 0.25, true)
+  // The track's own stream is the second one: SEPARATE is the layout here, so the main lane's sound and the track's
+  // are two streams of the output and it is the TRACK's that has to be silent and then heard.
+  check('nothing is heard where the lane is still empty', (await volumeAt(moved, 3, 0.4, 1)) < -60, true)
+  check('and the track is heard from its own offset', (await volumeAt(moved, 4.2, 0.4, 1)) > -40, true)
+  const inPlace = await runTask('in-place.mp4', { type: 'multitrack', sourcePaths: [red], additionalAudioTracks: [{ id: 't1', path: tone, language: 'und' }] })
+  check('a track with no offset is heard at zero, as it always was', (await volumeAt(inPlace, 0.2, 0.4, 1)) > -40, true)
+  check('and its lane is no longer than the picture', Math.abs(await secondsOf(inPlace) - 2) < 0.25, true)
 
   console.log(failures === 0 ? '\nCLIP SPEED MATCHES THE EXPORT\n' : `\n${failures} CLIP SPEED CHECK(S) FAILED\n`)
   fs.rmSync(work, { recursive: true, force: true })

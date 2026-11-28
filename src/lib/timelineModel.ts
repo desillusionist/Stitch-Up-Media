@@ -1009,7 +1009,11 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
     lanes.push({ id: STITCHED_AUDIO_LANE_ID, label: 'AUDIO 1', kind: 'audio', embedded: false, segments, duration: cursor })
   } else {
     tracks.forEach((track, index) => {
-      const segment = trackSegment(track, 0)
+      // A STACKED track may sit anywhere along its lane; the segment starts there and the lane is as long as the
+      // place plus the clip. A SEQUENCED set is a concatenation, so it starts at zero and its members follow one
+      // another — see the branch above.
+      const offset = Math.max(0, Number(track.offset) || 0)
+      const segment = trackSegment(track, offset)
       const language = (track.language || '').toLowerCase()
       lanes.push({
         id: track.id,
@@ -1017,7 +1021,7 @@ export const buildTimeline = (task: QueueTask, options: BuildTimelineOptions = {
         kind: 'audio',
         embedded: false,
         segments: [segment],
-        duration: segment.duration,
+        duration: offset + segment.duration,
       })
     })
   }

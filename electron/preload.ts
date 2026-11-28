@@ -165,7 +165,7 @@ export interface IElectronAPI {
    * here, because a `.webm` is a picture container to this app's own media rules and a microphone recorded no
    * picture. A failure answers with an error rather than a path, so the window can say what went wrong.
    */
-  saveRecording: (taskId: string, data: ArrayBuffer, mimeType: string) => Promise<{ path: string | null; error?: string }>
+  saveRecording: (taskId: string, data: ArrayBuffer, mimeType: string, seconds?: number) => Promise<{ path: string | null; error?: string }>
   /** The published releases' notes, newest first, for WHAT'S NEW. Empty where GitHub could not be reached. */
   releaseNotes: () => Promise<Array<{ version: string; notes: string; publishedAt: string }>>
   /** This app's own version, as the bundle carries it. */
@@ -297,7 +297,7 @@ const api: IElectronAPI = {
   downloadsDirectory: () => ipcRenderer.invoke('downloads-directory'),
   downloadYouTube: (options: { url: string; directory?: string; quality?: string; previewSafe?: boolean; subtitles?: boolean }) => ipcRenderer.invoke('download-youtube', options),
   requestMicrophone: () => ipcRenderer.invoke('request-microphone'),
-  saveRecording: (taskId: string, data: ArrayBuffer, mimeType: string) => ipcRenderer.invoke('save-recording', taskId, data, mimeType),
+  saveRecording: (taskId: string, data: ArrayBuffer, mimeType: string, seconds?: number) => ipcRenderer.invoke('save-recording', taskId, data, mimeType, seconds),
   releaseNotes: () => ipcRenderer.invoke('release-notes'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   checkForUpdate: () => ipcRenderer.invoke('check-for-update'),

@@ -20,7 +20,7 @@ import { outputCarriesPicture, outputTakesArt } from '../../src/lib/outputKind'
 import { clipFilters } from '../../src/lib/sourceFit'
 import { VISUALIZATION_BACKGROUND, drawingColorOf, drawingTuneOf, eqStyleOf, visualizationBackgroundKind, visualizationGraph, visualizationProgressLine } from '../../src/lib/visualization'
 import { channelLayoutFor, resolvedAudioChannels } from '../../src/lib/audioFacts'
-import { DEFAULT_CAPTION_STYLE, burnInFilter, cuesOnTimeline, languageOfSubtitle, subtitleCodecFor, toSrt } from '../../src/lib/subtitles'
+import { DEFAULT_CAPTION_STYLE, burnInFilter, cuesOnTimeline, languageOfSubtitle, subtitleCodecFor, toAss, toSrt } from '../../src/lib/subtitles'
 import { probeFile } from './probe'
 import { teachLavfiFormat } from './virtualInput'
 
@@ -461,8 +461,10 @@ export class FFmpegEngine {
     if (!burn && !soft) return
     const cues = await this.placeCaptionCues(task)
     if (!cues.length) return
-    const srt = path.join(os.tmpdir(), `stitch_${task.id}_captions.srt`)
-    fs.writeFileSync(srt, toSrt(cues), 'utf-8')
+    // A BURNED caption is written as ASS so each line can carry its own `\pos` — a style string alone cannot put a
+    // centred line anywhere but the middle. The soft stream stays SRT, which every muxer reads.
+    const srt = path.join(os.tmpdir(), `stitch_${task.id}_captions.${burn ? 'ass' : 'srt'}`)
+    fs.writeFileSync(srt, burn ? toAss(cues, task.captionStyle ?? DEFAULT_CAPTION_STYLE) : toSrt(cues), 'utf-8')
     this.captionsPrepared.set(task.id, { srt, burn, cues: cues.length, sources: [...new Set(cues.map((cue) => cue.sourcePath))] })
   }
 
@@ -470,7 +472,7 @@ export class FFmpegEngine {
   private captionBurnFilter(task: QueueTask): string[] {
     const prepared = this.captionsPrepared.get(task.id)
     if (!prepared?.burn) return []
-    return [burnInFilter(prepared.srt, task.captionStyle ?? DEFAULT_CAPTION_STYLE)]
+    return [burnInFilter(prepared.srt)]
   }
 
   /** The temporary cue file goes with the job, whichever way the job ended. */
@@ -1130,9 +1132,13 @@ export class FFmpegEngine {
       visualRetime,
     )
     const trackTimelineDurations = trackDurations.map((seconds, index) => clipDurationFor(seconds || 0, trackRetimes[index]))
-    // What the tracks amount to as ONE run of sound: the sum where they are SEQUENCED, the longest where
-    // they are stacked. That is the figure the output is reconciled against either way.
-    const audioRun = trackTimelineDurations.reduce((run, seconds) => (tracksConcatenate(task) ? run + seconds : Math.max(run, seconds)), 0)
+    // WHERE EACH TRACK SITS. A STACKED track may be moved along its lane, so its sound is delayed to that instant;
+    // a SEQUENCED set is one stream end to end, so an offset has no gap to live in and is not written.
+    const trackOffsets = extraAudios.map((track) => (tracksConcatenate(task) ? 0 : Math.max(0, Number(track.offset) || 0)))
+    const trackDelays = trackOffsets.map((offset) => (offset > 0.0005 ? [`adelay=${Math.round(offset * 1000)}:all=1`] : []))
+    // What the tracks amount to as ONE run of sound: the sum where they are SEQUENCED, the longest PLACE plus its
+    // clip where they are stacked. That is the figure the output is reconciled against either way.
+    const audioRun = trackTimelineDurations.reduce((run, seconds, index) => (tracksConcatenate(task) ? run + seconds : Math.max(run, (trackOffsets[index] || 0) + seconds)), 0)
     // A multi-track output runs to the longer of the visual and its tracks, the visual being padded when a
     // track outlasts it. A still cover is the exception: it is bounded by the tracks it plays under, having
     // no length of its own to run out of.
@@ -1219,7 +1225,11 @@ export class FFmpegEngine {
         ...(carriesMainAudio && videoHasAudio ? [undefined] : []),
         ...extraAudios.map((track) => track.gainDb),
       ]
-      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, this.exportChannels(task.preset, 2), expectedSeconds, audibleGains)
+      const audibleDelays: Array<number | undefined> = [
+        ...(carriesMainAudio && videoHasAudio ? [undefined] : []),
+        ...trackOffsets,
+      ]
+      this.applyVisualization(cmd, task.preset, audible, this.visualizationBackgroundFor(cmd, task.preset, isStillCover ? 0 : undefined, 1 + extraAudios.length), 48000, this.exportChannels(task.preset, 2), expectedSeconds, audibleGains, audibleDelays)
     }
     const attachCover = !pictured && isStillCover && outputTakesArt(task.preset.container) && task.preset.coverArt !== false
 
@@ -1273,7 +1283,7 @@ export class FFmpegEngine {
     if (!tracksStitched) {
       if (mainStreams) mainStreams.forEach((stream) => mixSources.push({ label: `0:a:${stream.index}`, filters: [...speedMainAudio, ...mainFades.audio, ...this.gainFilters(stream.gainDb)] }))
       else if (carriesMain) mixSources.push({ label: '0:a:0', filters: [...speedMainAudio, ...mainFades.audio] })
-      extraAudios.forEach((track, idx) => mixSources.push({ label: `${idx + 1}:a:${track.streamIndex ?? 0}`, filters: [...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...this.gainFilters(track.gainDb)] }))
+      extraAudios.forEach((track, idx) => mixSources.push({ label: `${idx + 1}:a:${track.streamIndex ?? 0}`, filters: [...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...this.gainFilters(track.gainDb), ...trackDelays[idx]] }))
     }
     const mixing = !pictured && !tracksStitched && audioLayout === 'mixdown' && mixSources.length > 0
     // The output stream each track's audio lands on: after the main lane's own streams, however many
@@ -1395,6 +1405,9 @@ export class FFmpegEngine {
       const perStream = mainChains.some((chain) => chain.length > 1)
         || trackFades.some((fade) => fade.audio.length > 0)
         || trackSpeedAudio.some((chain) => chain.length > 0)
+        // A MOVED track needs its own chain too: its delay is the whole of where it sits, and a shared `-af`
+        // would put that silence in front of every lane rather than this one.
+        || trackDelays.some((chain) => chain.length > 0)
         // A track with a LEVEL of its own needs its own chain too: a shared `-af` would put that level on
         // every stream, which is the one thing a per-track gain must not do.
         || extraAudios.some((track) => this.gainFilters(track.gainDb).length > 0)
@@ -1404,7 +1417,7 @@ export class FFmpegEngine {
       } else {
         mainChains.forEach((chain, outIndex) => cmd.outputOptions([`-filter:a:${outIndex} ${chain.join(',')}`]))
         extraAudios.forEach((track, idx) => {
-          const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...this.gainFilters(track.gainDb)]
+          const chain = [audioBase, ...trackSpeedAudio[idx], ...(trackFades[idx]?.audio ?? []), ...this.gainFilters(track.gainDb), ...trackDelays[idx]]
           cmd.outputOptions([`-filter:a:${firstTrackOut + idx} ${chain.join(',')}`])
         })
       }
@@ -1570,7 +1583,7 @@ export class FFmpegEngine {
    * `duration` is how long the export's sound runs — what the progress line sweeps across — and the line's
    * own on/off comes from the preset, so the default lives in one place rather than at each call site.
    */
-  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number, gainDbs: Array<number | undefined> = []): void {
+  private applyVisualization(cmd: ffmpeg.FfmpegCommand, preset: EncodingPreset, sources: string[], background: string | { input: number }, rate: number, channels: number, duration: number, gainDbs: Array<number | undefined> = [], delaysMs: Array<number | undefined> = []): void {
     const { width, height } = this.frameBoxFor(preset)
     // EACH SOURCE IS LEVELLED BEFORE IT IS SUMMED. A drawing built from several inputs sums them with `amix`,
     // and a level applied after the sum would move every one of them together — so the gain is written on
@@ -1579,9 +1592,9 @@ export class FFmpegEngine {
     // graph is the one it always was.
     const pre: string[] = []
     const labels = sources.map((source, index) => {
-      const gain = this.gainFilters(gainDbs[index])
-      if (!gain.length) return source
-      pre.push(`[${source}]${gain.join(',')}[lv${index}]`)
+      const chain = [...this.gainFilters(gainDbs[index]), ...((delaysMs[index] ?? 0) > 0.0005 ? [`adelay=${Math.round((delaysMs[index] ?? 0) * 1000)}:all=1`] : [])]
+      if (!chain.length) return source
+      pre.push(`[${source}]${chain.join(',')}[lv${index}]`)
       return `lv${index}`
     })
     const graph = visualizationGraph({

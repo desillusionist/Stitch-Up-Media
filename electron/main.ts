@@ -1162,7 +1162,7 @@ app.whenReady().then(() => {
    * app's own ffmpeg, gives a take every reader already speaks: 48 kHz, stereo, 16-bit. The take is kept under
    * `userData`, not the preview cache, because it is the reader's material and CLEAR CACHE must never take it.
    */
-  ipcMain.handle('save-recording', async (_, taskId: string, data: ArrayBuffer, mimeType: string) => {
+  ipcMain.handle('save-recording', async (_, taskId: string, data: ArrayBuffer, mimeType: string, seconds?: number) => {
     const id = String(taskId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || 'take'
     const directory = path.join(app.getPath('userData'), 'recordings')
     const extension = /ogg/i.test(String(mimeType || '')) ? 'ogg' : 'webm'
@@ -1172,7 +1172,13 @@ app.whenReady().then(() => {
       fs.writeFileSync(input, Buffer.from(data))
       const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-').replace(' ', '-')
       const output = uniquePath(path.join(directory, `Take ${stamp}.wav`), fs.existsSync)
-      await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-vn', '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le', output], 120000, FFMPEG_BINARY)
+      // HELD TO THE MEASURED LENGTH. A recorder's own stream runs on past the moment the take was stopped by
+      // whole packets, so the file it writes is longer than the take that was actually spoken. The renderer counts
+      // the milliseconds a take was recording and the trim takes the rail back to exactly that figure. A take that
+      // measures nothing (an older caller) is written whole.
+      const held = Number(seconds)
+      const trim = Number.isFinite(held) && held > 0.05 ? ['-t', held.toFixed(3)] : []
+      await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', input, '-vn', ...trim, '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le', output], 120000, FFMPEG_BINARY)
       logEvent('recording', 'take saved', { taskId: id, path: output })
       return { path: output }
     } catch (error) {

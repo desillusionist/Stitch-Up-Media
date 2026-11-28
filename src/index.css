@@ -548,6 +548,9 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    amber because they are neither. */
 .lane-rec { flex: 0 0 auto; width: 9px; height: 9px; margin-left: 2px; padding: 0; border: 0; border-radius: 50%; background: var(--crt-green); box-shadow: 0 0 6px rgba(125, 255, 117, .5); animation: lane-rec-pulse 1.6s ease-in-out infinite; }
 .lane-rec.is-recording { background: var(--crt-red); box-shadow: 0 0 8px rgba(255, 101, 101, .6); animation: none; }
+/* A PAUSED take is steady amber: the microphone is still open and the take is still in hand, but nothing is being
+   written — neither the green of standby nor the red of recording would say that. */
+.lane-rec.is-paused { background: var(--crt-amber); box-shadow: 0 0 7px rgba(255, 184, 77, .55); animation: none; }
 .lane-rec.is-arming, .lane-rec.is-saving { background: var(--crt-amber); box-shadow: 0 0 6px rgba(255, 184, 77, .5); animation: lane-rec-pulse .9s ease-in-out infinite; }
 .lane-rec:disabled { cursor: default; }
 @keyframes lane-rec-pulse { 0%, 100% { opacity: .3; transform: scale(.82); } 50% { opacity: 1; transform: scale(1); } }
@@ -588,6 +591,18 @@ aside { box-shadow: -10px 0 24px rgba(0,0,0,.35) !important; }
    sources ARE the main lane's clips, so this is a reorder of the join rather than a free move — nothing is
    dropped between clips, because a concatenation has no room to drop into. */
 .timeline-lane .timeline-clip.is-dragging { opacity: .35; }
+/* A STACKED TRACK is the only clip that may sit anywhere on its lane, so it says so with the pointer: grab to slide
+   it, and a crosshair while it is held. A clip on a joining lane has no such gap to move into and keeps a pointer. */
+.timeline-lane .timeline-clip.is-slideable { cursor: grab; }
+.timeline-lane .timeline-clip.is-slideable:active { cursor: grabbing; }
+/* THE TAKE BEING WRITTEN: a growing box on the row below the job's lanes, its width the milliseconds recorded and
+   its bars the microphone's own peaks as they arrive. It is drawn by its own animation frame (see `TakeWave`), so
+   nothing in the editor re-renders to make it grow. */
+.timeline-take-wave { position: absolute; top: 5px; bottom: 5px; overflow: hidden; border: 1px solid var(--crt-red); background: rgba(201, 133, 133, .1); }
+.timeline-take-wave svg { display: block; }
+.timeline-lane-head.is-take { color: var(--crt-red); letter-spacing: .06em; }
+.timeline-lane-head.is-take.is-paused { color: var(--crt-amber); }
+.timeline-lane-head.is-take.is-saving { color: var(--crt-amber); }
 /* Trimming: a grab handle on each edge of a main-lane clip, shown while the clip is in hand or hovered so a
    lane at rest stays as wide as its time and nothing else. The bar carries dark NOTCHES down it, so it reads
    as a grip to take hold of rather than as a change of colour, and a SELECTED clip draws both handles wider
@@ -1037,16 +1052,25 @@ button:hover { box-shadow: none !important; text-shadow: none !important; }
 /* THE CAPTION OVER THE MONITOR. Positioned in the picture's own box and aligned to its bottom, so the words sit on
    the image rather than on a letterbox bar. It takes no pointer events: the picture under it is still what is being
    watched and clicked. */
-.monitor-caption { position: absolute; z-index: 4; display: flex; align-items: flex-end; justify-content: center; padding: 0 5% 5%; pointer-events: none; text-align: center; line-height: 1.25; white-space: pre-wrap; overflow-wrap: anywhere; }
-.monitor-caption > span { padding: 1px 7px; border-radius: 2px; }
+.monitor-caption { position: absolute; z-index: 4; pointer-events: none; overflow-wrap: anywhere; }
+.monitor-caption > span { position: absolute; display: block; max-width: 90%; padding: 1px 7px; border-radius: 2px; line-height: 1.25; white-space: pre-wrap; }
 .monitor-caption.has-box > span { background: rgba(0, 0, 0, .72); }
+/* The two STYLE controls that are a shape rather than a list: the three alignments, and the two position figures. */
+.caption-align { display: flex; }
+.caption-align button { flex: 1 1 0; height: 28px; padding: 0; color: var(--ui-muted); background: transparent; border: 1px solid var(--ui-border); font-family: inherit; font-size: 9px; }
+.caption-align button + button { border-left: 0; }
+.caption-align button.is-on { color: var(--ui-canvas); background: var(--ui-accent); border-color: var(--ui-accent); }
+.caption-position { display: flex; gap: 5px; }
+.caption-position .mini-field { flex: 1 1 0; min-width: 0; }
 /* THE CAPTIONS TAB. One block per track, one row per cue: the times, the words, and the two gestures a cue
    offers. The times are SRT's own spelling, because that is the file the words came from and the one they are
    written back into. */
 .caption-track { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 9px 0; border-bottom: 1px dotted var(--ui-border-dim); min-width: 0; }
 .caption-track-head { display: flex; align-items: center; gap: 6px; }
 .caption-track-head .panel-kicker { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.caption-track-facts { color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
+.caption-track-facts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--ui-muted); font-size: 9px; letter-spacing: .06em; }
+.caption-language { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; }
+.caption-language-select { width: 96px; }
 .caption-add { flex: 0 0 auto; margin-left: auto; padding: 4px 7px; color: var(--ui-accent); background: transparent; border: 1px solid var(--ui-border); font-size: 9px; }
 .caption-add:hover { border-color: var(--ui-accent); }
 .caption-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 6px; background: var(--ui-panel-inset); border: 1px solid var(--ui-border-dim); min-width: 0; }

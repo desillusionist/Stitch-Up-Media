@@ -361,6 +361,15 @@ export interface AudioTrackItem {
    * with nothing to undo — see `extractedBy`.
    */
   sourceClipId?: string
+  /**
+   * How far along the timeline this track begins, in seconds. Absent means zero — the left edge.
+   *
+   * A track used to be pinned to zero because every track is a lane playing alongside the picture from its start.
+   * This is what lets one be MOVED along its lane, and it is how a take recorded at the skimmer lands where it was
+   * spoken. It applies only to STACKED tracks: a SEQUENCED set is one stream end to end, so an offset there would
+   * be a gap the concatenation cannot express and is ignored.
+   */
+  offset?: number
 }
 
 /**

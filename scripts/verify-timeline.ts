@@ -37,7 +37,7 @@ import { bitsPerSecond, estimateLabel, estimateOutputSize, framesFrom, sizeLabel
 import { pixelDepth, pixelDepthLabel, proresDepth, proresDepthLabel } from '../src/lib/pixelDepth'
 import { mediaKind } from '../src/lib/mediaKind'
 import { EXPORT_SUFFIX, deriveOutputFilename, exportName, stableBaseName, withExtension, withoutExtension } from '../src/lib/outputNaming'
-import { CAPTION_COLORS, CAPTION_FONTS, DEFAULT_CAPTION_STYLE, burnInFilter, burnInStyle, captionColorValue, captionFontStack, clampCaptionSize, cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, moveCueEdge, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, subtitleCodecFor, subtitleFormatOf, subtitleSidecarsFor, subtitlesForSource, toSrt } from '../src/lib/subtitles'
+import { CAPTION_COLORS, CAPTION_FONTS, DEFAULT_CAPTION_STYLE, burnInFilter, burnInStyle, captionColorValue, captionFontStack, clampCaptionPosition, clampCaptionSize, cueAt, cuesOnTimeline, formatSubtitleTime, isSubtitlePath, languageOfSubtitle, moveCueEdge, normaliseCue, parseSubtitleTime, parseSubtitles, placeCue, readSubtitleTime, shiftCue, subtitleCodecFor, subtitleFormatOf, subtitleSidecarsFor, subtitlesForSource, toAss, toSrt } from '../src/lib/subtitles'
 import { DEFAULT_BLANK_FILL, DEFAULT_PLACEHOLDER_SECONDS, PLACEHOLDER_SOURCE_SECONDS, filePathsOnly, makePlaceholderPath, normaliseFill, placeholderFill, withPlaceholderFill } from '../src/lib/placeholder'
 
 /**
@@ -3267,19 +3267,31 @@ void (async () => {
   check('an end dragged before the start stops on it', moveCueEdge({ start: 4, end: 6, text: 'x' }, 'end', 2, 12), { start: 4, end: 4, text: 'x' })
   check('a start dragged past the end stops on it', moveCueEdge({ start: 4, end: 6, text: 'x' }, 'start', 9, 12), { start: 6, end: 6, text: 'x' })
   check('and neither edge can leave the file', [moveCueEdge({ start: 1, end: 3, text: 'x' }, 'end', 99, 12).end, moveCueEdge({ start: 1, end: 3, text: 'x' }, 'start', -5, 12).start], [12, 0])
+  // A CUE DRAGGED ALONG ITS LANE moves whole: the length holds, and it stops at either end of the file.
+  check('a cue moved along the lane keeps its length', shiftCue({ start: 2, end: 5, text: 'x' }, 3, 12), { start: 5, end: 8, text: 'x' })
+  check('and stops at the head', shiftCue({ start: 2, end: 5, text: 'x' }, -9, 12), { start: 0, end: 3, text: 'x' })
+  check('and at the tail', shiftCue({ start: 2, end: 5, text: 'x' }, 99, 12), { start: 9, end: 12, text: 'x' })
 
   // THE MONITOR'S CAPTION APPEARANCE, and what it does when a saved job names something this build lost.
-  check('the default caption style is the app\u2019s own', DEFAULT_CAPTION_STYLE, { font: 'sans', size: 6, color: 'white', background: true, bold: false })
+  check('the default caption style is the app\u2019s own', DEFAULT_CAPTION_STYLE, { font: 'sans', size: 6, color: 'white', background: true, bold: false, align: 'center', x: 50, y: 92 })
+  check('a position is held inside the picture', [clampCaptionPosition(-5, 50), clampCaptionPosition(140, 50), clampCaptionPosition(Number.NaN, 92)], [0, 100, 92])
   check('a size is held where the monitor can read it', [clampCaptionSize(1), clampCaptionSize(60), clampCaptionSize(Number.NaN)], [2, 20, 6])
   check('a font falls back to sans rather than to nothing', [captionFontStack('sans').startsWith('system-ui'), captionFontStack('nonsense' as never) === captionFontStack('sans')], [true, true])
   check('a colour falls back to white', [captionColorValue('white'), captionColorValue('nonsense' as never)], ['#ffffff', '#ffffff'])
   check('every offered colour and font is labelled', [CAPTION_COLORS.length, CAPTION_FONTS.length], [4, 4])
   // A BURNED CAPTION IS DRAWN BY LIBASS, not by the window's CSS, so the look has to be translated: a size that is a
-  // share of the picture becomes a figure on libass's 288-line script, and the colours become ASS's `&HBBGGRR&`.
-  check('a burned caption asks libass for the same look', burnInStyle(DEFAULT_CAPTION_STYLE), 'FontName=Arial,FontSize=17,Bold=0,PrimaryColour=&H00FFFFFF&,BorderStyle=4,Outline=1,Shadow=0,Alignment=2,MarginV=18,BackColour=&H80000000&')
-  check('bold, amber and no box are written as libass reads them', burnInStyle({ ...DEFAULT_CAPTION_STYLE, bold: true, color: 'amber', background: false, size: 10 }), 'FontName=Arial,FontSize=29,Bold=1,PrimaryColour=&H004DB8FF&,BorderStyle=1,Outline=1,Shadow=0,Alignment=2,MarginV=18')
-  check('the burn filter names its own file and style', burnInFilter('/tmp/a.srt', DEFAULT_CAPTION_STYLE), `subtitles=filename='/tmp/a.srt':force_style='FontName=Arial,FontSize=17,Bold=0,PrimaryColour=&H00FFFFFF&,BorderStyle=4,Outline=1,Shadow=0,Alignment=2,MarginV=18,BackColour=&H80000000&'`)
-  check('and the whole filter carries no spaces for the option parser to split on', /\s/.test(burnInFilter('/tmp/a.srt', { ...DEFAULT_CAPTION_STYLE, font: 'crt' })), false)
+  // share of the picture becomes a figure on libass's 384x288 script, and the colours become ASS's `&HBBGGRR&`.
+  // The POSITION cannot go in a style at all — libass places a line with `\an` and `\pos` — so each cue carries it.
+  check('a burned caption asks libass for the same look', burnInStyle(DEFAULT_CAPTION_STYLE), 'Default,Arial,17,&H00FFFFFF&,&H000000FF&,&H00000000&,&H80000000&,0,0,0,0,100,100,0,0,4,1,0,2,0,0,0,1')
+  check('bold, amber and no box are written as libass reads them', burnInStyle({ ...DEFAULT_CAPTION_STYLE, bold: true, color: 'amber', background: false, size: 10 }), 'Default,Arial,29,&H004DB8FF&,&H000000FF&,&H00000000&,&HFF000000&,-1,0,0,0,100,100,0,0,1,1,0,2,0,0,0,1')
+  const burnedAss = toAss([{ start: 1.5, end: 3.25, text: 'Hello\nthere' }], DEFAULT_CAPTION_STYLE)
+  check('a burned cue is an ASS event at the style\u2019s own place', burnedAss.includes('Dialogue: 0,0:00:01.50,0:00:03.25,Default,,0,0,0,,{\\an2\\pos(192,265)}Hello\\Nthere'), true)
+  check('and the script is the one the figures are shares of', ['PlayResX: 384', 'PlayResY: 288'].every((line) => burnedAss.includes(line)), true)
+  check('a left-aligned caption anchors its left edge on X', toAss([{ start: 0, end: 1, text: 'x' }], { ...DEFAULT_CAPTION_STYLE, align: 'left', x: 0, y: 10 }).includes('{\\an1\\pos(0,29)}'), true)
+  check('and a right-aligned one its right edge', toAss([{ start: 0, end: 1, text: 'x' }], { ...DEFAULT_CAPTION_STYLE, align: 'right', x: 100, y: 100 }).includes('{\\an3\\pos(384,288)}'), true)
+  check('braces in the words are not read as an override', toAss([{ start: 0, end: 1, text: '{not a tag}' }], DEFAULT_CAPTION_STYLE).includes('\\{not a tag\\}'), true)
+  check('the burn filter names its own file', burnInFilter('/tmp/a.ass'), "subtitles=filename='/tmp/a.ass'")
+  check('and the whole filter carries no spaces for the option parser to split on', /\s/.test(burnInFilter('/tmp/a.ass')), false)
 
   // A PLACED CUE CARRIES THE CLIP IT CAME THROUGH, which is what a dragged edge is turned back by: the window's
   // start, its in point, and SOURCE seconds per TIMELINE second.

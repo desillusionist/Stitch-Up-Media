@@ -84,7 +84,7 @@ const bridge = {
   // THE MICROPHONE. The system's own consent is not this harness's business: the answer is yes, and the capture
   // itself is stubbed so a take can be driven without a device.
   requestMicrophone: async () => true,
-  saveRecording: async (_taskId: string, _data: ArrayBuffer, _mimeType: string) => ({ path: '/tmp/take.wav' }),
+  saveRecording: async (_taskId: string, _data: ArrayBuffer, _mimeType: string, _seconds?: number) => ({ path: '/tmp/take.wav' }),
 }
 // A cast through `unknown`, because the project declares `window.electronAPI` globally as the real
 // bridge and a stub is deliberately not that: it answers the calls the editor makes on mount and
@@ -114,11 +114,15 @@ const CLIP_AUDIO = (window as unknown as { __clipAudioFixture?: string }).__clip
 class StubRecorder {
   static isTypeSupported = () => true
   mimeType = 'audio/webm'
+  state = 'inactive'
   ondataavailable: ((event: { data: Blob }) => void) | null = null
   onstop: (() => void) | null = null
   constructor(_stream: unknown, _options?: unknown) { /* the same shape; nothing to open */ }
-  start() { window.setTimeout(() => this.ondataavailable?.({ data: new Blob([new Uint8Array(8)]) }), 10) }
-  stop() { window.setTimeout(() => this.onstop?.(), 10) }
+  start() { this.state = 'recording'; window.setTimeout(() => this.ondataavailable?.({ data: new Blob([new Uint8Array(8)]) }), 10) }
+  // PAUSE AND RESUME are what SPACE drives, so the stub has to hold a state the editor can be seen to leave.
+  pause() { this.state = 'paused' }
+  resume() { this.state = 'recording' }
+  stop() { this.state = 'inactive'; window.setTimeout(() => this.onstop?.(), 10) }
 }
 Object.defineProperty(window, 'MediaRecorder', { value: StubRecorder, configurable: true })
 Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => undefined }] }) }, configurable: true })
@@ -2569,6 +2573,7 @@ const drive = async () => {
   const burnIn = { checked: Boolean(toggleInput('BURN-IN CAPTIONS')?.checked), disabled: Boolean(toggleInput('BURN-IN CAPTIONS')?.disabled) }
   const playheadAtRest = (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
   const secondCueLeft = cueBlocks[1]?.style.left ?? null
+  const secondCueWidth = cueBlocks[1]?.style.width ?? null
   cueBlocks[1]?.click()
   await wait(250)
   const playheadOnCue = (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
@@ -2641,6 +2646,21 @@ const drive = async () => {
     return { colour: style.color, size: style.fontSize }
   })()
 
+  // THE STYLE'S OWN PLACE. ALIGN and POSITION are the controls this pass added beside the look: each has to be a
+  // real control, and the drawing has to follow them rather than staying where a bottom padding used to put it.
+  const alignButtons = [...(fieldFor('ALIGN')?.querySelectorAll('button') ?? [])]
+  const alignLabels = alignButtons.map((button) => button.textContent?.trim() ?? '')
+  alignButtons[2]?.click()
+  await wait(150)
+  const alignRight = alignButtons[2]?.className ?? null
+  const positionInputs = [...(fieldFor('POSITION')?.querySelectorAll('input') ?? [])] as HTMLInputElement[]
+  if (positionInputs[0]) { setNativeValue(positionInputs[0], '20'); await wait(150) }
+  if (positionInputs[1]) { setNativeValue(positionInputs[1], '50'); await wait(150) }
+  const placed = (() => {
+    const span = document.querySelector('.monitor-caption > span') as HTMLElement | null
+    return span ? { left: span.style.left, bottom: span.style.bottom, align: span.style.textAlign } : { left: null, bottom: null, align: null }
+  })()
+
   // THE CUE'S OWN EDGE, dragged on the lane. The right handle of the first cue is pressed and moved 40px right, which
   // at this zoom is over a second; the cue's END in the tab is what says the drag reached the words rather than only
   // the box. The start must not move with it, which is the whole difference between resizing and sliding.
@@ -2690,6 +2710,19 @@ const drive = async () => {
   applyRemoved?.click()
   await wait(300)
   const removedPatch = applied[applied.length - 1] as { subtitles?: Record<string, { cues: unknown[] }> } | undefined
+  // DELETE TAKES THE CAPTION IN HAND. The cue left after the menu's REMOVE is clicked, then DELETE is pressed: the
+  // same key that removes a clip has to take the smaller thing when a caption is selected.
+  const lastCue = document.querySelector('.timeline-cue') as HTMLElement | null
+  lastCue?.click()
+  await wait(200)
+  const selectedBeforeDelete = document.querySelectorAll('.timeline-cue.is-active').length
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Delete', key: 'Delete', bubbles: true, cancelable: true }))
+  await wait(300)
+  const blocksAfterDelete = document.querySelectorAll('.timeline-cue').length
+  const applyDeleted = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
+  applyDeleted?.click()
+  await wait(300)
+  const deletedPatch = applied[applied.length - 1] as { subtitles?: Record<string, { cues: unknown[] }> } | undefined
   result.captions = {
     headsBefore: captionHeadsBefore,
     blocksBefore: captionBlocksBefore,
@@ -2700,6 +2733,7 @@ const drive = async () => {
     playheadAtRest,
     playheadOnCue,
     secondCueLeft,
+    secondCueWidth,
     rows: captionRows,
     overflow,
     times: captionTimes,
@@ -2710,6 +2744,8 @@ const drive = async () => {
     groups: captionGroups,
     overlay: overlayBefore,
     overlayAfter,
+    align: { labels: alignLabels, right: alignRight, placed },
+    delete: { selectedBeforeDelete, blocksAfterDelete, cuesAfterDelete: deletedPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.length ?? null },
     draggedTimes,
     cueMenu: { head: cueMenuHead, items: cueMenuItems, rowsAfterRemove, blocksAfterRemove, cuesAfterRemove: removedPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.length ?? null },
     appliedText: captionPatch?.subtitles?.[CLIP_FIXTURE]?.cues?.[0]?.text ?? null,
@@ -2798,14 +2834,25 @@ const drive = async () => {
   }
 
   // A VOICE TAKE. The dot IS the state: pulsing green while the microphone is armed and nothing is being written,
-  // solid red while it is. The keyboard drives it the way the tooltip says — SHIFT+SPACE to start, SPACE to stop —
-  // and what comes out is a track on the job rather than a source spliced into it.
+  // solid red while it is, steady amber while SPACE has paused it. SHIFT+SPACE starts, SPACE pauses and carries on,
+  // and the DOT (or ESCAPE) stops and keeps it — what comes out is a track at the SKIMMER, on the job rather than
+  // spliced into its sources.
   flushEdits()
   await wait(200)
   arrive(task, 'take')
   await wait(900)
+  // The skimmer is put somewhere other than zero FIRST, so "the take begins where the skimmer was" is a figure and
+  // not a round zero that any behaviour would pass.
+  const takeInner = document.querySelector('.timeline-lanes-inner') as HTMLElement | null
   const takeLaneBodies = [...document.querySelectorAll('.timeline-lane')] as HTMLElement[]
   const emptyAudioLane = takeLaneBodies[1]
+  const takeLaneTrack = emptyAudioLane?.querySelector('.timeline-lane-track') as HTMLElement | null
+  const takeInnerBox = takeInner?.getBoundingClientRect()
+  if (takeLaneTrack && takeInnerBox) {
+    takeLaneTrack.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: takeInnerBox.left + 200, clientY: takeInnerBox.top + 12 }))
+    await wait(250)
+  }
+  const playheadOnTake = (document.querySelector('.timeline-playhead') as HTMLElement | null)?.style.left ?? null
   ;(emptyAudioLane?.querySelector('.boundary-add.is-lane-empty') as HTMLElement | null)?.click()
   await wait(200)
   const recButton = [...document.querySelectorAll('.boundary-editor button')].find((button) => button.textContent?.trim() === 'REC AUDIO') as HTMLButtonElement | undefined
@@ -2815,20 +2862,56 @@ const drive = async () => {
   const armed = { offered: Boolean(recButton), present: Boolean(dot()), state: dot()?.className ?? null, label: dot()?.getAttribute('aria-label') ?? null }
   window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', shiftKey: true, bubbles: true, cancelable: true }))
   await wait(250)
-  const recording = { state: dot()?.className ?? null, pressed: dot()?.getAttribute('aria-pressed') ?? null }
+  const recording = { state: dot()?.className ?? null, pressed: dot()?.getAttribute('aria-pressed') ?? null, lane: document.querySelectorAll('.timeline-lane-head.is-take').length, wave: Boolean(document.querySelector('.timeline-take-wave')) }
+  // SPACE PAUSES, and the picture with it; the row says PAUSED and the growing box stands still.
   window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true }))
-  await wait(800)
+  await wait(250)
+  const paused = { state: dot()?.className ?? null, label: document.querySelector('.timeline-lane-head.is-take')?.textContent?.trim() ?? null }
+  // SPACE AGAIN CARRIES ON.
+  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true }))
+  await wait(250)
+  const resumed = { state: dot()?.className ?? null }
+  // THE DOT STOPS IT — a click, not a pause.
+  dot()?.click()
+  await wait(900)
   const dotGone = !dot()
+  // THE TRACK LANDS WHERE THE SKIMMER WAS: the clip's own leading gap is the skimmer's own pixel.
+  const takeClip = document.querySelector('.timeline-clip.is-slideable') as HTMLElement | null
+  const takeOffsetLeft = takeClip?.style.marginLeft ?? null
+  // AND IT SLIDES: the clip is dragged 120px right and the gap has to follow.
+  if (takeClip) {
+    const box = takeClip.getBoundingClientRect()
+    takeClip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: box.left + 10, clientY: box.top + 10, pointerId: 3 }))
+    await wait(50)
+    window.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: box.left + 130, clientY: box.top + 10, pointerId: 3 }))
+    await wait(120)
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: box.left + 130, clientY: box.top + 10, pointerId: 3 }))
+    await wait(250)
+  }
+  const slidLeft = (document.querySelector('.timeline-clip.is-slideable') as HTMLElement | null)?.style.marginLeft ?? null
+  // REC AUDIO IS IN THE FADE BAR TOO, which is the second way into a take.
+  ;(document.querySelector('.timeline-clip .boundary-add.is-head') as HTMLElement | null)?.click()
+  await wait(200)
+  const boundaryRecOffered = [...document.querySelectorAll('.boundary-editor button')].some((button) => button.textContent?.trim() === 'REC AUDIO')
+  ;(document.querySelector('.boundary-close') as HTMLElement | null)?.click()
+  await wait(150)
   const applyTake = [...document.querySelectorAll('.editor-actions button')].find((button) => button.textContent?.trim() === 'APPLY') as HTMLButtonElement | undefined
   applyTake?.click()
   await wait(300)
-  const takePatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ path?: string }> } | undefined
+  const takePatch = applied[applied.length - 1] as { additionalAudioTracks?: Array<{ path?: string; offset?: number }> } | undefined
   result.take = {
     armed,
     recording,
+    paused,
+    resumed,
     dotGone,
+    playheadOnTake,
+    takeOffsetLeft,
+    slidLeft,
+    boundaryRecOffered,
     patchTracks: takePatch?.additionalAudioTracks?.length ?? null,
     patchPath: takePatch?.additionalAudioTracks?.[0]?.path ?? null,
+    patchOffset: takePatch?.additionalAudioTracks?.[0]?.offset ?? null,
   }
 
   ;(window as unknown as Record<string, unknown>).__MOUNT_DONE = true

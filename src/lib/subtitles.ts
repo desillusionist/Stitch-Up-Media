@@ -247,6 +247,14 @@ export const moveCueEdge = (cue: SubtitleCue, edge: 'start' | 'end', seconds: nu
     duration,
   )
 
+/** A cue moved along its lane: both edges shift, its length holds, and it stays inside the file. */
+export const shiftCue = (cue: SubtitleCue, delta: number, duration: number): SubtitleCue => {
+  const limit = Number.isFinite(duration) && duration > 0 ? duration : Number.MAX_SAFE_INTEGER
+  const length = Math.max(0, cue.end - cue.start)
+  const start = Math.max(0, Math.min(Math.max(0, limit - length), cue.start + (Number.isFinite(delta) ? delta : 0)))
+  return { start, end: start + length, text: cue.text }
+}
+
 /**
  * How a caption looks in the MONITOR.
  *
@@ -266,9 +274,15 @@ export interface CaptionStyle {
   /** Whether the words sit on a dark box rather than straight on the picture. */
   background: boolean
   bold: boolean
+  /** Which edge of the words sits on the X figure: their left, their middle, or their right. */
+  align: 'left' | 'center' | 'right'
+  /** Where that edge sits across the picture, in per cent. */
+  x: number
+  /** Where the BOTTOM of the words sits down the picture, in per cent: 100 is the bottom edge. */
+  y: number
 }
 
-export const DEFAULT_CAPTION_STYLE: CaptionStyle = { font: 'sans', size: 6, color: 'white', background: true, bold: false }
+export const DEFAULT_CAPTION_STYLE: CaptionStyle = { font: 'sans', size: 6, color: 'white', background: true, bold: false, align: 'center', x: 50, y: 92 }
 
 /** The fonts offered, as the stacks the monitor draws with. A choice is a name, not a font file. */
 export const CAPTION_FONTS: Array<{ value: CaptionStyle['font']; label: string; stack: string }> = [
@@ -290,6 +304,10 @@ export const CAPTION_COLORS: Array<{ value: CaptionStyle['color']; label: string
 export const clampCaptionSize = (value: number): number =>
   Math.max(2, Math.min(20, Number.isFinite(value) ? value : DEFAULT_CAPTION_STYLE.size))
 
+/** An X or Y held inside the picture, in per cent. */
+export const clampCaptionPosition = (value: number, fallback: number): number =>
+  Math.max(0, Math.min(100, Number.isFinite(value) ? value : fallback))
+
 /** A font choice's stack, falling back to sans for a record that names one this build no longer offers. */
 export const captionFontStack = (font: CaptionStyle['font']): string =>
   (CAPTION_FONTS.find((choice) => choice.value === font) ?? CAPTION_FONTS[0]).stack
@@ -299,15 +317,16 @@ export const captionColorValue = (color: CaptionStyle['color']): string =>
   (CAPTION_COLORS.find((choice) => choice.value === color) ?? CAPTION_COLORS[0]).css
 
 /**
- * A caption style as libass's `force_style` value, for a DRAWN-in caption.
+ * A caption style as an ASS STYLE LINE, for a DRAWN-in caption.
  *
  * The monitor draws captions in CSS; the encoder draws them with libass, and the two do not share a units system.
- * libass lays a converted SRT out on a 288-line script, so a size that is a percentage of the picture is that
- * percentage of 288 here — six per cent is FontSize 17, which renders at six per cent of the frame's height. The
- * colours are ASS's `&HAABBGGRR` (blue and red the way round the name says), and the box behind the words is
- * `BorderStyle=4` with a half-transparent black back colour, which is the closest thing libass has to the
- * monitor's own box. The font is a NAME libass has to resolve on this machine, which is why the app's terminal
- * face is mapped to the system's monospace rather than to a webfont only the window can load.
+ * libass lays a caption out on a 384×288 script, so a size that is a percentage of the picture is that percentage of
+ * 288 here — six per cent is FontSize 17, which renders at six per cent of the frame's height. The colours are ASS's
+ * `&HAABBGGRR` (blue and red the way round the name says), and the box behind the words is `BorderStyle=4` with a
+ * half-transparent black back colour, which is the closest thing libass has to the monitor's own box.
+ *
+ * X, Y and the alignment are NOT here: they differ per cue (the same style at a different place), and libass places
+ * a line with an override tag — see `toAss`.
  */
 export const burnInStyle = (style: CaptionStyle): string => {
   const colours: Record<CaptionStyle['color'], string> = {
@@ -316,29 +335,69 @@ export const burnInStyle = (style: CaptionStyle): string => {
     green: '&H0075FF7D&',
     cyan: '&H00E2E663&',
   }
-  // libass resolves these by NAME on this machine, and a name with a SPACE cannot be passed through the `-vf`
-  // string without fluent-ffmpeg splitting it into two arguments — so the sans face is Arial rather than Helvetica
-  // Neue, and every value in this list is one word. Measured: the spaced name failed the whole export with
-  // "Unrecognized option 'vf scale=...'".
-  const fonts: Record<CaptionStyle['font'], string> = {
-    sans: 'Arial',
-    serif: 'Georgia',
-    mono: 'Menlo',
-    crt: 'Menlo',
-  }
+  // libass resolves these by NAME on this machine, and a name with a SPACE cannot be passed through a `-vf` string
+  // without the option parser splitting it — so the sans face is Arial rather than Helvetica Neue, and every value
+  // here is one word.
+  const fonts: Record<CaptionStyle['font'], string> = { sans: 'Arial', serif: 'Georgia', mono: 'Menlo', crt: 'Menlo' }
   const size = Math.max(6, Math.round(288 * clampCaptionSize(style.size) / 100))
   return [
-    `FontName=${fonts[style.font] ?? fonts.sans}`,
-    `FontSize=${size}`,
-    style.bold ? 'Bold=1' : 'Bold=0',
-    `PrimaryColour=${colours[style.color] ?? colours.white}`,
-    style.background ? 'BorderStyle=4' : 'BorderStyle=1',
-    'Outline=1',
-    'Shadow=0',
-    'Alignment=2',
-    'MarginV=18',
-    ...(style.background ? ['BackColour=&H80000000&'] : []),
+    'Default',
+    fonts[style.font] ?? fonts.sans,
+    String(size),
+    colours[style.color] ?? colours.white,
+    '&H000000FF&',
+    '&H00000000&',
+    style.background ? '&H80000000&' : '&HFF000000&',
+    style.bold ? '-1' : '0', '0', '0', '0', '100', '100', '0', '0',
+    style.background ? '4' : '1', '1', '0', '2', '0', '0', '0', '1',
   ].join(',')
+}
+
+/** Seconds as ASS's `H:MM:SS.cc`, which counts hundredths rather than milliseconds. */
+const assTime = (seconds: number): string => {
+  const total = Math.max(0, Number.isFinite(seconds) ? seconds : 0)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const rest = total % 60
+  const whole = Math.floor(rest)
+  const hundredths = Math.min(99, Math.round((rest - whole) * 100))
+  return `${hours}:${String(minutes).padStart(2, '0')}:${String(whole).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}`
+}
+
+/**
+ * Cues as an ASS file, with each line PLACED by the style's own X/Y and alignment.
+ *
+ * A `force_style` string can carry the look but not a position: libass positions with margins, which cannot put a
+ * centred line anywhere but the middle. An ASS EVENT can, with `\an` (which corner of the line is the anchor) and
+ * `\pos` (where that anchor is). The script is 384×288 — the size libass's own SRT conversion uses — so the style's
+ * figures read as the same shares of the picture the monitor draws them at. Braces and backslashes are escaped, or a
+ * caption containing one would be read as an override tag.
+ */
+export const toAss = (cues: SubtitleCue[], style: CaptionStyle): string => {
+  const x = clampCaptionPosition(style.x, DEFAULT_CAPTION_STYLE.x) * 3.84
+  const y = clampCaptionPosition(style.y, DEFAULT_CAPTION_STYLE.y) * 2.88
+  const an = style.align === 'left' ? 1 : style.align === 'right' ? 3 : 2
+  const lines = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    'PlayResX: 384',
+    'PlayResY: 288',
+    'WrapStyle: 2',
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    `Style: ${burnInStyle(style)}`,
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  ]
+  ;[...cues].sort((a, b) => a.start - b.start).forEach((cue) => {
+    // Braces open an override block and a bare newline ends the event, so both are escaped the way Aegisub does.
+    const text = cue.text.replace(/\{/g, '\\{').replace(/\}/g, '\\}').replace(/\r?\n/g, '\\N')
+    lines.push(`Dialogue: 0,${assTime(cue.start)},${assTime(cue.end)},Default,,0,0,0,,{\\an${an}\\pos(${x.toFixed(0)},${y.toFixed(0)})}${text}`)
+  })
+  return lines.join('\n') + '\n'
 }
 
 /**
@@ -347,10 +406,9 @@ export const burnInStyle = (style: CaptionStyle): string => {
  * `subtitles` reads the file ITSELF, which is what makes burning possible without a second input: the encoder's
  * stream indices are the whole reason the soft stream is muxed in a second pass, and this filter steps around
  * them entirely. The path is this app's own temp file, whose name is a task id — no quotes, commas or colons to
- * escape — and the style is single-quoted because its commas are part of one value rather than filter separators.
+ * escape.
  */
-export const burnInFilter = (srtPath: string, style: CaptionStyle): string =>
-  `subtitles=filename='${srtPath}':force_style='${burnInStyle(style)}'`
+export const burnInFilter = (assPath: string): string => `subtitles=filename='${assPath}'`
 
 /**
  * Where one clip sits on the assembled timeline, in the terms a cue has to be moved by.

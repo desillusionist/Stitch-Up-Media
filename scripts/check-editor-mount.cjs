@@ -1244,9 +1244,13 @@ app.whenReady().then(async () => {
         if (menu.cuesAfterRemove !== 1) problems.push(`REMOVE CAPTION did not reach the queue: the job still carries ${JSON.stringify(menu.cuesAfterRemove)} cues`)
       }
       // The cue's block and the skimmer are two readings of the SAME figure, so a click that seeks has to leave the
-      // skimmer exactly on the block's own left edge. Read as a string comparison rather than an inequality: a
-      // skimmer left where it was, or moved to a nearby cue, both pass an inequality and neither is the rule.
-      if (String(captions.playheadOnCue) !== String(captions.secondCueLeft)) problems.push(`clicking a cue left the skimmer at ${JSON.stringify(captions.playheadOnCue)} rather than on the block at ${JSON.stringify(captions.secondCueLeft)} (was ${JSON.stringify(captions.playheadAtRest)})`)
+      // skimmer INSIDE the block that was clicked — under the pointer for a real click, at the block's middle for one
+      // with no pointer in it. Read against the block's own bounds: a skimmer left where it was, or moved to a nearby
+      // cue, both pass an inequality and neither is the rule.
+      const cueLeft = parseFloat(String(captions.secondCueLeft))
+      const cueWidth = parseFloat(String(captions.secondCueWidth))
+      const onCue = parseFloat(String(captions.playheadOnCue))
+      if (!(Number.isFinite(onCue) && onCue >= cueLeft - 0.5 && onCue <= cueLeft + cueWidth + 0.5)) problems.push(`clicking a cue left the skimmer at ${JSON.stringify(captions.playheadOnCue)} rather than inside the block ${JSON.stringify(captions.secondCueLeft)}+${JSON.stringify(captions.secondCueWidth)} (was ${JSON.stringify(captions.playheadAtRest)})`)
       if (captions.rows !== 2) problems.push(`the CAPTIONS tab drew ${captions.rows} cue row(s) rather than the two on the job`)
       // THE PANE FITS ITS ROWS. Measured before this pass: the pane was 329 wide with 357 of content, every row overran
       // it, and focusing a field scrolled the hidden overflow sideways so the track's own name was cut off on the left.
@@ -1271,6 +1275,24 @@ app.whenReady().then(async () => {
       const after = captions.overlayAfter
       if (!after || after.colour !== 'rgb(255, 184, 77)') problems.push(`choosing AMBER left the monitor's caption at ${JSON.stringify(after && after.colour)}`)
       if (!after || !(parseFloat(String(after.size)) > parseFloat(String(captions.overlay && captions.overlay.size)))) problems.push(`raising SIZE did not grow the monitor's caption: ${JSON.stringify(captions.overlay && captions.overlay.size)} to ${JSON.stringify(after && after.size)}`)
+      // THE STYLE'S PLACE: ALIGN and POSITION are drawn as controls and the monitor's span follows both.
+      const align = captions.align
+      if (!align) problems.push('the CAPTIONS STYLE group reported no alignment controls')
+      else {
+        if (JSON.stringify(align.labels) !== JSON.stringify(['L', 'C', 'R'])) problems.push(`the alignment controls read ${JSON.stringify(align.labels)} rather than L, C, R`)
+        if (!String(align.right).includes('is-on')) problems.push(`choosing R left its own control at ${JSON.stringify(align.right)}`)
+        if (!align.placed || align.placed.left !== '20%') problems.push(`raising X did not place the words at 20%: ${JSON.stringify(align.placed && align.placed.left)}`)
+        if (!align.placed || align.placed.bottom !== '50%') problems.push(`raising Y did not put the words' bottom at 50%: ${JSON.stringify(align.placed && align.placed.bottom)}`)
+        if (!align.placed || align.placed.align !== 'right') problems.push(`a right-aligned caption is drawn ${JSON.stringify(align.placed && align.placed.align)}`)
+      }
+      // DELETE TAKES THE CAPTION IN HAND, after the menu has taken the other one.
+      const deletion = captions.delete
+      if (!deletion) problems.push('the DELETE drive reported nothing')
+      else {
+        if (deletion.selectedBeforeDelete !== 1) problems.push(`the last cue was not selected before DELETE: ${JSON.stringify(deletion.selectedBeforeDelete)}`)
+        if (deletion.blocksAfterDelete !== 0) problems.push(`DELETE left ${JSON.stringify(deletion.blocksAfterDelete)} cue block(s) on the lane`)
+        if (deletion.cuesAfterDelete !== 0) problems.push(`DELETE left ${JSON.stringify(deletion.cuesAfterDelete)} cue(s) on the applied job`)
+      }
       // THE EDGE DRAG: the end moved, the start held, and both reached the queue.
       const before = captions.times || []
       const dragged = captions.draggedTimes || []
@@ -1278,19 +1300,30 @@ app.whenReady().then(async () => {
       if (!(parseFloat(String(captions.appliedEnd)) > 3)) problems.push(`dragging the cue's end did not reach the queue: end is ${JSON.stringify(captions.appliedEnd)}`)
       if (String(dragged[1]) === String(before[1])) problems.push(`the lane drag left the cue's end at ${JSON.stringify(dragged[1])}`)
       const style = captions.appliedStyle
-      if (!style || style.color !== 'amber' || style.size !== 9) problems.push(`the caption's appearance did not reach the queue: ${JSON.stringify(style)}`)
+      if (!style || style.color !== 'amber' || style.size !== 9 || style.align !== 'right' || style.x !== 20 || style.y !== 50) problems.push(`the caption's appearance did not reach the queue: ${JSON.stringify(style)}`)
       if (captions.appliedText !== 'EDITED CAPTION') problems.push(`an edited caption did not reach the queue: ${JSON.stringify(captions.appliedText)}`)
       if (captions.appliedCues !== 2) problems.push(`the applied job carries ${captions.appliedCues} cues rather than two`)
     }
-    // A VOICE TAKE: armed green, recorded red, and landed as a track.
+    // A VOICE TAKE: armed green, recording red, PAUSED amber, and landed as a track at the skimmer.
     const take = result.take
     if (!take) problems.push('the take drive reported nothing')
     else {
       if (!take.armed?.offered) problems.push('the empty audio lane\u2019s panel offered no REC AUDIO')
       if (!take.armed?.present || !String(take.armed.state).includes('is-standby')) problems.push(`REC AUDIO left no armed dot: ${JSON.stringify(take.armed)}`)
       if (!String(take.recording?.state).includes('is-recording') || take.recording?.pressed !== 'true') problems.push(`SHIFT+SPACE did not start the take: ${JSON.stringify(take.recording)}`)
+      if (take.recording?.lane !== 1) problems.push(`a running take drew ${JSON.stringify(take.recording?.lane)} take row(s)`)
+      if (!take.recording?.wave) problems.push('a running take drew no growing waveform')
+      if (!String(take.paused?.state).includes('is-paused') || !/PAUSED/.test(String(take.paused?.label))) problems.push(`SPACE did not pause the take: ${JSON.stringify(take.paused)}`)
+      if (!String(take.resumed?.state).includes('is-recording')) problems.push(`SPACE did not carry the take on: ${JSON.stringify(take.resumed)}`)
       if (!take.dotGone) problems.push('the dot is still drawn after the take was stopped and saved')
+      const skimmerAt = parseFloat(String(take.playheadOnTake))
+      const takeAt = parseFloat(String(take.takeOffsetLeft))
+      if (!(Number.isFinite(skimmerAt) && Number.isFinite(takeAt) && Math.abs(skimmerAt - takeAt) <= 2)) problems.push(`the take landed at ${JSON.stringify(take.takeOffsetLeft)} rather than at the skimmer's ${JSON.stringify(take.playheadOnTake)}`)
+      const slidTo = parseFloat(String(take.slidLeft))
+      if (!(Number.isFinite(slidTo) && Number.isFinite(takeAt) && slidTo > takeAt + 50)) problems.push(`dragging the track left its gap at ${JSON.stringify(take.slidLeft)} from ${JSON.stringify(take.takeOffsetLeft)}`)
+      if (!take.boundaryRecOffered) problems.push('the fade/cut bar offered no REC AUDIO')
       if (take.patchTracks !== 1 || take.patchPath !== '/tmp/take.wav') problems.push(`the take did not reach the job as a track: ${JSON.stringify(take.patchTracks)} ${JSON.stringify(take.patchPath)}`)
+      if (!(Number(take.patchOffset) > 0)) problems.push(`the take's track reached the queue at offset ${JSON.stringify(take.patchOffset)}`)
     }
     if (result.errors && result.errors.length) problems.push(...result.errors.map((error) => 'the page threw: ' + error))
   }
